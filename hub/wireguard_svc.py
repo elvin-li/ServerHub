@@ -253,14 +253,30 @@ def _now() -> int:
 
 
 def _conf_int(raw, fallback) -> int:
-    """Parse a conf field that operators sometimes write as ``51820/udp``."""
+    """Parse a conf field that operators sometimes write as ``51820/udp``.
+
+    The old blank probe ``raw not in (None, "")`` ran a *reflected*
+    ``__eq__`` on the stored value, and the bare ``int(...)`` dispatched
+    into a numeric subclass's ``__int__`` — either bomb raised past the
+    arithmetic-trio except and 500'd GET /api/wireguard on a conf/registry
+    value the coercion below degrades anyway.  Identity/isinstance gates
+    first, then everything through :func:`_plain_int`, which never raises.
+    """
+    blank = raw is None or (
+        isinstance(raw, (str, bytes, bytearray)) and not _as_text(raw).strip()
+    )
+    number = _plain_int(fallback if blank else raw)
+    if number is None:
+        number = _plain_int(fallback)
+    return 0 if number is None else number
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__``/``__len__`` bomb."""
     try:
-        return int(_as_text(raw if raw not in (None, "") else fallback).strip())
-    except (TypeError, ValueError, OverflowError):
-        try:
-            return int(fallback)
-        except (TypeError, ValueError, OverflowError):
-            return 0
+        return bool(value)
+    except Exception:
+        return False
 
 
 def _nonfinite(value) -> bool:
@@ -291,7 +307,13 @@ def _plain_int(value):
         return int(value)
     if isinstance(value, int):
         try:
-            return int.__index__(value)
+            value = int.__index__(value)
+            # str() probe (the _save_registry rule): an over-cap already-int
+            # (YAML hex/octal, a poisoned registry merge) renders through
+            # int->str, which CPython caps at 4300 digits — json.dumps
+            # ValueErrors past it, one layer after the range checks passed.
+            str(value)
+            return value
         except Exception:
             return None
     if isinstance(value, float):
@@ -415,9 +437,18 @@ class WireGuardError(ValueError):
 
 def settings() -> dict:
     """Effective WireGuard settings, defaults filled in."""
-    stored = settings_section("wireguard")
+    # Unbound ``dict.items`` behind a provider guard (the save_settings
+    # ``dict.get`` rule): this read does not own ``settings_section`` — tests
+    # and tooling patch it — and a section that raises, or arrives as a dict
+    # *subclass* whose bound ``.items`` bombs, used to 500 every WireGuard
+    # read (GET /api/wireguard, /settings, /readiness, /next-ip).
+    try:
+        stored = settings_section("wireguard")
+    except Exception:
+        stored = {}
     merged = dict(DEFAULTS)
-    for key, value in stored.items():
+    items = dict.items(stored) if isinstance(stored, dict) else ()
+    for key, value in items:
         if key not in merged or value is None:
             continue
         # YAML leftover ``endpoint: 2026-08-19`` / ``!!binary`` / ``!!set``
@@ -736,6 +767,73 @@ def read_conf(interface: str | None = None) -> dict:
     return wireguard_export.parse_conf(text)
 
 
+def _conf_interface(parsed) -> dict:
+    """The parsed ``[Interface]`` block as an *exact* dict, junk shapes empty.
+
+    :func:`read_conf` does not own its provider (tests and tooling patch it,
+    and ``wireguard_export.parse_conf`` is patchable the same way): a parsed
+    conf whose ``interface`` block is a dict *subclass* with a bombing
+    ``.get`` used to raise straight out of the bare method calls in
+    :func:`status`, :func:`used_addresses`, :func:`server_identity` and
+    :func:`_identify` — a raw 500 on GET /api/wireguard, GET
+    /api/wireguard/readiness and GET /api/wireguard/next-ip.  ``dict(...)``
+    copies through the C-level storage, bypassing the override; the values
+    are still leftovers and stay individually laundered at each use.
+    """
+    block = dict.get(parsed, "interface") if isinstance(parsed, dict) else None
+    if not isinstance(block, dict):
+        return {}
+    try:
+        return dict(block)
+    except Exception:
+        return {}
+
+
+def _plain_rows(value) -> list[dict]:
+    """*value* as a list of exact dicts, one junk row costing only itself.
+
+    The :func:`_ping_targets` convention on the listing seams: a peers value
+    that is a list *subclass* whose ``__iter__`` raises, or a row that is a
+    dict subclass with a bombing ``.get``, used to raise out of the walks in
+    :func:`peer_records`, :func:`used_addresses` and :func:`status` — a raw
+    500 where a blank row already drops silently.  Unbound ``list.__iter__``
+    walks the real entries; ``dict(row)`` launders each row's own methods.
+    """
+    if isinstance(value, list):
+        try:
+            rows = list.__iter__(value)
+        except Exception:
+            return []
+    elif isinstance(value, tuple):
+        rows = tuple.__iter__(value)
+    elif value is None:
+        return []
+    else:
+        try:
+            rows = iter(value)
+        except Exception:
+            return []
+    out: list[dict] = []
+    try:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out.append(dict(row))
+            except Exception:
+                continue
+    except Exception:
+        # An iterator whose __next__ bombs mid-walk keeps the rows walked so far.
+        pass
+    return out
+
+
+def _conf_peers(parsed) -> list[dict]:
+    """The parsed ``[Peer]`` blocks as exact dicts; see :func:`_conf_interface`."""
+    peers = dict.get(parsed, "peers") if isinstance(parsed, dict) else None
+    return _plain_rows(peers)
+
+
 def strip_conf(text: str) -> str:
     """Drop wg-quick-only directives, leaving what ``wg setconf`` accepts.
 
@@ -791,15 +889,14 @@ def render_conf(server: dict, peers: list[dict]) -> str:
 
 def server_identity() -> dict:
     """The server's own keys and address, creating them on first use."""
-    parsed = read_conf()
-    iface = parsed["interface"]
+    iface = _conf_interface(read_conf())
     cfg_ = settings()
     network = _usable_network(cfg_["subnet"]) or ipaddress.ip_network(
         DEFAULTS["subnet"], strict=False
     )
     default_address = f"{network.network_address + 1}/{network.prefixlen}"
 
-    private = str(iface.get("PrivateKey") or "").strip()
+    private = _as_text(iface.get("PrivateKey")).strip()
     if not _KEY_RE.match(private):
         directory = conf_dir()
         key_file = directory / "privatekey"
@@ -814,7 +911,9 @@ def server_identity() -> dict:
     return {
         "private_key": private,
         "public_key": public_from_private(private),
-        "address": str(iface.get("Address") or default_address).strip(),
+        # _as_text first: the old ``iface.get(...) or default`` blank probe
+        # reflected into a leftover value's own ``__bool__``.
+        "address": _as_text(iface.get("Address")).strip() or default_address,
         "listen_port": _conf_int(iface.get("ListenPort"), cfg_["listen_port"]),
     }
 
@@ -906,21 +1005,27 @@ def peer_records() -> list[dict]:
     parsed = read_conf()
     registry = _registry_peers()
     records = []
-    for peer in parsed["peers"]:
-        public = str(peer.get("PublicKey") or "").strip()
+    # _conf_peers / _as_text throughout: a peers list-subclass __iter__ bomb,
+    # a dict-subclass row, or a value whose __bool__/__str__ raises used to
+    # 500 every caller of this listing (GET /api/wireguard, /readiness,
+    # /next-ip, POST /ping) instead of costing only the junk row.
+    for peer in _conf_peers(parsed):
+        public = _as_text(peer.get("PublicKey")).strip()
         if not public:
             continue
         meta = registry.get(public) or {}
+        if not isinstance(meta, dict):
+            meta = {}
         records.append({
-            "public_key": _as_text(public),
-            "ip": _as_text(peer.get("AllowedIPs") or "").strip(),
-            "preshared_key": _as_text(peer.get("PresharedKey") or "").strip(),
-            "keepalive": _as_text(peer.get("PersistentKeepalive") or "").strip(),
-            "name": _as_text(meta.get("name") or ""),
-            "mode": _as_text(meta.get("mode") or ""),
-            "created": meta.get("created") or 0,
+            "public_key": public,
+            "ip": _as_text(peer.get("AllowedIPs")).strip(),
+            "preshared_key": _as_text(peer.get("PresharedKey")).strip(),
+            "keepalive": _as_text(peer.get("PersistentKeepalive")).strip(),
+            "name": _as_text(meta.get("name")),
+            "mode": _as_text(meta.get("mode")),
+            "created": _conf_int(meta.get("created"), 0),
             # Whether this peer's config/QR can be produced again.
-            "reissuable": bool(meta.get("private_key")),
+            "reissuable": _truthy(meta.get("private_key")),
             "known": bool(meta),
         })
     return records
@@ -1129,12 +1234,12 @@ def _identify(grouped: dict[str, list[list[str]]]) -> str:
     :func:`server_identity`, which mints a keypair when the file has none -- a
     write-shaped side effect that has no business firing on a status poll.
     """
-    iface_block = read_conf()["interface"]
+    iface_block = _conf_interface(read_conf())
     try:
-        expected_key = public_from_private(str(iface_block.get("PrivateKey") or ""))
+        expected_key = public_from_private(_as_text(iface_block.get("PrivateKey")))
     except WireGuardError:
         expected_key = ""
-    expected_port = str(iface_block.get("ListenPort") or "").strip()
+    expected_port = _as_text(iface_block.get("ListenPort")).strip()
 
     by_port = ""
     for device, rows in grouped.items():
@@ -1223,7 +1328,14 @@ def status(force: bool = False) -> dict:
     cfg_ = settings()
     interface = cfg_["interface"]
     install = installation()
-    records = peer_records()
+    # This walk does not own the provider (tests and tooling patch
+    # ``peer_records``, the :func:`_ping_targets` rule): a listing that
+    # raises, a list subclass whose ``__iter__`` bombs, or a junk row must
+    # cost only itself, never the whole status poll.
+    try:
+        records = _plain_rows(peer_records())
+    except Exception:
+        records = []
 
     up, rows, error = _dump(interface)
     live: dict[str, dict] = {}
@@ -1278,41 +1390,54 @@ def status(force: bool = False) -> dict:
     now = _now()
     peers = []
     active = stale = keepalive_missing = 0
+    # ``.get`` with laundering, not bare indexing: a partial row from a
+    # patched provider used to KeyError this walk (a raw 500 on every
+    # GET /api/wireguard poll), and a value's __bool__/__str__ bomb fired
+    # from the old ``stats.get(...) or record[...]`` chains.
     for record in records:
-        stats = live.get(record["public_key"]) or {}
+        public = _as_text(record.get("public_key"))
+        stats = live.get(public) or {}
         handshake = _conf_int(stats.get("last_handshake"), 0)
         age = (now - handshake) if handshake else 0
         is_active = bool(handshake) and age <= ACTIVE_WINDOW
         is_stale = bool(handshake) and ACTIVE_WINDOW < age <= STALE_WINDOW
         active += 1 if is_active else 0
         stale += 1 if is_stale else 0
-        keepalive = stats.get("keepalive") or record["keepalive"] or "off"
-        if str(keepalive) in ("", "0", "off"):
+        # Scalar-gated: _as_text of an arbitrary junk object is its repr,
+        # which would read as "keepalive set" in the count below.
+        raw_keep = record.get("keepalive")
+        if not isinstance(raw_keep, (str, bytes, bytearray, int, float)):
+            raw_keep = ""
+        keepalive = (
+            _as_text(stats.get("keepalive")) or _as_text(raw_keep).strip() or "off"
+        )
+        if keepalive in ("", "0", "off"):
             keepalive_missing += 1
         rx = _conf_int(stats.get("rx"), 0)
         tx = _conf_int(stats.get("tx"), 0)
+        reissuable = _truthy(record.get("reissuable"))
         peers.append({
-            "pubkey": _as_text(record["public_key"]),
-            "name": _as_text(record["name"]),
-            "mode": _as_text(record["mode"]),
-            "allowed_ips": _as_text(stats.get("allowed_ips") or record["ip"]),
-            "endpoint": _as_text(stats.get("endpoint") or ""),
+            "pubkey": public,
+            "name": _as_text(record.get("name")),
+            "mode": _as_text(record.get("mode")),
+            "allowed_ips": _as_text(stats.get("allowed_ips")) or _as_text(record.get("ip")),
+            "endpoint": _as_text(stats.get("endpoint")),
             "last_handshake": handshake,
             "handshake_age": age,
             "active": is_active,
             "stale": is_stale,
-            "keepalive": _as_text(keepalive),
-            "psk": bool(stats.get("preshared") or record["preshared_key"]),
+            "keepalive": keepalive,
+            "psk": _truthy(stats.get("preshared")) or _truthy(record.get("preshared_key")),
             "rx": rx,
             "tx": tx,
             "rx_human": _human_bytes(rx),
             "tx_human": _human_bytes(tx),
-            "reissuable": record["reissuable"],
-            "known": record["known"],
+            "reissuable": reissuable,
+            "known": _truthy(record.get("known")),
         })
 
-    parsed = read_conf()
-    address = _as_text(parsed["interface"].get("Address") or "").strip()
+    iface = _conf_interface(read_conf())
+    address = _as_text(iface.get("Address")).strip()
     # Only derive the key from the config when the running interface did not report
     # one.  `public_key` below is `server_public or conf_public`, so on a healthy
     # tunnel this value was computed and then discarded -- and computing it runs
@@ -1322,7 +1447,7 @@ def status(force: bool = False) -> dict:
     conf_public = ""
     if not server_public:
         try:
-            conf_public = public_from_private(str(parsed["interface"].get("PrivateKey") or ""))
+            conf_public = public_from_private(_as_text(iface.get("PrivateKey")))
         except WireGuardError:
             conf_public = ""
 
@@ -1334,13 +1459,13 @@ def status(force: bool = False) -> dict:
         "running": up,
         "state_error": _as_text(error),
         "listen_port": listen_port or _conf_int(
-            parsed["interface"].get("ListenPort"), cfg_["listen_port"],
+            iface.get("ListenPort"), cfg_["listen_port"],
         ),
         "public_key": _as_text(server_public or conf_public),
         "address": address,
         "subnet": _as_text(cfg_["subnet"]),
-        "mtu": _conf_int(parsed["interface"].get("MTU"), cfg_["mtu"]),
-        "dns": _as_text(parsed["interface"].get("DNS") or cfg_["dns"]),
+        "mtu": _conf_int(iface.get("MTU"), cfg_["mtu"]),
+        "dns": _as_text(iface.get("DNS")) or _as_text(cfg_["dns"]),
         "endpoint": _as_text(cfg_["endpoint"]),
         "wstunnel": wstunnel_status(),
         "peers": peers,
@@ -1359,13 +1484,16 @@ def used_addresses() -> set[str]:
     """Every host address already claimed, including the server's own."""
     used: set[str] = set()
     parsed = read_conf()
-    address = str(parsed["interface"].get("Address") or "")
+    # Laundered shape + _as_text: a subclass block/row or a bombing value
+    # used to 500 GET /api/wireguard/next-ip and every peer mutation's
+    # allocation step; junk now costs only the value it sits in.
+    address = _as_text(_conf_interface(parsed).get("Address"))
     for part in address.split(","):
         host = part.strip().split("/")[0].strip()
         if host:
             used.add(host)
-    for peer in parsed["peers"]:
-        for part in str(peer.get("AllowedIPs") or "").split(","):
+    for peer in _conf_peers(parsed):
+        for part in _as_text(peer.get("AllowedIPs")).split(","):
             host = part.strip().split("/")[0].strip()
             if host:
                 used.add(host)

@@ -676,11 +676,24 @@ def peer_origin_conflict() -> dict:
     pinned to some other server's public key and none of them can ever complete a
     handshake here.
     """
-    raw = wireguard_svc.peer_records()
-    records = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    # This probe does not own the provider (tests and tooling patch
+    # ``peer_records``, the wireguard_svc._ping_targets rule): a listing that
+    # raises, a list *subclass* whose ``__iter__`` bombs inside the old
+    # comprehension, or a dict-subclass row whose bound ``.get`` raises used
+    # to escape through :func:`readiness` — a raw 500 on GET
+    # /api/wireguard/readiness where a junk row already dropped silently.
+    try:
+        raw = wireguard_svc.peer_records()
+    except Exception:
+        raw = []
+    records = wireguard_svc._plain_rows(raw)
     if not records:
         return {"conflict": False, "reason": "no_peers", "foreign": 0, "total": 0}
-    foreign = [r for r in records if not r.get("known") and not r.get("reissuable")]
+    foreign = [
+        r for r in records
+        if not wireguard_svc._truthy(r.get("known"))
+        and not wireguard_svc._truthy(r.get("reissuable"))
+    ]
     conflict = len(foreign) == len(records)
     return {
         "conflict": conflict,
