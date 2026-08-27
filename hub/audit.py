@@ -284,6 +284,27 @@ _PUBLIC_EXCEPTIONS = (
 _STR_CAP = 64 * 1024
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves: as the ``event`` argument it
+    blew ``_utf8_text`` inside record()'s *fallback* entry — the one spot
+    outside both nets — and raised into the request being audited; nested
+    in a set/frozenset field or planted as a mapping key it blew
+    ``_jsonable``'s rank gates and degraded the whole line to the minimal
+    ts+event shape, wiping the who/where detail the trail exists for (the
+    logs9 / vms_svc rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
 
@@ -293,14 +314,14 @@ def _utf8_text(value) -> str:
     scrub from inside record()'s shaping — outside the (ValueError, TypeError,
     RecursionError) net — and 500 the request being audited.
     """
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
         try:
             text = base.decode(value, "utf-8", "replace")
         except Exception:
             return ""
     else:
-        if isinstance(value, str):
+        if _isa(value, str):
             text = value
         else:
             try:
@@ -334,9 +355,17 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # Exact type, not isinstance: bool cannot be subclassed, so the only
+    # thing an isinstance gate admits that this one refuses is an impostor
+    # whose lying ``__class__`` property answers ``bool``.  Passed through
+    # raw, that impostor reached record()'s json.dumps (whose C encoder
+    # checks the real type), fell to ``default=str``, and its ``__str__``
+    # bomb then cost the *entire line* inside the disk net — a failed
+    # sign-in left no trace at all.  Refused here, it falls through to the
+    # int gate below, whose unbound ``int.__index__`` sheds it to None.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Shed a subclass first: an int subclass whose ``__str__`` raised
             # (anything, not just ValueError) used to escape this probe and
@@ -355,7 +384,7 @@ def _jsonable(value, depth: int = 0):
             # and hub.errors._jsonable_param.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion before the finite probes: a float subclass whose
             # ``__ne__``/``__eq__`` raised used to blow ``value != value``.
@@ -365,9 +394,9 @@ def _jsonable(value, depth: int = 0):
         except Exception:
             return None
         return value
-    if isinstance(value, (str, bytes, bytearray)):
+    if _isa(value, (str, bytes, bytearray)):
         return _utf8_text(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         try:
             # Unbound base read: a dict-subclass ``items()`` bomb must cost
@@ -376,7 +405,7 @@ def _jsonable(value, depth: int = 0):
         except Exception:
             return out
         for k, v in items:
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isa(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except Exception:
@@ -384,7 +413,7 @@ def _jsonable(value, depth: int = 0):
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     for base in (list, tuple, set, frozenset):
-        if isinstance(value, base):
+        if _isa(value, base):
             try:
                 # Same shape as the dict read: subclass ``__iter__`` bombs
                 # bypass the base slot, so the real elements still list.
@@ -422,7 +451,15 @@ def _is_secret_key(key: str) -> bool:
         # sign-in being logged into a 500 of its own.  An unrenderable key
         # carries no name to match a hint against, and _jsonable drops it
         # before disk regardless, so "not secret" is the safe answer.
-        lowered = str(key).lower()
+        #
+        # Unbound ``str.lower`` on the base type: ``str()`` of a subclass
+        # whose ``__str__`` returns ``self`` hands the *subclass* instance
+        # straight through, and its bound ``lower()`` can do the same — so
+        # the substring probes below used to run ``in`` against a hostile
+        # ``__contains__``, outside this net, and one poisoned key wiped
+        # the whole line's detail.  The base method always returns an
+        # exact str, which the ``in`` probes can trust.
+        lowered = str.lower(str(key))
     except Exception:
         return False
     if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
@@ -451,7 +488,7 @@ def redact(value: Any, _depth: int = 0) -> Any:
     """
     if _depth > 32:
         return None
-    if isinstance(value, dict):
+    if _isa(value, dict):
         try:
             # Unbound base read, like _jsonable's: redact() runs before
             # record()'s swallow-all, so a dict-subclass ``items()`` bomb in
@@ -471,7 +508,7 @@ def redact(value: Any, _depth: int = 0) -> Any:
                 continue
         return out
     for base in (list, tuple):
-        if isinstance(value, base):
+        if _isa(value, base):
             try:
                 seq = list(base.__iter__(value))
             except Exception:
@@ -511,18 +548,25 @@ def record(event: str, /, **fields: Any) -> dict:
     on exactly what reached disk rather than on what was passed in.
     """
     try:
-        extra = redact(fields)
+        # Shape *before* the pop/merge below: redact() keeps the caller's
+        # key objects, and ``**kwargs`` admits str-subclass keys, so a
+        # hash-shadowing key whose ``__eq__`` raises used to detonate
+        # ``extra.pop("ts", ...)`` (and the ``**extra`` merge) and degrade
+        # the whole line to the minimal shape.  _jsonable rebuilds every
+        # key as an exact str first, so the dict operations here only ever
+        # touch plain keys.
+        extra = _jsonable(redact(fields))
         if not isinstance(extra, dict):
             extra = {}
         # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
         # clobber the stamp or the event name the trail is queried by.
         extra.pop("ts", None)
         extra.pop("event", None)
-        entry = _jsonable({
+        entry = {
             "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
             "event": _utf8_text(event),
             **extra,
-        })
+        }
     except Exception:
         # Shaping runs before the swallow-all below, so a poisoned field
         # shape it cannot handle must degrade to a minimal line — losing the
@@ -533,6 +577,12 @@ def record(event: str, /, **fields: Any) -> dict:
         # breaks the request.
         entry = None
     if not isinstance(entry, dict):
+        # This fallback runs *outside* both nets, so everything here must be
+        # total.  _utf8_text used to open with a bare isinstance: an event
+        # whose ``__class__`` property raised blew the shaping try above,
+        # landed here, and blew _utf8_text *again* — this time straight into
+        # the request being audited.  The _isa gates make _utf8_text
+        # non-raising for any input.
         entry = {
             "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
             "event": _utf8_text(event),
