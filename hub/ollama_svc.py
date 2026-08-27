@@ -127,9 +127,28 @@ CODES.setdefault("ollama.bad_label", (400, "invalid launchd label: {label}"))
 LABEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare rank gates themselves: planted in the in-memory pull
+    row it 500'd GET /api/ollama/pull/log raw (``_jsonable`` /
+    ``_pull_log_lines``), and planted as a settings scalar or block it took
+    GET /api/ollama/status to a coded 500 through ``settings_text`` /
+    ``_mapping_get`` (the system/status/usage_svc rule).  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isa(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
@@ -151,10 +170,16 @@ def _truthy(value) -> bool:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a bytes-subclass ``.decode`` bomb used to
-        # escape here and 500 GET /api/ollama/pull/log via _jsonable.
-        return _decode_bytes(value)
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a bytes-subclass ``.decode`` bomb used to
+            # escape here and 500 GET /api/ollama/pull/log via _jsonable.
+            return _decode_bytes(value)
+        except Exception:
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -182,9 +207,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* bare isinstance below — as a
+    # pull-row value, a nested ``model`` mapping value, or a status field —
+    # and 500 GET /api/ollama/pull/log raw (coded-500 on /api/ollama/status).
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 rule): an int
@@ -202,7 +231,7 @@ def _jsonable(value, depth: int = 0):
         except ValueError:
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``/
@@ -213,31 +242,54 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict-subclass ``items()`` bomb in a junk
         # pull-row value used to 500 GET /api/ollama/pull/log raw — the
-        # hub.jobs/_modules ``dict`` guard this walker never got.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # hub.jobs/_modules ``dict`` guard this walker never got.  The try
+        # is for a lying-``__class__`` dict impostor, which TypeErrors the
+        # unbound view itself.
+        try:
+            entries = list(dict.items(value))
+        except Exception:
+            return None
+        for k, v in entries:
+            # _isa on the key gates too: a ``__class__``-property bomb
+            # riding a mapping *key* used to detonate the bare isinstance
+            # and 500 GET /api/ollama/pull/log raw.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a sequence-subclass ``__iter__``
-                # bomb cannot 500 and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # bomb cannot 500 and the real elements still survive.  The
+                # try is for a lying-``__class__`` impostor, which
+                # TypeErrors the unbound iteration itself.
+                try:
+                    items = list(base.__iter__(value))
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -277,9 +329,15 @@ def _safe_int(raw, default: int = 0) -> int:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
-    elif not isinstance(value, str):
+    # _isa on both gates, try on the decode: a ``__class__``-property bomb
+    # detonated the bare isinstance itself; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and answers "".
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = _decode_bytes(value)
+        except Exception:
+            return ""
+    elif not _isa(value, str):
         return ""
     # Unbound base encode: a str-subclass ``.encode`` bomb planted as a
     # settings value used to raise out of every ``base_url()`` caller —
@@ -298,13 +356,17 @@ def settings_text(value) -> str:
     from CPython's 4300-digit cap) and an over-cap leftover would otherwise
     ValueError at ``str()`` time.  bool/inf/NaN and collections stay "".
     """
-    if isinstance(value, (str, bytes, bytearray)):
+    # _isa on every gate: a ``__class__``-property bomb planted as
+    # settings.ollama.url / .label used to detonate the first bare
+    # isinstance out of every base_url()/discover_label() caller — a coded
+    # 500 on GET /api/ollama/status and a raw 500 on GET /api/settings.
+    if _isa(value, (str, bytes, bytearray)):
         return _as_text(value)
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return ""
-    if not isinstance(value, (int, float)):
+    if not _isa(value, (int, float)):
         return ""
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes (the modules5 rule).
@@ -335,7 +397,10 @@ def _mapping_get(mapping, key):
     GET /api/ollama/status down whole.  ``dict.get`` reads the real storage
     underneath the override.
     """
-    if not isinstance(mapping, dict):
+    # _isa: a config node whose ``__class__`` is a raising property used to
+    # detonate the bare gate itself — the same 500 this helper exists to
+    # prevent, one line earlier.
+    if not _isa(mapping, dict):
         return None
     try:
         return mapping.get(key)
@@ -354,8 +419,17 @@ def _settings() -> dict:
     # returned mapping is copied to a plain dict so the callers' own ``.get``
     # cannot be the next bomb — ``dict()`` copies through the C-level
     # storage, ignoring overridden methods.
-    raw = _mapping_get(_mapping_get(cfg(), "settings"), "ollama")
-    if not isinstance(raw, dict):
+    try:
+        data = cfg()
+    except Exception:
+        # A detonating config loader used to raise out of every base_url()
+        # / discover_label() caller — a coded 500 on GET /api/ollama/status
+        # (the hub.status._cfg_root rule).  No config reads as defaults.
+        return {}
+    raw = _mapping_get(_mapping_get(data, "settings"), "ollama")
+    # _isa: a ``__class__``-property bomb planted as the whole ollama block
+    # used to detonate this bare gate the same way.
+    if not _isa(raw, dict):
         return {}
     if type(raw) is dict:
         return raw
@@ -894,15 +968,23 @@ def _pull_log_lines(raw) -> list[str]:
     The ``jobs._log_lines`` rule: ``log: [bytes, None, 5]`` in a junk
     in-memory row TypeError'd ``str.join`` out of GET /api/ollama/pull/log.
     """
-    if isinstance(raw, str):
-        # Unbound base length, not ``if raw``: truthiness of a str *subclass*
-        # dispatches into its own ``__bool__``/``__len__``, and a leftover
-        # bomb there used to 500 GET /api/ollama/pull/log raw — the one
-        # subclass shape the ollama6 sweep missed.
-        return [raw] if str.__len__(raw) else []
-    if not isinstance(raw, (list, tuple)):
+    # _isa on every gate: a leftover ``log`` (or one line in it) whose
+    # ``__class__`` is a raising property used to detonate the bare
+    # isinstance itself and 500 GET /api/ollama/pull/log raw.
+    if _isa(raw, str):
+        try:
+            # Unbound base length, not ``if raw``: truthiness of a str
+            # *subclass* dispatches into its own ``__bool__``/``__len__``,
+            # and a leftover bomb there used to 500 GET /api/ollama/pull/log
+            # raw — the one subclass shape the ollama6 sweep missed.  The
+            # try is for a lying ``__class__`` (claims str, is not), which
+            # TypeErrors the unbound call.
+            return [raw] if str.__len__(raw) else []
+        except Exception:
+            return []
+    if not _isa(raw, (list, tuple)):
         return []
-    base = list if isinstance(raw, list) else tuple
+    base = list if _isa(raw, list) else tuple
     try:
         # Unbound base iteration: a list-subclass ``__iter__`` bomb used to
         # 500 GET /api/ollama/pull/log past the isinstance gate (the
@@ -912,10 +994,16 @@ def _pull_log_lines(raw) -> list[str]:
         return []
     out: list[str] = []
     for item in items:
-        if isinstance(item, str):
+        # _isa on the per-item gates: a ``__class__``-property bomb *line*
+        # used to detonate outside the materializing try above and 500 the
+        # route; it drops alone and the real lines still survive.
+        if _isa(item, str):
             out.append(item)
-        elif isinstance(item, (bytes, bytearray)):
-            out.append(_decode_bytes(item))
+        elif _isa(item, (bytes, bytearray)):
+            try:
+                out.append(_decode_bytes(item))
+            except Exception:
+                continue
     return out
 
 

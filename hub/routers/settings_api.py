@@ -115,6 +115,32 @@ _ALLOWED_THEMES = {
 _ALLOWED_DENSITY = {"compact", "comfortable", "cozy"}
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare rank gates themselves — planted as the config root,
+    the ``settings`` / ``settings.ollama`` block, or any scalar these
+    helpers coerce, it 500'd GET /api/settings raw one line ahead of the
+    laundering built to absorb junk shapes (the system/status rule).  A real
+    subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a bytes-subclass ``__bytes__``/``.decode`` bomb
+    cannot 500.  ``bytes(value)`` dispatches into an overridden ``__bytes__``
+    (and ``.decode`` into an overridden decode); the unbound base call reads
+    the real buffer underneath either override."""
+    base = bytes if _isa(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _as_map(v):
     """A plain-dict view of *v*, or ``{}``.
 
@@ -127,7 +153,10 @@ def _as_map(v):
     ``.get`` normally.  Nested *values* that are themselves bombs are handled
     by :func:`_jsonable`.
     """
-    if not isinstance(v, dict):
+    # _isa: a block whose ``__class__`` is a raising property used to
+    # detonate the bare gate itself — the same GET /api/settings 500 this
+    # launderer exists to prevent, one line earlier.
+    if not _isa(v, dict):
         return {}
     try:
         return dict(v)
@@ -152,10 +181,17 @@ def _cfg_map():
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; the old ``bytes(value)`` copy
+    # dispatched into a bytes-subclass ``__bytes__`` bomb (the unbound base
+    # decode reads the buffer underneath both overrides); a lying
+    # ``__class__`` (claims bytes, is not) TypeErrors the unbound decode
+    # and answers "" like any unreadable leftover.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -185,9 +221,12 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* bare isinstance below and 500
+    # GET /api/settings raw, wherever it rode in the config tree.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Base coercion to an exact int: an int *subclass* whose
             # ``__index__``/``__str__`` bombs (the modules5 class) used to
@@ -200,7 +239,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -210,13 +249,18 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: the old ``bytes(value)`` copy dispatched
+            # into a bytes-subclass ``__bytes__`` bomb and 500'd the render.
+            # The try is for a lying ``__class__`` (claims bytes, is not),
+            # which TypeErrors the unbound call and drops the impostor.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         try:
             items = list(value.items())
@@ -226,16 +270,21 @@ def _jsonable(value, depth: int = 0):
             # unrenderable scalar; healthy siblings around it are untouched.
             return None
         for k, v in items:
-            if isinstance(k, (bytes, bytearray)):
-                k = bytes(k).decode("utf-8", "replace")
-            elif not isinstance(k, str):
+            # _isa on the key gates too: a ``__class__``-property bomb
+            # riding a mapping *key* used to detonate the bare isinstance.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
         except Exception:
@@ -243,7 +292,14 @@ def _jsonable(value, depth: int = 0):
             # than 500ing the encode; the surrounding structure survives.
             return None
         return [_jsonable(v, depth + 1) for v in seq]
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a leftover whose
+        # ``isoformat`` is a raising property (or a ``__getattr__`` bomb)
+        # used to raise out of the probe itself and 500 GET /api/settings
+        # raw (the hub.ollama_svc._jsonable rule).
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -263,9 +319,11 @@ def _text(value, default: str = "") -> str:
 
 
 def _finite(value, default):
-    if isinstance(value, bool) or value is None:
+    # _isa on every gate: a ``__class__``-property bomb interval used to
+    # detonate the bare isinstance itself instead of answering *default*.
+    if _isa(value, bool) or value is None:
         return default
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Base coercion to an exact int first: an int *subclass* whose
             # ``__index__``/``__str__`` bombs used to raise past the
@@ -277,7 +335,7 @@ def _finite(value, default):
             # (CPython's int->str digit cap) — fall back like inf.
             return default
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -293,9 +351,11 @@ def _finite(value, default):
 def _epoch(value, default: int = 0) -> int:
     """Finite unix timestamp. Leftover inf ``time.time()`` OverflowError'd
     ``int(inf)`` on GET /api/metrics?range=."""
-    if isinstance(value, bool) or value is None:
+    # _isa on every gate: the same ``__class__``-property bomb class as
+    # _finite, one endpoint over (GET /api/metrics window math).
+    if _isa(value, bool) or value is None:
         return default
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Base coercion first: a subclass ``__index__``/``__str__`` bomb
             # used to raise past the ValueError-only digit-cap catch.
@@ -305,7 +365,7 @@ def _epoch(value, default: int = 0) -> int:
             # A >4300-digit epoch cannot be JSON-encoded (int->str digit cap).
             return default
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             value = float.__float__(value)
         except Exception:
@@ -326,7 +386,9 @@ def _epoch(value, default: int = 0) -> int:
 
 
 def _flag(value, default: bool = True) -> bool:
-    return value if isinstance(value, bool) else default
+    # _isa: a ``__class__``-property bomb flag used to detonate the bare
+    # gate itself instead of answering *default*.
+    return value if _isa(value, bool) else default
 
 
 def _truthy(value) -> bool:
@@ -337,7 +399,9 @@ def _truthy(value) -> bool:
     used to 500 GET /api/settings where every healthy sibling around it
     rendered fine.
     """
-    if isinstance(value, bool):
+    # _isa: a ``__class__``-property bomb used to detonate this bare gate
+    # one line ahead of the guarded bool() below.
+    if _isa(value, bool):
         return value
     try:
         return bool(value)
@@ -346,7 +410,9 @@ def _truthy(value) -> bool:
 
 
 def _json_list(value) -> list:
-    cleaned = _jsonable(value if isinstance(value, (list, tuple, set, frozenset)) else [])
+    # _isa: a ``__class__``-property bomb riding stacks / log_sources /
+    # groups_order used to detonate the bare gate itself.
+    cleaned = _jsonable(value if _isa(value, (list, tuple, set, frozenset)) else [])
     return cleaned if isinstance(cleaned, list) else []
 
 
