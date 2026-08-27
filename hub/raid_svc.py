@@ -485,16 +485,53 @@ def candidate_devices() -> list[dict]:
     return out
 
 
+def _listing(provider) -> list:
+    """A listing provider's answer materialized under its own guard.
+
+    ``list_sets`` / ``candidate_devices`` build plain rows, but this module
+    does not own them (tests and tooling patch both), and a leftover listing
+    that passes ``isinstance`` yet refuses iteration — or a row missing its
+    own keys — used to blow ``overview()``'s counts *before* the route's
+    sanitizer could drop the unusable field, 500ing GET /api/raid (the
+    usage_svc.scan_roots / storage_pool_svc._candidates rule).
+    """
+    try:
+        rows = provider()
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    try:
+        return [r for r in list.__iter__(rows) if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
+def _flagged(rows: list, key: str) -> int:
+    """How many rows carry a truthy *key*; a hostile row counts as false."""
+    total = 0
+    for row in rows:
+        try:
+            if bool(dict.get(row, key)):
+                total += 1
+        except Exception:
+            continue
+    return total
+
+
 @cached_snapshot(_CACHE_TTL)
 def overview(force: bool = False) -> dict:
-    sets = list_sets()
+    sets = _listing(list_sets)
     data = {
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "sets": sets,
         "count": len(sets),
-        "degraded": sum(1 for s in sets if s["degraded"]),
-        "rebuilding": sum(1 for s in sets if s["rebuilding"]),
-        "candidates": candidate_devices(),
+        # dict.get + a guarded bool, not ``s["degraded"]``: a row that lost
+        # its own flag KeyError'd the count, and a leftover ``__bool__`` bomb
+        # detonated the truth test itself.
+        "degraded": _flagged(sets, "degraded"),
+        "rebuilding": _flagged(sets, "rebuilding"),
+        "candidates": _listing(candidate_devices),
         "levels": list(LEVELS),
         "filesystems": list(FILESYSTEMS),
     }
@@ -510,7 +547,19 @@ def invalidate() -> None:
 def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
     """Validate and re-verify member devices against a fresh enumeration."""
     cleaned: list[str] = []
-    for device in devices or []:
+    # Guarded unbound walk (the smart_test_svc.set_schedule rule): the routes
+    # hand over Pydantic-exact lists, but the service is also called
+    # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
+    # used to blow the old ``(devices or [])`` raw — past the router's
+    # RaidError catch — where every junk device already earns the coded
+    # ``raid.bad_device`` refusal.
+    if isinstance(devices, list):
+        rows = list.__iter__(devices)
+    elif isinstance(devices, tuple):
+        rows = tuple.__iter__(devices)
+    else:
+        rows = iter(())
+    for device in rows:
         # _req_text, not str(): a leftover int already past CPython's
         # int->str digit cap made ``str(device)`` itself ValueError out of
         # the endpoint instead of the coded refusal every other junk

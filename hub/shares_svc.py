@@ -466,8 +466,28 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
     assumed; the SPA and the health page turn them into actionable hints.
     """
     if shares is None:
-        shares = list_smb_shares(include_sizes=False)
-    tm_count = sum(1 for share in shares if share.get("time_machine"))
+        try:
+            shares = list_smb_shares(include_sizes=False)
+        except Exception:
+            shares = []
+    # Guarded unbound walk with per-row reads: this runs *after* the
+    # ``shares_overview`` fan-out has already absorbed its own failures, so a
+    # leftover listing that passes ``isinstance`` yet refuses iteration — or a
+    # dict-subclass row whose bound ``.get`` raises (the jobs/metrics row-bomb
+    # class) — used to raise here and 500 the whole shares page the fan-out
+    # had just rescued.
+    tm_count = 0
+    try:
+        rows = list.__iter__(shares) if isinstance(shares, list) else iter(())
+    except Exception:
+        rows = iter(())
+    try:
+        for share in rows:
+            if isinstance(share, dict) and _truthy(dict.get(share, "time_machine")):
+                tm_count += 1
+    except Exception:
+        # A walk dying mid-iteration keeps the count already gathered.
+        pass
     return {
         "share_count": tm_count,
         "smb_service_running": smb_service_running(),

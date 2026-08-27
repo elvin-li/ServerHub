@@ -479,7 +479,19 @@ def _validate(mounts: list[str], policy: str) -> tuple[list[str], list[dict]]:
         raise api_error("storage_pool.bad_policy", policy=policy)
 
     wanted: list[str] = []
-    for raw in mounts or []:
+    # Guarded unbound walk (the smart_test_svc.set_schedule rule): the routes
+    # hand over Pydantic-exact lists, but the service is also called
+    # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
+    # used to blow the old ``(mounts or [])`` raw out of GET-adjacent
+    # POST /api/storage/pool/plan and /save for those callers, where junk
+    # mounts already earn their coded refusals.
+    if isinstance(mounts, list):
+        rows = list.__iter__(mounts)
+    elif isinstance(mounts, tuple):
+        rows = tuple.__iter__(mounts)
+    else:
+        rows = iter(())
+    for raw in rows:
         # _text, not str(): a leftover int already past CPython's int->str
         # digit cap made ``str(raw)`` itself ValueError out of the endpoint
         # instead of the coded refusal every other junk mount gets.
