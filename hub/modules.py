@@ -187,16 +187,30 @@ def _isinst(value, types) -> bool:
         return False
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+def _decode_bytes(value):
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Returns ``None`` for a *lying* ``__class__`` that answers ``bytes`` /
+    ``bytearray`` while the real type is neither: the unbound base decode
+    is a descriptor bound to the real ``bytes``/``bytearray`` layout, so it
+    rejects the foreign operand with a ``TypeError`` outside any try — the
+    same seam the numeric arms already close via ``int.__index__`` /
+    ``float.__float__``.  A raise means "not really this type"; the caller
+    drops the impostor exactly as it drops a lying ``int``/``float``.
+    """
     base = bytes if _isinst(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if _isinst(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
     try:
         text = str(value)
     except RecursionError:
@@ -225,8 +239,19 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isinst(value, bool):
+    if value is None:
         return value
+    if _isinst(value, bool):
+        # ``bool`` is final, so a value that answers the ``bool`` gate while
+        # its real type is not ``bool`` is a *lying* ``__class__`` impostor,
+        # not a genuine bool.  The old arm returned it raw, handing the
+        # ``allow_nan=False`` encoder a non-serializable object that 500'd
+        # GET /api/modules — at value rank and as ``enabled``.  Only a real
+        # bool renders; the impostor drops to ``None`` like its numeric
+        # siblings' lying-``__class__`` coercion does.
+        if type(value) is bool:
+            return value
+        return None
     if _isinst(value, int):
         if type(value) is not int:
             try:
@@ -256,15 +281,28 @@ def _jsonable(value, depth: int = 0):
     if _isinst(value, str):
         return _utf8_text(value)
     if _isinst(value, (bytes, bytearray)):
+        # A lying ``__class__`` claiming ``bytes``/``bytearray`` makes the
+        # unbound base decode reject the foreign operand; drop it.
         return _decode_bytes(value)
     if _isinst(value, dict):
-        out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises
         # or yields non-pairs used to 500 GET /api/modules, nested and
-        # (since the ``dict(m)`` pre-copy fell) at row rank too.
-        for k, v in dict.items(value):
+        # (since the ``dict(m)`` pre-copy fell) at row rank too.  ``dict.items``
+        # is itself a descriptor bound to the real dict layout, so a *lying*
+        # ``__class__`` claiming ``dict`` (real type is neither) blew the
+        # call outside any try — drop the impostor like a lying ``int``.
+        try:
+            items = dict.items(value)
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
             if _isinst(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
+                if k is None:
+                    # A lying ``__class__`` key claiming bytes — drop just
+                    # this entry, keep the rest of the mapping.
+                    continue
             elif not _isinst(k, str):
                 try:
                     k = str(k)
@@ -276,8 +314,16 @@ def _jsonable(value, depth: int = 0):
         for base in (list, tuple, set, frozenset):
             if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot 500 and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot 500 and the real elements still survive.  The
+                # unbound ``__iter__`` is bound to the real sequence layout,
+                # so a *lying* ``__class__`` claiming this base (real type is
+                # not) makes it reject the operand — drop the impostor.
+                try:
+                    items = base.__iter__(value)
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
