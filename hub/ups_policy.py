@@ -348,6 +348,45 @@ def _truthy(value) -> bool:
         return False
 
 
+def _below_floor(value, floor) -> bool:
+    """``float(value) <= float(floor)`` that a seam ``__float__`` bomb cannot 500.
+
+    ``float(value)`` dispatches to the value's own ``__float__``, so a
+    ``battery_percent`` / ``time_remaining_min`` subclass from the
+    ``_ups_status`` seam whose ``__float__`` raises outside the
+    ``(TypeError, ValueError, OverflowError)`` trio the old ``except`` caught
+    used to escape ``_condition``'s trigger compare and 500
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill — and raise
+    out of ``sweep()`` into check_once's containment, silently killing every
+    UPS policy tick.  An unreadable value fails its condition, the module's
+    documented "never fires on the unknown" (a hand-edited ``trigger_pct:
+    "25%"`` string floor and a >4300-digit / inf floor already leaned on the
+    same fall-through).
+    """
+    if value is None:
+        return False
+    try:
+        return float(value) <= float(floor)
+    except Exception:
+        return False
+
+
+def _reason(template: str, *parts) -> str:
+    """Fired-condition label, built without running a raw seam value's dunders.
+
+    The reason interpolates the raw ``battery_percent`` / ``time_remaining_min``
+    the seam handed back (so a sane ``18`` still reads "battery 18% ≤ 25%"); a
+    subclass value whose ``__format__``/``__str__`` raises used to blow the
+    f-string *after* the condition had already fired and 500 the plan/drill
+    routes — and raise out of ``sweep()``.  A label that will not render
+    degrades to empty; the trigger it describes still fires.
+    """
+    try:
+        return template.format(*parts)
+    except Exception:
+        return ""
+
+
 def _service_states() -> dict[str, str]:
     """service id -> state ("ok"/"warn"/"down"/...), from the shared status."""
     from hub.status import full_status
@@ -535,6 +574,10 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
     ``.get``/``__bool__`` bomb from the ``_ups_status`` seam used to 500
     the plan/drill routes out of this evaluation — and to raise out of
     ``sweep()`` into check_once's containment, silently killing the tick.
+    The numeric floor compares go through ``_below_floor`` and their labels
+    through ``_reason`` for the same reason, one dunder deeper: a
+    ``battery_percent`` subclass whose ``__float__`` or ``__format__`` raises
+    used to escape this evaluation the same way.
     """
     if not _truthy(_row_get(status, "on_battery")):
         return False, ""
@@ -543,18 +586,12 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
     checks: list[tuple[bool, str]] = []
     if pct_floor is not None:
         pct = _row_get(status, "battery_percent")
-        try:
-            hit = pct is not None and float(pct) <= float(pct_floor)
-        except (TypeError, ValueError, OverflowError):
-            hit = False
-        checks.append((hit, f"battery {pct}% ≤ {pct_floor}%" if hit else ""))
+        hit = _below_floor(pct, pct_floor)
+        checks.append((hit, _reason("battery {}% ≤ {}%", pct, pct_floor) if hit else ""))
     if min_floor is not None:
         remain = _row_get(status, "time_remaining_min")
-        try:
-            hit = remain is not None and float(remain) <= float(min_floor)
-        except (TypeError, ValueError, OverflowError):
-            hit = False
-        checks.append((hit, f"≈{remain} min left ≤ {min_floor} min" if hit else ""))
+        hit = _below_floor(remain, min_floor)
+        checks.append((hit, _reason("≈{} min left ≤ {} min", remain, min_floor) if hit else ""))
     if not checks:
         # Enabled but no condition configured: never fires.  The settings API
         # refuses to save this shape, but a hand-edited services.yaml can
