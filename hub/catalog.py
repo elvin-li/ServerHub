@@ -160,16 +160,27 @@ CATEGORIES = [
 
 
 def _plain_str(value, default: str = "") -> str:
-    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store."""
-    if isinstance(value, str):
+    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store.
+
+    ``_isinst`` gates throughout (a raising ``__class__`` property answers
+    False instead of detonating the gate), and the unbound base decode runs in
+    a try: a *lying* ``__class__`` claiming bytes rejects the descriptor with
+    a TypeError that used to escape this launderer — a raise means "not really
+    bytes", so the impostor degrades to *default* like every other junk shape
+    (the modules9/json9 impostor class).
+    """
+    if _isinst(value, str):
         text = value
-    elif isinstance(value, (bytes, bytearray)):
+    elif _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if isinstance(value, bytes) else bytearray
-        text = base.decode(value, "utf-8", "replace")
-    elif isinstance(value, bool) or value is None:
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            text = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return default
+    elif _isinst(value, bool) or value is None:
         return default
-    elif isinstance(value, float):
+    elif _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -180,7 +191,7 @@ def _plain_str(value, default: str = "") -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return default
         text = str(value)
-    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+    elif _isinst(value, (dict, list, tuple, set, frozenset)):
         return default
     else:
         try:
@@ -231,8 +242,13 @@ def _is_dir(path: Path) -> bool:
 
 
 def _plain_str_list(raw) -> list[str]:
-    if isinstance(raw, list):
-        items = raw
+    if _isinst(raw, list):
+        try:
+            # Base copy first: a lying ``__class__`` claiming list is not
+            # actually iterable, so the loop below used to TypeError on it.
+            items = list(raw)
+        except Exception:
+            return []
     elif raw in (None, "", False):
         return []
     else:
@@ -246,13 +262,19 @@ def _plain_str_list(raw) -> list[str]:
 
 
 def _plain_ports(raw) -> list:
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
+        return []
+    try:
+        # Base copy first (the _plain_str_list convention): a lying
+        # ``__class__`` claiming list is not actually iterable.
+        ports = list(raw)
+    except Exception:
         return []
     out: list = []
-    for port in raw:
-        if port is None or isinstance(port, bool):
+    for port in ports:
+        if port is None or _isinst(port, bool):
             continue
-        if isinstance(port, int):
+        if _isinst(port, int):
             if type(port) is not int:
                 try:
                     # Base coercion to an exact int: a subclass ``__str__``
@@ -273,7 +295,7 @@ def _plain_ports(raw) -> list:
                 continue
             out.append(port)
         else:
-            if isinstance(port, float):
+            if _isinst(port, float):
                 if type(port) is not float:
                     try:
                         # Base coercion: a subclass ``__eq__`` bomb used to

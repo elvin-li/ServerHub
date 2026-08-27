@@ -246,7 +246,7 @@ def source_url() -> str:
 
     section = settings_section("catalog_remote")
     url = section.get("url")
-    if not isinstance(url, str):
+    if type(url) is not str:
         # _as_text, not bare str(): YAML hex/octal int spellings dodge the
         # decimal digit-cap loader, so a hand-edited ``url: 0xfff…`` arrives
         # in the config as a >4300-digit int whose ``str()`` is the
@@ -254,10 +254,14 @@ def source_url() -> str:
         # GET /api/catalog/remote and every POST /api/catalog/remote/check
         # until the operator repaired services.yaml by hand.  Unrenderable
         # junk degrades to junk text validate_source_url refuses with its
-        # coded 400 (or, empty, "no source configured").  A real *str* is
-        # returned untouched: laundering a lone-surrogate URL here would
-        # turn it into a fetchable replacement-char host instead of the
-        # coded bad_url refusal.
+        # coded 400 (or, empty, "no source configured").
+        # Exact-type gate, not isinstance: a lying ``__class__`` impostor
+        # answering str used to pass the old gate untouched and blow the
+        # ``.strip()`` below, and a raising ``__class__`` property detonated
+        # the gate itself.  A genuine str — the only shape YAML ever yields
+        # here — is still returned byte-for-byte untouched, so a
+        # lone-surrogate URL keeps its coded bad_url refusal instead of
+        # being laundered into a fetchable replacement-char host.
         url = _as_text(url)
     return url.strip()
 
@@ -278,12 +282,30 @@ def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
 # ── state ─────────────────────────────────────────────────────────────────────
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through
+    (the catalog/native_catalog/docker_cli rule)."""
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """Exception text that cannot RecursionError leftover ``str(exc)`` or UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
+    decoded = None
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` claiming bytes rejects the unbound
+            # descriptor: not really bytes, render like any other object
+            # (the modules9/json9 impostor class).
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
     else:
@@ -299,7 +321,12 @@ def _as_text(value) -> str:
     # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
     # returns self keeps the subclass, so a bound ``.encode`` bomb could
     # still fire (the modules5 unbound convention, like docker_cli).
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor whose ``__str__`` returned
+        # itself lands here: junk.
+        return ""
 
 
 def _jsonable(value, depth: int = 0):
@@ -314,9 +341,16 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if isinstance(value, bool) or value is None:
+    if value is None:
         return value
-    if isinstance(value, float):
+    if _isinst(value, bool):
+        # ``bool`` is final, so a value that answers this gate while its real
+        # type is not ``bool`` is a *lying* ``__class__`` impostor.  The old
+        # arm returned it raw, handing Starlette's ``allow_nan=False`` encoder
+        # a non-serializable object (the modules9/json9 bool-liar).  Only a
+        # genuine bool renders; the impostor drops like the numeric liars.
+        return value if type(value) is bool else None
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -327,22 +361,28 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
-            # items()/keys()/__iter__ — a nested dict-subclass bomb cannot fire.
+            # items()/keys()/__iter__ — a nested dict-subclass bomb cannot
+            # fire, and a lying ``__class__`` claiming dict rejects the copy.
             try:
                 value = dict(value)
             except Exception:
                 return None
         out = {}
         for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                base = bytes if isinstance(k, bytes) else bytearray
-                key = base.decode(k, "utf-8", "replace")
+            if _isinst(k, (bytes, bytearray)):
+                base = bytes if _isinst(k, bytes) else bytearray
+                try:
+                    key = base.decode(k, "utf-8", "replace")
+                except Exception:
+                    # A lying-``__class__`` key claiming bytes rejects the
+                    # unbound decode — drop this entry, keep the siblings.
+                    continue
             else:
                 try:
-                    key = k if isinstance(k, str) else str(k)
+                    key = k if _isinst(k, str) else str(k)
                 except Exception:
                     continue
             try:
@@ -351,16 +391,21 @@ def _jsonable(value, depth: int = 0):
                 continue
             out[key] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
         except Exception:
-            # Leftover nested sequence subclass whose __iter__ raises.
+            # Leftover nested sequence subclass whose __iter__ raises, or a
+            # lying ``__class__`` claiming a sequence it is not.
             return None
         return [_jsonable(v, depth + 1) for v in items]
-    if isinstance(value, str):
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, int):
+    if _isinst(value, str):
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            # A lying ``__class__`` claiming str rejects the unbound encode.
+            return None
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -376,9 +421,13 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
+    if _isinst(value, (bytes, bytearray)):
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` claiming bytes rejects the unbound decode.
+            return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
