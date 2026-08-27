@@ -283,21 +283,78 @@ def _device_nodes() -> list[str]:
     return nodes or ["/dev/disk0"]
 
 
+def _node_list() -> list[str]:
+    """The device list as *exact base strs*, junk entries dropped alone.
+
+    This module does not own the provider (tests and tooling patch
+    ``_device_nodes``), and three leftover shapes used to detonate its
+    consumers:
+
+    * a *lying* ``__class__`` claiming list (or any non-iterable return)
+      raised out of ``overview()``'s probe comprehension — a raw 500 on
+      GET /api/smart before any per-disk guard ran;
+    * a ``__class__``-property bomb *entry* blew the old per-entry
+      ``isinstance`` inside ``_known_nodes`` (every healthy sibling node
+      lost), and riding into ``_device_report`` it AttributeError'd the
+      except arm's own ``node.rsplit`` — ``fan_out`` re-raised and 500'd
+      GET /api/smart;
+    * a str-*subclass* entry whose ``__eq__`` raises (the hash-shadowing
+      key class) stored fine in the membership set, then the
+      ``node in known`` probes in start_test / abort_test / set_schedule
+      ran the *stored* entry's own comparison — a raw 500 on
+      POST /api/smart/test where junk arguments earn ``bad_device``.
+
+    ``str.__str__`` base copies launder the third shape; non-str entries
+    can never match a validated ``/dev/diskN`` node, so they drop.
+    """
+    try:
+        raw = _device_nodes()
+    except Exception:
+        return []
+    # Unbound base iteration in a try (the modules9 rule): a lying
+    # ``__class__`` claiming list TypeErrors the bound descriptor instead
+    # of raising out of the caller's loop header.
+    if _isa(raw, list):
+        try:
+            rows = list(list.__iter__(raw))
+        except Exception:
+            return []
+    elif _isa(raw, tuple):
+        try:
+            rows = list(tuple.__iter__(raw))
+        except Exception:
+            return []
+    else:
+        return []
+    nodes: list[str] = []
+    for n in rows:
+        if not _isa(n, str):
+            continue
+        if type(n) is str:
+            node = n
+        else:
+            try:
+                # Base copy: bypasses a self-returning ``__str__`` override
+                # and rejects a str-liar impostor with a caught TypeError.
+                node = str.__str__(n)
+            except Exception:
+                continue
+        if node and node not in nodes:
+            nodes.append(node)
+    return nodes
+
+
 def _known_nodes() -> set[str]:
     """The device list as a membership set, junk entries dropped.
 
-    This module does not own the provider (tests and tooling patch
-    ``_device_nodes``): a listing carrying an *unhashable* entry (a list, a
-    dict row) made the bare ``set(_device_nodes())`` in start_test /
-    abort_test / set_schedule TypeError — a 500 on POST /api/smart/test
-    where every junk *device argument* already earns the coded
-    ``bad_device`` refusal.  Non-str entries can never match a validated
-    ``/dev/diskN`` node, so they drop rather than raise.
+    A listing carrying an *unhashable* entry (a list, a dict row) made the
+    bare ``set(_device_nodes())`` in start_test / abort_test /
+    set_schedule TypeError — a 500 on POST /api/smart/test where every
+    junk *device argument* already earns the coded ``bad_device`` refusal.
+    ``_node_list`` launders every entry to an exact base str, so the
+    membership probes cannot run a stored shadow key's ``__eq__`` either.
     """
-    try:
-        return {n for n in _device_nodes() if isinstance(n, str)}
-    except Exception:
-        return set()
+    return set(_node_list())
 
 
 def _selftest_raw(device: str) -> tuple[int, str, str]:
@@ -1235,7 +1292,11 @@ def _smartctl_installed() -> bool:
 @cached_snapshot(_CACHE_TTL)
 def overview() -> dict:
 
-    nodes = _device_nodes()
+    # _node_list, not the raw provider: a lying-list return used to raise
+    # out of the probe comprehension below, and a class-bomb entry
+    # AttributeError'd ``node.rsplit`` inside _device_report's own except
+    # arm — each a raw 500 on GET /api/smart (fan_out re-raises).
+    nodes = _node_list()
     # One disk's SMART reads tell you nothing about another's, but in series the page
     # cost grew with every attached disk, and each smartctl read is tens of
     # milliseconds at best -- far worse on a drive that is spinning up or already
