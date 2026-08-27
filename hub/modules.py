@@ -242,9 +242,9 @@ def _jsonable(value, depth: int = 0):
         return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        # Unbound base view: a nested dict subclass whose ``items()``
-        # raises or yields non-pairs used to 500 GET /api/modules — the
-        # top-level ``dict(m)`` copy only neutralizes the row itself.
+        # Unbound base view: a dict subclass whose ``items()`` raises
+        # or yields non-pairs used to 500 GET /api/modules, nested and
+        # (since the ``dict(m)`` pre-copy fell) at row rank too.
         for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
@@ -288,7 +288,14 @@ def _module_row(m) -> dict | None:
         except Exception:
             return None
     elif isinstance(m, dict):
-        row = dict(m)
+        # No pre-copy: ``dict(m)`` on a subclass that overrides
+        # ``__iter__`` abandons CPython's fast storage copy for the
+        # generic mapping path, running the subclass's ``keys()`` and
+        # ``__getitem__`` — a bomb in either (or a junk ``keys()``
+        # return) 500'd GET /api/modules before ``_jsonable`` ever saw
+        # the row.  Its dict arm already copies via unbound
+        # ``dict.items``, straight off the real storage.
+        row = m
     else:
         return None
     row = _jsonable(row)
