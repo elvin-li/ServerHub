@@ -169,6 +169,23 @@ def _truthy(value) -> bool:
         return False
 
 
+def _sh_triple(argv, timeout):
+    """``sh()``'s ``(rc, out, err)``, fail-closed for a leftover shape.
+
+    The launchctl-print branch of ``_native_logs`` unpacked the return
+    bare: a leftover 2-tuple blew the unpack with ValueError and a
+    sequence-subclass whose ``__iter__`` raises detonated it outright —
+    both raw 500s on GET /api/apps/managed/logs?id=native:* where a
+    *raising* spawn already degrades to "no logs".  ``-255`` is no honest
+    exit status (the _rc_int convention), so junk reads as failure.
+    """
+    try:
+        rc, out, err = sh(argv, timeout=timeout)
+        return rc, out, err
+    except Exception:
+        return -255, "", ""
+
+
 def _clean_rows(raw) -> list[dict]:
     """Laundered dict rows from another service's list payload.
 
@@ -965,13 +982,19 @@ def _native_apps(force: bool = False) -> list[dict]:
             launchd_label = ""
         if isinstance(pkg_name, str) and pkg_name and a.get("method") in ("brew_formula", "brew_cask"):
             auto_id = f"brew:{pkg_name}"
-            auto = brew_autostart.get(pkg_name)
+            # _mapping_get, not a bare ``.get``: the index is our own dict
+            # but its *stored keys* are another module's rows verbatim, and
+            # a leftover hash-shadowing str-subclass key (its ``__eq__``
+            # fires during the hash probe) used to raise out of this loop
+            # and wipe the whole native section of GET /api/apps/managed
+            # via _collect's fallback.  Only the shadowed flag degrades.
+            auto = _mapping_get(brew_autostart, pkg_name)
         elif launchd_label or a.get("id") in ("native-filebrowser", "native-homeassistant"):
             label = launchd_label or (
                 "local.filebrowser" if a.get("id") == "native-filebrowser" else "com.homeassistant.core"
             )
             auto_id = f"launchd:{label}"
-            auto = launchd_autostart.get(label)
+            auto = _mapping_get(launchd_autostart, label)
             if running:
                 acts = ["stop", "restart", "detail", "logs", "uninstall", "open", "autostart"]
             else:
@@ -996,7 +1019,17 @@ def _native_apps(force: bool = False) -> list[dict]:
             try:
                 from hub import cloudflared_svc
                 cf = cloudflared_svc.status()
-                running = bool(cf.get("running"))
+                # _mapping_get/_truthy/_field_text on every status field:
+                # the payload is another module's return.  A ``tunnels``
+                # value whose ``__bool__`` raises used to detonate the bare
+                # ``or []`` inside this try — the absorbed bomb silently
+                # flipped a *running* tunnel row to "down".  A junk
+                # ``active_tunnel`` (a ``__str__``-bomb int, a >4300-digit
+                # int, a ``__bool__`` bomb) detonated the status-text
+                # f-string *outside* the try and wiped the whole native
+                # section of GET /api/apps/managed via _collect's fallback;
+                # sanitized here, it costs the tunnel name only.
+                running = _truthy(_mapping_get(cf, "running"))
                 state = "ok" if running else "down"
                 auto_id = f"launchd:{cloudflared_svc.LABEL}"
                 auto = _is_file(cloudflared_svc.PLIST)
@@ -1005,14 +1038,16 @@ def _native_apps(force: bool = False) -> list[dict]:
                     if running
                     else ["start", "detail", "logs", "uninstall", "autostart"]
                 )
+                tunnels = _jsonable(_mapping_get(cf, "tunnels"))
                 cf_extra = {
-                    "logged_in": cf.get("logged_in"),
-                    "active_tunnel": cf.get("active_tunnel"),
-                    "tunnels": cf.get("tunnels") or [],
+                    "logged_in": _truthy(_mapping_get(cf, "logged_in")),
+                    "active_tunnel": _field_text(_mapping_get(cf, "active_tunnel"), ""),
+                    "tunnels": tunnels if isinstance(tunnels, list) else [],
                 }
-                notes_extra = cf.get("notes") or ""
-                if a.get("notes"):
-                    a = {**a, "notes": (a.get("notes") or "") + " · " + notes_extra}
+                notes_extra = _field_text(_mapping_get(cf, "notes"), "")
+                base_notes = _field_text(_mapping_get(a, "notes"), "")
+                if base_notes:
+                    a = {**a, "notes": base_notes + " · " + notes_extra}
                 else:
                     a = {**a, "notes": notes_extra}
             except Exception:
@@ -1216,17 +1251,24 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
                 chunks.append(f"{logp}: {_as_text(e)}")
     # launchctl print for brew services
     if pkg:
-        rc, out, err = sh(
+        # _sh_triple + _rc_int: the bare unpack and the bare ``rc != 0``
+        # probe each 500'd this route on a leftover ``sh()`` shape (a
+        # wrong-arity tuple, an ``__iter__`` bomb, an rc-subclass whose
+        # ``__ne__`` raises).  _as_text before the ``or``, not ``out or
+        # err``: a str-subclass stdout whose ``__bool__`` raises detonated
+        # the bare truthiness probe while the text underneath was real.
+        rc, out, err = _sh_triple(
             ["/bin/launchctl", "print", f"gui/{os.getuid()}/homebrew.mxcl.{pkg}"],
             timeout=8,
         )
-        if rc != 0:
-            rc, out, err = sh(
+        if _rc_int(rc) != 0:
+            rc, out, err = _sh_triple(
                 ["/bin/launchctl", "print", f"homebrew.mxcl.{pkg}"],
                 timeout=8,
             )
-        if out or err:
-            chunks.append(f"===== launchctl =====\n{_as_text(out or err)[-3000:]}")
+        text = _as_text(out) or _as_text(err)
+        if text:
+            chunks.append(f"===== launchctl =====\n{text[-3000:]}")
     if not chunks:
         chunks.append("No dedicated log file found. System-level logs are available under Tools → System Logs.")
     return {"ok": True, "log": "\n\n".join(chunks), "source": "native"}
@@ -1302,11 +1344,43 @@ def _launchd_apps() -> list[dict]:
         # so the raw column is truthy for a job that is not running at all.
         # pid_for() tests it for digits; loaded says whether launchd knows the
         # label, which is the difference between idle and not installed.
-        pid = listing.pid_for(label)
-        running = pid is not None
-        loaded = label in listing.loaded
-        entry = listing.jobs.get(label)
-        last = entry[1] if entry else None
+        #
+        # Every reading below is guarded: the apps8 try covers listing()
+        # *raising*, but a leftover listing object rode past it and each
+        # bare read was its own detonation point inside this loop — a raw
+        # 500 on GET /api/apps/managed/detail?id=launchd:* and a silently
+        # emptied launchd section of GET /api/apps/managed via _collect's
+        # fallback.  A ``pid_for`` that raises, a ``loaded`` set whose
+        # ``__contains__`` bombs, a ``jobs.get`` bomb, a job entry whose
+        # ``__bool__``/``__getitem__`` bombs — each costs its own reading
+        # (the agent degrades to "not loaded"), never the agent or the
+        # route.  _field_text on the pid and last-exit values: a
+        # >4300-digit int is ValueError inside the f-string ``str()``
+        # itself, and an ``__eq__``-bomb last exit used to detonate the
+        # tuple ``in`` probe below.
+        try:
+            pid = listing.pid_for(label)
+        except Exception:
+            pid = None
+        pid_text = _field_text(pid, "") if pid is not None else ""
+        running = pid is not None and bool(pid_text)
+        try:
+            loaded = bool(label in listing.loaded)
+        except Exception:
+            loaded = False
+        try:
+            entry = listing.jobs.get(label)
+        except Exception:
+            entry = None
+        last = None
+        if _truthy(entry):
+            try:
+                last = entry[1]
+            except Exception:
+                last = None
+        # The membership probe compares as sanitized text, so a junk last
+        # exit reads as "no exit status" instead of running its dunders.
+        last_text = _field_text(last, "")
         keep = bool(data.get("KeepAlive")) if data else False
         try:
             ov = config.override(label)
@@ -1332,11 +1406,11 @@ def _launchd_apps() -> list[dict]:
             else ["start", "detail", "logs", "uninstall"]
         )
         if running:
-            status_text = f"Running · pid {pid}"
-        elif loaded and last not in (None, "", "-", "0") and keep:
-            status_text = f"Crash-looping · last exit {last}"
-        elif loaded and last not in (None, "", "-", "0"):
-            status_text = f"Exited · last exit {last}"
+            status_text = f"Running · pid {pid_text}"
+        elif loaded and last_text not in ("", "-", "0") and keep:
+            status_text = f"Crash-looping · last exit {last_text}"
+        elif loaded and last_text not in ("", "-", "0"):
+            status_text = f"Exited · last exit {last_text}"
         elif loaded:
             status_text = "Loaded but not running"
         else:
