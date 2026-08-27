@@ -279,18 +279,25 @@ class PoolRowProtocolBombPins(unittest.TestCase):
             resp = _client().get("/api/storage/pool?force=true")
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         resp.content.decode("utf-8")
-        mounts = [c["mount"] for c in resp.json()["unassigned"]]
-        self.assertIn("/Volumes/Vault", mounts)
+        rows = {c["mount"]: c for c in resp.json()["unassigned"]}
+        self.assertIn("/Volumes/Vault", rows)
         # The poisoned-method-but-real-storage rows keep rendering.
-        self.assertIn("/Volumes/F", mounts)
-        self.assertIn("/Volumes/G", mounts)
+        self.assertIn("/Volumes/F", rows)
+        self.assertIn("/Volumes/G", rows)
         # Since the pool7 unbound-base sweep, the str-subclass encode-bomb
         # mount renders through ``str.encode`` (the real path underneath the
         # override) instead of dropping the row.
-        self.assertIn("/Volumes/D", mounts)
-        # The protocol-bomb rows drop alone.
-        for gone in ("/Volumes/A", "/Volumes/B", "/Volumes/C"):
-            self.assertNotIn(gone, mounts)
+        self.assertIn("/Volumes/D", rows)
+        # Since the pool10 field-level sweep, a numeric bomb costs only its
+        # own field: ``_finite_float`` no longer runs the value's ``__eq__``
+        # (the old ``raw in (None, "")`` probe) and catches a subclass
+        # ``__float__`` under ``except Exception``, so B and C render with
+        # the poisoned figure degraded to 0.0 instead of vanishing whole.
+        self.assertEqual(rows["/Volumes/B"]["avail_gb"], 0.0)
+        self.assertEqual(rows["/Volumes/C"]["total_gb"], 0.0)
+        # The unhashable-kind row still drops alone: membership in
+        # POOLABLE_KINDS is the row's admission test, not a display field.
+        self.assertNotIn("/Volumes/A", rows)
 
     def test_save_next_to_the_bomb_rows_still_lands(self):
         settings = {}

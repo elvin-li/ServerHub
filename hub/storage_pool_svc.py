@@ -90,6 +90,27 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _sequence_rows(value) -> list:
+    """Materialised rows of a leftover list/tuple, or ``[]`` fail-closed.
+
+    The unbound ``list.__iter__`` walk this replaces guarded against a
+    *subclass* ``__iter__`` override, but the descriptor call itself ran
+    bare: a leftover whose ``__class__`` property *lies* (answers ``list``
+    without being one — or answers once and raises on the next look) passed
+    ``_isa`` and then blew the unbound ``list.__iter__`` with a TypeError
+    one line outside every try, 500ing all four pool routes at once.  The
+    descriptor still bypasses a real subclass's override; an impostor that
+    only claims the type takes the empty branch instead of the 500.
+    """
+    for base in (list, tuple):
+        if _isa(value, base):
+            try:
+                return list(base.__iter__(value))
+            except Exception:
+                return []
+    return []
+
+
 def _mapping_get(mapping, key):
     """Field read that a hostile mapping *key* cannot 500.
 
@@ -142,13 +163,14 @@ def _pool_config() -> dict:
     raw = _mapping_get(settings, "storage_pool")
     if not _isa(raw, dict):
         raw = {}
-    members_raw = _mapping_get(raw, "members")
+    # _sequence_rows, not a bare unbound ``list.__iter__``: a leftover whose
+    # ``__class__`` lies as ``list`` passed the rank gate and the descriptor
+    # call TypeError'd outside every try, 500ing all four pool routes.
     members = []
-    if _isa(members_raw, list):
-        for m in list.__iter__(members_raw):
-            text = _text(m).strip()
-            if text:
-                members.append(text)
+    for m in _sequence_rows(_mapping_get(raw, "members")):
+        text = _text(m).strip()
+        if text:
+            members.append(text)
     policy = _text(_mapping_get(raw, "policy")) or DEFAULT_POLICY
     if policy not in PLACEMENT_POLICIES:
         policy = DEFAULT_POLICY
@@ -207,18 +229,28 @@ def _text(raw) -> str:
     four pool routes ahead of every scrub below (the system/status rule).
     """
     if _isa(raw, (list, tuple)):
-        base = list if isinstance(raw, list) else tuple
+        # _isa again, not the bare ``isinstance`` this line used to run: a
+        # leftover whose ``__class__`` property answers ``list`` once and
+        # raises on the next look passed the tuple gate above and detonated
+        # the base pick itself — 500ing all four pool routes through the
+        # name, the policy, or one member value.  A mispicked base for such
+        # an impostor just TypeErrors the unbound call inside the try.
+        base = list if _isa(raw, list) else tuple
         try:
             raw = base.__getitem__(raw, 0) if base.__len__(raw) else ""
         except Exception:
             return ""
     if _isa(raw, (bytes, bytearray)):
-        base = bytes if isinstance(raw, bytes) else bytearray
+        base = bytes if _isa(raw, bytes) else bytearray
         try:
             return base.decode(raw, "utf-8", "replace")
         except Exception:
             return ""
-    if _isa(raw, bool):
+    # Exact-type probe, not ``_isa``: ``type`` never reflects into a lying
+    # ``__class__``, and bool cannot be subclassed — so a real int-subclass
+    # *claiming* bool now renders its digits through the int gate below
+    # instead of silently reading as "".
+    if type(raw) is bool:
         return ""
     if _isa(raw, int):
         try:
@@ -264,11 +296,23 @@ def _text(raw) -> str:
 
 
 def _finite_float(raw) -> float:
-    if isinstance(raw, bool) or raw in (None, ""):
+    """Finite exact float, degrading junk to 0.0 field-level.
+
+    ``type(raw) is bool`` and ``raw is None``, not the old
+    ``isinstance(raw, bool) or raw in (None, "")``: the isinstance ran a
+    lying/raising ``__class__`` and the tuple ``in`` ran a leftover
+    subclass ``__eq__`` — either bomb in one ``df`` field used to throw
+    the whole healthy row away through ``_candidates``' per-row try.
+    ``except Exception``: ``float()`` reflects into the value's own
+    ``__float__``.  ``float.__float__`` launders a subclass result to an
+    exact float so the nan/inf probes below cannot run a subclass
+    ``__eq__`` either.
+    """
+    if type(raw) is bool or raw is None:
         return 0.0
     try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
+        value = float.__float__(float(raw))
+    except Exception:
         return 0.0
     if value != value or value in (float("inf"), float("-inf")):
         return 0.0
@@ -276,11 +320,11 @@ def _finite_float(raw) -> float:
 
 
 def _finite_int(raw) -> int:
-    if isinstance(raw, bool) or raw in (None, ""):
+    if type(raw) is bool or raw is None:
         return 0
     try:
-        return int(float(raw))
-    except (TypeError, ValueError, OverflowError):
+        return int.__index__(int(float(raw)))
+    except Exception:
         return 0
 
 
@@ -540,13 +584,11 @@ def _validate(mounts: list[str], policy: str) -> tuple[list[str], list[dict]]:
     # mounts already earn their coded refusals.  _isa for the same
     # in-process callers: a mounts value whose ``__class__`` is a raising
     # property detonated the bare gate itself.
-    if _isa(mounts, list):
-        rows = list.__iter__(mounts)
-    elif _isa(mounts, tuple):
-        rows = tuple.__iter__(mounts)
-    else:
-        rows = iter(())
-    for raw in rows:
+    # _sequence_rows, not bare unbound ``__iter__`` calls: a mounts value
+    # whose ``__class__`` *lies* as list/tuple passed the _isa gates and the
+    # descriptor call itself TypeError'd out of plan/save for in-process
+    # callers, where junk mounts already earn their coded refusals.
+    for raw in _sequence_rows(mounts):
         # _text, not str(): a leftover int already past CPython's int->str
         # digit cap made ``str(raw)`` itself ValueError out of the endpoint
         # instead of the coded refusal every other junk mount gets.
@@ -613,10 +655,18 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     # code points are the unit the config read cap compares.
     if len(clean_name) > _NAME_CAP:
         raise api_error("storage_pool.name_too_long", max=_NAME_CAP)
-    try:
-        floor = max(0.0, float(min_free_gb or 0))
-    except (TypeError, ValueError, OverflowError):
+    # No ``or 0`` and ``except Exception``, not the narrow tuple: the routes
+    # hand over a Pydantic-exact float, but an in-process caller's leftover
+    # subclass used to detonate the ``or``'s ``__bool__`` probe (or raise
+    # past the tuple from its own ``__float__``) out of save_pool where
+    # every other junk floor already degrades to no reservation.
+    if min_free_gb is None:
         floor = 0.0
+    else:
+        try:
+            floor = max(0.0, float.__float__(float(min_free_gb)))
+        except Exception:
+            floor = 0.0
     if floor != floor or floor in (float("inf"), float("-inf")):
         floor = 0.0
 
