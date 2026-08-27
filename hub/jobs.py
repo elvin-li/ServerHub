@@ -367,7 +367,17 @@ def _task_id(raw) -> str:
 
 def maintenance_tasks():
     out = {}
-    raw = cfg().get("maintenance")
+    # Guarded snapshot + unbound ``dict.get`` (the config.settings_section
+    # convention): a leftover cfg() root that is a dict *subclass* with a
+    # bombing ``.get`` — or a snapshot provider that raises outright — used
+    # to 500 GET /api/maintenance AND POST /api/maintenance/{tid}/run (which
+    # walks this list before matching the id), while the log route stayed up
+    # over the very same poisoned state.
+    try:
+        data = cfg()
+    except Exception:
+        data = None
+    raw = dict.get(data, "maintenance") if isinstance(data, dict) else None
     if isinstance(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
@@ -396,13 +406,34 @@ def maintenance_tasks():
     return out
 
 
+def _jobs_row(tid: str):
+    """``_jobs.get(tid)`` that survives a leftover bomb *key* in the table.
+
+    A plain ``dict.get`` still compares the probe against every stored key
+    whose hash collides, and that comparison dispatches into the stored
+    key's own ``__eq__`` — so a leftover str-*subclass* key with a bombing
+    ``__eq__`` (same text as a configured id, hence the same hash) used to
+    raise straight out of ``job_state`` / ``get_job`` and 500 all three
+    Maintenance routes.  On a poisoned lookup, fall back to a scan that
+    compares through the unbound base (``str.__eq__`` reads the C-level
+    character storage, so no override can fire).
+    """
+    try:
+        return _jobs.get(tid)
+    except Exception:
+        for k, v in list(_jobs.items()):
+            if isinstance(k, str) and str.__eq__(k, tid) is True:
+                return v
+        return None
+
+
 def job_state(tid):
     empty = {"running": False, "rc": None, "finished": None}
     if not isinstance(tid, str):
         return empty
     # _plain_dict + _truthy: a leftover dict-subclass row (or a __bool__-bomb
     # ``running`` value) used to 500 GET /api/maintenance for every task.
-    j = _plain_dict(_jobs.get(tid))
+    j = _plain_dict(_jobs_row(tid))
     if j is None:
         return empty
     cleaned = _jsonable({
@@ -418,7 +449,7 @@ def get_job(tid):
         return None
     # The plain-dict copy also neutralises a subclass .get() bomb for the
     # only caller (job_log); rows this module writes are already plain.
-    return _plain_dict(_jobs.get(tid))
+    return _plain_dict(_jobs_row(tid))
 
 
 def _log_lines(raw) -> list[str]:
@@ -492,14 +523,35 @@ def start_job(task):
     tid = _utf8_text(tid)
     if not tid:
         return None
+    row = {"running": True, "rc": None, "log": [],
+           "started": strftime_now("%H:%M:%S"), "finished": None}
     with _jobs_lock:
         if any(_row_running(j) for j in _jobs.values()):
             raise api_error("jobs.already_running")
-        _jobs[tid] = {"running": True, "rc": None, "log": [],
-                      "started": strftime_now("%H:%M:%S"), "finished": None}
+        try:
+            _jobs[tid] = row
+        except Exception:
+            # The insert compares the exact-str tid against any stored key
+            # whose hash collides, dispatching into that key's ``__eq__`` —
+            # so a leftover subclass bomb key with the same text used to 500
+            # POST /api/maintenance/{tid}/run.  Rebuild the table with
+            # laundered exact-str keys (rows this module writes already are;
+            # a subclass key is a leftover by definition) and retry: the
+            # laundered twin is simply overwritten by the fresh row.
+            items = list(_jobs.items())
+            _jobs.clear()
+            for k, v in items:
+                key = _utf8_text(k)
+                if key:
+                    _jobs[key] = v
+            _jobs[tid] = row
 
     def run():
-        j = _jobs[tid]
+        # The captured row, not a ``_jobs[tid]`` re-lookup: a leftover bomb
+        # key sharing tid's hash used to blow the lookup inside the job
+        # thread — before the try block below — leaving the row parked
+        # "running" forever and the single-runner mutex wedged.
+        j = row
         try:
             env = dict(os.environ)
             env.update(maintenance_env())
