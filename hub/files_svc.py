@@ -151,6 +151,35 @@ def _settings() -> dict:
     return settings_section("files")
 
 
+def _setting(key: str, default=None):
+    """One files-settings value, or *default* when the section cannot answer.
+
+    ``settings_section`` launders the section *mapping* with ``dict(...)``,
+    but a plain-dict copy keeps hostile **keys** as-is — and a ``.get`` on
+    the copy is still a hash-table probe.  A leftover key whose ``__hash__``
+    collides with the literal being fetched runs its ``__eq__`` during that
+    probe (CPython demotes the table to the general lookup once a non-exact
+    -str key is inserted), so a raising ``__eq__`` blew
+    ``_settings().get("roots")`` at the head of :func:`default_roots` —
+    500ing GET /api/files, /api/files/list, download and every Files write
+    at once, because ``_resolve_safe`` starts there — and
+    ``.get("max_upload_mb")`` in :func:`_max_upload_mb`, which 500'd POST
+    /api/files/upload after the multipart body was already accepted.  The
+    sibling ``show_hidden`` read only survived because its ``bool(...)``
+    try happened to wrap the get too.
+
+    A section that cannot even answer a key lookup degrades to the absent
+    -key default (the files12 ``_isinst`` fail-closed direction): ``roots``
+    falls back to the default candidates, the upload cap to 512 MB.  The
+    ``_settings()`` call sits inside the try so a raising section provider
+    degrades the same way instead of 500ing.
+    """
+    try:
+        return dict.get(_settings(), key, default)
+    except Exception:
+        return default
+
+
 def _isinst(value, types) -> bool:
     """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
 
@@ -246,7 +275,10 @@ def _max_upload_mb() -> int:
     rejects anything beyond float range, the same junk test the stat
     numbers get.
     """
-    raw = _settings().get("max_upload_mb")
+    # ``_setting``, not ``_settings().get``: a leftover section key whose
+    # ``__hash__`` collides with this literal ran its raising ``__eq__``
+    # inside the hash-table probe and 500'd POST /api/files/upload.
+    raw = _setting("max_upload_mb")
     # ``_isinst``, not bare ``isinstance``: a leftover ``max_upload_mb`` whose
     # ``__class__`` is a raising property read the operand's ``__class__`` on
     # the real-type miss and 500'd POST /api/files/upload before the
@@ -317,7 +349,11 @@ def _exists(p: Path) -> bool:
 
 def default_roots() -> list[dict]:
     """Allowlisted roots. Configurable via settings.files.roots."""
-    custom = _settings().get("roots")
+    # ``_setting``, not ``_settings().get``: a leftover section key whose
+    # ``__hash__`` collides with ``"roots"`` ran its raising ``__eq__``
+    # inside the hash-table probe — before any value gate could help — and
+    # 500'd every Files route, because ``_resolve_safe`` starts here.
+    custom = _setting("roots")
     # ``_isinst``, not bare ``isinstance``: this gate is the first thing every
     # Files route runs (``_resolve_safe`` → ``default_roots``), and a leftover
     # ``roots`` value whose ``__class__`` is a raising property made
@@ -571,7 +607,9 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
         # bool(), guarded: a leftover ``show_hidden`` whose ``__bool__``
         # raises (the bookmarks5 BoolBomb class) used to escape here and
         # 500 GET /api/files/list after the directory was already read.
-        show_hidden = bool(_settings().get("show_hidden"))
+        # ``_setting`` for the read itself: a hash-colliding eq-bomb key
+        # answers the default instead of relying on this try alone.
+        show_hidden = bool(_setting("show_hidden"))
     except Exception:
         show_hidden = False
     for c in children:
