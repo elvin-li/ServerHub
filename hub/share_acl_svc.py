@@ -134,6 +134,66 @@ def _pick(value, fallback):
     return value if _truthy(value) else fallback
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / host_address / docker10 ``_rc_int`` rule), and every probe
+    compared the *rc* slot raw: an rc-subclass whose ``__eq__``/``__ne__``
+    raises detonated ``rc != 0`` in ``read_acl`` and ``local_users`` — raw
+    500s on GET and PUT /api/shares/acl past every coded refusal — and the
+    same bomb in ``_run_unprivileged`` blew the PUT one line ahead of its
+    failure funnel.  ``-255`` is no honest exit status and is distinct from
+    the ``-1`` spawn-failure sentinel, so junk can never be misread as
+    success or as a vanished CLI.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
+        # cannot fire, and a lying-``__class__`` impostor TypeErrors here
+        # instead of passing the gate (the modules5 unbound convention).
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
+def _str_keyed(plain: dict) -> dict:
+    """*plain* (an exact dict) with every key an exact ``str``.
+
+    One hash-shadowing key — same hash as the literal a reader fetches,
+    raising ``__eq__`` — detonates the *probe itself*: ``dict.get`` on a
+    laundered copy is still a hash-table probe, one seam earlier than any
+    value gate (the compose10 / files13 shadow-key class).  A shadow over
+    ``ok`` / ``error`` / ``message`` in a privileged result blew
+    ``_plain_result`` and ``set_user_access``'s failure funnel — raw 500s
+    on PUT /api/shares/acl in place of the coded refusals.  ``str.__str__``
+    copies through the C storage, so laundering cannot itself detonate;
+    non-str keys drop — no reader ever looks a field up by one.
+    """
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str map returns as-is.
+    if all(type(k) is str for k in plain):
+        return plain
+    out = {}
+    for k, v in plain.items():
+        if type(k) is str:
+            out[k] = v
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew a bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
+            try:
+                out[str.__str__(k)] = v
+            except Exception:
+                continue
+    return out
+
+
 def _plain_result(result) -> dict:
     """A privileged-helper result as a plain dict with a real bool ``ok``.
 
@@ -148,7 +208,12 @@ def _plain_result(result) -> dict:
     """
     if _isa(result, dict):
         try:
-            plain = dict(result)
+            # _str_keyed after the copy: a hash-shadowing ``ok`` key kept
+            # its raising ``__eq__`` through ``dict()`` and detonated the
+            # very next ``plain.get("ok")`` probe — and the ``{**result,
+            # "error": ...}`` merge in set_user_access after it — raw 500s
+            # on PUT /api/shares/acl out of the laundering itself.
+            plain = _str_keyed(dict(result))
         except Exception:
             return {"ok": False, "error": "failed"}
     else:
@@ -260,7 +325,12 @@ def read_acl(path: str) -> dict:
     """ACL and ownership of *path* (validated absolute directory)."""
     resolved = _validated_dir(path)
     rc, output, error = sh([LS, "-lde", str(resolved)], timeout=8)
-    if rc != 0:
+    # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
+    # to detonate this gate — a raw 500 on GET and PUT /api/shares/acl in
+    # place of the coded read failure.  Junk rc reads as failure, and the
+    # vanish classification below still needs the message marker plus the
+    # fresh disk probe, so junk can never fake a vanished CLI.
+    if _rc_int(rc) != 0:
         # An ls confirmed vanished by a fresh disk probe answers the coded
         # 503, not the 500 "the ACL could not be read" that blames the
         # directory.  Probe on this failure path only.
@@ -293,7 +363,9 @@ def local_users() -> list[dict]:
     uid 500 on macOS, so both filters together keep exactly the human set.
     """
     rc, output, _ = sh([DSCL, ".", "-list", "/Users", "UniqueID"], timeout=8)
-    if rc != 0:
+    # _rc_int: an rc-``__ne__`` bomb used to raise out of this gate and 500
+    # GET /api/shares/acl — the route reads the picker outside any try.
+    if _rc_int(rc) != 0:
         return []
     users: list[dict] = []
     for line in _as_text(output).splitlines():
@@ -312,7 +384,9 @@ def local_users() -> list[dict]:
         rc_name, name_out, _ = sh(
             [DSCL, ".", "-read", f"/Users/{username}", "RealName"], timeout=5
         )
-        if rc_name == 0:
+        # _rc_int: the same rc-``__eq__`` bomb class, per picked user — one
+        # poisoned RealName read used to cost the whole picker as a raw 500.
+        if _rc_int(rc_name) == 0:
             # Two shapes: "RealName: Alice" on one line, or the value alone on
             # the following line when it contains spaces.
             lines = [l.strip() for l in _as_text(name_out).splitlines() if l.strip()]
@@ -388,7 +462,10 @@ def _run_unprivileged(commands: list[list[str]]) -> dict:
         # full timeout.  ``sh`` streams to a tempfile and already maps
         # timeout/OSError to rc=-1 instead of raising into the Shares page.
         rc, out, err = sh(command, timeout=15)
-        if rc != 0:
+        # _rc_int: an rc-``__ne__`` bomb used to blow this probe one line
+        # ahead of the funnel that classifies the failure — a raw 500 on
+        # PUT /api/shares/acl on the owner-run path.
+        if _rc_int(rc) != 0:
             # int/bytes/date leftovers used to AttributeError ``.strip`` /
             # TypeError ``"denied" in bytes`` on PUT /api/shares/acl.
             # _pick, not ``or``: a ``__bool__``-bomb stderr used to raise out
