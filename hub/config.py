@@ -544,6 +544,24 @@ def reload_cfg():
 _UNRENDERABLE = object()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover node whose ``__class__`` is a *raising property*
+    riding a stored section back through PUT /api/settings detonated
+    ``_renderable_tree``'s bare rank gates on the retry walk — and the same
+    probe inside ``yaml.safe_dump``'s own ``ignore_aliases`` raises a
+    RuntimeError (not a YAMLError) straight out of the first dump attempt.
+    A real subclass still matches through the C-level type check (the
+    storage_svc/vms_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _renderable_tree(value, depth: int = 0):
     """Drop over-cap ints and launder subclass leftovers so one node cannot
     wedge every save forever.
@@ -567,9 +585,9 @@ def _renderable_tree(value, depth: int = 0):
     """
     if depth > 64:
         return value
-    if isinstance(value, bool):
+    if _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 value = int.__index__(value)
@@ -580,7 +598,7 @@ def _renderable_tree(value, depth: int = 0):
         except ValueError:
             return _UNRENDERABLE
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is float:
             return value
         try:
@@ -588,17 +606,31 @@ def _renderable_tree(value, depth: int = 0):
             return float.__float__(value)
         except Exception:
             return _UNRENDERABLE
-    if isinstance(value, str):
-        return value if type(value) is str else str.__str__(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, str):
+        if type(value) is str:
+            return value
+        try:
+            return str.__str__(value)
+        except Exception:
+            # A lying ``__class__`` (claims str, is not) TypeErrors the
+            # unbound copy: no representer could render it either way.
+            return _UNRENDERABLE
+    if _isa(value, (bytes, bytearray)):
         # bytearray as well: SafeDumper only represents exact bytes.
         try:
             return bytes(value)
         except Exception:
             return _UNRENDERABLE
-    if not isinstance(value, (dict, list, tuple, set, frozenset)):
+    if not _isa(value, (dict, list, tuple, set, frozenset)):
+        try:
+            value.__class__
+        except Exception:
+            # A ``__class__``-property bomb detonates the dumper's own bare
+            # ``ignore_aliases`` isinstance (RuntimeError, not YAMLError):
+            # unrepresentable either way — drop the node, keep siblings.
+            return _UNRENDERABLE
         return value
-    if isinstance(value, dict):
+    if _isa(value, dict):
         try:
             items = list(dict.items(value))
         except Exception:
@@ -611,17 +643,26 @@ def _renderable_tree(value, depth: int = 0):
             v2 = _renderable_tree(v, depth + 1)
             if v2 is _UNRENDERABLE:
                 continue
-            out[k2] = v2
+            try:
+                out[k2] = v2
+            except Exception:
+                # A passthrough key whose ``__hash__`` bombs cannot land in
+                # a YAML mapping; drop the entry, keep siblings.
+                continue
         return out
-    if isinstance(value, (set, frozenset)):
-        base = set if isinstance(value, set) else frozenset
+    if _isa(value, (set, frozenset)):
+        base = set if _isa(value, set) else frozenset
         try:
             members = list(base.__iter__(value))
         except Exception:
             return _UNRENDERABLE
         cleaned = (_renderable_tree(v, depth + 1) for v in members)
-        return {v for v in cleaned if v is not _UNRENDERABLE}
-    base = list if isinstance(value, list) else tuple
+        try:
+            return {v for v in cleaned if v is not _UNRENDERABLE}
+        except Exception:
+            # A laundered member whose ``__hash__`` bombs cannot join a set.
+            return _UNRENDERABLE
+    base = list if _isa(value, list) else tuple
     try:
         members = list(base.__iter__(value))
     except Exception:
@@ -647,7 +688,7 @@ def _dump(data: dict) -> str:
     except RecursionError:
         # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
         raise api_error("settings.save_failed")
-    except (ValueError, yaml.YAMLError):
+    except Exception:
         # A leftover YAML hex int past CPython's int->str digit cap loads fine
         # (``int(x, 16)`` is uncapped) but cannot be re-dumped.  The coded 503
         # alone left every settings save stuck for good: the auth sweep scrubs
@@ -665,6 +706,13 @@ def _dump(data: dict) -> str:
         # RepresenterError straight out of mutate() — a raw 500 where the
         # digit-cap sibling one line up already degraded.  The retry launders
         # subclasses to their base type, so the value itself still persists.
+        #
+        # Exception, not (ValueError, YAMLError): the dumper's own
+        # ``ignore_aliases`` runs a bare isinstance, so a leftover whose
+        # ``__class__`` is a raising property escaped the first attempt as a
+        # RuntimeError — a raw 500 where every other unrenderable node
+        # already took the retry.  The retry drops the bomb node and the
+        # rest of the save still lands.
         try:
             return yaml.safe_dump(
                 _renderable_tree(data),
@@ -673,7 +721,9 @@ def _dump(data: dict) -> str:
                 width=120,
                 default_flow_style=False,
             )
-        except (ValueError, RecursionError, yaml.YAMLError):
+        except Exception:
+            # ValueError / RecursionError / YAMLError as before, plus any
+            # bomb the laundering could not shape: the coded 503, never raw.
             raise api_error("settings.save_failed")
 
 
@@ -819,7 +869,12 @@ def deep_merge(base: dict, patch: dict, _merging: frozenset = frozenset()) -> di
         return out
     _merging = _merging | {id(patch)}
     for k, v in patch.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
+        # _isa: a leftover patch value whose ``__class__`` is a raising
+        # property (a stored-section bomb merged back in by PUT
+        # /api/settings' terminal branch) used to detonate the bare rank
+        # gate here — a raw 500 out of mutate() before the dump-side
+        # laundering ever ran.
+        if _isa(v, dict) and _isa(out.get(k), dict):
             out[k] = deep_merge(out[k], v, _merging)
         else:
             out[k] = v
