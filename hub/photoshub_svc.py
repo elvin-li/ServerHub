@@ -846,6 +846,35 @@ def remove_from_pending(ids: list[str]) -> dict:
     return {"removed": len(clean), "album_id": album_id}
 
 
+def _rc_int(rc: Any) -> Any:
+    """Launder an int-subclass rc to a plain int before it is compared.
+
+    ``run_watchdog`` collapses every spawn to an int rc, and photos6 sealed an
+    rc-subclass whose ``__str__`` bombs inside ``_jsonable`` via the unbound
+    ``int.__index__``.  But ``run_action`` tests the *raw* rc (``rc == -1`` /
+    ``rc == 0``) before it ever reaches ``_jsonable``, so those ran the *bound*
+    ``__eq__``: an int-subclass whose ``__eq__`` raises — the ``__str__`` bomb's
+    sibling from the identical ``run_watchdog`` seam — raised out of the route
+    and turned POST /api/photoshub/action into the catch-all coded 500
+    ``photoshub.action_failed``.  Coerce via the unbound ``int.__index__`` (the
+    ``_jsonable`` convention) so the equality tests and the ``exit_code`` field
+    run on a plain int; an over-cap value survives coercion and is dropped to
+    null by ``_jsonable`` exactly like its plain-int sibling.
+
+    Only *int* values are laundered.  A non-int rc (photos7's str-subclass
+    ``encode`` bomb rc flows through this seam as well) keeps its own value:
+    its ``__eq__`` against ``0`` / ``-1`` does not raise, and ``_jsonable``
+    still scrubs it for the ``exit_code`` field.  ``bool`` is left alone so a
+    true/false rc renders as itself rather than 1/0.
+    """
+    if type(rc) is int or not isinstance(rc, int) or isinstance(rc, bool):
+        return rc
+    try:
+        return int(int.__index__(rc))
+    except Exception:
+        return -1
+
+
 def _ctl_on_disk(binary: Any) -> bool:
     """True when the just-spawned binary is still present on disk.
 
@@ -891,7 +920,10 @@ def run_action(action: str, timeout: int = 600) -> dict:
 
     started = _iso_now()
     log: list[str] = []
-    rc = run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB))
+    # Launder the rc to a plain int: run_action compares it (rc == -1 / rc == 0)
+    # before _jsonable ever sees it, so a leftover subclass whose __eq__ bombs
+    # would raise straight out of the route.
+    rc = _rc_int(run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB)))
     if rc == -1 and not _ctl_on_disk(cmd[0]):
         # The installed()/script gate blessed this binary moments ago;
         # vanished between the check and the spawn, the answer used to be
