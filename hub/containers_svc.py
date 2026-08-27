@@ -58,7 +58,7 @@ def _job_epoch() -> int:
 
 
 def _plain_job(value) -> dict | None:
-    """A ``_cjobs`` row as a plain ``dict``, or None.
+    """A ``_cjobs`` / config-stack row as a plain ``dict``, or None.
 
     Rows this module writes are already plain (the AST test pins the two
     writers), but the store outlives requests and a leftover dict-*subclass*
@@ -68,15 +68,41 @@ def _plain_job(value) -> dict | None:
     through the C-level storage, so an overridden method cannot fire; a
     subclass whose copy itself raises is junk and drops.  Same guard as
     hub.jobs._plain_dict.
+
+    The KEYS are laundered too, not just the mapping type: one str-*subclass*
+    key anywhere in the row makes every later ``row.get("field")`` fall off
+    CPython's exact-str fast path onto generic comparison, and when the
+    poisoned key's hash collides with the looked-up field name the reflected
+    operand hands the subclass ``__eq__`` priority — a ``__eq__`` bomb riding
+    a ``stacks:`` row's key used to raise out of ``_stack_paths``'s
+    ``s.get("id")`` / ``s.get("path")`` and 500 GET /api/stacks, GET/PUT
+    /api/compose/{id}, POST /api/compose/{id}/validate and every stack-job
+    start (the docker7 unbound-``dict.get`` guard covered the cfg *root*,
+    not a key inside a row).  ``str.__str__`` copies through the C storage,
+    so laundering cannot itself detonate; non-str keys drop — no reader
+    ever looks a row up by one.
     """
-    if type(value) is dict:
-        return value
-    if isinstance(value, dict):
+    if not isinstance(value, dict):
+        return None
+    if type(value) is not dict:
         try:
-            return dict(value)
+            value = dict(value)
         except Exception:
             return None
-    return None
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str row returns as-is.
+    if all(type(k) is str for k in value):
+        return value
+    out = {}
+    for k, v in value.items():
+        if type(k) is str:
+            out[k] = v
+        elif isinstance(k, str):
+            try:
+                out[str.__str__(k)] = v
+            except Exception:
+                continue
+    return out
 
 
 def _truthy(value) -> bool:
