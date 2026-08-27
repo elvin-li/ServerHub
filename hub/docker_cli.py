@@ -258,7 +258,21 @@ def _rc_int(rc) -> int:
 
 
 def docker(*args, timeout=30) -> tuple[int, str, str]:
-    rc, out, err = sh([DOCKER, *args], timeout=timeout)
+    # Guarded unwrap of the whole ``sh`` answer, not just its three slots:
+    # this module does not own ``sh`` (tests and tooling patch it), and a
+    # leftover riding the *shape* of the return — a 2-tuple, a scalar, a
+    # sequence subclass whose ``__iter__`` raises, a ``__class__``-property
+    # bomb — used to detonate the bare ``rc, out, err = …`` unpack itself
+    # and 500 essentially every docker route at once (the listings, inspect,
+    # /api/docker/df|sizes and the action/exec/prune mutations), one step
+    # ahead of the per-slot launders below.  A junk shape carries no exit
+    # status and no output: it reads as the same ``-255`` failure `_rc_int`
+    # assigns junk rc values — never the ``-1`` timeout / not-found sentinel,
+    # never success — so the routes degrade to their coded answers.
+    try:
+        rc, out, err = sh([DOCKER, *args], timeout=timeout)
+    except Exception:
+        rc, out, err = -255, "", ""
     return _rc_int(rc), _as_text(out), _as_text(err)
 
 
@@ -448,24 +462,76 @@ def invalidate_engine_state() -> None:
         _engine_timeouts = 0
 
 
+def _cache_view() -> tuple[bool | None, bool]:
+    """The engine memo's ``(value, is-fresh)`` with leftover junk read as unknown.
+
+    ``_engine_cache`` outlives every request, so a leftover planted in either
+    slot went out raw: a junk ``t`` (a float-subclass ``__rsub__`` bomb, a
+    str) detonated the bare ``time.time() - t < TTL`` freshness probe, and a
+    junk ``v`` (a ``__bool__`` bomb) rode out as :func:`engine_up`'s answer
+    and blew the caller's own ``if not engine_up()`` — each one a raw 500 on
+    GET /api/containers and GET /api/stacks (the tools twins were saved only
+    by their ``_safe_flag``).
+
+    ``type(v) is bool``, not isinstance/_isa: bool cannot be subclassed, so
+    the exact check is complete, and a bool-liar (``__class__`` answers bool,
+    the object is not one) or any other impostor reads as "never probed" —
+    junk is not evidence of engine state, so the caller re-probes.  A junk
+    ``t`` reads as stale for the same reason.
+    """
+    v = _engine_cache.get("v")
+    if type(v) is not bool:
+        v = None
+    try:
+        # bool() inside the try: a poisoned ``t`` whose reflected subtraction
+        # or comparison answers junk must not hand a ``__bool__`` bomb out.
+        fresh = bool(time.time() - _engine_cache.get("t") < _ENGINE_TTL)
+    except Exception:
+        fresh = False
+    return v, fresh
+
+
+def _timeouts_int(value) -> int:
+    """Exact consecutive-timeout count; junk reads as the tolerance spent.
+
+    The counter is a module global that outlives requests, so a leftover
+    int-subclass whose ``__add__`` raises used to detonate the ``+= 1``
+    inside the lock the moment one probe timed out — a raw 500 on every
+    docker listing route.  The unbound base coercion keeps a real subclass's
+    value while defusing its bound-method bombs (the ``+ 1`` then runs on an
+    exact int); a lying-``__class__`` impostor TypeErrors and drops.  Junk is
+    not evidence that recent probes succeeded, so it reads as the tolerance
+    already spent: the timeout reports as engine-down instead of re-serving
+    a stale answer through a counter that cannot count.
+    """
+    if type(value) is int:
+        return value
+    try:
+        if not _isa(value, bool) and _isa(value, int):
+            return int.__index__(value)
+    except Exception:
+        pass
+    return _TIMEOUT_TOLERANCE
+
+
 def engine_up(force: bool = False) -> bool:
     if not force:
-        cached = _engine_cache["v"]
-        if cached is not None and time.time() - _engine_cache["t"] < _ENGINE_TTL:
+        cached, fresh = _cache_view()
+        if cached is not None and fresh:
             return cached
 
     global _engine_timeouts
     with _engine_lock:
         # Re-check under the lock: another caller may have finished the same probe
         # while this one waited, which is what makes this single-flight.
-        cached = _engine_cache["v"]
-        if not force and cached is not None and time.time() - _engine_cache["t"] < _ENGINE_TTL:
+        cached, fresh = _cache_view()
+        if not force and cached is not None and fresh:
             return cached
         rc, _, err = docker("info", timeout=8)
         if rc == -1 and err == "timeout":
             # No evidence either way: keep the last real observation alive for
             # a bounded number of slow probes instead of flipping to "down".
-            _engine_timeouts += 1
+            _engine_timeouts = _timeouts_int(_engine_timeouts) + 1
             if _engine_timeouts < _TIMEOUT_TOLERANCE and cached is not None:
                 _engine_cache.update(t=time.time(), v=cached)
                 return cached
@@ -481,8 +547,11 @@ def peek_engine() -> bool | None:
 
     Does not spawn ``docker info``. Host identity in low mode only needs a
     badge; the 5s probe TTL is for callers that must reflect a restart.
+    ``_cache_view`` rather than the raw slot: a leftover planted in the memo
+    (a ``__bool__`` bomb, a bool-liar) must read as "never probed", not ride
+    out to the badge renderers.
     """
-    return _engine_cache["v"]
+    return _cache_view()[0]
 
 
 def redact_env(env_list: list[str] | None) -> list[str]:
