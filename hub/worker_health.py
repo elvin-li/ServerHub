@@ -66,9 +66,16 @@ def _utf8_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a subclass ``.decode`` bomb registered as a
         # worker name used to raise out of snapshot() and silently wipe the
-        # workers row from the health page.
+        # workers row from the health page.  Guarded: a lying-``__class__``
+        # impostor (the docker10/json9 shape — ``isinstance`` says bytes, the
+        # real object is not one) passed the gate but made the unbound
+        # descriptor raise ``TypeError``, wiping the row the same way; it now
+        # falls through to the generic ``str()`` probe below.
         base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -304,6 +311,30 @@ def snapshot(now: float | None = None) -> list[dict]:
     return out
 
 
+def _pull_guarded(rows) -> list:
+    """Materialize *rows* one element at a time, absorbing a mid-walk raise.
+
+    A generic iterable that *answers* ``iter()`` but raises mid-iteration
+    (a patched ``problems(rows=...)`` provider) used to blow the caller's
+    per-row guard; the elements already yielded survive, the bomb costs only
+    its own tail.  Also the fall-through for a lying-``list`` impostor whose
+    unbound ``list.__iter__`` raised.
+    """
+    try:
+        it = iter(rows)
+    except Exception:
+        return []
+    collected = []
+    while True:
+        try:
+            collected.append(next(it))
+        except StopIteration:
+            break
+        except Exception:
+            break
+    return collected
+
+
 def problems(now: float | None = None, rows: list[dict] | None = None) -> list[str]:
     """Human-readable descriptions of dead or stale workers (empty = healthy).
 
@@ -318,26 +349,21 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
         # does not own *rows*, and a list-subclass ``__iter__`` bomb used to
         # raise here and silently wipe the workers row from the health page.
         # _isa on the gate itself: a ``__class__``-property-bomb rows object
-        # detonated the old bare isinstance the same way.
-        rows = list.__iter__(rows)
+        # detonated the old bare isinstance the same way.  The unbound
+        # descriptor runs in a try: a lying-``__class__`` impostor (the
+        # docker10/json9 shape — ``isinstance`` says list, the real object is
+        # not one) passed the gate but made ``list.__iter__`` raise
+        # ``TypeError``; it falls through to the generic guarded pull loop.
+        try:
+            rows = list.__iter__(rows)
+        except Exception:
+            rows = _pull_guarded(rows)
     else:
         # Materialize with a guarded pull loop: a generic iterable that
         # *answers* iter() but raises mid-iteration used to blow the for
         # loop below past the per-row guard — the rows already yielded
         # survive, the bomb costs only its own tail.
-        try:
-            it = iter(rows)
-        except Exception:
-            return []
-        collected = []
-        while True:
-            try:
-                collected.append(next(it))
-            except StopIteration:
-                break
-            except Exception:
-                break
-        rows = collected
+        rows = _pull_guarded(rows)
     out = []
     for w in rows:
         # _isa: a ``__class__``-property-bomb row detonated the gate itself,

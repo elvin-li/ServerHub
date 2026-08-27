@@ -213,16 +213,33 @@ def _as_text(value) -> str:
     consults ``__class__`` when the exact-type check misses) — a raw 500 on
     GET /api/wireguard, GET /api/wireguard/settings and POST
     /api/wireguard/ping for a value this function exists to absorb.
+
+    The unbound base calls run inside a ``try``: a *lying*-``__class__``
+    impostor (the docker10/json9 shape — ``isinstance`` answers bytes / str,
+    the real object is neither) passes the ``_isa`` gate but makes the
+    unbound ``bytes.decode`` / ``str.encode`` descriptor itself raise
+    ``TypeError`` — the exact raw 500 on POST /api/wireguard/ping that a
+    bytes-liar peer ``ip`` / ``name`` / ``public_key`` reproduced.  A liar
+    falls through to the generic ``str()`` probe like any other leftover.
     """
+    text = None
     if _isa(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
+        try:
+            text = bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isa(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
+        try:
+            text = bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isa(value, str):
         text = value
     elif value is None:
         return ""
-    else:
+    if text is None:
+        # A bytes/bytearray impostor whose unbound decode just raised, or a
+        # value that is not text at all: coerce through a guarded ``str()``.
         try:
             text = str(value)
         except RecursionError:
@@ -232,7 +249,19 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A str-liar rode the ``_isa(value, str)`` branch as *text* itself,
+        # and unbound ``str.encode`` cannot apply to it — one last guarded
+        # ``str()`` renders its honest ``__str__`` instead of 500ing.
+        try:
+            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except Exception:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
 
 
 def _path_exists(path) -> bool:
@@ -2412,10 +2441,19 @@ def _ping_targets() -> list[tuple[dict, str]]:
         return []
     # _isa on both gates: a listing (or row) whose ``__class__`` is a
     # raising property used to detonate the bare isinstance itself — the
-    # same raw 500 these gates exist to prevent.
+    # same raw 500 these gates exist to prevent.  The unbound
+    # ``list.__iter__`` runs in a try: a lying-``__class__`` impostor (the
+    # docker10/json9 shape — ``isinstance`` answers list, the real object is
+    # not one) passed the gate but made the descriptor raise ``TypeError``,
+    # a raw 500 on POST /api/wireguard/ping.  A liar falls through to the
+    # generic guarded pull loop.
+    rows = None
     if _isa(records, list):
-        rows = list.__iter__(records)
-    else:
+        try:
+            rows = list.__iter__(records)
+        except Exception:
+            rows = None
+    if rows is None:
         # Guarded pull loop (the worker_health.problems rule): a generic
         # iterable that answers iter() but raises mid-iteration used to blow
         # the walk below past the per-row drops — rows already yielded

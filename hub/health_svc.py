@@ -64,9 +64,26 @@ def _rc_int(rc) -> int:
 
 
 def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Guarded, because callers reach here on the ``_isa(value, (bytes,
+    bytearray))`` gate and that gate answers True for a *lying*-``__class__``
+    impostor (the docker10/json9 shape — ``isinstance`` says bytes, the real
+    object is not one).  The unbound ``bytes.decode`` descriptor then raises
+    ``TypeError`` on the impostor; fall through to a plain ``str()`` so the
+    liar drops to its own text instead of 500ing GET /api/health/checks.
+    """
+    try:
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        try:
+            return str(value)
+        except Exception:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
 
 
 def _utf8_text(value) -> str:
