@@ -510,7 +510,19 @@ def invalidate() -> None:
 def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
     """Validate and re-verify member devices against a fresh enumeration."""
     cleaned: list[str] = []
-    for device in devices or []:
+    # Guarded unbound walk (the smart_test_svc.set_schedule rule): the routes
+    # hand over Pydantic-exact lists, but the service is also called
+    # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
+    # used to blow the old ``(devices or [])`` raw — past the router's
+    # RaidError catch — where every junk device already earns the coded
+    # ``raid.bad_device`` refusal.
+    if isinstance(devices, list):
+        rows = list.__iter__(devices)
+    elif isinstance(devices, tuple):
+        rows = tuple.__iter__(devices)
+    else:
+        rows = iter(())
+    for device in rows:
         # _req_text, not str(): a leftover int already past CPython's
         # int->str digit cap made ``str(device)`` itself ValueError out of
         # the endpoint instead of the coded refusal every other junk

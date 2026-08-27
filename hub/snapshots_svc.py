@@ -554,7 +554,22 @@ def thin_snapshots(mount: str, urgency: int = 1) -> dict:
     is free.  Urgency 1-4 selects how aggressively macOS is willing to drop
     them; 4 means "free the space even if all snapshots go".
     """
-    if urgency not in (1, 2, 3, 4):
+    # Base coercion + a guarded membership probe: the route hands over a
+    # Pydantic-exact int, but the service is also called in-process, and an
+    # int-subclass ``__eq__`` bomb used to detonate the bare
+    # ``urgency not in (1, 2, 3, 4)`` — a raw raise where every other junk
+    # urgency earns the coded ``bad_urgency`` refusal (the raid_svc._req_text
+    # convention at membership rank).
+    if isinstance(urgency, int) and not isinstance(urgency, bool):
+        try:
+            urgency = int.__index__(urgency)
+        except Exception:
+            return {"ok": False, "error": "bad_urgency"}
+    try:
+        valid = urgency in (1, 2, 3, 4)
+    except Exception:
+        valid = False
+    if not valid:
         return {"ok": False, "error": "bad_urgency"}
     target = str(10 * 1024 * 1024 * 1024)  # 10 GiB request; macOS frees what it can
     result = run_admin(

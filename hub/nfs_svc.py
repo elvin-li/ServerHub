@@ -85,6 +85,41 @@ def _as_text(value) -> str:
     return value.encode("utf-8", "replace").decode("utf-8")
 
 
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _admin_result(result) -> dict:
+    """A privileged-helper result as a plain dict with a real bool ``ok``.
+
+    ``save_exports`` and ``server_action`` read ``result.get("ok")`` on the
+    *raw* ``run_admin_sequence`` payload — the one NAS service still doing
+    so after the snapshots/raid/smart/usage/shares sweeps.  A leftover
+    ``None`` AttributeError'd the read, a dict-*subclass* result whose bound
+    ``.get`` raises (the jobs/metrics row-bomb class: passes ``isinstance``,
+    refuses the read) blew the same line, a ``__bool__``-bomb ``ok`` value
+    detonated the ``if`` itself, and ``server_action``'s
+    ``result["server"] = …`` ran a subclass ``__setitem__`` — each a raw 500
+    on POST /api/nfs/exports and /api/nfs/server one call ahead of the
+    router funnel that already knows how to answer coded.  ``dict()``
+    copies through the C-level storage, so an overridden method cannot
+    fire; junk shapes degrade to the coded generic failure.
+    """
+    if isinstance(result, dict):
+        try:
+            plain = dict(result)
+        except Exception:
+            return {"ok": False, "error": "failed"}
+    else:
+        return {"ok": False, "error": "failed"}
+    plain["ok"] = _truthy(plain.get("ok"))
+    return plain
+
+
 def _nfsd_on_disk() -> bool:
     """Fresh disk probe for the mutation-failure paths only (raid/vms rule).
 
@@ -116,8 +151,15 @@ def _classify_admin_failure(result: dict) -> dict:
     """
     if not isinstance(result, dict):
         return {"ok": False, "error": "failed"}
-    if not result.get("ok") and (result.get("error") or "failed") == "failed":
-        message = _as_text(result.get("message") or "").lower()
+    # _as_text on both probes, no bare ``or`` / ``==`` on the raw fields:
+    # a leftover ``__eq__``-bomb error value used to detonate the
+    # ``== "failed"`` read, and a ``__bool__``-bomb message blew the old
+    # ``result.get("message") or ""`` — raw 500s on POST /api/nfs/exports
+    # and /api/nfs/server in place of the coded refusal (the
+    # usage_svc.set_spotlight vanish-classification rule).
+    error = _as_text(dict.get(result, "error")) or "failed"
+    if not _truthy(dict.get(result, "ok")) and error == "failed":
+        message = _as_text(dict.get(result, "message")).lower()
         if any(marker in message for marker in _VANISH_MARKERS) and not _nfsd_on_disk():
             return {"ok": False, "error": "nfsd_missing"}
     return result
@@ -213,14 +255,25 @@ def read_exports() -> list[dict]:
 
 def _validate_entry(entry: dict) -> dict:
     """Normalize one caller-supplied export, raising NfsConfigError on refusal."""
+    # Unbound ``dict.get`` throughout (the shares.py _share_directory rule):
+    # the route hands over plain model_dump dicts, but the service is also
+    # called in-process, and a leftover dict-*subclass* entry whose bound
+    # ``.get`` raises a non-ValueError — or a non-dict entry AttributeError'ing
+    # the read — used to raise raw past the router's NfsConfigError catch
+    # where every other junk entry earns its coded refusal.
+    if not isinstance(entry, dict):
+        raise NfsConfigError("nfs.bad_path")
     try:
         # A str() probe, not an isinstance gate: a numeric leftover keeps
         # behaving as its string form, while a >4300-digit *already-int*
         # (YAML/plist hex loads with int(x, 16), exempt from the int(str)
         # parse cap) earns the coded refusal instead of the digit-cap
         # ValueError a bare str() raises past the router.
-        path = str(entry.get("path") or "").strip()
-    except ValueError:
+        raw_path = dict.get(entry, "path")
+        path = str(raw_path).strip() if _truthy(raw_path) else ""
+    except Exception:
+        # The digit-cap ValueError, or a leftover ``__str__`` bomb raising
+        # something else: neither may escape past the coded refusal.
         raise NfsConfigError("nfs.bad_path")
     # Control characters before Path(): a NUL never reaches the later check,
     # and Path("…\0…") raises ValueError instead of NfsConfigError.
@@ -264,19 +317,27 @@ def _validate_entry(entry: dict) -> dict:
         # POST /api/nfs/exports after validation had already passed.
         raise NfsConfigError("nfs.bad_path") from error
 
-    clients_raw = entry.get("clients") or []
+    clients_raw = dict.get(entry, "clients")
     if isinstance(clients_raw, str):
         clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
-    elif not isinstance(clients_raw, list):
+    elif isinstance(clients_raw, list):
+        # Materialized under the unbound base walk: a list-subclass client
+        # table whose ``__iter__`` raises used to blow the loop below raw.
+        try:
+            clients_raw = list(list.__iter__(clients_raw))
+        except Exception:
+            clients_raw = []
+    else:
         clients_raw = []
     clients: list[str] = []
     everyone = False
     for client in clients_raw:
         try:
             value = str(client).strip()
-        except ValueError:
+        except Exception:
             # An already-int hex leftover past the digit cap can never be a
-            # host spec; refuse it like any other bad client, not a 500.
+            # host spec — and a ``__str__`` bomb raising a non-ValueError is
+            # the same junk; refuse it like any other bad client, not a 500.
             raise NfsConfigError("nfs.bad_client", client="")
         if not value:
             continue
@@ -290,11 +351,14 @@ def _validate_entry(entry: dict) -> dict:
         raise NfsConfigError("nfs.no_clients")
 
     try:
-        maproot = str(entry.get("maproot") or "").strip()
-        mapall = str(entry.get("mapall") or "").strip()
-    except ValueError:
-        # The digit-cap ValueError of a huge already-int leftover; the value
-        # could never match _MAP_RE anyway.
+        raw_maproot = dict.get(entry, "maproot")
+        raw_mapall = dict.get(entry, "mapall")
+        maproot = str(raw_maproot).strip() if _truthy(raw_maproot) else ""
+        mapall = str(raw_mapall).strip() if _truthy(raw_mapall) else ""
+    except Exception:
+        # The digit-cap ValueError of a huge already-int leftover — or a
+        # ``__str__`` bomb raising past it; the value could never match
+        # _MAP_RE anyway.
         raise NfsConfigError("nfs.bad_mapping", field="maproot", value="")
     for label, value in (("maproot", maproot), ("mapall", mapall)):
         if value and not _MAP_RE.match(value):
@@ -306,8 +370,10 @@ def _validate_entry(entry: dict) -> dict:
         "path": real,
         "clients": clients,
         "everyone": everyone,
-        "readonly": bool(entry.get("readonly")),
-        "alldirs": bool(entry.get("alldirs", True)),
+        # _truthy: a leftover ``__bool__``-bomb flag used to raise out of the
+        # bare bool() after every other field had already validated.
+        "readonly": _truthy(dict.get(entry, "readonly")),
+        "alldirs": _truthy(dict.get(entry, "alldirs", True)),
         "maproot": maproot,
         "mapall": mapall,
     }
@@ -422,7 +488,18 @@ def save_exports(entries: list[dict]) -> dict:
     root-owned file needs either a privileged editor or a read-modify-write race,
     and the panel is the declared owner of this file anyway.
     """
-    validated = [_validate_entry(e) for e in (entries or [])]
+    # Guarded unbound walk (the smart_test_svc.set_schedule rule): the route
+    # hands over a Pydantic-exact list, but the service is also called
+    # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
+    # used to blow the old ``(entries or [])`` — a raw raise where every junk
+    # entry already earns its coded NfsConfigError refusal.
+    if isinstance(entries, list):
+        rows = list.__iter__(entries)
+    elif isinstance(entries, tuple):
+        rows = tuple.__iter__(entries)
+    else:
+        rows = iter(())
+    validated = [_validate_entry(e) for e in rows]
     seen: set[str] = set()
     for entry in validated:
         if entry["path"] in seen:
@@ -441,7 +518,9 @@ def save_exports(entries: list[dict]) -> dict:
         # is also what the panel displays, so the two must not disagree.
         return {"ok": False, "error": "failed", "message": _as_text(exc)[:200]}
 
-    result = run_admin_sequence(
+    # _admin_result before any read: the raw run_admin_sequence payload used
+    # to 500 this route at ``result.get("ok")`` — see _admin_result.
+    result = _admin_result(run_admin_sequence(
         [
             [CP, str(_STAGE_PATH), str(EXPORTS_PATH)],
             [CHOWN, "root:wheel", str(EXPORTS_PATH)],
@@ -451,9 +530,9 @@ def save_exports(entries: list[dict]) -> dict:
             [NFSD, "update"],
         ],
         timeout=180,
-    )
+    ))
     invalidate()
-    if not result.get("ok"):
+    if not result["ok"]:
         return _classify_admin_failure(result)
     check = check_exports()
     return {"ok": True, "count": len(validated), "check": check}
@@ -473,9 +552,12 @@ def server_action(action: str) -> dict:
     commands = _SERVER_ACTIONS.get((action or "").strip().lower())
     if not commands:
         return {"ok": False, "error": "bad_action"}
-    result = run_admin_sequence(commands, timeout=120)
+    # _admin_result before any read: the raw run_admin_sequence payload used
+    # to 500 this route at ``result.get("ok")`` (and the ``result["server"]``
+    # write ran a subclass ``__setitem__``) — see _admin_result.
+    result = _admin_result(run_admin_sequence(commands, timeout=120))
     invalidate()
-    if result.get("ok"):
+    if result["ok"]:
         result["server"] = _nfsd_status()
         return result
     return _classify_admin_failure(result)
