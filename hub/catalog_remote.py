@@ -809,7 +809,18 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
     rejected: list[dict] = []
     seen: set[str] = set()
 
-    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=REMOTE_DIR))
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=REMOTE_DIR))
+    except OSError as exc:
+        # _ensure_dir() answered fine one call ago, but the staging mkdtemp
+        # is a *second* write into REMOTE_DIR: a remote dir that vanished in
+        # between (a concurrent cleanup, an operator's rm -rf of data/, a
+        # dying FUSE/SMB mount answering EIO) used to raise the raw OSError
+        # out of POST /api/catalog/remote/check as an uncoded HTTP 500 —
+        # while every neighbouring write in this module (_ensure_dir,
+        # _save_state, the per-template replace) already degrades to the
+        # coded 503 that names the dependency instead of blaming the server.
+        raise api_error("catalog_remote.write_failed", reason=_as_text(exc))
     try:
         for entry in entries:
             reason = _validate_entry(entry)
