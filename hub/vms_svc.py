@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any
 
+from fastapi import HTTPException
+
 from hub import cli_args, vm_console
 from hub.config import override
 from hub.errors import api_error
@@ -116,27 +118,83 @@ def _truthy(value) -> bool:
 
 
 def _rc_int(value) -> int:
-    """Exact int from an ``sh()`` return code; junk reads as -1.
+    """Exact int from an ``sh()`` return code; junk reads as -255.
 
     ``rc == 0`` / ``rc != -1`` ran a leftover int-subclass's own
     ``__eq__`` / ``__ne__`` — one bombed rc from a poisoned runner 500'd
     the action reply (the ``ok``/``message`` assembly runs outside every
     listing catch) straight through ``_cli_missing``.  ``int.__index__``
-    reads the real value underneath a subclass override; anything that is
-    not an int at all reads as the spawn-failure sentinel.
+    reads the real value underneath a subclass override; a *lying*
+    ``__class__`` impostor (claims int over no real int storage — the
+    vms10 class) TypeErrors on the unbound read and drops with the junk.
+
+    Junk degrades to ``-255`` (the shares10/network10/tools10 rule), never
+    ``-1``: that value is the ``sh`` spawn-failure *sentinel*, and a junk
+    rc that read as -1 could forge the vanished-CLI classifier in
+    :func:`_cli_missing` — a coded 503 minted out of a poisoned object
+    instead of a real missing binary.  -255 is no honest exit status, so
+    junk always keeps the plain failure branch.  An over-cap exact int
+    (>4300 digits — YAML/JSON hex leftovers dodge the parse-time caps) is
+    unrenderable by any log line or encoder and reads as junk too.
     """
     if type(value) is int:
-        return value
-    if value is True:
+        rc = value
+    elif value is True:
         return 1
-    if value is False:
+    elif value is False:
         return 0
-    if _isa(value, int):
+    elif _isa(value, int):
         try:
-            return int.__index__(value)
+            rc = int.__index__(value)
         except Exception:
-            return -1
-    return -1
+            return -255
+        if type(rc) is not int:
+            return -255
+    else:
+        return -255
+    try:
+        str(rc)
+    except ValueError:
+        return -255
+    return rc
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and the bare
+    ``rc, out, err = sh(...)`` unpack dispatched into the answer's own
+    iteration: a tuple/list *subclass* whose bound ``__iter__`` bombs — or
+    a lying ``__class__`` impostor claiming tuple/list over no real
+    sequence storage — raised straight out of ``_utm_action`` /
+    ``_orb_action`` / ``_utm_status`` / ``create_orb_machine`` (raw 500s
+    on POST /api/vms/{id}/action and /api/vms/create, outside every
+    listing catch) and threw whole inventories away through the
+    ``_listing_rows`` catch (the network10 ``_sh_triple`` rule).  The
+    unbound base reads see the real C-level storage, so an honest answer
+    in a subclass wrapper survives untouched — the vanished-spawn sentinel
+    included — while junk degrades to ``(-255, "", "")``: nonzero (a
+    poisoned answer is not consent to claim success) and never the ``-1``
+    sentinel (an unusable answer cannot forge the vanished-CLI 503).
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _bin_present(path) -> bool:
@@ -176,16 +234,30 @@ def _cli_missing(rc, err, binary) -> bool:
     """
     # _rc_int, not bare ``rc != -1``: a leftover int-subclass rc whose
     # ``__ne__`` raises detonated the classifier itself, one line ahead of
-    # the disk re-check.
+    # the disk re-check.  Junk reads -255 there, never -1 — so a poisoned
+    # rc beside a leftover "not found" stderr can no longer forge the
+    # vanished-CLI 503; only the real spawn sentinel reaches the disk
+    # confirm below.
     if _rc_int(rc) != -1 or _as_text(err).strip() != "not found":
         return False
     return not _bin_present(binary)
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if _isa(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+def _decode_bytes(value) -> str | None:
+    """Unbound base decode; ``None`` when *value* only lies about being bytes.
+
+    The unbound call bypasses a leftover subclass ``.decode`` bomb, but it
+    used to run *outside* any try — so a lying ``__class__`` impostor
+    (passes the ``_isa`` bytes gate over no real byte storage — the vms10
+    class) TypeError'd the launder itself and 500'd the action reply and
+    the final ``_jsonable`` pass one line ahead of every scrub.  ``None``
+    lets each caller fall back to its own junk rendering.
+    """
+    try:
+        base = bytes if _isa(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _as_text(value) -> str:
@@ -194,11 +266,14 @@ def _as_text(value) -> str:
         # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
         # bomb, and the bound ``.decode`` was the subclass's own — either one
         # 500'd the action reply (``_utm_action`` message assembly runs
-        # outside every listing catch).
-        value = _decode_bytes(value)
-    elif value is None:
+        # outside every listing catch).  A lying-``__class__`` impostor
+        # answers None and renders like any other junk object below.
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            value = decoded
+    if value is None:
         return ""
-    elif not _isa(value, str):
+    if not _isa(value, str):
         # str instances skip str(): a subclass ``__str__`` bomb would trade
         # the real text for "", and a ``__str__`` that answers *self* skips
         # CPython's exact-str copy anyway.
@@ -216,7 +291,21 @@ def _as_text(value) -> str:
     # POST /api/vms/{id}/action and threw away the whole UTM listing on
     # GET /api/vms.  The round-trip also hands back an exact str, so the
     # ``.strip()`` / ``or`` that follow cannot hit another override.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        pass
+    # A lying ``__class__`` impostor claiming str (or bytes, decoded to
+    # None above) reaches here: the unbound encode TypeError'd instead of
+    # detonating the caller, and the impostor renders like any junk object.
+    try:
+        value = str(value)
+    except Exception:
+        return ""
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _display_text(value, fallback: str = "") -> str:
@@ -257,9 +346,18 @@ def _display_text(value, fallback: str = "") -> str:
             return fallback
         return str(value)
     if _isa(value, str):
+        # Unbound exact-str copy through the C storage: a lying
+        # ``__class__`` impostor claiming str TypeErrors here and takes
+        # the fallback instead of detonating ``_as_text``'s encode (the
+        # shares10 ``str.__str__`` launder).
+        try:
+            value = str.__str__(value)
+        except Exception:
+            return fallback
         return _as_text(value)
     if _isa(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        text = _decode_bytes(value)
+        return text if text is not None else fallback
     if _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     try:
@@ -280,6 +378,13 @@ def _optional_text(value) -> str | None:
 def _id_text(value, fallback: str) -> str:
     """Machine id/uuid from leftover orbctl JSON: Infinity/objects are not ids."""
     if _isa(value, str):
+        # Unbound exact-str copy first: a lying ``__class__`` impostor
+        # claiming str used to detonate ``_as_text``'s encode; it reads as
+        # no id at all, never as its repr.
+        try:
+            value = str.__str__(value)
+        except Exception:
+            return fallback
         # Scrub before the truthiness test: a str-subclass ``__bool__`` bomb
         # used to raise out of ``_orb_item`` and cost the whole listing.
         text = _as_text(value)
@@ -322,7 +427,12 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if _isa(value, bool) or value is None:
+    if value is None or type(value) is bool:
+        # ``type``, not ``_isa``: bool admits no subclass, so anything that
+        # only *claims* bool through a lying ``__class__`` used to pass
+        # this gate raw and 500 the response encoder one layer later (the
+        # vms10 bool-liar class).  A liar falls through and degrades at
+        # the int gate like any other junk.
         return value
     if _isa(value, float):
         if type(value) is not float:
@@ -334,17 +444,29 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if _isa(value, (bytes, bytearray)):
+        # None marks a lying-``__class__`` impostor: no byte storage to
+        # decode, and nothing below can match what it claims to be.
         return _decode_bytes(value)
     if _isa(value, dict):
-        out = {}
         # Unbound base view: a dict-subclass row whose ``items()`` raises
         # cannot 500, and the real storage underneath still comes through.
-        for k, v in dict.items(value):
+        # In a try: a lying impostor claiming dict TypeErrors on the view
+        # itself, which used to 500 GET /api/vms out of this final pass.
+        try:
+            pairs = dict.items(value)
+        except Exception:
+            return None
+        out = {}
+        for k, v in pairs:
             if _isa(k, (bytes, bytearray)):
                 key = _decode_bytes(k)
             elif _isa(k, str):
                 key = k
             else:
+                key = None
+            if key is None:
+                # Non-text keys and lying-``__class__`` impostor keys
+                # (their unbound decode answered None) render as repr.
                 try:
                     key = str(k)
                 except Exception:
@@ -355,8 +477,13 @@ def _jsonable(value, depth: int = 0):
         for base in (list, tuple, set, frozenset):
             if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot 500 and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot 500 and the real elements still survive.  In a
+                # try: a lying impostor claiming list/tuple TypeErrors on
+                # the unbound read itself — it degrades instead of 500ing.
+                try:
+                    return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                except Exception:
+                    return None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -426,7 +553,7 @@ def _probe_port(port) -> bool | None:
 def _list_utm_vms_uncached() -> list[dict]:
     if not _utm_available():
         return []
-    rc, out, err = sh([UTMCTL, "list"], timeout=10)
+    rc, out, err = _sh3(sh([UTMCTL, "list"], timeout=10))
     if _rc_int(rc) != 0:
         return []
     out = _as_text(out)
@@ -452,8 +579,12 @@ def _list_utm_vms_uncached() -> list[dict]:
         rows.append({"uuid": uuid, "status": status, "name": name, "ov": ov})
 
     # None where no port is configured, matching the previous conditional.
+    # _truthy, not a bare ``if port``: a leftover override port whose
+    # ``__bool__`` raises used to detonate inside the fan_out worker,
+    # re-raise on iteration and cost the *whole* UTM inventory through the
+    # ``_listing_rows`` catch instead of degrading one row's probe.
     probes = fan_out(
-        lambda port: _probe_port(port) if port else None,
+        lambda port: _probe_port(port) if _truthy(port) else None,
         [_mapping_get(row["ov"], "port") for row in rows],
     )
 
@@ -541,7 +672,7 @@ def _list_orb_machines_uncached() -> list[dict]:
     if not _orb_available():
         return []
     # orbctl list -f json if available, else text
-    rc, out, err = sh([ORBCTL, "list", "-f", "json"], timeout=15)
+    rc, out, err = _sh3(sh([ORBCTL, "list", "-f", "json"], timeout=15))
     items: list[dict] = []
     out = _as_text(out)
     if _rc_int(rc) == 0 and out.strip().startswith(("[", "{")):
@@ -583,7 +714,7 @@ def _list_orb_machines_uncached() -> list[dict]:
                     return items
         except Exception:
             pass
-    rc, out, err = sh([ORBCTL, "list"], timeout=15)
+    rc, out, err = _sh3(sh([ORBCTL, "list"], timeout=15))
     if _rc_int(rc) != 0:
         return []
     # parse table: NAME  STATE  ...
@@ -742,17 +873,29 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
     # key used by list_* for overrides
     if backend == "orb":
         key = name  # override(name) or override(orb-name)
-        # prefer existing key
-        from hub.config import override as _ov
-        if _ov(f"orb-{name}"):
+        # prefer existing key.  _override, not the raw config read: a
+        # leftover cfg snapshot provider bomb (or a returned object whose
+        # ``__bool__`` raises under the bare truthiness probe) used to
+        # 500 the rename action here, one call ahead of the write (vms10;
+        # the listings got the same guard in vms9).
+        if _override(f"orb-{name}"):
             key = f"orb-{name}"
-        elif _ov(name):
-            key = name
         else:
             key = name
     else:
         key = name
-    set_override(key, {"name": new_name})
+    try:
+        set_override(key, {"name": new_name})
+    except HTTPException:
+        # mutate() already answers coded refusals (settings.config_unreadable
+        # for an unparseable services.yaml) — keep them.
+        raise
+    except Exception:
+        # The write funnels through cfg()/mutate(); a leftover snapshot
+        # provider bomb or an unwritable services.yaml used to answer a
+        # raw 500.  Nothing was persisted, so report the same coded 503
+        # every other failed config persist answers.
+        raise api_error("settings.save_failed")
     _invalidate()
     return {"ok": True, "action": "rename", "id": vm_id, "name": new_name, "message": f"Display name changed to {new_name}"}
 
@@ -831,7 +974,16 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
         if (_isa(orb_name, str) and str.__eq__(raw, orb_name) is True) or (
             _isa(row_id, str) and str.__eq__(raw, row_id) is True
         ):
-            name_text = _as_text(orb_name) if _isa(orb_name, str) else ""
+            # Unbound exact-str copy: a lying ``__class__`` impostor riding
+            # ``orb_name`` beside a healthy matching ``id`` used to detonate
+            # ``_as_text``'s encode (vms10); it now falls back to the exact
+            # request text that matched.
+            name_text = ""
+            if _isa(orb_name, str):
+                try:
+                    name_text = _as_text(str.__str__(orb_name))
+                except Exception:
+                    name_text = ""
             return "orb", _argv_name(name_text or raw)
     return "utm", _argv_name(raw)
 
@@ -851,7 +1003,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
     if not _utm_available():
         raise api_error("vms.utm_unavailable")
     if action == "start":
-        rc, out, err = sh([UTMCTL, "start", ident], timeout=90)
+        rc, out, err = _sh3(sh([UTMCTL, "start", ident], timeout=90))
     elif action == "stop":
         force = kwargs.get("force", True)
         args = [UTMCTL, "stop", ident]
@@ -859,11 +1011,11 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
             args.append("--force")
         else:
             args.append("--request")
-        rc, out, err = sh(args, timeout=180)
+        rc, out, err = _sh3(sh(args, timeout=180))
     elif action == "kill":
-        rc, out, err = sh([UTMCTL, "stop", ident, "--kill"], timeout=60)
+        rc, out, err = _sh3(sh([UTMCTL, "stop", ident, "--kill"], timeout=60))
     elif action == "suspend":
-        rc, out, err = sh([UTMCTL, "suspend", ident], timeout=120)
+        rc, out, err = _sh3(sh([UTMCTL, "suspend", ident], timeout=120))
     elif action == "restart":
         return _utm_restart_async(ident)
     elif action == "delete":
@@ -872,7 +1024,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         if st in ("started", "running"):
             sh([UTMCTL, "stop", ident, "--force"], timeout=120)
             time.sleep(2)
-        rc, out, err = sh([UTMCTL, "delete", ident], timeout=60)
+        rc, out, err = _sh3(sh([UTMCTL, "delete", ident], timeout=60))
     elif action == "clone":
         new_name = kwargs.get("name")
         args = [UTMCTL, "clone", ident]
@@ -880,9 +1032,9 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
             if not isinstance(new_name, str):
                 raise api_error("vms.bad_machine_name")
             args += ["--name", _argv_name(new_name, code="vms.bad_machine_name")]
-        rc, out, err = sh(args, timeout=300)
+        rc, out, err = _sh3(sh(args, timeout=300))
     elif action == "ip":
-        rc, out, err = sh([UTMCTL, "ip-address", ident], timeout=15)
+        rc, out, err = _sh3(sh([UTMCTL, "ip-address", ident], timeout=15))
         if _cli_missing(rc, err, UTMCTL):
             raise api_error("vms.utm_unavailable")
         text = _as_text(out)
@@ -909,7 +1061,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
 
 
 def _utm_status(name: str) -> str:
-    rc, out, _ = sh([UTMCTL, "status", name], timeout=10)
+    rc, out, _ = _sh3(sh([UTMCTL, "status", name], timeout=10))
     return _as_text(out).strip() if _rc_int(rc) == 0 else "unknown"
 
 
@@ -958,7 +1110,7 @@ def _utm_restart_async(name: str) -> dict:
         # as a return code instead of raising.
         sh([UTMCTL, "stop", name, "--force"], timeout=180)
         for _ in range(40):
-            _, out, _ = sh([UTMCTL, "status", name], timeout=10)
+            _, out, _ = _sh3(sh([UTMCTL, "status", name], timeout=10))
             if _as_text(out).strip() == "stopped":
                 break
             time.sleep(2)
@@ -973,16 +1125,16 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
     if not _orb_available():
         raise api_error("vms.orb_unavailable")
     if action == "start":
-        rc, out, err = sh([ORBCTL, "start", ident], timeout=120)
+        rc, out, err = _sh3(sh([ORBCTL, "start", ident], timeout=120))
     elif action == "stop":
-        rc, out, err = sh([ORBCTL, "stop", ident], timeout=120)
+        rc, out, err = _sh3(sh([ORBCTL, "stop", ident], timeout=120))
     elif action == "restart":
-        rc, out, err = sh([ORBCTL, "restart", ident], timeout=180)
+        rc, out, err = _sh3(sh([ORBCTL, "restart", ident], timeout=180))
     elif action == "delete":
         # orbctl delete NAME -y if exists
-        rc, out, err = sh([ORBCTL, "delete", ident, "-f"], timeout=180)
+        rc, out, err = _sh3(sh([ORBCTL, "delete", ident, "-f"], timeout=180))
         if _rc_int(rc) != 0:
-            rc, out, err = sh([ORBCTL, "delete", ident], timeout=180)
+            rc, out, err = _sh3(sh([ORBCTL, "delete", ident], timeout=180))
     elif action == "clone":
         new_name = kwargs.get("name")
         if new_name is None or new_name == "":
@@ -990,7 +1142,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         elif not isinstance(new_name, str):
             raise api_error("vms.bad_machine_name")
         new_name = _argv_name(new_name, code="vms.bad_machine_name")
-        rc, out, err = sh([ORBCTL, "clone", ident, new_name], timeout=600)
+        rc, out, err = _sh3(sh([ORBCTL, "clone", ident, new_name], timeout=600))
     elif action == "shell":
         # Hint only.  ``orbctl ssh`` is an interactive session and used to sit
         # on the request thread until the 10s sh() timeout.
@@ -1002,7 +1154,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
             "command": f"orb -m {ident}",
         }
     elif action == "info":
-        rc, out, err = sh([ORBCTL, "info", ident], timeout=15)
+        rc, out, err = _sh3(sh([ORBCTL, "info", ident], timeout=15))
         if _cli_missing(rc, err, ORBCTL):
             raise api_error("vms.orb_unavailable")
         return {
@@ -1043,7 +1195,7 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
         args.append(name)
     if arch in ("arm64", "amd64"):
         args += ["--arch", arch]
-    rc, out, err = sh(args, timeout=600)
+    rc, out, err = _sh3(sh(args, timeout=600))
     if _cli_missing(rc, err, ORBCTL):
         raise api_error("vms.orb_unavailable")
     _invalidate()
