@@ -372,7 +372,8 @@ def maintenance_tasks():
     # bombing ``.get`` — or a snapshot provider that raises outright — used
     # to 500 GET /api/maintenance AND POST /api/maintenance/{tid}/run (which
     # walks this list before matching the id), while the log route stayed up
-    # over the very same poisoned state.
+    # over the very same poisoned state.  The unbound builtin reads the
+    # C-level storage underneath the override.
     try:
         data = cfg()
     except Exception:

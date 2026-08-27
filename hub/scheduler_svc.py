@@ -357,14 +357,42 @@ def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     return dom_ok or dow_ok
 
 
+#: Every key a parse_cron product carries; _day_matches reads all of them.
+_MATCHER_KEYS = frozenset(
+    ("minute", "hour", "dom", "month", "dow",
+     "minute_star", "hour_star", "dom_star", "month_star", "dow_star")
+)
+
+
+def _parsed_matcher(expr) -> dict | None:
+    """*expr* when it is a parse_cron product, else None.
+
+    The old sniff — ``expr.get("minute")`` behind a bare isinstance — had two
+    holes.  A leftover dict-*subclass* cron whose ``.get`` raised detonated
+    the probe itself, and a YAML mapping cron that happened to carry a
+    ``!!set`` ``minute`` passed the sniff and KeyError'd :func:`_day_matches`
+    on the matcher keys it did not have.  Either escaped
+    :func:`_tick_once`'s (ValueError, TypeError) net and aborted the whole
+    tick — every *other* job's matching minute was lost (the sched7
+    thread-name class again).  Only an exact dict carrying every matcher key
+    with set-typed field values takes the fast path; everything else goes to
+    parse_cron's ValueError, the one signal every caller catches.
+    """
+    if type(expr) is not dict or not _MATCHER_KEYS <= expr.keys():
+        return None
+    if all(isinstance(expr[k], (set, frozenset))
+           for k in ("minute", "hour", "dom", "month", "dow")):
+        return expr
+    return None
+
+
 def cron_matches(expr: str | dict | list | tuple, t: time.struct_time) -> bool:
     """Whether *t* (a local struct_time) is a matching minute for *expr*."""
     # A parsed matcher carries frozensets; a job mapping also looks like a
     # dict and must go through parse_cron (ValueError) instead of
     # ``5 not in "*"`` TypeError, which used to abort the whole tick.
-    if isinstance(expr, dict) and isinstance(expr.get("minute"), (set, frozenset)):
-        parsed = expr
-    else:
+    parsed = _parsed_matcher(expr) if isinstance(expr, dict) else None
+    if parsed is None:
         parsed = parse_cron(expr)
     if t.tm_min not in parsed["minute"] or t.tm_hour not in parsed["hour"]:
         return False
