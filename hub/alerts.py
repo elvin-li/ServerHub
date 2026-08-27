@@ -458,12 +458,24 @@ def notify_settings() -> dict:
     through unchanged.
     """
     from hub.config import settings_section
-    raw = settings_section("notify")
+    # Try-wrapped: settings_section's own ``isinstance`` gate runs a leftover
+    # section's ``__class__`` property, so a bomb planted as the whole
+    # ``settings.notify`` value used to raise out of this read into every
+    # caller — emit_alert (the UPS shutdown policy and scheduler entry) and
+    # each per-check sweep's ``n = notify_settings()`` line.  A section that
+    # cannot answer what it is reads as unconfigured; when it returns at all
+    # it is already a plain dict copy.
+    try:
+        raw = settings_section("notify")
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
     try:
         from hub import notify_channels
         return notify_channels.effective_settings(raw)
     except Exception:
-        return raw if isinstance(raw, dict) else {}
+        return raw
 
 
 def _http_url_ok(url: str) -> bool:
