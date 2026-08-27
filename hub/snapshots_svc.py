@@ -37,9 +37,29 @@ _SYSTEM_SNAPSHOT_PREFIXES = ("com.apple.os.update-", "com.apple.installer")
 _CACHE_TTL = 20.0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_admin_result``'s dict gate 500'd
+    POST /api/snapshots/* and /api/timemachine/action ahead of the
+    laundering built to absorb junk shapes, ``_jsonable``'s rank gates blew
+    the same routes on a bomb nested in a run_admin payload, and
+    ``list_snapshots``' entry gate 500'd GET /api/snapshots out of a
+    poisoned plist row.  A real subclass still matches through the C-level
+    type check; only a value that cannot answer what it is takes the
+    non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/snapshots."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the modules5 / nas_common rule): the old
         # ``bytes(value)`` copy consulted a subclass ``__bytes__``, so a
         # leftover bytes-subclass bomb in sh() output raised out of _plist
@@ -86,9 +106,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 16:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa at every rank (the nas_common rule): a ``__class__``-property
+    # bomb nested in a run_admin payload used to detonate the first gate it
+    # failed and 500 the mutation routes; it now falls through to the final
+    # text probe like any other unrecognized leftover.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 / nas_common
@@ -106,7 +130,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a float-subclass
@@ -118,14 +142,14 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a bytes-subclass whose bound ``.decode``
         # raises used to 500 the mutation routes out of _admin_result.
         base = bytes if isinstance(value, bytes) else bytearray
         return base.decode(value, "utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, dict):
         try:
             items = list(value.items())
         except Exception:
@@ -143,21 +167,32 @@ def _jsonable(value, depth: int = 0):
                 # used to happen outside the guard above and 500 the same
                 # routes — the torn row drops, its sibling pairs survive.
                 continue
-            if not isinstance(k, (str, bytes, bytearray)):
-                try:
+            try:
+                # Per-pair guard: a ``__class__``-bomb key used to detonate
+                # its own gate and cost the whole mapping — the torn pair
+                # drops alone, its sibling keys survive.
+                if not _isa(k, (str, bytes, bytearray)):
                     k = str(k)
-                except Exception:
-                    continue
-            out[_as_text(k)] = _jsonable(v, depth + 1)
+                out[_as_text(k)] = _jsonable(v, depth + 1)
+            except Exception:
+                continue
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a leftover whose
+        # ``isoformat`` is a *raising property* (or a ``__getattr__`` bomb)
+        # still raised out of the probe itself and 500'd
+        # POST /api/snapshots/* and /api/timemachine/action — the guard
+        # nas_common._jsonable already carries.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -194,7 +229,10 @@ _VANISH_MARKERS = ("command not found", "no such file or directory", "not found"
 
 
 def _admin_result(result) -> dict:
-    cleaned = _jsonable(result) if isinstance(result, dict) else {}
+    # _isa: a ``__class__``-property bomb result detonated the bare gate
+    # itself — a raw 500 on every snapshots/timemachine mutation one line
+    # ahead of the laundering built to absorb junk shapes.
+    cleaned = _jsonable(result) if _isa(result, dict) else {}
     if not isinstance(cleaned, dict):
         return {"ok": False, "error": "failed"}
     # A tmutil that vanished between boot and the mutation (an OS update
@@ -244,21 +282,32 @@ def _xid(raw):
     ``inf`` / ``nan`` used to 500 GET /api/snapshots under Starlette's
     ``allow_nan=False`` encoder; ``bytes`` used to TypeError ``json.dumps``.
     """
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return None
-    if isinstance(raw, (bytes, bytearray, list, dict, tuple, set)):
+    if _isa(raw, (bytes, bytearray, list, dict, tuple, set)):
         return None
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return None
-    if isinstance(raw, int):
+    if _isa(raw, float):
         try:
+            # Base coercion before the NaN/inf probes (the _jsonable rule):
+            # a float-subclass ``__eq__``/``__ne__`` bomb XID used to
+            # detonate the probes themselves and 500 GET /api/snapshots.
+            raw = float.__float__(raw)
+        except Exception:
+            return None
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return None
+    if _isa(raw, int):
+        try:
+            # Base coercion first: an int-subclass ``__str__`` bomb raised
+            # a non-ValueError past the digit-cap probe below.
+            raw = int.__index__(raw)
             str(raw)
-        except ValueError:
+        except Exception:
             # A >4300-digit leftover XID is past CPython's int->str digit
             # cap and ValueError'd json.dumps on GET /api/snapshots.
             return None
         return raw
-    if isinstance(raw, str):
+    if _isa(raw, str):
         # A leftover ``\ud800`` XID string used to 500 the UTF-8 encode the
         # same way an unscrubbed SnapshotName did.
         return _as_text(raw)
@@ -312,12 +361,15 @@ def list_snapshots(mount: str = "/") -> list[dict]:
     purgeable flag).  Its output is unprivileged, unlike much of ``tmutil``.
     """
     data = _plist([DISKUTIL, "apfs", "listSnapshots", "-plist", mount])
-    raw = (data or {}).get("Snapshots") if isinstance(data, dict) else []
-    if not isinstance(raw, list):
+    raw = (data or {}).get("Snapshots") if _isa(data, dict) else []
+    if not _isa(raw, list):
         raw = []
     items: list[dict] = []
     for entry in raw:
-        if not isinstance(entry, dict):
+        # _isa: a ``__class__``-property bomb row in a poisoned plist used
+        # to detonate this gate and 500 GET /api/snapshots through fan_out,
+        # where every other junk row already drops silently.
+        if not _isa(entry, dict):
             continue
         name = _as_text(entry.get("SnapshotName") or "")
         token = _snapshot_date(name)
@@ -372,10 +424,12 @@ def time_machine_overview() -> dict:
     status = status or {}
     destinations = []
     raw_dest = dest.get("Destinations")
-    if not isinstance(raw_dest, list):
+    if not _isa(raw_dest, list):
         raw_dest = []
     for entry in raw_dest:
-        if not isinstance(entry, dict):
+        # _isa, same as the list_snapshots walk: a ``__class__``-bomb
+        # destination row must drop alone, never 500 GET /api/snapshots.
+        if not _isa(entry, dict):
             continue
         try:
             mount_point = str(entry.get("MountPoint") or "")
@@ -404,8 +458,8 @@ def time_machine_overview() -> dict:
         })
 
     running = bool(status.get("Running"))
-    progress = status.get("Progress") if isinstance(status.get("Progress"), dict) else {}
-    percent = progress.get("Percent") if isinstance(progress, dict) else None
+    progress = status.get("Progress") if _isa(status.get("Progress"), dict) else {}
+    percent = progress.get("Percent") if _isa(progress, dict) else None
     percent_val = None
     if percent is not None:
         try:
@@ -615,7 +669,7 @@ def thin_snapshots(mount: str, urgency: int = 1) -> dict:
     # ``urgency not in (1, 2, 3, 4)`` — a raw raise where every other junk
     # urgency earns the coded ``bad_urgency`` refusal (the raid_svc._req_text
     # convention at membership rank).
-    if isinstance(urgency, int) and not isinstance(urgency, bool):
+    if _isa(urgency, int) and not _isa(urgency, bool):
         try:
             urgency = int.__index__(urgency)
         except Exception:

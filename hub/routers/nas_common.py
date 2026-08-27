@@ -21,6 +21,25 @@ from hub import auth
 from hub.errors import api_error
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    When the exact-type check misses, ``isinstance`` consults
+    ``value.__class__`` — so a leftover whose ``__class__`` is a *raising
+    property* detonated the gate itself, one step ahead of every guard
+    built on top of it: ``_plain_result`` blew ``result_ok`` at the routes'
+    audit line and both error funnels, and ``_jsonable`` blew ``_rendered``
+    on GET /api/nfs, /api/raid, /api/snapshots, /api/smart and
+    /api/storage/usage.  A real subclass still matches through the C-level
+    type check without touching ``__class__``; only a value that cannot
+    even answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -47,7 +66,10 @@ def _plain_result(result) -> dict | None:
     """
     if type(result) is dict:
         return result
-    if isinstance(result, dict):
+    # _isa, not a bare isinstance: a leftover whose ``__class__`` is a
+    # raising property detonated the gate itself and 500'd the audit line
+    # (result_ok) and both funnels ahead of the coded admin.failed.
+    if _isa(result, dict):
         try:
             return dict(result)
         except Exception:
@@ -57,7 +79,7 @@ def _plain_result(result) -> dict | None:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a leftover bytes-subclass whose bound
         # ``.decode`` raises used to 500 the shares/NAS failure funnels.
         return _decode_bytes(value)
@@ -88,9 +110,15 @@ def _jsonable(value, depth: int = 0):
     """Coerce leftovers so a privileged ok payload cannot 500 the encoder."""
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa at every rank: a leftover whose ``__class__`` is a raising
+    # property detonates the first bare gate it fails, so a bomb nested as
+    # a dict *value* in any NAS payload used to 500 the read routes out of
+    # ``_rendered`` and the mutation ok bodies out of the funnels.  It now
+    # falls through every gate to the final text probe like any other
+    # unrecognized leftover.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 rule): a
@@ -111,7 +139,7 @@ def _jsonable(value, depth: int = 0):
             # sibling, matching power_svc / system_settings_svc / status.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -122,11 +150,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         # Unbound base view (the modules5 rule): a dict subclass whose
         # ``items()`` raises *or yields non-pairs* used to 500 the routes —
@@ -135,24 +163,27 @@ def _jsonable(value, depth: int = 0):
         # ``dict.items`` reads the real C-level storage, so the salvageable
         # keys still survive.
         for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
-                try:
+            # Per-pair guard: a ``__class__``-bomb *key* used to detonate
+            # its own gates below and cost the whole mapping — the torn
+            # pair drops alone, its sibling keys survive.
+            try:
+                if _isa(k, (bytes, bytearray)):
+                    k = _decode_bytes(k)
+                elif not _isa(k, str):
                     k = str(k)
-                except Exception:
-                    continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+                out[_utf8_text(k)] = _jsonable(v, depth + 1)
+            except Exception:
+                continue
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         # Unbound base ``__iter__`` (the modules5 rule at sequence rank): a
         # subclass whose bound ``__iter__`` raises — or answers an iterator
         # that bombs mid-walk — used to drop the whole field to None even
         # though the real C-level storage still held every element.
         base = (
-            list if isinstance(value, list)
-            else tuple if isinstance(value, tuple)
-            else set if isinstance(value, set)
+            list if _isa(value, list)
+            else tuple if _isa(value, tuple)
+            else set if _isa(value, set)
             else frozenset
         )
         try:
@@ -297,7 +328,10 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
         # exact types, so the encoder walk downstream cannot detonate.
         params = {}
         for k, v in dict.items(result):
-            if not isinstance(k, str) or not isinstance(v, (str, int, float)):
+            # _isa on both reads: a leftover ``__class__``-bomb key or value
+            # riding a coded failure used to detonate the gate itself and
+            # 500 the refusal while it was being built.
+            if not _isa(k, str) or not _isa(v, (str, int, float)):
                 continue
             key = _utf8_text(k)
             if key in ("ok", "error"):

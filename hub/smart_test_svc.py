@@ -431,6 +431,26 @@ def _in_progress(device: str, caps_raw: tuple[int, str, str] | None = None) -> d
 
 # ── history journal ──────────────────────────────────────────────────────────
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``history()``'s row gate 500'd
+    GET /api/smart/history, ``_schedule_cfg``'s cfg gate 500'd
+    GET /api/smart (and escaped ``schedule_due()`` inside the scheduler
+    tick), and the run_admin gates in ``start_test``/``abort_test`` blew
+    their mutations after the operator had already typed the admin
+    password.  A real subclass still matches through the C-level type
+    check; only a value that cannot answer what it is takes the
+    non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -439,7 +459,7 @@ def _decode_bytes(value) -> str:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -459,7 +479,7 @@ def _utf8_text(value) -> str:
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; parsers and JSON need text."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         value = _decode_bytes(value)
     elif value is None:
         return ""
@@ -486,9 +506,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 16:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa at every rank (the nas_common rule): a ``__class__``-property
+    # bomb nested in a run_admin payload or a poisoned history row used to
+    # detonate the first gate it failed and 500 the SMART routes; it now
+    # falls through to the final text probe like any other leftover.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules._jsonable rule):
@@ -505,7 +529,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -516,11 +540,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         try:
             # Unpacking inside the same try: a subclass ``items()`` that
             # *answers* but yields non-pairs used to raise out of the loop
@@ -536,19 +560,19 @@ def _jsonable(value, depth: int = 0):
             return None
         out = {}
         for k, v in items:
-            if isinstance(k, (bytes, bytearray)):
-                try:
+            try:
+                # Per-pair guard: a ``__class__``-bomb key used to detonate
+                # its own gate and cost the whole mapping — the torn pair
+                # drops alone, its sibling keys survive.
+                if _isa(k, (bytes, bytearray)):
                     k = _decode_bytes(k)
-                except Exception:
-                    continue
-            elif not isinstance(k, str):
-                try:
+                elif not _isa(k, str):
                     k = str(k)
-                except Exception:
-                    continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+                out[_utf8_text(k)] = _jsonable(v, depth + 1)
+            except Exception:
+                continue
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
@@ -598,9 +622,9 @@ def _load_history() -> list[dict]:
         )
     except (OSError, TypeError, ValueError, RecursionError):
         return []
-    if not isinstance(data, list):
+    if not _isa(data, list):
         return []
-    return [_jsonable(row) for row in data if isinstance(row, dict)]
+    return [_jsonable(row) for row in data if _isa(row, dict)]
 
 
 def _append_history(record: dict) -> None:
@@ -630,7 +654,7 @@ def history(limit: int = 100) -> list[dict]:
     # service is also called in-process, and an int-subclass limit whose
     # ``__bool__``/``__int__`` raises used to blow ``limit or 100`` /
     # ``int(limit)`` — a raw 500 on GET /api/smart/history for those callers.
-    if isinstance(limit, int) and not isinstance(limit, bool):
+    if _isa(limit, int) and not _isa(limit, bool):
         try:
             limit = int.__index__(limit)
         except Exception:
@@ -639,7 +663,10 @@ def history(limit: int = 100) -> list[dict]:
         n = max(1, min(int(limit or 100), 500))
     except Exception:
         n = 100
-    return [_jsonable(row) for row in reversed(records[-n:]) if isinstance(row, dict)]
+    # _isa: a ``__class__``-property bomb row in the journal used to
+    # detonate the gate itself and 500 GET /api/smart/history where every
+    # other junk row already drops silently.
+    return [_jsonable(row) for row in reversed(records[-n:]) if _isa(row, dict)]
 
 
 # ── schedule ─────────────────────────────────────────────────────────────────
@@ -651,8 +678,15 @@ def _schedule_cfg() -> dict:
     # non-mapping used to AttributeError ``.get`` here — through
     # ``get_schedule()`` that 500'd GET /api/smart, and the same raise
     # escaped ``schedule_due()`` inside the scheduler tick.
-    data = cfg()
-    if not isinstance(data, dict):
+    # _isa: a ``__class__``-property bomb from a patched-out cfg() used to
+    # detonate this very gate — a 500 on GET /api/smart through
+    # get_schedule(), and the same raise escaped schedule_due() inside the
+    # scheduler tick (the try/except-around-cfg() union rule).
+    try:
+        data = cfg()
+    except Exception:
+        return {}
+    if not _isa(data, dict):
         return {}
     # Unbound ``dict.get`` at every rank, and a plain-dict copy of the
     # answer: a dict *subclass* whose ``.get`` or ``__bool__`` raises (the
@@ -662,10 +696,10 @@ def _schedule_cfg() -> dict:
     # tick, silently stopping every scheduled self-test.  ``dict(...)``
     # copies the raw storage without calling any overridden method.
     settings = dict.get(data, "settings")
-    if not isinstance(settings, dict):
+    if not _isa(settings, dict):
         return {}
     stored = dict.get(settings, "smart_schedule")
-    if not isinstance(stored, dict):
+    if not _isa(stored, dict):
         return {}
     try:
         return dict(stored)
@@ -687,7 +721,7 @@ def _schedule_text(value) -> str:
     """
     if value is None:
         return ""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a bytes-subclass ``.decode`` bomb stored as a
         # schedule field used to raise out of get_schedule() — a 500 on
         # GET /api/smart, and the same raise escaped schedule_due() inside
@@ -715,7 +749,7 @@ def _now() -> int:
 def _schedule_epoch(raw) -> float:
     # Leftover YAML ``last_run: true`` is a bool subclass of int;
     # ``float(True)`` is 1.0 and made every schedule look overdue.
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return 0.0
     try:
         # Base coercions before any dispatch (the modules._jsonable rule):
@@ -725,9 +759,9 @@ def _schedule_epoch(raw) -> float:
         # inside the scheduler tick, silently stopping every scheduled
         # self-test.  Exception, not the numeric trio: these bombs raise
         # whatever they like.
-        if isinstance(raw, int):
+        if _isa(raw, int):
             raw = int.__index__(raw)
-        elif isinstance(raw, float):
+        elif _isa(raw, float):
             raw = float.__float__(raw)
         value = float(raw or 0)
     except Exception:
@@ -755,7 +789,7 @@ def get_schedule() -> dict:
     # header — a 500 on GET /api/smart through get_schedule(), and the same
     # raise escaped schedule_due() inside the scheduler tick.  The real
     # entries still walk.
-    for d in (list.__iter__(devices) if isinstance(devices, list) else ()):
+    for d in (list.__iter__(devices) if _isa(devices, list) else ()):
         # An over-cap device entry drops alone; its siblings stay scheduled.
         node = _schedule_text(d)
         if node and _DEV_RE.match(node):
@@ -790,7 +824,7 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
         node
         for node in (
             _schedule_text(d)
-            for d in (list.__iter__(devices) if isinstance(devices, list) else ())
+            for d in (list.__iter__(devices) if _isa(devices, list) else ())
         )
         if node and _DEV_RE.match(node) and node in known
     ]
@@ -975,7 +1009,10 @@ def start_test(device: str, kind: str) -> dict:
         # the operator had already typed the admin password.
         ok = False
         message = ""
-        if isinstance(admin, dict):
+        # _isa: a ``__class__``-property bomb result detonated the bare
+        # gate itself — a raw 500 on POST /api/smart/test after the
+        # operator had already typed the admin password.
+        if _isa(admin, dict):
             try:
                 ok = bool(dict.get(admin, "ok"))
             except Exception:
@@ -1020,7 +1057,9 @@ def abort_test(device: str) -> dict:
             return {"ok": False, "error": "smartctl_missing", "device": node}
         result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
         invalidate()
-        cleaned = _jsonable(result) if isinstance(result, dict) else {}
+        # _isa: same ``__class__``-bomb gate as start_test, on
+        # POST /api/smart/abort.
+        cleaned = _jsonable(result) if _isa(result, dict) else {}
         return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
     invalidate()
     return {"ok": True, "message": (_as_text(out) or _as_text(err)).strip()[-300:]}

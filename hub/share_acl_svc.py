@@ -69,9 +69,26 @@ _ACL_LINE = re.compile(
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_plain_result``'s dict gate 500'd
+    PUT /api/shares/acl one line ahead of the laundering built to absorb
+    junk shapes.  A real subclass still matches through the C-level type
+    check; only a value that cannot answer what it is takes the
+    non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares/acl."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # whose bound ``.decode`` raises used to escape read_acl untyped and
         # 500 GET /api/shares/acl past the share gate.
@@ -118,8 +135,10 @@ def _plain_result(result) -> dict:
     ``if not result.get("ok")`` — and again out of the ``{**result, ...}``
     merge below it.  ``dict()`` copies through the C-level storage, so an
     overridden method cannot fire; junk shapes degrade to the coded failure.
+    _isa, not a bare isinstance: a ``__class__``-property bomb detonated
+    the gate itself before the non-dict branch could answer.
     """
-    if isinstance(result, dict):
+    if _isa(result, dict):
         try:
             plain = dict(result)
         except Exception:
