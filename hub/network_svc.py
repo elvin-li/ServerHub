@@ -149,6 +149,53 @@ def _pick(value, fallback):
         return fallback
 
 
+def _mapping_get(mapping, key, default=None):
+    """``dict.get`` that a leftover mapping cannot 500 through.
+
+    The row readers below (``preferred_active_device``, ``_iface_usable``,
+    ``find_ip_locations``, the settings readers…) all reach into dicts that
+    an in-process caller last populated, so the bound ``mapping.get`` used to
+    dispatch into a dict *subclass*' own bombing ``.get`` — or TypeError on a
+    lying ``__class__`` that claims dict over no mapping storage — a raw 500
+    on GET /api/system/network/alias/auto, POST alias/auto/run and the
+    failover routes (the config._settings / vms _mapping_get rule).
+
+    The unbound builtin reads the C-level storage past the override, but it
+    still runs the hash lookup, so a *hash-shadowing* leftover key (same hash
+    as ``key``, raising ``__eq__``) detonated the compare inside the C lookup
+    itself — the host10 vector the task calls out.  The try fails that closed
+    to ``default`` like every other unreadable leftover.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _rows(value) -> list:
+    """Exact list storage from a possibly-poisoned listing.
+
+    ``interfaces()`` / ``hardware_ports()`` / ``_network_service_order_entries``
+    normally answer plain lists of plain dicts, but the row loops iterate
+    whatever an in-process caller last stored: a list *subclass* whose bound
+    ``__iter__`` bombs — or a lying ``__class__`` claiming list over no
+    sequence storage — used to raise straight out of the loop header (the
+    ``_sh_triple`` unbound-read rule).  The unbound base slice sees the real
+    elements, so an honest listing in a subclass wrapper survives untouched
+    and junk degrades to ``[]``.
+    """
+    if type(value) is list:
+        return value
+    if not _isinst(value, list):
+        return []
+    try:
+        return list.__getitem__(value, slice(None))
+    except Exception:
+        return []
+
+
 def _as_rc(value) -> int:
     """Exact int exit status from a possibly-poisoned ``rc``.
 
@@ -621,15 +668,15 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
 
 def _wifi_devices() -> list[str]:
     devices = []
-    for port in hardware_ports():
-        if not isinstance(port, dict):
+    # ``_rows`` + ``_mapping_get`` + ``_as_text``: a poisoned ``hardware_ports()``
+    # listing or a row whose stored port/device is a bomb, liar or surrogate
+    # used to raise out of this reader — a raw 500 on POST /wifi/{state} and
+    # (through ``wifi_power_status``) the failover routes.
+    for port in _rows(hardware_ports()):
+        if not _isinst(port, dict):
             continue
-        label = port.get("port") or ""
-        device = port.get("device") or ""
-        if not isinstance(label, str):
-            label = str(label)
-        if not isinstance(device, str):
-            continue
+        label = _as_text(_mapping_get(port, "port"))
+        device = _as_text(_mapping_get(port, "device"))
         if device and re.search(r"wi-?fi|airport|无线", label, re.I):  # cjk-input: networksetup port names are localized
             devices.append(device)
     return devices
@@ -949,21 +996,23 @@ def switch_profile(profile: str) -> dict:
 
 
 def interface_addresses() -> list:
-    """All IPv4 addresses per interface, mark primary vs alias (host netmask or secondary)."""
-    ifaces = interfaces()
+    """All IPv4 addresses per interface, mark primary vs alias (host netmask or secondary).
+
+    ``_rows`` / ``_mapping_get`` / ``_as_text`` throughout: a poisoned
+    ``interfaces()`` listing or a row whose stored ip / broadcast is a bomb,
+    surrogate or over-cap int used to raise out of the loop — or ride raw into
+    the JSON render of GET /api/system/network/addresses and the alias-auto
+    status page.  Each unrenderable field costs its own value, never the read.
+    """
     out = []
-    for iface in ifaces if isinstance(ifaces, list) else []:
-        if not isinstance(iface, dict):
+    for iface in _rows(interfaces()):
+        if not _isinst(iface, dict):
             continue
         addrs = []
-        raw_v4 = iface.get("ipv4")
-        ipv4s = [x for x in (raw_v4 if isinstance(raw_v4, list) else []) if isinstance(x, dict)]
+        ipv4s = [x for x in _rows(_mapping_get(iface, "ipv4")) if _isinst(x, dict)]
         for idx, a in enumerate(ipv4s):
-            raw_mask = a.get("netmask") or ""
-            mask = raw_mask if isinstance(raw_mask, str) else str(raw_mask)
-            first_mask = ipv4s[0].get("netmask") or "" if idx > 0 else ""
-            if not isinstance(first_mask, str):
-                first_mask = str(first_mask)
+            mask = _as_text(_mapping_get(a, "netmask"))
+            first_mask = _as_text(_mapping_get(ipv4s[0], "netmask")) if idx > 0 else ""
             # /32 or 255.255.255.255 typically alias; first non-/32 is primary-ish
             is_alias = mask in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF") or (
                 idx > 0 and mask == first_mask
@@ -974,9 +1023,9 @@ def interface_addresses() -> list:
             if idx == 0 and mask not in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF"):
                 is_alias = False
             addrs.append({
-                "ip": a.get("ip"),
+                "ip": _as_text(_mapping_get(a, "ip")),
                 "netmask": mask,
-                "broadcast": a.get("broadcast") or "",
+                "broadcast": _as_text(_mapping_get(a, "broadcast")),
                 "alias": is_alias or (idx > 0),
                 "primary": idx == 0 and not (mask in ("255.255.255.255", "0xffffffff")),
             })
@@ -985,14 +1034,14 @@ def interface_addresses() -> list:
             if not a["alias"]:
                 a["primary"] = True
                 break
-        name = iface.get("name")
-        if not isinstance(name, str) or not name:
+        name = _as_text(_mapping_get(iface, "name"))
+        if not name:
             continue
         out.append({
             "device": name,
-            "up": iface.get("up"),
-            "mac": iface.get("mac"),
-            "status": iface.get("status"),
+            "up": _truthy(_mapping_get(iface, "up")),
+            "mac": _as_text(_mapping_get(iface, "mac")) or None,
+            "status": _as_text(_mapping_get(iface, "status")) or None,
             "addresses": addrs,
         })
     return out
@@ -1102,7 +1151,13 @@ def _alias_settings() -> dict:
     # ``__class__`` (claims str/list, is neither) TypeErrored ``str.split``
     # / ``list.__iter__`` — raw 500s on GET /api/system/network/alias/auto,
     # PUT/POST alias/auto and the autobind loop's settings read.
-    ips = s.get("ips")
+    # ``_mapping_get``, not ``s.get(...)``: ``settings_section`` hands back a
+    # shallow ``dict(raw)`` copy, so a *hash-shadowing* leftover key (same
+    # hash as "ips"/"netmask"/…, raising ``__eq__``) survives the copy and
+    # detonated the bound ``.get`` lookup here — a raw 500 on GET
+    # /api/system/network/alias/auto and the alias run/PUT routes (the
+    # host10/config rule).
+    ips = _mapping_get(s, "ips")
     if _isinst(ips, str):
         try:
             ips = str.split(str.replace(ips, ",", " "))
@@ -1127,15 +1182,15 @@ def _alias_settings() -> dict:
             clean.append(text)
     # `_valid_ip` accepts bytes, so a YAML ``!!binary`` netmask used to ride
     # through here *as bytes* and TypeError the JSON encoder on the same GETs.
-    netmask = _as_text(s.get("netmask")).strip()
+    netmask = _as_text(_mapping_get(s, "netmask")).strip()
     if not _valid_ip(netmask):
         netmask = "255.255.255.255"
     return {
-        "auto_bind": _truthy(s.get("auto_bind", True)),
+        "auto_bind": _truthy(_mapping_get(s, "auto_bind", True)),
         "ips": clean,
         "netmask": netmask,
-        "interval": _coerce_int(_pick(s.get("interval"), 60), 60),
-        "prefer_wired": _truthy(s.get("prefer_wired", True)),
+        "interval": _coerce_int(_pick(_mapping_get(s, "interval"), 60), 60),
+        "prefer_wired": _truthy(_mapping_get(s, "prefer_wired", True)),
     }
 
 
@@ -1143,56 +1198,60 @@ def _failover_settings() -> dict:
     from hub.config import settings_section
 
     settings = settings_section("network_failover")
-    # Same nested-bomb rule as ``_alias_settings``: these truth tests used to
-    # 500 GET /api/system/network/failover and POST /failover/run.
+    # Same nested-bomb rule as ``_alias_settings`` — plus ``_mapping_get`` for
+    # the hash-shadowing key: these truth tests used to 500 GET
+    # /api/system/network/failover and POST /failover/run.
     return {
-        "enabled": _truthy(settings.get("enabled", False)),
-        "power_save_wifi": _truthy(settings.get("power_save_wifi", True)),
-        "interval": max(10, min(300, _coerce_int(_pick(settings.get("interval"), 15), 15))),
-        "fail_threshold": max(1, min(10, _coerce_int(_pick(settings.get("fail_threshold"), 2), 2))),
-        "recover_threshold": max(1, min(10, _coerce_int(_pick(settings.get("recover_threshold"), 2), 2))),
-        "probe_timeout_ms": max(500, min(5000, _coerce_int(_pick(settings.get("probe_timeout_ms"), 1200), 1200))),
+        "enabled": _truthy(_mapping_get(settings, "enabled", False)),
+        "power_save_wifi": _truthy(_mapping_get(settings, "power_save_wifi", True)),
+        "interval": max(10, min(300, _coerce_int(_pick(_mapping_get(settings, "interval"), 15), 15))),
+        "fail_threshold": max(1, min(10, _coerce_int(_pick(_mapping_get(settings, "fail_threshold"), 2), 2))),
+        "recover_threshold": max(1, min(10, _coerce_int(_pick(_mapping_get(settings, "recover_threshold"), 2), 2))),
+        "probe_timeout_ms": max(500, min(5000, _coerce_int(_pick(_mapping_get(settings, "probe_timeout_ms"), 1200), 1200))),
     }
 
 
 def _iface_by_name(name: str) -> dict | None:
-    for i in interfaces():
-        if i.get("name") == name:
+    # ``_rows`` + ``_mapping_get`` + ``_as_text`` compare: a poisoned
+    # ``interfaces()`` listing (iter bomb / lying list) or a row whose stored
+    # name ``__eq__`` bombs used to raise out of the bare ``i.get("name") ==
+    # name`` loop that GET failover and the alias routes lean on.
+    for i in _rows(interfaces()):
+        if _isinst(i, dict) and _as_text(_mapping_get(i, "name")) == name:
             return i
     return None
 
 
 def _iface_usable(iface: dict | None) -> bool:
-    if not isinstance(iface, dict):
+    if not _isinst(iface, dict):
         return False
-    if not iface.get("up"):
+    if not _truthy(_mapping_get(iface, "up")):
         return False
-    st = iface.get("status") or ""
-    if not isinstance(st, str):
-        st = str(st)
-    st = st.lower()
+    # ``_as_text`` launders a bomb/liar status to an exact str; ``.lower`` is
+    # then a plain-str call.  ``_truthy``/``_mapping_get`` above kill the
+    # ``iface.get("up")`` bool bomb and the dict-subclass ``.get`` bomb.
+    st = _as_text(_mapping_get(iface, "status")).lower()
     if st in ("inactive", "not present"):
         return False
     # need at least one IPv4 (primary or already has connectivity)
-    ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
+    ipv4 = _rows(_mapping_get(iface, "ipv4"))
     if not ipv4:
         return False
-    # skip pure virtual without real en status active when marked
-    if st and st not in ("active", "") and "active" not in st:
-        # status field sometimes empty on macOS
-        if st not in ("active",):
-            # still allow if RUNNING flag implied by up=True and has IP
-            pass
     return True
 
 
 def _is_junk_service(s: dict) -> bool:
-    n = " ".join(
-        v for v in (s.get("name"), s.get("hardware_port"), s.get("port"))
-        if isinstance(v, str) and v
-    )
-    d = s.get("device") if isinstance(s.get("device"), str) else ""
-    d = d.lower()
+    parts = []
+    for key in ("name", "hardware_port", "port"):
+        value = _mapping_get(s, key)
+        # Only real strings, like the original ``isinstance(v, str) and v``;
+        # ``_as_text`` then scrubs a str-subclass bomb / surrogate to text.
+        if _isinst(value, str):
+            text = _as_text(value)
+            if text:
+                parts.append(text)
+    n = " ".join(parts)
+    d = _as_text(_mapping_get(s, "device")).lower()
     if re.search(r"modem|monitor|iphone|ipad|apple.?watch|thunderbolt bridge", n, re.I):
         return True
     if "modem" in d or d.startswith("bridge"):
@@ -1209,21 +1268,31 @@ def preferred_active_device() -> dict | None:
         svcs = _network_service_order_entries()
     except Exception:
         svcs = []
-    iface_map = {
-        iface.get("name"): iface
-        for iface in interfaces()
-        if isinstance(iface, dict)
-    }
-    candidates = []
-    for order, s in enumerate(svcs):
-        if not isinstance(s, dict):
+    # ``_rows`` + ``_mapping_get`` + ``_as_text`` throughout: a poisoned
+    # ``interfaces()`` / order listing (iter bomb / lying list), a row that is
+    # a dict *subclass* with a bombing ``.get`` or a lying ``__class__``, an
+    # unhashable / hash-shadowing / ``__eq__``-bomb device name, and a
+    # bomb/surrogate/over-cap field all used to raise straight out of this
+    # collector — a raw 500 on GET /api/system/network/alias/auto, POST
+    # alias/auto/run and the failover routes that all read it.  Every field
+    # that reaches the response JSON is laundered so an unrenderable leftover
+    # costs its own value, never the whole route.
+    iface_map = {}
+    for iface in _rows(interfaces()):
+        if not _isinst(iface, dict):
             continue
-        if s.get("disabled"):
+        name = _as_text(_mapping_get(iface, "name"))
+        if name:
+            iface_map[name] = iface
+    candidates = []
+    for order, s in enumerate(_rows(svcs)):
+        if not _isinst(s, dict):
+            continue
+        if _truthy(_mapping_get(s, "disabled")):
             continue
         if _is_junk_service(s):
             continue
-        device = s.get("device") if isinstance(s.get("device"), str) else ""
-        device = device.strip()
+        device = _as_text(_mapping_get(s, "device")).strip()
         if not device:
             continue
         iface = iface_map.get(device)
@@ -1231,27 +1300,25 @@ def preferred_active_device() -> dict | None:
             continue
         # prefer interfaces with a non-/32 primary address
         primary_ip = None
-        ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
+        ipv4 = _rows(_mapping_get(iface, "ipv4"))
         for a in ipv4:
-            if not isinstance(a, dict):
+            if not _isinst(a, dict):
                 continue
-            mask = a.get("netmask") or ""
-            if not isinstance(mask, str):
-                mask = str(mask)
+            mask = _as_text(_mapping_get(a, "netmask"))
             dotted = _hex_netmask_to_dotted(mask)
             if dotted not in ("255.255.255.255",) and mask.lower() not in ("0xffffffff",):
-                primary_ip = a.get("ip")
+                primary_ip = _as_text(_mapping_get(a, "ip"))
                 break
-        if not primary_ip and ipv4 and isinstance(ipv4[0], dict):
-            primary_ip = ipv4[0].get("ip")
+        if not primary_ip and ipv4 and _isinst(ipv4[0], dict):
+            primary_ip = _as_text(_mapping_get(ipv4[0], "ip"))
         candidates.append({
             "order": order,
-            "service": s.get("name"),
+            "service": _as_text(_mapping_get(s, "name")),
             "device": device,
             "primary_ip": primary_ip,
-            "hardware_port": s.get("port"),
-            "status": iface.get("status"),
-            "up": iface.get("up"),
+            "hardware_port": _as_text(_mapping_get(s, "port")),
+            "status": _as_text(_mapping_get(iface, "status")),
+            "up": _truthy(_mapping_get(iface, "up")),
         })
     if not candidates:
         return None
@@ -1267,20 +1334,22 @@ def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
     per IP and then discard every row that did not match.
     """
     found = []
-    for iface in addresses if addresses is not None else interface_addresses():
-        if not isinstance(iface, dict):
+    for iface in _rows(addresses if addresses is not None else interface_addresses()):
+        if not _isinst(iface, dict):
             continue
-        raw = iface.get("addresses")
-        rows = raw if isinstance(raw, list) else []
-        for a in rows:
-            if not isinstance(a, dict):
+        for a in _rows(_mapping_get(iface, "addresses")):
+            if not _isinst(a, dict):
                 continue
-            if a.get("ip") == ip:
+            # ``_as_text`` on both sides, not ``a.get("ip") == ip``: a stored
+            # ip whose ``__eq__`` bombs (or a surrogate/over-cap ip that would
+            # 500 the JSON render) used to raise out of this compare / into the
+            # locations the alias routes echo back.
+            if _as_text(_mapping_get(a, "ip")) == ip:
                 found.append({
-                    "device": iface.get("device"),
-                    "alias": bool(a.get("alias")),
-                    "netmask": a.get("netmask"),
-                    "up": iface.get("up"),
+                    "device": _as_text(_mapping_get(iface, "device")),
+                    "alias": _truthy(_mapping_get(a, "alias")),
+                    "netmask": _as_text(_mapping_get(a, "netmask")),
+                    "up": _truthy(_mapping_get(iface, "up")),
                 })
     return found
 
@@ -1523,15 +1592,15 @@ def alias_auto_status() -> dict:
 
 
 def _primary_ipv4_for_device(device: str, iface: dict | None = None) -> str | None:
-    iface = iface or _iface_by_name(device)
-    if not isinstance(iface, dict) or str(iface.get("status") or "").lower() != "active":
+    if not _isinst(iface, dict):
+        iface = _iface_by_name(device)
+    if not _isinst(iface, dict) or _as_text(_mapping_get(iface, "status")).lower() != "active":
         return None
-    addrs = iface.get("ipv4")
-    for address in addrs if isinstance(addrs, list) else []:
-        if not isinstance(address, dict):
+    for address in _rows(_mapping_get(iface, "ipv4")):
+        if not _isinst(address, dict):
             continue
-        ip = str(address.get("ip") or "")
-        mask = _hex_netmask_to_dotted(str(address.get("netmask") or ""))
+        ip = _as_text(_mapping_get(address, "ip"))
+        mask = _hex_netmask_to_dotted(_as_text(_mapping_get(address, "netmask")))
         if ip and not ip.startswith("169.254.") and mask != "255.255.255.255":
             return ip
     return None
@@ -1540,14 +1609,16 @@ def _primary_ipv4_for_device(device: str, iface: dict | None = None) -> str | No
 def _wired_devices() -> list[dict]:
     """Discover physical LAN adapters; never assumes a fixed en-number."""
     devices = []
-    for port in hardware_ports():
-        if not isinstance(port, dict):
+    # Same ``_rows`` / ``_mapping_get`` / ``_as_text`` laundering as
+    # ``_wifi_devices``: a poisoned hardware-port row used to 500 POST
+    # /failover/run before any probe ran, and ``{"device": device, ...}``
+    # rides into the tick result JSON.
+    for port in _rows(hardware_ports()):
+        if not _isinst(port, dict):
             continue
-        label = port.get("port") or ""
-        device = port.get("device") or ""
-        if not isinstance(label, str):
-            label = str(label)
-        if not isinstance(device, str) or not device:
+        label = _as_text(_mapping_get(port, "port"))
+        device = _as_text(_mapping_get(port, "device"))
+        if not device:
             continue
         if re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):  # cjk-input: networksetup port names are localized
             continue
@@ -1557,20 +1628,25 @@ def _wired_devices() -> list[dict]:
 
 
 def _service_gateway_for_device(device: str) -> dict:
-    entry = next(
-        (item for item in _network_service_order_entries() if item.get("device") == device),
-        None,
-    )
+    # ``_rows`` + ``_mapping_get`` + ``_as_text``: a poisoned order listing or a
+    # row whose stored device ``__eq__`` bombs used to raise out of the ``next``
+    # generator on the failover probe path.
+    entry = None
+    for item in _rows(_network_service_order_entries()):
+        if _isinst(item, dict) and _as_text(_mapping_get(item, "device")) == device:
+            entry = item
+            break
     if not entry:
         return {"service": None, "gateway": None}
-    rc, out, _ = _sh([NS, "-getinfo", entry["name"]], timeout=8)
+    service_name = _as_text(_mapping_get(entry, "name"))
+    rc, out, _ = _sh([NS, "-getinfo", service_name], timeout=8)
     gateway = None
     if rc == 0:
         match = re.search(r"^Router:\s*(\S+)", out, re.M | re.I)
         candidate = match.group(1) if match else ""
         if _valid_ip(candidate) and candidate != "0.0.0.0":
             gateway = candidate
-    return {"service": entry["name"], "gateway": gateway}
+    return {"service": service_name, "gateway": gateway}
 
 
 def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None) -> dict:
@@ -1623,7 +1699,16 @@ def network_failover_tick(force: bool = False) -> dict:
             # "No Wi-Fi adapter found" lie.  The background loop wraps this
             # tick in its own try, so the coded raise only reaches HTTP.
             raise api_error("network.networksetup_missing")
-        iface_map = {iface.get("name"): iface for iface in interfaces()}
+        # ``_rows`` + ``_mapping_get`` + ``_as_text``, not a bare comprehension:
+        # a poisoned ``interfaces()`` listing or a row whose stored name bombs /
+        # is unhashable used to 500 POST /failover/run before any probe ran.
+        iface_map = {}
+        for iface in _rows(interfaces()):
+            if not _isinst(iface, dict):
+                continue
+            name = _as_text(_mapping_get(iface, "name"))
+            if name:
+                iface_map[name] = iface
 
         def probe(item) -> dict:
             """Never raises: `fan_out` re-raises on iteration, and losing the whole
@@ -1735,7 +1820,18 @@ def update_alias_auto_config(
 ) -> dict:
     from hub.config import settings_section, update_settings
 
-    cur = dict(settings_section("ip_aliases"))
+    # Rebuild the patch from guarded reads of the known keys rather than
+    # ``dict(settings_section(...))``: the section is a shallow copy that can
+    # still carry a *hash-shadowing* leftover key (raising ``__eq__``), and
+    # copying / indexing it used to 500 the PUT write path.  ``update_settings``
+    # deep-merges onto the on-disk config, so keys we do not carry here are
+    # preserved untouched.
+    raw = settings_section("ip_aliases")
+    cur: dict[str, Any] = {}
+    for key in ("auto_bind", "ips", "netmask", "interval", "prefer_wired"):
+        value = _mapping_get(raw, key)
+        if value is not None:
+            cur[key] = value
     if auto_bind is not None:
         # _truthy, not bare bool(): the route hands over a Pydantic-exact
         # bool, but in-process callers stored ``__bool__`` bombs here and
@@ -1829,8 +1925,18 @@ def _validate_device(device: str) -> str:
     device = (device or "").strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9]*\d*$", device):
         raise api_error("network.invalid_device", device=device)
-    # must exist in ifconfig
-    names = {i["name"] for i in interfaces()}
+    # must exist in ifconfig.  ``_rows`` + ``_mapping_get`` + ``_as_text``, not
+    # ``{i["name"] for i in interfaces()}``: a poisoned listing (iter bomb /
+    # lying list), a non-dict / dict-subclass-with-bombing-.get row, a missing
+    # ``name`` key or an unhashable / hash-shadowing name all used to raise out
+    # of the set comprehension — a raw 500 on POST alias/add and alias/remove.
+    names = set()
+    for i in _rows(interfaces()):
+        if not _isinst(i, dict):
+            continue
+        name = _as_text(_mapping_get(i, "name"))
+        if name:
+            names.add(name)
     if device not in names:
         if not names and _ifconfig_missing():
             # An empty interface listing with ifconfig confirmed absent is
