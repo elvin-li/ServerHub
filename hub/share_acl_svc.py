@@ -91,12 +91,20 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # whose bound ``.decode`` raises used to escape read_acl untyped and
-        # 500 GET /api/shares/acl past the share gate.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
-    elif value is None:
+        # 500 GET /api/shares/acl past the share gate.  _isa + try-wrap: a
+        # *lying* ``__class__`` impostor passes the bytes gate but is no
+        # bytes underneath, and the unbound call's TypeError used to 500
+        # GET /api/shares/acl (parse_acl_listing / local_users) and PUT's
+        # failure funnel — fall through to the str() rank so a legible
+        # impostor still renders instead of costing the route.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -423,14 +431,17 @@ def set_user_access(path: str, username: str, level: str) -> dict:
     else:
         result = _plain_result(macos_admin.run_admin_sequence(commands))
     if not result.get("ok"):
-        # isinstance + _as_text, not a bare ``raw_error and``: the truth test
+        # _isa + _as_text, not a bare ``raw_error and``: the truth test
         # detonated a str-subclass ``__bool__`` bomb, and keeping the subclass
         # instance let an ``__eq__`` bomb blow the ``== "failed"`` probe below
         # (and the router's mapping lookup after it).  The unbound scrub reads
         # the real text underneath the override, so a bombed-but-legible
         # "cancelled" still earns its coded refusal instead of the generic one.
+        # _isa, not isinstance: an error value whose ``__class__`` is a
+        # raising property blew the gate itself and 500'd PUT /api/shares/acl
+        # one line ahead of the scrub.
         raw_error = result.get("error")
-        error = (_as_text(raw_error) if isinstance(raw_error, str) else "") or "failed"
+        error = (_as_text(raw_error) if _isa(raw_error, str) else "") or "failed"
         # A chmod confirmed vanished by a fresh disk probe answers the coded
         # 503, not the generic 500 sharing failure.  Only the generic failure
         # shape is eligible — timeouts and authorization outcomes (cancelled,

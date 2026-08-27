@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from hub import audit, auth, shares_svc
 from hub.errors import api_error
-from hub.routers.nas_common import _jsonable, _plain_result, _truthy, _utf8_text
+from hub.routers.nas_common import _isa, _jsonable, _plain_result, _truthy, _utf8_text
 
 router = APIRouter(tags=["shares"])
 
@@ -315,8 +315,17 @@ def _share_directory(path: str) -> str:
         for share in rows:
             # dict.get, not share.get: a leftover dict-subclass row whose bound
             # ``.get`` raised used to 500 GET and PUT /api/shares/acl out of the
-            # gate itself (the jobs/metrics row-bomb class).
-            raw = dict.get(share, "path") if isinstance(share, dict) else None
+            # gate itself (the jobs/metrics row-bomb class).  _isa, not a bare
+            # isinstance: a row whose ``__class__`` is a raising property blew
+            # the gate into the walk-level catch, so every share point after
+            # the hostile row was lost and a legitimately shared directory
+            # answered the acl_not_share lie.  Try-wrapped unbound get: a
+            # *lying* ``__class__`` impostor passes the dict gate but is no
+            # dict underneath, and the unbound TypeError rode the same path.
+            try:
+                raw = dict.get(share, "path") if _isa(share, dict) else None
+            except Exception:
+                raw = None
             if not _truthy(raw):
                 continue
             try:

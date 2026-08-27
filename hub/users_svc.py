@@ -6,17 +6,42 @@ import pwd
 import grp
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot blow.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover Open Directory field whose ``__class__`` is a
+    *raising property* detonated ``_pwd_text``'s bytes gate itself — planted
+    as ``pw_name`` / ``pw_shell`` / ``pw_dir`` / ``pw_gecos``, the raise rode
+    into the walk's outer catch and silently wiped every healthy pwd row
+    after the poisoned one (the logs9 / share_acl rule, at row rank).  A
+    real subclass still matches through the C-level type check; only a
+    value that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _pwd_text(value) -> str:
     """JSON-encodable pwd/grp field.  Leftover bytes / ``\\ud800`` used to 500 GET /api/users."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # field whose bound ``.decode`` raises used to escape mid-row and
-        # silently drop every healthy pwd row after it.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
-    elif value is None:
+        # silently drop every healthy pwd row after it.  Try-wrapped: a
+        # *lying* ``__class__`` impostor passes the bytes gate but is no
+        # bytes underneath, and the unbound call's TypeError used to ride
+        # the same path out of the walk — fall through to the str() rank
+        # so a legible impostor still renders instead of costing the page.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         value = ""
-    else:
+    elif type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -31,6 +56,84 @@ def _pwd_text(value) -> str:
     # bound ``encode`` bomb rode this line out of the row walk and cost every
     # healthy row after the poisoned one.
     return str.encode(value, "utf-8", "replace").decode("utf-8")
+
+
+def _user_row(u, seen: set):
+    """One pwd record as its JSON row, or ``None`` for a filtered row.
+
+    Split out of the walk so the caller can give each record its own catch:
+    any raise here costs the poisoned row only, never the healthy rows after
+    it (the users5/users7 "a poisoned Open Directory value costs itself
+    only" rule, at row rank).
+    """
+    try:
+        uid = int(u.pw_uid)
+        gid = int(u.pw_gid)
+        # An *already-int* id past CPython's int->str digit cap
+        # sails through int() (no string conversion happens) and
+        # only exploded later, at Starlette's json.dumps — one
+        # poisoned Open Directory record 500'd GET /api/users for
+        # every healthy row.  The str() probe reuses this except.
+        str(uid)
+        str(gid)
+    except Exception:
+        # Broad, not (TypeError, ValueError, OverflowError,
+        # AttributeError): a leftover int-subclass id whose
+        # ``__int__``/``__index__`` raises something else used to
+        # escape into the walk's mid-iteration catch and silently
+        # wipe every healthy row after (and including) the poisoned
+        # one.  A row whose ids are unanswerable costs itself only.
+        return None
+    name = _pwd_text(getattr(u, "pw_name", ""))
+    if not name:
+        return None
+    if uid < 500 and name not in ("root",):
+        return None
+    if name in ("nobody", "daemon", "null"):
+        return None
+    key = (name, uid)
+    if key in seen:
+        return None
+    seen.add(key)
+    shell = _pwd_text(getattr(u, "pw_shell", ""))
+    if shell in ("/usr/bin/false", "/bin/false", "/usr/sbin/nologin") and uid != 0:
+        if uid < 500:
+            return None
+    groups = []
+    is_admin = uid == 0
+    try:
+        gids = os.getgrouplist(name, gid)
+        for g in gids:
+            try:
+                gn = _pwd_text(grp.getgrgid(g).gr_name)
+                groups.append(gn)
+                if gn in ("admin", "wheel"):
+                    is_admin = True
+            except Exception:
+                # Broad, not (KeyError, OSError, TypeError,
+                # OverflowError): a leftover Open Directory gid whose
+                # getgrgid lookup raises something else — a RuntimeError
+                # from an int-subclass ``__index__`` / ``__hash__``, an
+                # AttributeError on a struct missing ``gr_name`` —
+                # escaped into the outer catch and aborted the *whole*
+                # membership walk.  Every group after the poisoned gid
+                # was dropped and the ``admin``/``wheel`` classification
+                # silently flipped off (the users7 "a poisoned id costs
+                # itself only" rule at group rank).  One unanswerable
+                # gid now costs only its own entry.
+                pass
+    except Exception:
+        pass
+    return {
+        "name": name,
+        "uid": uid,
+        "gid": gid,
+        "home": _pwd_text(getattr(u, "pw_dir", "")),
+        "shell": shell,
+        "gecos": _pwd_text(getattr(u, "pw_gecos", "")).split(",")[0],
+        "admin": is_admin,
+        "groups": groups[:12],
+    }
 
 
 def list_users() -> list:
@@ -67,73 +170,17 @@ def list_users() -> list:
     try:
         for u in iterator:
             try:
-                uid = int(u.pw_uid)
-                gid = int(u.pw_gid)
-                # An *already-int* id past CPython's int->str digit cap
-                # sails through int() (no string conversion happens) and
-                # only exploded later, at Starlette's json.dumps — one
-                # poisoned Open Directory record 500'd GET /api/users for
-                # every healthy row.  The str() probe reuses this except.
-                str(uid)
-                str(gid)
+                row = _user_row(u, seen)
             except Exception:
-                # Broad, not (TypeError, ValueError, OverflowError,
-                # AttributeError): a leftover int-subclass id whose
-                # ``__int__``/``__index__`` raises something else used to
-                # escape into the walk's mid-iteration catch and silently
-                # wipe every healthy row after (and including) the poisoned
-                # one.  A row whose ids are unanswerable costs itself only.
+                # Per-row catch, one rank inside the mid-iteration one below:
+                # a poisoned Open Directory *field* — a getattr property
+                # raising EIO, anything ``_user_row``'s own nets miss — used
+                # to escape into the walk-level catch and silently wipe every
+                # healthy row after the poisoned one.  A hostile row costs
+                # itself only.
                 continue
-            name = _pwd_text(getattr(u, "pw_name", ""))
-            if not name:
-                continue
-            if uid < 500 and name not in ("root",):
-                continue
-            if name in ("nobody", "daemon", "null"):
-                continue
-            key = (name, uid)
-            if key in seen:
-                continue
-            seen.add(key)
-            shell = _pwd_text(getattr(u, "pw_shell", ""))
-            if shell in ("/usr/bin/false", "/bin/false", "/usr/sbin/nologin") and uid != 0:
-                if uid < 500:
-                    continue
-            groups = []
-            is_admin = uid == 0
-            try:
-                gids = os.getgrouplist(name, gid)
-                for g in gids:
-                    try:
-                        gn = _pwd_text(grp.getgrgid(g).gr_name)
-                        groups.append(gn)
-                        if gn in ("admin", "wheel"):
-                            is_admin = True
-                    except Exception:
-                        # Broad, not (KeyError, OSError, TypeError,
-                        # OverflowError): a leftover Open Directory gid whose
-                        # getgrgid lookup raises something else — a RuntimeError
-                        # from an int-subclass ``__index__`` / ``__hash__``, an
-                        # AttributeError on a struct missing ``gr_name`` —
-                        # escaped into the outer catch and aborted the *whole*
-                        # membership walk.  Every group after the poisoned gid
-                        # was dropped and the ``admin``/``wheel`` classification
-                        # silently flipped off (the users7 "a poisoned id costs
-                        # itself only" rule at group rank).  One unanswerable
-                        # gid now costs only its own entry.
-                        pass
-            except Exception:
-                pass
-            users.append({
-                "name": name,
-                "uid": uid,
-                "gid": gid,
-                "home": _pwd_text(getattr(u, "pw_dir", "")),
-                "shell": shell,
-                "gecos": _pwd_text(getattr(u, "pw_gecos", "")).split(",")[0],
-                "admin": is_admin,
-                "groups": groups[:12],
-            })
+            if row is not None:
+                users.append(row)
     except Exception:
         # Directory Service dying mid-iteration used to 500 the page
         # instead of returning the rows already collected.
