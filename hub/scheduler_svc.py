@@ -381,12 +381,32 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _in_field(n: int, values) -> bool:
+    """``n in values`` that a leftover member ``__eq__`` bomb cannot raise through.
+
+    A parse_cron product holds frozensets of exact ints, but the matcher
+    fast path accepts any set-typed field values — and a set membership test
+    compares the probe against every stored member whose hash collides,
+    dispatching into that member's own ``__eq__``.  A leftover int-*subclass*
+    member with a bombing ``__eq__`` (hash of a real minute, so the probe
+    reaches it) used to raise out of :func:`cron_matches` /
+    :func:`_day_matches` past :func:`_tick_once`'s (ValueError, TypeError)
+    net and abort the whole tick.  A bombed field is junk: it matches
+    nothing, so the job never fires — the same contract as an unparsable
+    expression — and the siblings keep their minute.
+    """
+    try:
+        return n in values
+    except Exception:
+        return False
+
+
 def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     """Vixie day rule: when *both* dom and dow are restricted, either may match."""
-    if month not in parsed["month"]:
+    if not _in_field(month, parsed["month"]):
         return False
-    dom_ok = dom in parsed["dom"]
-    dow_ok = dow in parsed["dow"]
+    dom_ok = _in_field(dom, parsed["dom"])
+    dow_ok = _in_field(dow, parsed["dow"])
     if parsed["dom_star"] and parsed["dow_star"]:
         return True
     if parsed["dom_star"]:
@@ -414,17 +434,39 @@ def _parsed_matcher(expr) -> dict | None:
     :func:`_tick_once`'s (ValueError, TypeError) net and aborted the whole
     tick — every *other* job's matching minute was lost (the sched7
     thread-name class again).  Only an exact dict carrying every matcher key
-    with set-typed field values takes the fast path; everything else goes to
-    parse_cron's ValueError, the one signal every caller catches.
+    with set-typed field values and exact-bool star flags takes the fast
+    path; everything else goes to parse_cron's ValueError, the one signal
+    every caller catches.
+
+    The whole probe runs in a try: the key-subset test and the ``expr[k]``
+    reads both hash-probe the dict, and that probe compares the interned
+    matcher key against every stored key whose hash collides — so a leftover
+    hash-shadow key (a str *subclass* with a matcher key's text and a
+    bombing ``__eq__``) used to raise out of the ``<=`` itself and abort the
+    whole tick.  A raise means "not a parse_cron product": the dict goes to
+    parse_cron's ValueError like every other impostor.
+
+    The star flags are read as raw truth by :func:`_day_matches`, so they
+    must be exact bools here (parse_cron only ever writes exact bools): a
+    leftover ``__bool__``-bomb star value used to pass the old gate and
+    detonate the ``and`` inside the day rule, aborting the tick the same
+    way.  This *strengthens* the gate; the fast path for genuine parse_cron
+    products is unchanged.
     """
-    if type(expr) is not dict or not _MATCHER_KEYS <= expr.keys():
-        return None
-    # _isinst: an exact-dict cron carrying a ``__class__``-bomb field value
-    # used to detonate this probe and abort the whole tick.
-    if all(_isinst(expr[k], (set, frozenset))
-           for k in ("minute", "hour", "dom", "month", "dow")):
+    try:
+        if type(expr) is not dict or not _MATCHER_KEYS <= expr.keys():
+            return None
+        # _isinst: an exact-dict cron carrying a ``__class__``-bomb field
+        # value used to detonate this probe and abort the whole tick.
+        if not all(_isinst(expr[k], (set, frozenset))
+                   for k in ("minute", "hour", "dom", "month", "dow")):
+            return None
+        if not all(type(expr[f"{k}_star"]) is bool
+                   for k in ("minute", "hour", "dom", "month", "dow")):
+            return None
         return expr
-    return None
+    except Exception:
+        return None
 
 
 def cron_matches(expr: str | dict | list | tuple, t: time.struct_time) -> bool:
@@ -435,7 +477,9 @@ def cron_matches(expr: str | dict | list | tuple, t: time.struct_time) -> bool:
     parsed = _parsed_matcher(expr) if _isinst(expr, dict) else None
     if parsed is None:
         parsed = parse_cron(expr)
-    if t.tm_min not in parsed["minute"] or t.tm_hour not in parsed["hour"]:
+    # _in_field, not bare ``in``: a leftover ``__eq__``-bomb member in a
+    # matcher set used to raise here and abort the whole tick.
+    if not _in_field(t.tm_min, parsed["minute"]) or not _in_field(t.tm_hour, parsed["hour"]):
         return False
     # struct_time: Monday=0..Sunday=6; cron: Sunday=0..Saturday=6.
     dow = (t.tm_wday + 1) % 7
@@ -520,7 +564,21 @@ def list_jobs() -> list[dict]:
     # dict-*subclass* config root with a bombing ``.get`` used to detonate
     # here and 500 the same routes.  The unbound builtin reads the C-level
     # storage underneath the override.
-    raw = dict.get(data, "schedules") if _isinst(data, dict) else None
+    if _isinst(data, dict):
+        try:
+            raw = dict.get(data, "schedules")
+        except Exception:
+            # The unbound builtin is a descriptor bound to the real dict
+            # layout: a liar whose ``__class__`` merely *answers* dict (the
+            # maint9/modules9 impostor class — real type is no dict at all)
+            # passes _isinst above and then TypeErrors right here, which
+            # used to 500 GET /api/scheduler/jobs, every mutation's get_job
+            # scan, and abort the engine tick from outside every net.  A
+            # raise means "not really a dict": the impostor root degrades
+            # to the empty job list.
+            raw = None
+    else:
+        raw = None
     if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
