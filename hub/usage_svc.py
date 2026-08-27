@@ -980,11 +980,32 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     # flag detonated the ``"on" if enabled else "off"`` argv choice — a raw
     # raise where the coded refusals below are the contract.
     wanted = _truthy(enabled)
-    known = {
-        v.get("volume")
-        for v in spotlight_status()
-        if isinstance(v, dict) and isinstance(v.get("volume"), str)
-    }
+    # Guarded call + unbound reads (the nas_storage._known_mount rule): the
+    # old set comprehension consumed the status listing raw, so a leftover
+    # list-*subclass* whose ``__iter__`` raises, a dict-subclass row whose
+    # bound ``.get`` raises, or a str-subclass volume whose ``__hash__`` /
+    # ``__eq__`` detonated inside the set build all 500'd
+    # POST /api/storage/spotlight ahead of the coded ``bad_volume`` refusal
+    # — and a status listing that raised outright took the route with it.
+    # ``base.__iter__`` walks the real C-level storage so healthy rows still
+    # serve, ``dict.get`` cannot run a subclass override, and ``_as_text``
+    # answers an exact str so the set's hash/eq are the base ops.  "/" is
+    # pinned because spotlight_status always reports the boot volume first,
+    # so it stays toggleable while a hostile listing drops row by row.
+    try:
+        listing = spotlight_status()
+    except Exception:
+        listing = []
+    if not isinstance(listing, (list, tuple)):
+        listing = []
+    known = {"/"}
+    base = list if isinstance(listing, list) else tuple
+    for v in base.__iter__(listing):
+        if not isinstance(v, dict):
+            continue
+        vol = dict.get(v, "volume")
+        if isinstance(vol, str):
+            known.add(_as_text(vol))
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
     result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
