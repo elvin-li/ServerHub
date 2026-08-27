@@ -636,38 +636,69 @@ def _jsonable_param(value, depth: int = 0):
         return value
     if isinstance(value, int):
         try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__index__``/``__str__`` bombs (the settings8/modules5 class)
+            # used to raise past the ValueError-only digit-cap catch and turn
+            # the coded 4xx into a raw 500 while building its own error body —
+            # the same subclass rule every ``_jsonable`` sibling now follows.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render the
-            # number at all — ``json.dumps`` raises the same ValueError this
-            # guard eats.  A str param is parse-capped before it can become an
-            # int, but YAML/plist hex text loads uncapped (``int(x, 16)`` is a
-            # power-of-two base), so an already-int leftover reached Starlette
-            # untouched and turned the coded 4xx into a 500 while encoding its
-            # own error body — the photoshub/immich ``_jsonable`` drop.
+            # number at all — ``json.dumps`` raises the same ValueError.  A str
+            # param is parse-capped before it can become an int, but YAML/plist
+            # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
+            # so an already-int leftover reached Starlette untouched — the
+            # photoshub/immich ``_jsonable`` drop.
             return None
         return value
     if isinstance(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below (the modules5 rule).
+            value = float.__float__(value)
+        except Exception:
+            return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # Unbound str.encode, not the bound ``.encode``: ``str(x)`` of a str
+        # *subclass* whose ``__str__`` returns itself keeps the subclass, so a
+        # bound ``.encode`` dispatched into a leftover override — the json6
+        # self-``__str__`` encode bomb — and raised out of the error body.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        # bytes(...) first: a bytes subclass whose decode() bombs (the
+        # modules5 class) must not raise out of the sanitizer.
+        return bytes(value).decode("utf-8", "replace")
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, str):
+        try:
+            items = list(value.items())
+        except Exception:
+            # A dict *subclass* whose items() raises (the json5 bomb class)
+            # must not 500 the error body — drop the node like an unrenderable
+            # scalar; the code/message beside it in ``detail`` still render.
+            return None
+        for k, v in items:
+            if isinstance(k, (bytes, bytearray)):
+                k = bytes(k).decode("utf-8", "replace")
+            elif not isinstance(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
-            k = k.encode("utf-8", "replace").decode("utf-8")
-            out[k] = _jsonable_param(v, depth + 1)
+            out[str.encode(k, "utf-8", "replace").decode("utf-8")] = _jsonable_param(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable_param(v, depth + 1) for v in value]
+        try:
+            seq = list(value)
+        except Exception:
+            # A list/set subclass whose __iter__ raises drops to null rather
+            # than raising out of the encode; the error body survives.
+            return None
+        return [_jsonable_param(v, depth + 1) for v in seq]
     iso = getattr(value, "isoformat", None)
     if callable(iso):
         try:
@@ -684,8 +715,10 @@ def _jsonable_param(value, depth: int = 0):
         return None
     except Exception:
         return None
+    if not isinstance(text, str):
+        return None
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
     except Exception:
         return None
 
@@ -710,10 +743,13 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     status, template = CODES.get(code, (500, code))
     try:
         message = template.format(**params) if params else template
-    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
+    except Exception:
         # RecursionError: leftover recursive ``__format__``/``__str__`` is not
-        # ValueError; OverflowError: leftover inf width/precision. Either used
-        # to 500 every coded error after callers already sanitized params.
+        # ValueError; OverflowError: leftover inf width/precision.  A leftover
+        # param referenced by a ``{placeholder}`` is formatted *raw*, before
+        # the clean loop below sees it, so a subclass ``__format__``/``__str__``
+        # bomb (RuntimeError, not one of the arithmetic errors) used to raise
+        # straight out here — a raw 500 for the coded error's own body.
         message = template
     # Leftover ``\\ud800`` in a formatted param used to 500 the error body
     # under Starlette's UTF-8 encode even after params themselves were cleaned.
@@ -722,7 +758,11 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
             message = str(message)
         except Exception:
             message = template if isinstance(template, str) else code
-    message = message.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode: ``str.format`` yields an exact str, but the
+    # ``str(message)`` fallback above keeps a str *subclass* whose ``__str__``
+    # returns itself, so a bound ``.encode`` could dispatch into a leftover
+    # override — the json6 self-``__str__`` encode bomb.
+    message = str.encode(message, "utf-8", "replace").decode("utf-8")
     detail: dict = {"code": code, "message": message}
     if params:
         clean = {}
@@ -732,7 +772,7 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
                     k = str(k)
                 except Exception:
                     continue
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             clean[k] = _jsonable_param(v)
         detail["params"] = clean
     return status, {"detail": detail}
