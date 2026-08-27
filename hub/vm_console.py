@@ -173,6 +173,58 @@ def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     return None
 
 
+def _flag(value) -> bool:
+    """Truthiness of a leftover allowlist flag without a subclass ``__bool__`` 500.
+
+    ``not entry.get("enabled")`` and ``bool(entry.get("view_only"))`` used to
+    run a leftover value's bombing ``__bool__`` straight into a 500 on the
+    console-session mint (and an empty UTM listing via ``capability()``).
+    """
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _coerce_port(value) -> int | None:
+    """A TCP port from a leftover allowlist value, or None.
+
+    ``int(raw_port or 0)`` used to run a leftover subclass's ``__bool__`` (the
+    ``or``) or ``__int__`` bomb, so a poisoned ``port`` 500'd the mint and
+    emptied the UTM listing.  Numbers are base-coerced (``int.__index__`` /
+    ``float.__float__``) so a subclass override never runs; a string keeps its
+    exact-str copy before ``int()``.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                value = float.__float__(value)
+            except Exception:
+                return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            return None
+    if isinstance(value, str):
+        text = _exact_str(value).strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
 def _as_host_text(value) -> str:
     """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts."""
     if isinstance(value, (bytes, bytearray)):
@@ -234,33 +286,45 @@ def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTar
     if vm_uuid is not None and uuid.lower() != str(vm_uuid).strip().lower():
         return None
     entry = _entry_for(uuid)
-    if not entry or not entry.get("enabled"):
+    # ``_flag``: ``not entry.get("enabled")`` used to run a leftover value's
+    # bombing ``__bool__`` (the mint 500'd, capability() emptied the listing).
+    if not entry or not _flag(entry.get("enabled")):
         return None
-    protocol = _probe_text(entry.get("protocol") or "vnc").strip().lower()
+    # ``entry.get("protocol") or "vnc"`` ran that value's ``__bool__`` too.
+    # ``_flag`` keeps the old ``or`` default (a *falsy* protocol → vnc) while a
+    # bombing ``__bool__`` reads as falsy rather than 500ing; a truthy-but-junk
+    # value (e.g. a huge-int hex leftover) still laundered to "" and is refused.
+    raw_protocol = entry.get("protocol")
+    if not _flag(raw_protocol):
+        protocol = "vnc"
+    else:
+        protocol = _probe_text(raw_protocol).strip().lower()
     if protocol != "vnc":
         return None
     raw_host = entry.get("host")
-    host = "127.0.0.1" if raw_host in (None, "") else _as_host_text(raw_host)
+    # ``raw_host in (None, "")`` ran a str-subclass reflected ``__eq__`` bomb.
+    # ``_as_host_text`` is already bomb-safe and returns a plain str; an
+    # omitted (``is None``) or explicitly-blank host defaults to loopback,
+    # while a present-but-unusable host stays empty and is refused below
+    # rather than being silently upgraded to the loopback default.
+    host = _as_host_text(raw_host)
     if not host:
-        return None
-    raw_port = entry.get("port")
+        if raw_host is None or (isinstance(raw_host, str) and not _exact_str(raw_host)):
+            host = "127.0.0.1"
+        else:
+            return None
     # Bool is an int (``True`` → port 1).  JSON ``1e309`` / YAML ``port: .inf``
     # OverflowError ``int(inf)``; a 400-digit leftover int is not a TCP port.
-    if isinstance(raw_port, bool):
-        return None
-    try:
-        port = int(raw_port or 0)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not 1 <= port <= 65535 or not _is_loopback(host):
+    port = _coerce_port(entry.get("port"))
+    if port is None or not 1 <= port <= 65535 or not _is_loopback(host):
         return None
     return ConsoleTarget(
         console_id=console_id_for_utm(uuid),
         vm_uuid=uuid,
         protocol=protocol,
         host=host,
+        view_only=_flag(entry.get("view_only")),
         port=port,
-        view_only=bool(entry.get("view_only")),
     )
 
 
