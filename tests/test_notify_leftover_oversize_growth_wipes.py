@@ -283,9 +283,19 @@ class UnreadableSecretsFileTests(_Sandbox):
         self.assertEqual(ctx.exception.detail["code"], "notify.secrets_unreadable")
         self.assertEqual(self.secrets.read_text(encoding="utf-8"), before)
 
-    def test_reads_keep_degrading_and_delete_still_works(self):
-        """GET stays 200 (has_* false) and DELETE removes the row without
-        rewriting — and therefore without wiping — the unreadable store."""
+    def test_reads_keep_degrading_and_delete_refuses_coded(self):
+        """GET stays 200 (has_* false); DELETE refuses with the coded 503.
+
+        This used to pin "DELETE removes the row without rewriting the
+        unreadable store" — which left the row's stored credential behind
+        on the hand-recoverable disk: an orphaned live token no channel row
+        references, invisible to GET and unreachable by a second DELETE.
+        The notify7/notify8 orphan standard supersedes that: destroying the
+        credential is part of the delete's contract, so a store the drop
+        cannot read refuses first (row and file byte-identical), same as
+        the secrets writes above.  Deleting the corrupt store by hand — or
+        fixing it — unblocks the delete, which then destroys the row's
+        secrets for real (test_notify8_leftover_delete_orphan_secrets)."""
         self._seed_channel()
         before = self._oversized_store()
         client = self.client()
@@ -294,10 +304,16 @@ class UnreadableSecretsFileTests(_Sandbox):
         row = next(c for c in r.json()["channels"] if c["id"] == "sib")
         self.assertFalse(row["has"]["bot_token"])
         r = client.delete("/api/alerts/channels/sib")
+        self.assertEqual(r.status_code, 503, r.text[:300])
+        self.assertEqual(r.json()["detail"]["code"], "notify.secrets_unreadable")
+        self.assertIsNotNone(notify_channels.get_channel("sib"))
+        self.assertEqual(self.secrets.read_text(encoding="utf-8"), before,
+                         "the refusal must not rewrite a store it could not read")
+        # Removing the unreadable store by hand unblocks the delete.
+        self.secrets.unlink()
+        r = client.delete("/api/alerts/channels/sib")
         self.assertEqual(r.status_code, 200, r.text[:300])
         self.assertIsNone(notify_channels.get_channel("sib"))
-        self.assertEqual(self.secrets.read_text(encoding="utf-8"), before,
-                         "the prune must not rewrite a store it could not read")
 
     def test_missing_and_leftover_nonfile_stores_still_accept_writes(self):
         """The strict gate only guards rows that exist: a missing file and a

@@ -376,6 +376,23 @@ def save_channel(ch: dict) -> dict:
 
 
 def delete_channel(cid: str) -> bool:
+    """Remove one channel row *and* its stored credential — or refuse.
+
+    Deleting a channel destroys its stored secret; that is the whole point
+    of the operation.  When notify-credentials.json exists but cannot be
+    read back (torn to non-UTF-8 by power loss, grown past ``_SECRETS_CAP``,
+    corrupt JSON), :func:`drop_channel_secrets`' ``{}`` snapshot holds no
+    rows to drop: the row delete used to answer 200 while the bot token /
+    webhook URL it claimed to destroy stayed behind on the (hand-recoverable)
+    disk — an orphaned live credential no channel row references, invisible
+    to GET and unreachable by a second DELETE, the same class the create
+    path's pre-write wipe exists for.  Refuse first with the coded 503 the
+    secrets *writes* already use, before the row is gone; the file the
+    operator can still fix stays byte-identical.  A missing file or a
+    leftover non-regular node holds no rows to preserve and proceeds.
+    """
+    with _secrets_lock, secure_io.file_lock(SECRETS_FILE):
+        _require_secrets_readable()
     removed = []
 
     def apply(data: dict) -> None:
@@ -396,8 +413,11 @@ def delete_channel(cid: str) -> bool:
         notify["channels"] = kept
 
     config.mutate(apply)
-    if removed:
-        drop_channel_secrets(cid)
+    # Unconditional, not ``if removed``: a half-completed earlier delete
+    # (row gone, credentials write failed) leaves orphaned secrets under
+    # this id, and the retried DELETE used to 404 without touching them —
+    # the orphan had no recovery path short of hand-editing the file.
+    drop_channel_secrets(cid)
     return bool(removed)
 
 
@@ -551,6 +571,11 @@ def _require_secrets_readable() -> None:
     ``_write_secrets`` replaces the leftover node as before.  The read
     paths (``channel_secrets``, ``dispatch``) keep degrading to ``{}`` —
     they can never destroy anything.
+
+    A parseable *non-dict* root (a whole-document paste: a bare list or
+    scalar) refuses too, the ``_read_disk_for_mutate`` rule: it is content
+    the operator can still rescue by hand, and the merge's ``{}`` snapshot
+    would replace it wholesale on the very next write.
     """
     try:
         text = read_text_capped(SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
@@ -563,8 +588,10 @@ def _require_secrets_readable() -> None:
             return
         raise api_error("notify.secrets_unreadable")
     try:
-        safe_json_loads(text, parse_int=_capped_json_int)
+        data = safe_json_loads(text, parse_int=_capped_json_int)
     except (ValueError, RecursionError):
+        raise api_error("notify.secrets_unreadable")
+    if data is not None and not isinstance(data, dict):
         raise api_error("notify.secrets_unreadable")
 
 
