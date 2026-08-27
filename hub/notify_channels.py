@@ -175,8 +175,29 @@ def _http_url_ok(url: str) -> bool:
         return False
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property* —
+    planted as the channels list, a channel row, an id/type/flag value, a
+    nested config field, or a legacy Home Assistant field — detonated the
+    sanitizer gates themselves (``_mapping_get`` / ``_truthy`` /
+    ``_plain_row`` / ``_id_text`` / ``_json_safe``), one step ahead of every
+    scrub in this module: a raw 500 on all six /api/alerts/channels routes
+    and POST /api/alerts/test at once, plus a raise out of :func:`dispatch`
+    on the alert engine's single thread (the ups_svc/smart_test_svc rule).
+    A real subclass still matches through the C-level type check; only a
+    value that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def valid_channel_id(cid) -> bool:
-    return isinstance(cid, str) and bool(_ID_RE.fullmatch(cid))
+    return _isa(cid, str) and bool(_ID_RE.fullmatch(cid))
 
 
 def _mapping_get(mapping, key, default=None):
@@ -190,7 +211,7 @@ def _mapping_get(mapping, key, default=None):
     real storage underneath the override, so a subclass that only poisoned
     its method keeps its sane data.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return default
     try:
         return mapping.get(key, default)
@@ -210,8 +231,16 @@ def _truthy(value) -> bool:
     ``__bool__`` raises and 500 GET /api/alerts/channels and
     POST /api/alerts/test (killing the alert thread's sweep the same way).
     Fails closed to False — a bomb flag is junk, not consent to notify.
+
+    ``type(value) is bool``, not ``isinstance``: a ``__class__``-property
+    bomb used to detonate the isinstance gate itself, and a *lying*
+    ``__class__`` (claims bool, is not) used to ride through it verbatim —
+    leaking a non-encodable object into ``public_channel``'s ``enabled``
+    field (a 500 under Starlette's encoder) and carrying its own
+    ``__bool__`` bomb into ``_channel_wants``' truth test inside dispatch().
+    ``bool()`` always answers an exact bool, so the fallback stays clean.
     """
-    if isinstance(value, bool):
+    if type(value) is bool:
         return value
     try:
         return bool(value)
@@ -227,23 +256,55 @@ def _pick(value, fallback):
 def _plain_row(ch) -> dict | None:
     """A channel row as a *plain* dict copy, or None for a non-mapping.
 
-    ``dict(subclass)`` copies through CPython's C-level storage, bypassing a
+    ``dict.items(subclass)`` reads CPython's C-level storage, bypassing a
     leftover row's overridden ``.get`` / ``items`` / ``keys`` (the bomb class
     backups6/sched6 sealed elsewhere), so every read on the returned map is
-    on a plain dict.  A subclass whose copy itself raises is junk and drops.
+    on a plain dict.  A row whose copy itself raises — including a *lying*
+    ``__class__`` impostor that passes the dict gate but is no dict
+    underneath (the unbound view TypeErrors) — is junk and drops.
+
+    Keys are laundered to *exact* str: a hash-shadowing str-subclass key
+    (``StrEqBomb("id")`` — same hash as the plain key, ``__eq__`` raises)
+    survived the old ``dict(ch)`` copy verbatim, and every later
+    ``ch.get("id")`` / ``ch["id"] = cid`` probe of that slot detonated the
+    stored key's comparison — a raw 500 on all six channel routes and a
+    raise out of dispatch() on the alert thread.  ``str.__str__`` copies
+    the real text, so the shadowed field keeps its value under the plain
+    key; a key that cannot even render drops alone.
     """
-    if not isinstance(ch, dict):
+    if not _isa(ch, dict):
         return None
     try:
-        return dict(ch)
+        items = list(dict.items(ch))
     except Exception:
         return None
+    out = {}
+    for k, v in items:
+        if type(k) is not str and _isa(k, str):
+            try:
+                k = str.__str__(k)
+            except Exception:
+                continue
+        try:
+            out[k] = v
+        except Exception:
+            # An unhashable / hash-bomb key holds nothing addressable.
+            continue
+    return out
 
 
 def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Try-wrapped: a *lying* ``__class__`` (claims bytes, is not) passes the
+    callers' bytes gates, and the unbound base call used to TypeError out
+    of ``_json_safe`` / ``_utf8_text`` into a 500 on GET /api/alerts/channels.
+    """
+    base = bytes if _isa(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return ""
 
 
 def _id_text(raw) -> str:
@@ -265,16 +326,16 @@ def _id_text(raw) -> str:
     once.  ``str.__str__`` copies the real text without running the
     subclass's own ``__str__`` / ``__eq__``.
     """
-    if isinstance(raw, str):
+    if _isa(raw, str):
         if type(raw) is str:
             return raw
         try:
             return str.__str__(raw)
         except Exception:
             return ""
-    if raw is None or isinstance(raw, bool):
+    if raw is None or type(raw) is bool:
         return ""
-    if isinstance(raw, int) and type(raw) is not int:
+    if _isa(raw, int) and type(raw) is not int:
         # Base coercion to an exact int: an int-subclass ``__str__`` bomb
         # id must keep its real number, not drop the row.
         try:
@@ -294,7 +355,15 @@ def _id_text(raw) -> str:
 # ── configuration ─────────────────────────────────────────────────────────────
 
 def _raw_notify_cfg() -> dict:
-    return config.settings_section("notify")
+    # Try-wrapped: settings_section's own ``isinstance(raw, dict)`` gate runs
+    # a leftover section's ``__class__`` property, so a bomb planted as the
+    # whole ``settings.notify`` value used to raise out of this read and 500
+    # five of the six channel routes at once (dispatch alone wrapped it).
+    try:
+        raw = config.settings_section("notify")
+    except Exception:
+        return {}
+    return raw if _isa(raw, dict) else {}
 
 
 def channels(raw: dict | None = None) -> list[dict]:
@@ -311,11 +380,17 @@ def channels(raw: dict | None = None) -> list[dict]:
         raw = _raw_notify_cfg()
     out = []
     rows = _mapping_get(raw, "channels")
-    if not isinstance(rows, list):
+    if not _isa(rows, list):
         rows = []
     # Unbound base iteration: a list-subclass ``__iter__`` bomb cannot 500
-    # and the real rows still walk.
-    for ch in list.__iter__(rows):
+    # and the real rows still walk.  Try-wrapped: a lying ``__class__``
+    # impostor passes the list gate but is no list underneath, and the
+    # unbound call's TypeError used to 500 the same six routes.
+    try:
+        walk = list.__iter__(rows)
+    except Exception:
+        walk = iter(())
+    for ch in walk:
         # Plain-dict copy first (C-level storage): the row's own overridden
         # ``.get`` / ``keys`` never runs.  Rows are the live cfg() cache,
         # so the copy also keeps them unmutated.
@@ -597,7 +672,12 @@ def _require_secrets_readable() -> None:
 
 def _secret_map(data: dict, cid: str) -> dict:
     raw = data.get(cid)
-    return dict(raw) if isinstance(raw, dict) else {}
+    if not _isa(raw, dict):
+        return {}
+    try:
+        return dict(raw)
+    except Exception:
+        return {}
 
 
 def channel_secrets(cid: str) -> dict:
@@ -690,7 +770,7 @@ def drop_channel_secrets(cid: str) -> None:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a subclass ``.decode`` bomb used to raise
         # straight out of GET /api/alerts/channels.
         return _decode_bytes(value)
@@ -705,7 +785,7 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    if not isinstance(text, str):
+    if not _isa(text, str):
         return ""
     # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
     # skips CPython's exact-str copy above and used to carry its bound
@@ -730,9 +810,13 @@ def _json_safe(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if isinstance(value, bool) or value is None:
+    # type(value) is bool, not isinstance: a __class__-property bomb used to
+    # detonate this very head, and a *lying* __class__ (claims bool, is not)
+    # used to pass through verbatim — a non-encodable object in the response
+    # (its int gate below now drops the liar through int.__index__ instead).
+    if type(value) is bool or value is None:
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -743,26 +827,38 @@ def _json_safe(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, dict):
-        out = {}
+    if _isa(value, dict):
         # Unbound base view: a dict-subclass ``items()`` that raises or
         # yields non-pairs cannot 500, and the real entries still walk.
-        for k, v in dict.items(value):
+        # Try-wrapped: a lying ``__class__`` impostor passes the dict gate
+        # but is no dict underneath — the unbound TypeError used to 500.
+        try:
+            pairs = dict.items(value)
+        except Exception:
+            return None
+        out = {}
+        for k, v in pairs:
             try:
                 key = _utf8_text(k)
             except Exception:
                 continue
             out[key] = _json_safe(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot 500 and the real elements still survive.
-                return [_json_safe(v, depth + 1) for v in base.__iter__(value)]
-    if isinstance(value, str):
+                # Try-wrapped for the lying-``__class__`` impostor, whose
+                # unbound call TypeErrors before yielding anything.
+                try:
+                    return [_json_safe(v, depth + 1)
+                            for v in base.__iter__(value)]
+                except Exception:
+                    return None
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -777,7 +873,7 @@ def _json_safe(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         iso = getattr(value, "isoformat", None)
@@ -956,10 +1052,16 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
 
 
 def _recipients(raw) -> list[str]:
-    if isinstance(raw, str):
+    # _isa: a __class__-property bomb ``to`` used to raise here instead of
+    # degrading to notify.missing_field (the send is wrapped, but the coded
+    # soft-fail beats a junk exception message).
+    if _isa(raw, str):
         return [a.strip() for a in re.split(r"[,;\s]+", raw) if a.strip()]
-    if isinstance(raw, list):
-        return [str(a).strip() for a in raw if str(a).strip()]
+    if _isa(raw, list):
+        try:
+            return [str(a).strip() for a in raw if str(a).strip()]
+        except Exception:
+            return []
     return []
 
 
@@ -1135,17 +1237,20 @@ def _send_via(sender, ch: dict, secrets: dict, title: str, message: str,
         res = sender(ch, secrets, title, message, level=level, event=event)
     except Exception as e:  # a broken channel must not sink the others
         res = {"ok": False, "message": _utf8_text(e)}
-    if not isinstance(res, dict):
+    if not _isa(res, dict):
         # A sender that returns None/list used to AttributeError *outside* the
         # try, so the "never raises" contract only covered exceptions, not types.
+        # _isa: a return wearing a __class__-property bomb detonated the gate.
         res = {"ok": False, "message": "invalid sender response"}
     # Leftover YAML ``id: "\ud800"`` / a sender returning inf/bytes/a date
     # used to 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
+    # _pick/_truthy/_mapping_get: bomb fields in a junk result read as junk.
     return _json_safe({
-        "id": _id_text(ch.get("id")),
-        "type": ch.get("type"),
-        "ok": bool(res.get("ok")),
-        "message": res.get("message") or res.get("body") or "",
+        "id": _id_text(_mapping_get(ch, "id")),
+        "type": _mapping_get(ch, "type"),
+        "ok": _truthy(_mapping_get(res, "ok")),
+        "message": _pick(_mapping_get(res, "message"),
+                         _pick(_mapping_get(res, "body"), "")),
     })
 
 
@@ -1166,7 +1271,10 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
         raw = _raw_notify_cfg()
     except Exception:
         raw = {}
-    if not isinstance(raw, dict):
+    # _isa, not bare isinstance: a raw section wearing a __class__-property
+    # bomb used to detonate this gate itself — the one raise the try above
+    # could not catch, killing the alert thread's sweep.
+    if not _isa(raw, dict):
         raw = {}
     targets: list[tuple[dict, dict]] = []
     legacy = _legacy_target(raw)
