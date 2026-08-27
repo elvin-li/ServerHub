@@ -17,6 +17,23 @@ def shutdown_executor() -> None:
 _smart_cache = {"t": 0.0, "v": None}
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    planted in the SMART cache detonated ``_jsonable``'s rank gates, raised
+    out of ``collect_system`` and silently wiped the whole ``system`` tile
+    from GET /api/status (the docker_cli / nas8 rule).  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -25,8 +42,17 @@ def _decode_bytes(value) -> str:
 
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    decoded = None
+    if _isa(value, (bytes, bytearray)):
+        try:
+            decoded = _decode_bytes(value)
+        except Exception:
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
     else:
@@ -72,9 +98,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* isinstance below — as a value
+    # or a mapping key in the SMART cache — raising out of collect_system
+    # and wiping the whole ``system`` tile from GET /api/status.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -89,7 +119,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -100,30 +130,50 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises or
         # yields non-pairs cannot raise and the real entries still survive.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = dict.items(value)
+        except Exception:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot drop the real elements.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot drop the real elements.  The try is for a
+                # lying-``__class__`` impostor, which TypeErrors here.
+                try:
+                    items = base.__iter__(value)
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -143,11 +193,38 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate the bare
+    ``rc == 0`` / ``rc in (0, 4)`` probes in ``collect_system``'s main body
+    — one bomb wiped the whole ``system`` tile (load, disk, uptime and
+    SMART together) from GET /api/status (the health9 rule).  ``-255`` is
+    no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _sysctl_int(value) -> int | None:
     """int from a sysctl `-n` payload that may be str, bytes, or already int."""
-    if isinstance(value, bool) or value is None:
+    if _isa(value, bool) or value is None:
         return None
-    if isinstance(value, int):
+    if _isa(value, int):
+        try:
+            # Base coercion before the ``>= 0`` probe: a leftover int
+            # subclass whose comparison methods raise (the modules5 bomb
+            # class) used to escape this helper's callers.
+            value = int.__index__(value)
+        except Exception:
+            return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
     if not text.isdigit():
@@ -271,7 +348,9 @@ def collect_system():
     rc, out, _ = _result(f_boot, (1, "", ""))
     out = _as_text(out)
     uptime_h = 0.0
-    if rc == 0 and "sec =" in out:
+    # _rc_int on every probe below: an rc-``__eq__`` bomb from a patched/odd
+    # ``sh`` used to raise here and wipe the whole system tile.
+    if _rc_int(rc) == 0 and "sec =" in out:
         try:
             boot = int(out.split("sec =")[1].split(",")[0].strip())
         except (IndexError, TypeError, ValueError, OverflowError):
@@ -296,9 +375,15 @@ def collect_system():
     mem_total_gb = _bytes_to_gb(mem_n, 1) if mem_n is not None else None
 
     smart = _smart_cache["v"]
+    # _isa: the cache normally only ever holds the plain dict this function
+    # writes, but a leftover non-dict (a ``__class__``-property bomb, a
+    # scalar) planted as the whole value is junk — degrade the SMART field
+    # alone rather than serving it as a garbage string in the payload.
+    if smart is not None and not _isa(smart, dict):
+        smart = None
     if f_smart is not None:
         rc, out, _ = _result(f_smart, (1, "", ""))
-        if rc in (0, 4):
+        if _rc_int(rc) in (0, 4):
             smart = {}
             for line in _as_text(out).splitlines():
                 if "Data Units Written" in line and "[" in line:

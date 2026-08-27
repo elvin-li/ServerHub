@@ -40,17 +40,65 @@ _DETECT_TTL = 30.0
 _detect_generation = 0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gates themselves: planted in the LAN-detection cache it
+    blew ``_as_text``'s bytes gate one step ahead of every scrub and 500'd
+    ``host_ip()``'s one unguarded consumer, GET /api/system/host (the
+    docker_cli / nas8 rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` in ``_default_route_fields`` — straight out of
+    ``host_ip()`` and 500ing GET /api/system/host (the health9 rule).
+    ``-255`` is no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a bytes-subclass ``decode`` bomb planted in the
-        # detection cache must not raise out of this scrub (the modules5
-        # convention its sibling sanitizers already use).
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+    # _isa, not a bare isinstance: a ``__class__``-property bomb planted in
+    # the detection cache used to detonate this gate itself.
+    decoded = None
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a bytes-subclass ``decode`` bomb planted
+            # in the detection cache must not raise out of this scrub (the
+            # modules5 convention its sibling sanitizers already use).  The
+            # try is for a *lying* ``__class__`` (claims bytes, is not): the
+            # unbound call TypeErrors and the impostor renders like any
+            # other junk object below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
-    else:
+    elif type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -60,14 +108,16 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    if not isinstance(value, str):
-        return ""
     # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
     # skips CPython's exact-str copy above and used to carry its bound
     # ``encode`` bomb into this scrub — a leftover planted in the LAN-address
     # detection cache then raised straight out of ``host_ip()`` and 500'd its
     # one unguarded consumer, GET /api/system/host (the status.py convention).
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor lands here: junk.
+        return ""
 
 
 def configured_host() -> str:
@@ -120,7 +170,9 @@ def _default_route_fields() -> tuple[tuple[str, str], ...]:
     change, a service reorder or an alias edit is reflected immediately.
     """
     rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    if rc != 0:
+    # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
+    # to detonate this bare probe and 500 every host_ip() consumer.
+    if _rc_int(rc) != 0:
         return ()
     fields: list[tuple[str, str]] = []
     # int / None / bytes payloads used to AttributeError on splitlines and
@@ -171,7 +223,8 @@ def default_interface(*, force: bool = False) -> str:
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
     rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
-    return _as_text(output).strip() if rc == 0 else ""
+    # _rc_int: same rc-``__eq__`` bomb class as _default_route_fields.
+    return _as_text(output).strip() if _rc_int(rc) == 0 else ""
 
 
 def interface_address(interface: str, *, force: bool = False) -> str:
@@ -211,7 +264,15 @@ def _cached_detection(now: float) -> str:
             age = now - float(_detect_cache["t"])
         except (TypeError, ValueError, OverflowError):
             return ""
-        if value and age < _DETECT_TTL:
+        # Guarded truthiness: the cache normally only ever holds the exact
+        # str ``_detect_lan_ip_uncached`` writes, but a leftover whose
+        # ``__bool__`` raises used to detonate this probe and 500 every
+        # host_ip() consumer.  A bomb reads as a miss and re-detects.
+        try:
+            live = bool(value)
+        except Exception:
+            return ""
+        if live and age < _DETECT_TTL:
             return _as_text(value)
     return ""
 
@@ -289,6 +350,19 @@ def host_ip() -> str:
     return detect_lan_ip()
 
 
+def _plain_mapping_items(value):
+    """``dict.items`` through the C-level storage, or ``()`` for junk.
+
+    Unbound view so a dict-subclass ``items``/``__iter__`` bomb cannot fire;
+    the try is for a lying-``__class__`` impostor (claims dict, is not),
+    whose unbound call TypeErrors.
+    """
+    try:
+        return dict.items(value)
+    except Exception:
+        return ()
+
+
 def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
     host = host_ip()
     values = {"host": host, "host_ip": host, "localhost": "localhost"}
@@ -296,19 +370,23 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         from hub.config import cfg
 
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
-        if not isinstance(address_book, dict):
+        if not _isa(address_book, dict):
             address_book = {}
+        # Unbound items + per-entry scrub: one bomb entry (a ``__class__``-
+        # property value, a subclass ``items`` override) used to raise into
+        # the blanket except below and silently drop every sane sibling
+        # from the address book.
         values.update({
             _as_text(key): _as_text(value)
-            for key, value in address_book.items()
+            for key, value in _plain_mapping_items(address_book)
             if value is not None
         })
     except Exception:
         pass
-    if isinstance(extra, dict):
+    if _isa(extra, dict):
         values.update({
             _as_text(key): _as_text(value)
-            for key, value in extra.items()
+            for key, value in _plain_mapping_items(extra)
             if value is not None
         })
     return values
@@ -316,12 +394,16 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
 
 def resolve_template(value: str | None, extra: dict[str, Any] | None = None) -> str | None:
     """Expand host and named address-book variables."""
-    if value is None or not isinstance(value, str):
+    # _isa: a ``__class__``-property bomb used to detonate this gate itself.
+    if value is None or not _isa(value, str):
         return value
-    if "{" not in value:
-        return _as_text(value)
+    # Scrub to an exact str first: a str-subclass ``__contains__`` /
+    # ``__str__`` bomb must not raise out of the probe or the regex sub.
+    text = _as_text(value)
+    if "{" not in text:
+        return text
     variables = template_variables(extra)
-    return _as_text(_VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), value))
+    return _as_text(_VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), text))
 
 
 def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: int = 0) -> Any:
@@ -329,21 +411,36 @@ def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: in
 
     Depth-capped: leftover deeply-nested YAML used to RecursionError
     compose/catalog/bookmark payloads that walk this walker.
+
+    ``_isa`` on every rank gate and unbound base iteration: a leftover
+    whose ``__class__`` is a raising property (nested anywhere in
+    ``quick_links`` / a catalog row) used to detonate the bare isinstance
+    gates and raise out of this walker — ``_status_quick_links``'s blanket
+    except then wiped every sane link from GET /api/status.
     """
     if _depth > 16:
-        if isinstance(value, (dict, list, tuple)):
+        if _isa(value, (dict, list, tuple)):
             return None
-        return resolve_template(value, extra) if isinstance(value, str) else value
-    if isinstance(value, str):
+        return resolve_template(value, extra) if _isa(value, str) else value
+    if _isa(value, str):
         return resolve_template(value, extra)
-    if isinstance(value, list):
-        return [resolve_value(item, extra, _depth=_depth + 1) for item in value]
-    if isinstance(value, tuple):
-        return tuple(resolve_value(item, extra, _depth=_depth + 1) for item in value)
-    if isinstance(value, dict):
+    if _isa(value, list):
+        try:
+            items = list.__iter__(value)
+        except Exception:
+            # Lying-``__class__`` impostor (claims list, is not): junk.
+            return None
+        return [resolve_value(item, extra, _depth=_depth + 1) for item in items]
+    if _isa(value, tuple):
+        try:
+            items = tuple.__iter__(value)
+        except Exception:
+            return None
+        return tuple(resolve_value(item, extra, _depth=_depth + 1) for item in items)
+    if _isa(value, dict):
         return {
             _as_text(key): resolve_value(item, extra, _depth=_depth + 1)
-            for key, item in value.items()
+            for key, item in _plain_mapping_items(value)
         }
     return value
 
@@ -352,7 +449,9 @@ def normalize_local_url(value: str | None) -> str:
     """Store local URLs with {host} so DHCP/interface changes do not stale them."""
     if value is None:
         return ""
-    if not isinstance(value, str):
+    # _isa + the scrub's strip: a ``__class__``-property bomb or a
+    # str-subclass ``strip`` override must not raise out of a URL write.
+    if type(value) is not str:
         raw = _as_text(value).strip()
     else:
         raw = value.strip()
