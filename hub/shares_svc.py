@@ -144,6 +144,67 @@ def _truthy(value) -> bool:
         return False
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / host_address / docker10 ``_rc_int`` rule), and every listing
+    probe compared the *rc* slot raw.  An rc-subclass whose ``__eq__`` /
+    ``__ne__`` raises detonated ``rc == 0`` in ``list_smb_shares`` — a raw
+    500 on every share mutation through ``_find_share`` — and ``rc != 0``
+    in ``time_machine_records`` rode ``list_smb_shares``'s unguarded merge
+    the same way.  ``-255`` is no honest exit status and is distinct from
+    the ``-1`` spawn-failure sentinel, so junk can never be misread as
+    success, a timeout, or a vanished CLI.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
+        # cannot fire, and a lying-``__class__`` impostor TypeErrors here
+        # instead of passing the gate (the modules5 unbound convention).
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
+def _str_keyed(plain: dict) -> dict:
+    """*plain* (an exact dict) with every key an exact ``str``.
+
+    One hash-shadowing key — same hash as the literal a reader fetches,
+    raising ``__eq__`` — detonates the *probe itself*: ``dict.get`` on a
+    laundered copy is still a hash-table probe, one seam earlier than any
+    value gate (the compose10 / files13 shadow-key class).  A shadow over
+    ``ok`` in a privileged result blew ``_plain_result`` one line after its
+    ``dict()`` copy, and a shadow over a record name in a patched
+    ``time_machine_records`` table blew ``list_smb_shares``'s merge — raw
+    500s on the share mutations.  ``str.__str__`` copies through the C
+    storage, so laundering cannot itself detonate; non-str keys drop — no
+    reader ever looks a row up by one (the containers ``_plain_job`` rule).
+    """
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str map returns as-is.
+    if all(type(k) is str for k in plain):
+        return plain
+    out = {}
+    for k, v in plain.items():
+        if type(k) is str:
+            out[k] = v
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew a bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
+            try:
+                out[str.__str__(k)] = v
+            except Exception:
+                continue
+    return out
+
+
 def _plain_result(result) -> dict:
     """A privileged-helper result as a plain dict with a real bool ``ok``.
 
@@ -158,7 +219,11 @@ def _plain_result(result) -> dict:
     """
     if _isa(result, dict):
         try:
-            plain = dict(result)
+            # _str_keyed after the copy: a hash-shadowing ``ok`` key kept
+            # its raising ``__eq__`` through ``dict()`` and detonated the
+            # very next ``plain.get("ok")`` probe — a raw 500 on every
+            # share mutation out of the laundering built to absorb junk.
+            plain = _str_keyed(dict(result))
         except Exception:
             return {"ok": False, "error": "failed"}
     else:
@@ -414,12 +479,68 @@ def time_machine_records() -> dict[str, dict]:
     Reading the local directory node needs no privileges, unlike the writes.
     """
     rc, output, _ = sh([DSCL, "-plist", ".", "-readall", _SHAREPOINTS], timeout=8)
-    if rc != 0 or not output:
+    # _rc_int / _truthy: an rc-subclass ``__ne__`` bomb or a ``__bool__``-bomb
+    # output from a patched/odd ``sh`` used to raise out of this probe and —
+    # through ``list_smb_shares``'s unguarded merge — 500 every share
+    # mutation via ``_find_share``.
+    if _rc_int(rc) != 0 or not _truthy(output):
         return {}
     try:
         return parse_time_machine_records(output)
     except Exception:
         return {}
+
+
+def _plain_tm_records() -> dict:
+    """The live TM table as a plain dict with exact-str keys, {} for junk.
+
+    This module does not own the provider (tests and tooling patch
+    ``time_machine_records``), so the table is laundered before any reader
+    probes it: a *lying* ``__class__`` impostor claiming dict — or a dict
+    subclass whose copy raises — degrades to ``{}``, and ``_str_keyed``
+    drops the hash-shadowing record-name keys whose raising ``__eq__`` used
+    to detonate the ``.get(record)`` probes in ``list_smb_shares``'s merge
+    and ``update_smb_share``'s UUID read (raw 500s on the share mutations,
+    and a silently wiped listing under ``shares_overview``'s rescue).
+    """
+    records = time_machine_records()
+    if type(records) is not dict:
+        if not _isa(records, dict):
+            return {}
+        try:
+            records = dict(records)
+        except Exception:
+            return {}
+    return _str_keyed(records)
+
+
+def _tm_record_uuid(record: str) -> str | None:
+    """*record*'s existing backup-set UUID, None when unreadable.
+
+    The old bare ``(time_machine_records().get(record) or {}).get("uuid")``
+    chain detonated three ways on a poisoned provider — the ``.get(record)``
+    hash probe on a shadow key, the ``or`` truthiness on a ``__bool__``-bomb
+    record, and the bound ``.get("uuid")`` on a dict-subclass / dict-liar
+    record — each a raw 500 on PUT /api/shares/smb/{record} with Time
+    Machine enabled.  A junk record just means "no known UUID", so enabling
+    mints a fresh one, which the fresh-read verification then confirms.
+    """
+    tm = _plain_tm_records().get(record)
+    if not _isa(tm, dict):
+        return None
+    try:
+        # Unbound dict.get in a try: a genuine subclass reads through the
+        # C-level storage, a lying impostor TypeErrors, and a shadow-key
+        # ``uuid`` probe raising inside the hash table degrades the same.
+        raw = dict.get(tm, "uuid")
+    except Exception:
+        return None
+    # _as_text, not the raw value: ``_time_machine_commands`` decides
+    # "mint or keep" from this value's truthiness, and a ``__bool__``-bomb
+    # UUID used to detonate that read.  A legible leftover still reads as
+    # "a UUID exists", so a junk shape cannot rotate a share's backup-set
+    # identity.
+    return _as_text(raw) or None
 
 
 def smb_service_running() -> bool:
@@ -571,7 +692,10 @@ def _dir_size_mb(path: str) -> float | None:
         return None
     rc, output, _ = sh(["/usr/bin/du", "-sm", expanded], timeout=15)
     output = _as_text(output)
-    if rc != 0 or not output:
+    # _rc_int: an rc-``__ne__`` bomb raised inside the fan_out worker,
+    # which re-raises — one poisoned ``du`` used to wipe the whole sized
+    # listing where the row should just lose its size column.
+    if _rc_int(rc) != 0 or not output:
         return None
     try:
         value = float(output.split()[0])
@@ -593,7 +717,12 @@ def _connection_url(smb_name: str | None) -> str | None:
 def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     rc, output, _ = sh([SHARING, "-l", "-f", "json"], timeout=8)
     shares: list[dict]
-    if rc == 0 and output:
+    # _rc_int / _truthy: an rc-subclass ``__eq__`` bomb or a ``__bool__``-bomb
+    # output from a patched/odd ``sh`` used to detonate this very gate — a
+    # raw 500 on every share mutation through ``_find_share``, and a wiped
+    # listing under ``shares_overview``'s rescue.  Junk rc reads as failure,
+    # so the legacy fallback still runs.
+    if _rc_int(rc) == 0 and _truthy(output):
         try:
             shares = _json_shares(_as_text(output))
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
@@ -605,7 +734,7 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
         shares = []
     if not shares:
         legacy_rc, legacy_output, _ = sh([SHARING, "-l"], timeout=8)
-        shares = _legacy_shares(legacy_output) if legacy_rc == 0 else []
+        shares = _legacy_shares(legacy_output) if _rc_int(legacy_rc) == 0 else []
     # `du -sm` per share, and on a share holding real data it runs for seconds --
     # the timeout is 15 of them.  Serially the listing cost the sum, so a handful of
     # populated shares could hold the page past a minute; they are separate trees
@@ -620,25 +749,20 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     sizes = dict(zip(wanted, measured))
     # `sharing -l` knows nothing about the Time Machine attributes, so the
     # share-point records are read once and merged into every row.
-    # A plain-dict copy first (the _plain_result rule): this module does not
-    # own the provider (tests and tooling patch it), and a *lying*
-    # ``__class__`` impostor claiming dict — or a dict subclass whose bound
-    # ``.get`` raises — used to blow the merge below, a raw 500 on the share
-    # mutations through _find_share where the TM columns are droppable
-    # collateral.  ``dict()`` copies through the C-level storage.
-    tm_records = time_machine_records()
-    if type(tm_records) is not dict:
-        if _isa(tm_records, dict):
-            try:
-                tm_records = dict(tm_records)
-            except Exception:
-                tm_records = {}
-        else:
-            tm_records = {}
+    # _plain_tm_records launders the whole table first (the _plain_result
+    # rule): this module does not own the provider (tests and tooling patch
+    # it), and a *lying* ``__class__`` impostor claiming dict, a dict
+    # subclass whose bound ``.get`` raises, or a hash-shadowing record-name
+    # key whose ``__eq__`` bomb fired inside the ``.get`` probe itself used
+    # to blow the merge below — a raw 500 on the share mutations through
+    # _find_share where the TM columns are droppable collateral.
+    tm_records = _plain_tm_records()
     for index, share in enumerate(shares):
         share["size_mb"] = sizes.get(index)
         share["url"] = _connection_url(share.get("smb_name"))
-        tm = tm_records.get(share["record_name"]) or {}
+        # No ``or {}``: the truthiness read detonated a ``__bool__``-bomb
+        # record one line ahead of the dict gate that already absorbs it.
+        tm = tm_records.get(share["record_name"])
         if not _isa(tm, dict):
             tm = {}
         try:
@@ -926,8 +1050,7 @@ def update_smb_share(
         "tm_quota_gb": existing.get("tm_quota_gb"),
         # The UUID is not part of the share rows; it is only needed here, to
         # decide whether enabling has to mint one.
-        "uuid": (time_machine_records().get(record) or {}).get("uuid")
-        if time_machine else None,
+        "uuid": _tm_record_uuid(record) if time_machine else None,
     }
     commands = [[
         SHARING, "-e", record, "-S", smb,

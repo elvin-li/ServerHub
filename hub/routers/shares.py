@@ -12,6 +12,39 @@ from hub.routers.nas_common import _isa, _jsonable, _plain_result, _truthy, _utf
 router = APIRouter(tags=["shares"])
 
 
+def _str_keyed(plain: dict) -> dict:
+    """*plain* (an exact dict) with every key an exact ``str``.
+
+    One hash-shadowing key — same hash as the literal a reader fetches,
+    raising ``__eq__`` — detonates the *probe itself*: ``.get`` on a
+    laundered copy is still a hash-table probe, one seam earlier than any
+    value gate (the compose10 / files13 shadow-key class).  A shadow over
+    ``ok`` in a service result blew ``_service_result``'s very next read,
+    a shadow over ``error`` blew ``_raise_service_error``, and a shadow
+    over ``users`` in an ACL state blew the GET route's ``{**plain, ...}``
+    merge — raw 500s in place of the coded refusals.  ``str.__str__``
+    copies through the C storage, so laundering cannot itself detonate;
+    non-str keys drop — no reader ever looks a field up by one.
+    """
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str map returns as-is.
+    if all(type(k) is str for k in plain):
+        return plain
+    out = {}
+    for k, v in plain.items():
+        if type(k) is str:
+            out[k] = v
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew a bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
+            try:
+                out[str.__str__(k)] = v
+            except Exception:
+                continue
+    return out
+
+
 def _service_result(result) -> dict:
     """Coerce a leftover non-dict service result into the coded failure.
 
@@ -30,6 +63,11 @@ def _service_result(result) -> dict:
     plain = _plain_result(result)
     if plain is None:
         return {"ok": False, "error": "failed"}
+    # _str_keyed before any probe: a hash-shadowing ``ok`` / ``error`` key
+    # survived ``_plain_result``'s type laundering and detonated the
+    # ``plain.get("ok")`` read below (and ``_raise_service_error``'s
+    # ``result.get("error")`` after it) — raw 500s on every share mutation.
+    plain = _str_keyed(plain)
     plain["ok"] = _truthy(plain.get("ok"))
     return plain
 
@@ -375,7 +413,11 @@ def share_acl(path: str, request: Request):
     plain = _plain_result(state)
     if plain is None:
         raise api_error("shares.acl_read_failed")
-    return _jsonable({**plain, "users": share_acl_svc.local_users()})
+    # _str_keyed before the merge: inserting ``users`` is a hash-table
+    # probe, so a hash-shadowing ``users`` key in a leftover state raised
+    # its ``__eq__`` bomb out of the merge itself — a raw 500 on
+    # GET /api/shares/acl one line past the type laundering.
+    return _jsonable({**_str_keyed(plain), "users": share_acl_svc.local_users()})
 
 
 @router.put("/api/shares/acl")
