@@ -2751,6 +2751,8 @@ export default {
       not_a_git_checkout: 'このインストールは git チェックアウトではありません。clone から install.sh を再実行してください',
       github_unreachable: 'GitHub に接続できませんでした: {error}',
       brew_busy: 'Homebrew が使用中か未インストールです。数分後に再試行してください',
+      ping_missing: 'このホストに ping ツールがありません',
+      dns_flush_tools_missing: 'このホストに macOS の DNS フラッシュツール（dscacheutil/killall）がありません',
     },
     container: {
       job_running: '別のコンテナジョブが実行中です。完了までお待ちください',

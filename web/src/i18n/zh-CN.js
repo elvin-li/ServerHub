@@ -2753,6 +2753,8 @@ export default {
       not_a_git_checkout: '当前安装不是 git 仓库，请从克隆重新运行 install.sh',
       github_unreachable: '无法访问 GitHub：{error}',
       brew_busy: 'Homebrew 正忙或未安装，请稍后再试',
+      ping_missing: '本机缺少 ping 工具',
+      dns_flush_tools_missing: '本机缺少 macOS DNS 刷新工具（dscacheutil/killall）',
     },
     container: {
       job_running: '已有容器任务在运行，请等待它结束',

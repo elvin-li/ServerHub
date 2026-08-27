@@ -589,6 +589,11 @@ CODES: dict[str, tuple[int, str]] = {
     "tools.not_a_git_checkout": (400, "this install is not a git checkout; re-run install.sh from a clone"),
     "tools.github_unreachable": (503, "could not reach GitHub: {error}"),
     "tools.brew_busy": (409, "Homebrew is busy or not installed; try again in a few minutes"),
+    # Confirmed-vanished net-helper CLIs (fresh disk probe on the spawn-
+    # sentinel failure path only — the network.ping_missing /
+    # network.lookup_tools_missing rule on the Tools tab's own routes).
+    "tools.ping_missing": (503, "the ping tool is missing on this host"),
+    "tools.dns_flush_tools_missing": (503, "the macOS DNS flush tools (dscacheutil/killall) are missing on this host"),
     # ── PhotosHub ────────────────────────────────────────────────────────────
     "photoshub.status_failed": (500, "PhotosHub status could not be read: {detail}"),
     "photoshub.pending_failed": (502, "could not list pending-delete photos: {detail}"),

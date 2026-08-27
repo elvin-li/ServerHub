@@ -73,6 +73,7 @@ CONSTANTS = {
     "LAUNCHCTL": "/bin/launchctl",
     "NS": "/usr/sbin/networksetup",
     "IFCONFIG": "/sbin/ifconfig",
+    "KILLALL": "/usr/bin/killall",
     "NFSD": "/sbin/nfsd",
     # System path, not a Homebrew-pinned one: the runtime constant is the
     # same path the sudoers template grants.

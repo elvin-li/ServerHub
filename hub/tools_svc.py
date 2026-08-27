@@ -1332,6 +1332,39 @@ def _check_updates_uncached(*, force: bool = False) -> dict:
 
 # ─── Network helpers ─────────────────────────────────────────────────────────
 
+#: Module-level so the vanished-CLI probes re-check the exact path the spawn
+#: used (the network_svc ROUTE/PING/DSCACHEUTIL convention).
+PING = "/sbin/ping"
+DSCACHEUTIL = "/usr/bin/dscacheutil"
+KILLALL = "/usr/bin/killall"
+
+
+def _cli_gone(path: str) -> bool:
+    """Fresh disk probe: True only for a confirmed-absent binary at *path*.
+
+    Run on a failure path only (the network_svc ``_cli_gone`` / docker
+    ``cli_on_disk`` rule — a successful spawn never pays the stat).  An
+    unreadable parent directory (EIO/ESTALE on a dying mount) must not
+    upgrade the failure to the coded 503, so a stat that raises reads as
+    "still present".
+    """
+    try:
+        return not Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _spawn_sentinel(rc, out: str, err: str) -> bool:
+    """True when ``(rc, out, err)`` is ``sh``'s FileNotFoundError sentinel.
+
+    ``run_capped``/``sh`` collapse every failed spawn of a missing binary
+    into exactly ``(-1, "", "not found")`` — never a real CLI exit.  A
+    genuine run whose output merely reads "not found" is disambiguated by
+    the :func:`_cli_gone` disk confirm every caller pairs with this check.
+    """
+    return rc == -1 and (err or out or "").strip() == "not found"
+
+
 def net_ping(host: str, count: int = 3) -> dict:
     # The old blocklist enumerated shell metacharacters and never considered a
     # leading hyphen, so `-f` / `--flood` landed in ping's option position.
@@ -1340,9 +1373,16 @@ def net_ping(host: str, count: int = 3) -> dict:
     host = host.strip()
     count = _clamp_int(count, 3, 1, 10)
     rc, out, err = _sh(
-        ["/sbin/ping", "-c", str(count), "-W", "2000", host],
+        [PING, "-c", str(count), "-W", "2000", host],
         timeout=count * 3 + 5,
     )
+    if _spawn_sentinel(rc, out, err) and _cli_gone(PING):
+        # A vanished /sbin/ping answered 200 ok:false output "not found",
+        # which reads like the *host* does not respond — the same lie the
+        # Network tab's failover/dns-lookup routes already upgraded to a
+        # coded 503.  Disk-confirmed on the spawn-sentinel failure path
+        # only; a present-but-failing ping keeps its honest output below.
+        raise api_error("tools.ping_missing")
     return {
         "ok": rc == 0,
         "host": host,
@@ -1487,18 +1527,30 @@ def flush_dns() -> dict:
     """Flush macOS DNS caches (common admin tool)."""
     msgs = []
     ok_any = False
+    all_vanished = True
     for cmd in [
-        ["/usr/bin/dscacheutil", "-flushcache"],
-        ["/usr/bin/killall", "-HUP", "mDNSResponder"],
+        [DSCACHEUTIL, "-flushcache"],
+        [KILLALL, "-HUP", "mDNSResponder"],
     ]:
         rc, out, err = _sh(cmd, timeout=8)
         msgs.append(f"{' '.join(cmd)} → rc={rc} {(out or err).strip()[:80]}")
         if rc == 0:
             ok_any = True
-    # may need sudo for killall
+        if not _spawn_sentinel(rc, out, err):
+            all_vanished = False
     if not ok_any:
+        if all_vanished and _cli_gone(DSCACHEUTIL) and _cli_gone(KILLALL):
+            # Both spawns answered ``sh``'s vanished sentinel and both
+            # binaries are confirmed off disk: "partially failed (may need
+            # administrator privileges)" blamed sudo rights for missing
+            # host tools.  The raise fires *before* the sudo fallback, so
+            # nothing re-spawns over the confirmed-gone killall.  Either
+            # tool still on disk — including present-but-failing (a real
+            # permission problem) — keeps the honest escalation below.
+            raise api_error("tools.dns_flush_tools_missing")
+        # may need sudo for killall
         rc, out, err = _sh(
-            ["/usr/bin/sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"],
+            ["/usr/bin/sudo", "-n", KILLALL, "-HUP", "mDNSResponder"],
             timeout=8,
         )
         msgs.append(f"sudo killall mDNSResponder → rc={rc}")

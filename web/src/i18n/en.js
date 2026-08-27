@@ -2757,6 +2757,8 @@ export default {
       not_a_git_checkout: 'this install is not a git checkout; re-run install.sh from a clone',
       github_unreachable: 'could not reach GitHub: {error}',
       brew_busy: 'Homebrew is busy or not installed; try again in a few minutes',
+      ping_missing: 'the ping tool is missing on this host',
+      dns_flush_tools_missing: 'the macOS DNS flush tools (dscacheutil/killall) are missing on this host',
     },
     container: {
       job_running: 'Another container job is already running — wait for it to finish',
