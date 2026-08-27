@@ -504,7 +504,8 @@ def maintenance_tasks():
 
 
 def _jobs_row(tid: str):
-    """``_jobs.get(tid)`` that survives a leftover bomb *key* in the table.
+    """``_jobs.get(tid)`` that survives a leftover bomb *key* — or a leftover
+    bomb *table*.
 
     A plain ``dict.get`` still compares the probe against every stored key
     whose hash collides, and that comparison dispatches into the stored
@@ -514,27 +515,43 @@ def _jobs_row(tid: str):
     Maintenance routes.  On a poisoned lookup, fall back to a scan that
     compares through the unbound base (``str.__eq__`` reads the C-level
     character storage, so no override can fire).
+
+    The lookup and the rescue scan both go through the *unbound* dict
+    builtins: a leftover ``_jobs`` table that is itself a dict-*subclass*
+    with a bombing ``.get`` used to detonate the old bound call, and its
+    bombing ``.items()`` then blew the rescue scan — the scan existed to
+    save exactly these routes and 500'd them instead.  A liar table whose
+    ``__class__`` merely *answers* dict (no real dict at all) makes the
+    unbound descriptors refuse with TypeError; a raise there means "no
+    usable table", and the row degrades to None (the not-run-yet shape).
     """
     try:
-        return _jobs.get(tid)
+        return dict.get(_jobs, tid)
     except Exception:
-        for k, v in list(_jobs.items()):
-            if not _isinst(k, str):
-                continue
-            try:
-                same = str.__eq__(k, tid)
-            except Exception:
-                # A liar whose ``__class__`` *answers* str (the modules9
-                # impostor class — real type is no str at all) passes the
-                # _isinst gate above, and the unbound descriptor then
-                # refuses it with TypeError — out of the rescue scan
-                # itself, which used to 500 the list and log routes the
-                # scan exists to save.  A raise means "not really a str":
-                # the impostor key is junk and cannot be the probed tid.
-                continue
-            if same is True:
-                return v
+        pass
+    try:
+        items = list(dict.items(_jobs))
+    except Exception:
+        # Not really a dict (the modules9 impostor class): there is no
+        # C-level storage to read, so there is no row to find.
         return None
+    for k, v in items:
+        if not _isinst(k, str):
+            continue
+        try:
+            same = str.__eq__(k, tid)
+        except Exception:
+            # A liar whose ``__class__`` *answers* str (the modules9
+            # impostor class — real type is no str at all) passes the
+            # _isinst gate above, and the unbound descriptor then
+            # refuses it with TypeError — out of the rescue scan
+            # itself, which used to 500 the list and log routes the
+            # scan exists to save.  A raise means "not really a str":
+            # the impostor key is junk and cannot be the probed tid.
+            continue
+        if same is True:
+            return v
+    return None
 
 
 def job_state(tid):
@@ -626,6 +643,53 @@ def job_log(tid):
     return cleaned if _isinst(cleaned, dict) else missing
 
 
+def _jobs_values() -> list:
+    """Snapshot of the table's rows through the unbound builtin.
+
+    ``_jobs.values()`` dispatched into a leftover dict-subclass table's
+    bombing override — and a liar table whose ``__class__`` answers dict has
+    no values at all — which used to 500 POST /api/maintenance/{tid}/run's
+    single-runner scan for every task.  No usable table means no live rows.
+    """
+    try:
+        return list(dict.values(_jobs))
+    except Exception:
+        return []
+
+
+def _store_job_row(tid: str, row: dict) -> None:
+    """Insert *row* under the exact-str *tid*; never raises.
+
+    Callers hold ``_jobs_lock``.  The plain insert compares tid against any
+    stored key whose hash collides, dispatching into that key's ``__eq__`` —
+    so a leftover subclass bomb key with the same text used to 500
+    POST /api/maintenance/{tid}/run.  The insert goes through the unbound
+    ``dict.__setitem__`` (a subclass table's overridden setitem cannot
+    fire), and on a raise the table is rebuilt with laundered exact-str
+    keys: rows this module writes already are, so a subclass key is a
+    leftover by definition and its laundered twin is simply overwritten by
+    the fresh row.  A liar table whose ``__class__`` answers dict has no
+    C-level storage to rebuild from and is replaced outright.
+    """
+    global _jobs
+    try:
+        dict.__setitem__(_jobs, tid, row)
+        return
+    except Exception:
+        pass
+    try:
+        items = list(dict.items(_jobs))
+    except Exception:
+        items = []
+    table: dict = {}
+    for k, v in items:
+        key = _utf8_text(k)
+        if key:
+            table[key] = v
+    table[tid] = row
+    _jobs = table
+
+
 def _row_running(j) -> bool:
     """Whether a (possibly junk) ``_jobs`` row counts as a live job.
 
@@ -662,25 +726,12 @@ def start_job(task):
     row = {"running": True, "rc": None, "log": [],
            "started": strftime_now("%H:%M:%S"), "finished": None}
     with _jobs_lock:
-        if any(_row_running(j) for j in _jobs.values()):
+        # _jobs_values / _store_job_row, not bound calls: a leftover table
+        # that is itself a dict-subclass (or a ``__class__`` liar) used to
+        # 500 this route from its own ``.values()`` / insert overrides.
+        if any(_row_running(j) for j in _jobs_values()):
             raise api_error("jobs.already_running")
-        try:
-            _jobs[tid] = row
-        except Exception:
-            # The insert compares the exact-str tid against any stored key
-            # whose hash collides, dispatching into that key's ``__eq__`` —
-            # so a leftover subclass bomb key with the same text used to 500
-            # POST /api/maintenance/{tid}/run.  Rebuild the table with
-            # laundered exact-str keys (rows this module writes already are;
-            # a subclass key is a leftover by definition) and retry: the
-            # laundered twin is simply overwritten by the fresh row.
-            items = list(_jobs.items())
-            _jobs.clear()
-            for k, v in items:
-                key = _utf8_text(k)
-                if key:
-                    _jobs[key] = v
-            _jobs[tid] = row
+        _store_job_row(tid, row)
 
     def run():
         # The captured row, not a ``_jobs[tid]`` re-lookup: a leftover bomb

@@ -1073,23 +1073,170 @@ _RUNNERS = {
 
 # ── execution ────────────────────────────────────────────────────────────────
 
+def _rebuilt_fail_counts(drop: str) -> dict:
+    """A fresh plain streak table without *drop*, laundered to exact types.
+
+    Reached only when the live table refused an unbound read/write — a
+    leftover hash-shadow key or a ``__class__`` liar with no dict storage
+    at all (then there is nothing to salvage and the slate is clean, the
+    same quiet side a panel restart errs on).
+    """
+    try:
+        items = list(dict.items(_fail_counts))
+    except Exception:
+        return {}
+    out: dict = {}
+    for k, v in items:
+        key = _utf8_text(k)
+        if not key or key == drop:
+            continue
+        if type(v) is int and 0 <= v < 1_000_000:
+            out[key] = v
+    return out
+
+
+def _running_has(jid) -> bool:
+    """``jid in _running`` that a leftover bomb member cannot 500 through.
+
+    Callers hold ``_running_guard``.  A set membership test compares the
+    probe against every stored member whose hash collides, and when the
+    member is a *subclass* of the probe's type its reflected ``__eq__`` gets
+    first shot — so a leftover str-subclass member with a job id's text and
+    a bombing ``__eq__`` used to raise out of :func:`is_running` and 500
+    GET /api/scheduler/jobs (every row reads its running flag) and POST
+    run-now, and out of :func:`_execute`'s overlap check, breaking its
+    "never raises" contract.  A set-*subclass* table's overridden
+    ``__contains__`` detonated the same callers.  The probe goes through
+    the unbound base; on a raise, a scan counts only *exact*-str members:
+    ids this module writes are exact by construction (:func:`_job_id`
+    launders them), so a subclass twin is junk, not a live run — reading it
+    as "running" would skip the job forever, the same wedged-mutex fail
+    direction ``hub.jobs._truthy`` refuses.  A genuine live marker is an
+    exact str and the scan still finds it, so overlap-skip survives.
+    """
+    try:
+        return set.__contains__(_running, jid)
+    except Exception:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except Exception:
+        # Not really a set (a ``__class__`` liar): nothing can be running.
+        return False
+    for m in members:
+        # type(m) is str, then the unbound compare: neither can raise, and
+        # a subclass junk member can neither bomb the scan nor pose as live.
+        if type(m) is str and str.__eq__(m, jid) is True:
+            return True
+    return False
+
+
+def _rebuilt_running(members) -> set:
+    """A fresh plain set keeping only the exact-str live markers.
+
+    A str-*subclass* member is a leftover by definition (this module only
+    ever stores :func:`_job_id`'s exact strs); keeping a laundered twin
+    would mark a job that is not running as live forever.
+    """
+    out: set = set()
+    for m in members:
+        if type(m) is str:
+            out.add(m)
+    return out
+
+
+def _add_running(jid: str) -> None:
+    """``_running.add(jid)`` that never raises.  Callers hold the guard.
+
+    The plain add compares jid against any colliding stored member,
+    dispatching into that member's ``__eq__``; a leftover bomb member (or a
+    subclass table's overridden ``add``) used to raise here and 500 the
+    run-now path.  On a raise the table is rebuilt with laundered exact-str
+    members — ids this module writes already are, so a subclass member is a
+    leftover by definition and its laundered twin keeps marking the run.
+    """
+    global _running
+    try:
+        set.add(_running, jid)
+        return
+    except Exception:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except Exception:
+        members = []
+    fresh = _rebuilt_running(members)
+    fresh.add(jid)
+    _running = fresh
+
+
+def _discard_running(jid: str) -> None:
+    """``_running.discard(jid)`` that never raises.  Callers hold the guard.
+
+    A raise out of the discard in :func:`_execute`'s ``finally`` used to
+    leave the id parked "running" forever — every later trigger skipped —
+    so the rebuild both drops the poisoned twin and completes the discard.
+    """
+    global _running
+    try:
+        set.discard(_running, jid)
+        return
+    except Exception:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except Exception:
+        members = []
+    fresh = _rebuilt_running(members)
+    fresh.discard(jid)
+    _running = fresh
+
+
 def _alert_on_failure(job: dict, entry: dict) -> None:
     """Track consecutive failures; involve the alert pipeline on a streak.
 
     Imported lazily and wrapped: a broken alert path must not take the
     scheduler thread with it, mirroring how the alerter itself never lets a
     channel exception escape.
+
+    The streak table reads/writes go through the unbound dict builtins in
+    a try: every ``_fail_counts`` access hash-probes the table and compares
+    jid against any colliding stored key, so a leftover hash-shadow key (a
+    str subclass with the id's text and a bombing ``__eq__``) — or a
+    dict-subclass table with bombing overrides — used to raise out of
+    :func:`_execute` *after* the run was journalled, breaking its "never
+    raises" contract and killing the run thread.  On a poisoned write the
+    table is rebuilt with laundered exact-str keys and exact-int counts so
+    the streak (and the alert it has earned) survives the junk twin.
     """
+    global _fail_counts
     jid = _job_id(job)
     if not jid:
         return
     if entry.get("status") == "ok":
-        _fail_counts.pop(jid, None)
+        try:
+            dict.pop(_fail_counts, jid, None)
+        except Exception:
+            _fail_counts = _rebuilt_fail_counts(drop=jid)
         return
     if entry.get("status") == "skipped":
         return
-    count = _fail_counts.get(jid, 0) + 1
-    _fail_counts[jid] = count
+    try:
+        prev = dict.get(_fail_counts, jid, 0)
+    except Exception:
+        prev = 0
+    # Exact bounded int only: a leftover junk count (a bool, an int-subclass
+    # arithmetic bomb, a >4300-digit int whose str() the alert f-string
+    # cannot render) restarts the streak instead of detonating it.
+    if type(prev) is not int or not 0 <= prev < 1_000_000:
+        prev = 0
+    count = prev + 1
+    try:
+        dict.__setitem__(_fail_counts, jid, count)
+    except Exception:
+        fresh = _rebuilt_fail_counts(drop=jid)
+        fresh[jid] = count
+        _fail_counts = fresh
     if count < FAILURE_ALERT_AFTER:
         return
     try:
@@ -1133,7 +1280,10 @@ def _execute(job: dict, trigger: str) -> dict:
         return {"ok": False, "error": "no_id"}
     started = time.time()
     with _running_guard:
-        if jid in _running:
+        # _running_has / _add_running, not bare set ops: a leftover bomb
+        # member (or a subclass table) used to raise here — before the try
+        # below — and break the "never raises" contract.
+        if _running_has(jid):
             entry = {
                 "ts": _epoch_int(started), "end": _epoch_int(started), "job": jid,
                 "name": _job_label(job, jid), "type": job.get("type"),
@@ -1142,7 +1292,7 @@ def _execute(job: dict, trigger: str) -> dict:
             }
             _record_run(entry)
             return entry
-        _running.add(jid)
+        _add_running(jid)
     log: list[str] = []
     rc: int | None = -1
     try:
@@ -1157,7 +1307,7 @@ def _execute(job: dict, trigger: str) -> dict:
         rc = -1
     finally:
         with _running_guard:
-            _running.discard(jid)
+            _discard_running(jid)
     ended = time.time()
     try:
         status = "ok" if rc == 0 else ("timeout" if rc == 124 else "failed")
@@ -1181,8 +1331,11 @@ def _execute(job: dict, trigger: str) -> dict:
 
 
 def is_running(job_id: str) -> bool:
+    # _running_has, not bare ``in``: a leftover hash-shadow member's
+    # reflected ``__eq__`` (or a subclass table's ``__contains__``) used to
+    # raise here and 500 GET /api/scheduler/jobs and POST run-now.
     with _running_guard:
-        return job_id in _running
+        return _running_has(job_id)
 
 
 def run_job_now(job_id: str, *, wait: bool = False) -> dict:
@@ -1246,12 +1399,32 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
         # Leftover ``time.time() = inf`` OverflowError'd the scheduler tick.
         return []
     key = _minute_key(now)
-    if key == _last_minute:
+    last = _last_minute
+    try:
+        if key == last:
+            return []
+        went_back = last is not None and key < last
+    except Exception:
+        # This module only ever writes exact int tuples, but the mark is
+        # whatever an in-process leftover last stored: a junk high-water
+        # mark (a tuple subclass whose ``__eq__``/``__lt__`` bombs, junk
+        # elements the comparison reflects into) used to raise out of every
+        # tick forever — every job's every minute was lost while the loop's
+        # broad except kept the thread alive.  A junk mark carries no
+        # usable timeline: re-anchor on the current minute with boot
+        # semantics (marked evaluated, not fired).
+        _last_minute = key
         return []
-    if _last_minute is not None and key < _last_minute:
+    if went_back:
         # Naive datetimes on purpose: both keys came from time.localtime(),
         # so their difference is the wall-clock distance the operator sees.
-        if datetime(*_last_minute) - datetime(*key) <= _BACKWARD_RESYNC:
+        try:
+            small_step = datetime(*last) - datetime(*key) <= _BACKWARD_RESYNC
+        except Exception:
+            # A mark that compares but cannot build a datetime (junk
+            # elements) is a leftover, not a timeline: re-anchor.
+            small_step = False
+        if small_step:
             return []
         _last_minute = key
         return []
