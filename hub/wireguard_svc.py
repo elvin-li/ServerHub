@@ -2098,30 +2098,120 @@ def view_conf(reveal: bool = False) -> dict:
     return {"ok": True, "conf": redacted, "redacted": True}
 
 
-def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None]:
-    """``(reachable, latency_ms)`` for one peer.  Never raises.
+#: Module-level so the vanished-CLI probe re-checks the exact path the spawn
+#: used (the tools_svc / network_svc PING convention).
+PING = "/sbin/ping"
+
+
+def _ping_cli_gone() -> bool:
+    """Fresh disk probe: True only for a confirmed-absent ``/sbin/ping``.
+
+    Run on a failure path only (the network_svc ``_cli_gone`` rule — a
+    successful spawn never pays the stat).  An unreadable parent directory
+    (EIO/ESTALE on a dying mount) must not upgrade the failure to the coded
+    503, so a stat that raises reads as "still present".
+    """
+    try:
+        return not Path(PING).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _ping_spawn_sentinel(rc, out, err) -> bool:
+    """True when ``(rc, out, err)`` is ``sh``'s FileNotFoundError sentinel.
+
+    ``sh`` collapses every failed spawn of a missing binary into exactly
+    ``(-1, "", "not found")`` — never a real ping exit.  Purely a
+    message-pattern gate: :func:`ping_peers` still confirms with a fresh
+    :func:`_ping_cli_gone` disk probe, so a genuine run whose output merely
+    reads "not found" keeps its honest unreachable row.
+    """
+    return rc == -1 and (_as_text(err) or _as_text(out)).strip() == "not found"
+
+
+def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None, bool]:
+    """``(reachable, latency_ms, spawn_vanished)`` for one peer.  Never raises.
 
     ``fan_out`` re-raises on iteration, so an exception here would lose every
     peer's result instead of marking one unreachable.
     """
     try:
-        rc, out, _ = sh(
-            ["/sbin/ping", "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
+        rc, out, err = sh(
+            [PING, "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
         )
     except Exception:
-        return False, None
+        return False, None, False
+    vanished = _ping_spawn_sentinel(rc, out, err)
     match = re.search(r"time=([\d.]+)\s*ms", _as_text(out))
     if not match:
-        return rc == 0, None
+        return rc == 0, None, vanished
     try:
         latency = float(match.group(1))
     except ValueError:
         # ``[\d.]+`` also matches ``1.2.3``; the ValueError escaped through
         # fan_out and 500'd POST /api/wireguard/ping.
-        return rc == 0, None
+        return rc == 0, None, vanished
     # A >308-digit run parses to inf, which Starlette's allow_nan=False
     # encoder refuses -- same 500, one layer later.
-    return rc == 0, (None if _nonfinite(latency) else latency)
+    return rc == 0, (None if _nonfinite(latency) else latency), vanished
+
+
+def _ping_deadline(timeout_ms) -> int:
+    """Clamped probe deadline; a subclass bomb answers the default, never a 500.
+
+    The route calls :func:`ping_peers` with no arguments, but the service is
+    also called in-process, and an int/float-subclass ``__bool__``/``__int__``
+    bomb used to blow ``timeout_ms or 800`` / ``int(timeout_ms)`` past the
+    old arithmetic-trio except — the smart_test_svc._schedule_epoch rule, on
+    the ping surface.  Base coercions first, then one Exception net: these
+    bombs raise whatever they like.
+    """
+    try:
+        if isinstance(timeout_ms, bool):
+            return 800
+        if isinstance(timeout_ms, int):
+            timeout_ms = int.__index__(timeout_ms)
+        elif isinstance(timeout_ms, float):
+            timeout_ms = float.__float__(timeout_ms)
+        return max(200, min(int(timeout_ms or 800), 5000))
+    except Exception:
+        return 800
+
+
+def _ping_targets() -> list[tuple[dict, str]]:
+    """``(record, host)`` pairs from the peer table, junk records dropped.
+
+    This walk does not own the provider (tests and tooling patch
+    ``peer_records``): a listing that is a list *subclass* whose ``__iter__``
+    raises, a non-dict row, or a row whose ``ip`` is already-int (a poisoned
+    registry merge) used to raise out of the loop below — a raw 500 on POST
+    /api/wireguard/ping where every blank-ip peer already drops silently.
+    Unbound ``list.__iter__`` walks the real entries; a junk row costs only
+    itself, never its siblings or the route.
+    """
+    try:
+        records = peer_records()
+    except Exception:
+        return []
+    if isinstance(records, list):
+        rows = list.__iter__(records)
+    else:
+        try:
+            rows = iter(records or [])
+        except Exception:
+            return []
+    targets: list[tuple[dict, str]] = []
+    for record in rows:
+        if not isinstance(record, dict):
+            continue
+        # Unbound ``dict.get`` (the smart_test_svc._schedule_cfg rule): a
+        # dict-subclass row whose ``.get`` raises must drop alone.
+        ip = _as_text(dict.get(record, "ip"))
+        host = ip.split("/")[0].split(",")[0].strip()
+        if not host:
+            continue
+        targets.append((record, host))
+    return targets
 
 
 def ping_peers(timeout_ms: int = 800) -> dict:
@@ -2131,16 +2221,8 @@ def ping_peers(timeout_ms: int = 800) -> dict:
     only proves the peer's WireGuard is alive, not that traffic crosses the tunnel
     (a missing route or NAT rule breaks the second without touching the first).
     """
-    try:
-        deadline = max(200, min(int(timeout_ms or 800), 5000))
-    except (TypeError, ValueError, OverflowError):
-        deadline = 800
-    targets = []
-    for record in peer_records():
-        host = record["ip"].split("/")[0].split(",")[0].strip()
-        if not host:
-            continue
-        targets.append((record, host))
+    deadline = _ping_deadline(timeout_ms)
+    targets = _ping_targets()
 
     # One ICMP probe per peer, each waiting out its own deadline -- so in series
     # this endpoint cost the peer count times up to five seconds, and a WireGuard
@@ -2152,15 +2234,27 @@ def ping_peers(timeout_ms: int = 800) -> dict:
     # which must not reshuffle by who answered first.
     pinged = fan_out(lambda pair: _ping_once(pair[1], deadline), targets)
 
+    if (
+        targets
+        and any(vanished for _r, _l, vanished in pinged)
+        and _ping_cli_gone()
+    ):
+        # A vanished /sbin/ping answered 200 with every peer "unreachable" —
+        # the same lie the Network failover tick and POST /api/tools/net/ping
+        # already upgrade to a coded 503.  Disk-confirmed on the
+        # spawn-sentinel failure path only; a present-but-failing ping keeps
+        # its honest unreachable rows below.
+        raise WireGuardError("wg.ping_missing")
+
     results = [
         {
-            "pubkey": record["public_key"],
-            "name": record["name"],
+            "pubkey": _as_text(dict.get(record, "public_key")),
+            "name": _as_text(dict.get(record, "name")),
             "ip": host,
             "reachable": reachable,
             "latency_ms": latency,
         }
-        for (record, host), (reachable, latency) in zip(targets, pinged)
+        for (record, host), (reachable, latency, _vanished) in zip(targets, pinged)
     ]
     reachable = sum(1 for r in results if r["reachable"])
     return {

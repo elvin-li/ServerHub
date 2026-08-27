@@ -2634,6 +2634,7 @@ export default {
       bad_wstunnel_target: 'wstunnel 转发目标不合法：{target}',
       wstunnel_missing: '未安装 wstunnel — 请执行：brew install wstunnel',
       wstunnel_install_unverified: 'wstunnel 守护进程未按请求安装。root 实际运行的仍是 listen={listen}、restrict-to={restrict_to}；设置未保存。',
+      ping_missing: '此主机上缺少 ping 工具',
       bad_number: '{field} 超出允许范围',
       bad_name: '客户端名称需为 1–32 位字母、数字、空格、点、连字符或下划线',
       bad_mode: '不支持的隧道模式 {mode} — 请选择全局或分流',

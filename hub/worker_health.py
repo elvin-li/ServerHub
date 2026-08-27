@@ -73,8 +73,17 @@ def _coerce_interval(interval) -> float:
     if isinstance(interval, bool) or interval is None:
         return 60.0
     try:
+        # Base coercions before ``float()`` (the smart_test_svc._schedule_epoch
+        # rule): a numeric-subclass ``__float__``/``__index__`` bomb raised
+        # RuntimeError past the old arithmetic trio — out of register() on the
+        # worker's own thread, and out of snapshot() where it silently wiped
+        # the workers row from GET /api/health/checks.
+        if isinstance(interval, int):
+            interval = int.__index__(interval)
+        elif isinstance(interval, float):
+            interval = float.__float__(interval)
         n = float(interval)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         n = 60.0
     if n != n or n in (float("inf"), float("-inf")) or n <= 0:
         n = 60.0
@@ -94,11 +103,20 @@ def loop_interval(raw, default: int = 90, *, minimum: int = 30, maximum: int = 8
     """
     if isinstance(raw, bool) or raw is None:
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
     try:
+        # Base coercions first (the _coerce_interval rule): a float-subclass
+        # ``__eq__`` bomb used to blow the NaN probe below, and an
+        # int-subclass ``__int__`` bomb blew ``int(raw)`` — both raised on
+        # the sampler/alerter/scheduler start path instead of answering the
+        # default interval.
+        if isinstance(raw, int):
+            raw = int.__index__(raw)
+        elif isinstance(raw, float):
+            raw = float.__float__(raw)
+        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+            return default
         n = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return default
     if n <= 0 or n > maximum:
         return default
@@ -116,6 +134,30 @@ def _wall_now() -> float:
     return n
 
 
+def _finite_beat(raw) -> float:
+    """Finite beat timestamp from an entry this walk may not own.
+
+    beat() only ever writes ``_wall_now()``, but tests and tooling plant
+    entries directly, and a numeric-subclass ``__bool__``/``__float__`` bomb
+    used to blow the old ``raw or 0.0`` / ``float(raw)`` past the arithmetic
+    trio — snapshot() raised and the workers row silently vanished from
+    GET /api/health/checks (the health7 wipe class, one field over).
+    """
+    if isinstance(raw, bool) or raw is None:
+        return 0.0
+    try:
+        if isinstance(raw, int):
+            raw = int.__index__(raw)
+        elif isinstance(raw, float):
+            raw = float.__float__(raw)
+        beat = float(raw)
+    except Exception:
+        return 0.0
+    if beat != beat or beat in (float("inf"), float("-inf")):
+        return 0.0
+    return beat
+
+
 def _coerce_now(now) -> float:
     """Wall clock for age math; garbage / overflow must not 500 the health page."""
     if now is None:
@@ -127,6 +169,23 @@ def _coerce_now(now) -> float:
     if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
         return _wall_now()
     return n
+
+
+def _name_key(name) -> str:
+    """The registry key for *name*; a ``__str__`` bomb keys by its type.
+
+    register(), beat() and unregister() must agree on the key, so the
+    fallback is deterministic rather than "".  A bare ``str(name)`` used to
+    re-raise a subclass ``__str__`` bomb out of register() on the worker's
+    own thread — killing the loop this registry exists to watch.
+    """
+    try:
+        return str(name)
+    except Exception:
+        try:
+            return type(name).__name__
+        except Exception:
+            return "?"
 
 
 def register(name: str, interval: float, thread: threading.Thread | None = None) -> None:
@@ -142,21 +201,21 @@ def register(name: str, interval: float, thread: threading.Thread | None = None)
         "beat": _wall_now(),
     }
     with _lock:
-        _workers[str(name)] = entry
+        _workers[_name_key(name)] = entry
 
 
 def beat(name: str) -> None:
     """Record one loop iteration.  A beat for an unregistered name is a no-op
     (the worker may have been unregistered by a concurrent ``stop_*``)."""
     with _lock:
-        entry = _workers.get(str(name))
+        entry = _workers.get(_name_key(name))
         if isinstance(entry, dict):
             entry["beat"] = _wall_now()
 
 
 def unregister(name: str) -> None:
     with _lock:
-        _workers.pop(str(name), None)
+        _workers.pop(_name_key(name), None)
 
 
 def snapshot(now: float | None = None) -> list[dict]:
@@ -174,12 +233,7 @@ def snapshot(now: float | None = None) -> list[dict]:
             alive = bool(thread is not None and thread.is_alive())
         except Exception:
             alive = False
-        try:
-            beat = float(entry.get("beat") or 0.0)
-        except (TypeError, ValueError, OverflowError):
-            beat = 0.0
-        if beat != beat or beat in (float("inf"), float("-inf")):
-            beat = 0.0
+        beat = _finite_beat(entry.get("beat"))
         interval = _coerce_interval(entry.get("interval"))
         age = max(0.0, now_f - beat)
         if age != age or age in (float("inf"), float("-inf")):
@@ -208,21 +262,33 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
     cannot report ``N worker threads ticking`` from one read and a dead-thread
     line from a second read that raced with unregister.
     """
+    if rows is None:
+        rows = snapshot(now)
+    elif isinstance(rows, list):
+        # Unbound base walk (the health_svc._as_checks rule): this function
+        # does not own *rows*, and a list-subclass ``__iter__`` bomb used to
+        # raise here and silently wipe the workers row from the health page.
+        rows = list.__iter__(rows)
+    else:
+        try:
+            rows = iter(rows)
+        except Exception:
+            return []
     out = []
-    for w in rows if rows is not None else snapshot(now):
+    for w in rows:
         if not isinstance(w, dict):
             continue
-        name = _utf8_text(w.get("name") or "?")
-        if not w.get("alive"):
-            out.append(f"{name}: thread died")
-        elif w.get("stale"):
-            try:
-                age = int(float(w.get("age_sec") or 0))
-            except (TypeError, ValueError, OverflowError):
-                age = 0
-            try:
-                interval = int(float(w.get("interval") or 0))
-            except (TypeError, ValueError, OverflowError):
-                interval = 0
-            out.append(f"{name}: last tick {age}s ago (interval {interval}s)")
+        try:
+            # Unbound ``dict.get`` and one Exception net per row: a
+            # dict-subclass row (or a ``__bool__``-bomb field) drops alone
+            # rather than costing every sibling's dead/stale report.
+            name = _utf8_text(dict.get(w, "name") or "?")
+            if not dict.get(w, "alive"):
+                out.append(f"{name}: thread died")
+            elif dict.get(w, "stale"):
+                age = int(_finite_beat(dict.get(w, "age_sec")))
+                interval = int(_finite_beat(dict.get(w, "interval")))
+                out.append(f"{name}: last tick {age}s ago (interval {interval}s)")
+        except Exception:
+            continue
     return out

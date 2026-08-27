@@ -131,8 +131,17 @@ def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
         value = default
     else:
         try:
+            # Base coercions before ``int()`` (the smart_test_svc.history
+            # rule): the routes hand over Pydantic-exact ints, but these
+            # services are also called in-process, and an int-subclass
+            # ``__int__`` bomb raised RuntimeError past the old arithmetic
+            # trio — a raw 500 on POST /api/tools/net/ping for those callers.
+            if isinstance(raw, int):
+                raw = int.__index__(raw)
+            elif isinstance(raw, float):
+                raw = float.__float__(raw)
             value = int(raw)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             value = default
     return max(lo, min(value, hi))
 
@@ -1370,7 +1379,13 @@ def net_ping(host: str, count: int = 3) -> dict:
     # leading hyphen, so `-f` / `--flood` landed in ping's option position.
     if not cli_args.is_safe_hostname(host):
         return soft_fail("tools.bad_host")
-    host = host.strip()
+    # Unbound ``str.strip`` (the health_svc encode-bomb rule at strip rank):
+    # the route hands over a Pydantic-exact str, but a str-subclass host
+    # whose bound ``.strip`` raises passed the guard above and 500'd the
+    # in-process call where every junk host earns the coded refusal.  The
+    # unbound base method also answers an exact str, so the subclass's other
+    # overrides cannot ride into the argv below.
+    host = str.strip(host)
     count = _clamp_int(count, 3, 1, 10)
     rc, out, err = _sh(
         [PING, "-c", str(count), "-W", "2000", host],

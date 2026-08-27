@@ -2638,6 +2638,7 @@ export default {
       bad_wstunnel_target: 'Invalid wstunnel restrict-to: {target}',
       wstunnel_missing: 'wstunnel is not installed — install it with: brew install wstunnel',
       wstunnel_install_unverified: 'The wstunnel daemon was not installed as requested. Root is still running listen={listen}, restrict-to={restrict_to}; nothing was saved.',
+      ping_missing: 'ping is missing on this host',
       bad_number: '{field} is outside the allowed range',
       bad_name: 'A peer name of 1–32 letters, digits, spaces, dots, dashes or underscores is required',
       bad_mode: 'Unsupported tunnel mode {mode} — choose full or split',

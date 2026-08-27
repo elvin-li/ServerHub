@@ -2632,6 +2632,7 @@ export default {
       bad_wstunnel_target: 'wstunnel の転送先が不正です: {target}',
       wstunnel_missing: 'wstunnel が未インストールです — brew install wstunnel',
       wstunnel_install_unverified: 'wstunnel デーモンを要求どおりにインストールできませんでした。root では listen={listen}、restrict-to={restrict_to} のままです。設定は保存していません。',
+      ping_missing: 'このホストには ping がありません',
       bad_number: '{field} が許容範囲外です',
       bad_name: 'ピア名は英数字・空白・ドット・ハイフン・アンダースコアで 1〜32 文字にしてください',
       bad_mode: 'サポートされていないトンネルモード {mode} — full または split を選択してください',

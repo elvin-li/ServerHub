@@ -87,7 +87,13 @@ def _normalise(value: object) -> str | None:
     """
     if not isinstance(value, str):
         return None
-    text = value.strip(" \t")
+    # Unbound ``str.strip`` (the modules6 encode-bomb rule at strip rank): a
+    # str *subclass* whose bound ``.strip`` raises passed the isinstance gate
+    # above and blew this guard itself — every route that asks "is this
+    # argv-safe?" raised out of the very predicate that exists to refuse the
+    # value.  The base method also answers an exact str, so the walk below
+    # never runs the subclass's own iteration either.
+    text = str.strip(value, " \t")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         return None
     return text

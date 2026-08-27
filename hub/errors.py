@@ -288,6 +288,10 @@ CODES: dict[str, tuple[int, str]] = {
     "wg.bad_wstunnel_url": (400, "invalid wstunnel URL: {url}"),
     "wg.bad_wstunnel_target": (400, "invalid wstunnel restrict-to: {target}"),
     "wg.wstunnel_missing": (503, "wstunnel is not installed"),
+    # sh()'s vanished-binary sentinel confirmed by a fresh disk probe on the
+    # ping failure path only — the network.ping_missing / tools.ping_missing
+    # convention on the peer-ping surface.
+    "wg.ping_missing": (503, "ping is missing on this host"),
     "wg.wstunnel_install_unverified": (
         500,
         "the wstunnel daemon was not installed as requested; "
