@@ -1215,12 +1215,14 @@ def _launchd_detail(label: str) -> dict:
     # Laundered like every other cross-module payload merged into a detail
     # page: a subclass ``.get`` bomb or ``__bool__`` bomb value in the
     # uninstall preview must cost its field, never the whole detail route.
-    # The try covers a *raising* preview the same way — the agent is
-    # already confirmed listed, so a preview that cannot be computed (the
-    # plist vanished mid-request, a torn reader) costs the preview fields
-    # only; the coded not-found for a vanished agent is raised above.
+    # The try covers a preview that raises *raw* the same way (a torn
+    # reader mid-request); preview's own coded answers stay coded — apps5
+    # pins the FIFO-plist detail as services.uninstall_unknown, not a 200
+    # with blank preview fields.
     try:
         preview = _jsonable(services_uninstall_svc.preview(label))
+    except HTTPException:
+        raise
     except Exception:
         preview = None
     if not isinstance(preview, dict):
