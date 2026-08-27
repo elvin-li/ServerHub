@@ -109,16 +109,31 @@ def _safe_int(raw, default: int = 0) -> int:
     return value
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+def _decode_bytes(value):
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Returns ``None`` for a *lying* ``__class__`` that answers ``bytes`` /
+    ``bytearray`` while the real type is neither: ``_isa`` reports the lie at
+    face value, and the unbound base decode is a descriptor bound to the real
+    bytes layout, so it rejected the foreign operand with a TypeError outside
+    every try — ``_title`` runs it inside ``suggest_panels``, which the
+    router's own error fallback calls again with the same poisoned row: a
+    raw 500 on POST /api/assistant/ask.  A raise means "not really bytes";
+    the impostor drops like a lying ``int``/``float`` does.
+    """
     base = bytes if _isa(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if _isa(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        # ``or ""``: a lying-``__class__`` impostor decodes to None — drop
+        # the cell to empty, never its repr and never a raise.
+        return _decode_bytes(value) or ""
     try:
         text = str(value)
     except RecursionError:
@@ -178,6 +193,35 @@ def _dget(mapping, key):
     return None
 
 
+def _list_rows(value) -> list:
+    """Real elements of a list-shaped leftover; junk answers ``[]``.
+
+    ``list.__iter__`` is a descriptor bound to the real list layout, so a
+    *lying* ``__class__`` that answers ``list`` while the real type is not
+    rejected the operand with a TypeError at call sites outside every try:
+    one impostor aliases cell wiped the whole Cmd+K catalog to ``[]`` and
+    degraded every find to the brief, an impostor problems / resident list
+    dropped the snapshot section, and ``fallback_brief`` walks problems
+    inside the router's own error fallback.
+    """
+    if not _isa(value, list):
+        return []
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
+
+
+def _dict_len(mapping) -> int:
+    """Unbound ``dict.__len__`` that cannot raise: a lying ``__class__``
+    that answers ``dict`` rejects the descriptor — report it empty so the
+    caller's existing fallback path runs instead of a blanket except."""
+    try:
+        return dict.__len__(mapping)
+    except Exception:
+        return 0
+
+
 def _reply_text(value) -> str:
     """A chat-result cell as text; falsy junk stays the old empty drop.
 
@@ -229,8 +273,17 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` is final, so a value that answers this gate while its
+        # real type is not ``bool`` is a lying-``__class__`` impostor, not a
+        # genuine bool.  The old arm returned it raw, handing the response
+        # encoder a non-serializable object: a leftover engine_up / uptime /
+        # problem-state / ups-percent cell 500'd POST /api/assistant/ask on
+        # every action at once.  Only a real bool renders; the impostor
+        # drops to None like its lying int/float siblings.
+        return value if type(value) is bool else None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -265,12 +318,23 @@ def _jsonable(value, depth: int = 0):
     if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     if _isa(value, dict):
-        out = {}
         # Unbound base view: a nested dict-subclass ``items()`` bomb used to
-        # wipe the whole snapshot to the minimal brief.
-        for k, v in dict.items(value):
+        # wipe the whole snapshot to the minimal brief.  The descriptor is
+        # bound to the real dict layout, so a lying ``__class__`` claiming
+        # ``dict`` blew the call itself outside every try — drop the
+        # impostor like a lying int.
+        try:
+            items = dict.items(value)
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
             if _isa(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
+                if k is None:
+                    # A lying-``__class__`` key claiming bytes: drop just
+                    # this entry, keep the rest of the mapping.
+                    continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
@@ -286,8 +350,15 @@ def _jsonable(value, depth: int = 0):
         for base in (list, tuple, set, frozenset):
             if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot raise and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot raise and the real elements still survive.  A
+                # lying ``__class__`` claiming this base rejects the
+                # descriptor — drop the impostor, never the response.
+                try:
+                    rows = base.__iter__(value)
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in rows]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -475,11 +546,12 @@ def catalog(locale: str | None = None) -> list[dict]:
         # non-string path is junk the palette cannot open.
         pid = _panel_id(_dget(panel, "id"))
         path = _dget(panel, "path")
-        aliases = _dget(panel, "aliases")
+        # _list_rows, not a bare ``list.__iter__`` behind an _isa gate: a
+        # lying-``__class__`` aliases cell passed the gate, rejected the
+        # unbound descriptor and wiped the whole catalog to [].
+        aliases = _list_rows(_dget(panel, "aliases"))
         if not pid or not _isa(path, str):
             continue
-        if not _isa(aliases, list):
-            aliases = []
         out.append({
             "id": pid,
             # _utf8_text, not the raw value: a str-subclass path whose
@@ -493,9 +565,10 @@ def catalog(locale: str | None = None) -> list[dict]:
             # _utf8_text, not bare str(): an over-cap *already-int* alias used
             # to ValueError here and wipe the whole catalog to [] — drop just
             # the unrenderable alias, like its inf float sibling.
-            # list.__iter__: a subclass iterator bomb drops nothing but itself.
+            # _list_rows: a subclass iterator bomb or a lying-``__class__``
+            # impostor drops nothing but itself.
             "aliases": [
-                text for a in list.__iter__(aliases)
+                text for a in aliases
                 if a is not None and (text := _utf8_text(a))
             ],
         })
@@ -513,10 +586,12 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
     raw_aliases = _dget(panel, "aliases")
     # _utf8_text, not bare str(): an over-cap already-int alias used to
     # ValueError out of match_panels() and turn every find into the brief.
+    # _list_rows: a lying-``__class__`` aliases cell used to reject the
+    # unbound ``list.__iter__`` the same way and degrade every find too.
     aliases = [
-        text.lower() for a in list.__iter__(raw_aliases)
+        text.lower() for a in _list_rows(raw_aliases)
         if a is not None and (text := _utf8_text(a))
-    ] if _isa(raw_aliases, list) else []
+    ]
     # _panel_id, not bare str(): callers gate rows on the probe, but this
     # comparison must not be the one bare int->str left to re-raise.
     if needle == title or needle == _panel_id(_dget(panel, "id")) or needle == path.lstrip("/"):
@@ -611,8 +686,10 @@ def build_snapshot() -> dict:
         # Unbound ``dict.__len__``, not the bare ``or`` truthiness: a
         # dict-subclass ``__bool__`` bomb on the cached snapshot used to
         # fall into this except and wipe every field even though the real
-        # rows were right there.
-        if not (_isa(status, dict) and dict.__len__(status)):
+        # rows were right there.  _dict_len, not the bare descriptor: a
+        # lying-``__class__`` peek result rejected the call into the same
+        # except and skipped the full_status() retry the sane path still had.
+        if not (_isa(status, dict) and _dict_len(status)):
             status = full_status()
     except Exception:
         status = {}
@@ -626,11 +703,9 @@ def build_snapshot() -> dict:
     counts = counts if _isa(counts, dict) else {}
     raw_problems = _dget(status, "problems")
     problems = []
-    if _isa(raw_problems, list):
-        # list.__iter__: a subclass iterator bomb drops nothing but itself.
-        rows = [row for row in list.__iter__(raw_problems)][:8]
-    else:
-        rows = []
+    # _list_rows: a subclass iterator bomb or a lying-``__class__`` impostor
+    # drops nothing but itself.
+    rows = _list_rows(raw_problems)[:8]
     for row in rows:
         if not _isa(row, dict):
             continue
@@ -673,9 +748,7 @@ def build_snapshot() -> dict:
         # drop the whole ollama section even though the sane rows were right
         # underneath — the ups/ollama settings rule.
         raw_resident = _dget(ollama, "resident")
-        rows = [
-            row for row in list.__iter__(raw_resident)
-        ][:2] if _isa(raw_resident, list) else []
+        rows = _list_rows(raw_resident)[:2]
         snap["ollama"] = {
             "reachable": _truthy(_dget(ollama, "reachable")),
             "resident": [
@@ -789,9 +862,10 @@ def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     # out of this conditional on both passes of the turn.
     engine = "on" if _truthy(_dget(snapshot, "engine_up")) else "off"
     raw_problems = _dget(snapshot, "problems")
-    problems = [
-        p for p in list.__iter__(raw_problems) if _isa(p, dict)
-    ] if _isa(raw_problems, list) else []
+    # _list_rows: a lying-``__class__`` problems cell used to reject the
+    # unbound ``list.__iter__`` right here — inside the router's own error
+    # fallback, where the re-raise is a guaranteed 500.
+    problems = [p for p in _list_rows(raw_problems) if _isa(p, dict)]
     lines = [
         f"Overview: load {_brief_cell(_dget(snapshot, 'load'))} (~{_brief_cell(_dget(snapshot, 'cpu_load_pct'), keep_zero=True)}%)"
         f" · memory used {_brief_cell(_dget(snapshot, 'mem_used_pct'), keep_zero=True)}%"
@@ -824,7 +898,7 @@ def _pick_model() -> str | None:
         return None
     for key in ("resident", "models"):
         rows = _dget(snap, key)
-        for row in list.__iter__(rows) if _isa(rows, list) else []:
+        for row in _list_rows(rows):
             if not _isa(row, dict):
                 continue
             name = _dget(row, "name")
