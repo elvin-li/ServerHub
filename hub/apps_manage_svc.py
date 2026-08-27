@@ -24,6 +24,54 @@ from hub.paths import DOCKER, user_home
 from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, tail_file_lines
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a cross-module leftover whose ``__class__`` is a *raising
+    property* detonated the bare type gates themselves — planted as an
+    autostart-toggle / ``vm_action`` / uninstall result it blew
+    ``_safe_payload``'s dict gate (a raw 500 on POST /api/apps/managed/action
+    one line past the apps8 seam), planted as a ``config.override`` return or
+    override *value* it raised out of ``_launchd_apps`` (a 500 on
+    GET /api/apps/managed/detail?id=launchd:* and a wiped launchd section),
+    and planted as a listing row it raised out of ``_clean_rows`` and wiped
+    the row's whole section from GET /api/apps/managed.  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch (the docker_cli /
+    storage_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if _isa(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` probes; a bomb reads as failure.
+
+    ``actions.run_action`` is another module's return, and an rc-*subclass*
+    whose ``__eq__`` raises used to detonate the bare ``rc == 0`` probe —
+    the apps8 seam absorbed it into a bare ``ok: false``, but the action's
+    own output text was lost with it.  ``-255`` is no honest exit status,
+    so a bomb keeps the failure branch (the storage_svc/ups_svc rule).
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _default_services_root() -> Path:
     """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
     home = user_home()
@@ -55,8 +103,18 @@ def _plist_dict(path: Path) -> dict | None:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    # _isa + unbound decode: a ``__class__``-property bomb used to detonate
+    # the bytes gate itself, and a bytes-subclass ``.decode`` bomb rode the
+    # old bound call (planted as an override value it raised out of
+    # ``_launchd_apps`` — a 500 on the launchd detail route and a wiped
+    # launchd section).  The try is for a *lying* ``__class__`` (claims
+    # bytes, is not): the unbound decode TypeErrors and the value falls to
+    # the str() scrub below like any other junk leftover (docker_cli twin).
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -69,7 +127,11 @@ def _utf8_text(value) -> str:
     # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
     # returns self keeps the subclass, so a bound ``.encode`` bomb could
     # still fire here (the modules5 unbound convention, like docker_cli).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A lying-``__class__`` str impostor reaches here as a non-str; junk.
+        return ""
 
 
 def _mapping_get(mapping, key, default=None):
@@ -81,10 +143,22 @@ def _mapping_get(mapping, key, default=None):
     ``_vm_detail`` and 500 the Apps detail, logs and autostart-action
     routes.  ``dict.get`` reads the real storage underneath the override,
     so a subclass that only poisoned its method keeps its sane data.
+
+    _isa, not a bare isinstance: a mapping whose ``__class__`` is a raising
+    property used to detonate the gate itself.  The try around the unbound
+    read: even ``dict.get`` runs the *stored keys'* own ``__eq__`` during
+    the hash probe, so a leftover str-subclass key whose hash shadows the
+    real key (a hash-war ``name``/``port`` in a torn services.yaml
+    override) used to raise out of ``_launchd_apps`` — a 500 on the
+    launchd detail route and a wiped launchd section.  Only the shadowed
+    field degrades to its default (the storage_svc rule).
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return default
-    return dict.get(mapping, key, default)
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
 
 
 def _truthy(value) -> bool:
@@ -105,24 +179,44 @@ def _clean_rows(raw) -> list[dict]:
     downstream.  ``list.__iter__`` walks the real storage of a list
     subclass whose own ``__iter__`` raises (the modules convention).  A
     row that is not a dict at all costs itself, never its siblings.
+
+    _isa on the list gate and on every row gate: a listing (or one row)
+    whose ``__class__`` is a *raising property* used to detonate the bare
+    isinstance itself — one poisoned row raised out of this loop and wiped
+    its whole section (docker / native / vm) from GET /api/apps/managed via
+    _collect's fallback, exactly the row-wipe this launderer exists to stop.
     """
-    if not isinstance(raw, list):
+    if not _isa(raw, list):
         return []
     out: list[dict] = []
     for row in list.__iter__(raw):
-        cleaned = _jsonable(row) if isinstance(row, dict) else None
+        cleaned = _jsonable(row) if _isa(row, dict) else None
         if isinstance(cleaned, dict):
             out.append(cleaned)
     return out
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, str):
+    # _isa on every gate: a ``__class__``-property bomb used to detonate the
+    # first isinstance below.  Unbound decode: a bytes-subclass ``.decode``
+    # bomb rode the old bound call; a lying ``__class__`` (claims bytes, is
+    # not) TypeErrors the unbound read and falls to the str() scrub.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
+    if _isa(value, float):
+        # Base coercion to an exact float first: a float-subclass ``__ne__``
+        # bomb used to detonate the bare ``value != value`` NaN probe.
+        try:
+            probe = float.__float__(value)
+        except Exception:
+            return ""
+        if probe != probe or probe in (float("inf"), float("-inf")):
+            return ""
     if value is None:
         return ""
     try:
@@ -134,29 +228,56 @@ def _as_text(value) -> str:
 
 
 def _field_text(value, fallback: str = "") -> str:
-    """JSON-safe leftover YAML field (``.inf`` / dates / ``!!binary`` / ``!!set`` / ``\\ud800``)."""
-    if value is None or isinstance(value, bool):
+    """JSON-safe leftover YAML field (``.inf`` / dates / ``!!binary`` / ``!!set`` / ``\\ud800``).
+
+    _isa on every rank gate: an override value whose ``__class__`` is a
+    raising property used to detonate the *first* isinstance below — a raw
+    500 on GET /api/apps/managed/detail?id=launchd:* and a wiped launchd
+    section, one step ahead of every scrub this helper carries.  A lying
+    ``__class__`` bool impostor reads as junk (fallback), not as a value.
+    """
+    if value is None or _isa(value, bool):
         return fallback
-    if isinstance(value, float):
+    if _isa(value, float):
+        # Base coercion to an exact float first: a float-subclass ``__eq__``
+        # / ``__ne__`` bomb (a poisoned override ``port``) used to detonate
+        # the bare NaN/inf probes below (the docker_cli._jsonable rule).
+        try:
+            value = float.__float__(value)
+        except Exception:
+            return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         # A YAML hex/octal leftover dodges the int(str) digit cap, so an
         # override ``port: 0xfff…`` arrives as a >4300-digit int whose str()
         # is ValueError — it used to escape this helper and 500
         # GET /api/apps/managed/detail (and cost inventory whole sections).
+        # int.__index__ first: an int-subclass ``__str__`` bomb used to
+        # raise past the ValueError catch the digit cap already has.
         try:
-            return str(value)
-        except ValueError:
+            return str(int.__index__(value))
+        except Exception:
             return fallback
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, (dict, list, tuple, set, frozenset)):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a bytes-subclass ``.decode`` bomb in an
+            # override field used to fire the old bound call; a lying
+            # ``__class__`` TypeErrors the unbound read and reads as junk.
+            return _decode_bytes(value)
+        except Exception:
+            return fallback
+    if _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # A ``__getattr__`` bomb raising something besides AttributeError
+        # escapes getattr's default (the docker_cli._jsonable rule).
+        iso = None
     if callable(iso):
         try:
             text = iso()
@@ -217,8 +338,17 @@ def _scrub_utf8(value, depth: int = 0):
 
 
 def _safe_payload(payload):
-    """Starlette encodes with allow_nan=False; leftover inf/bytes/dates/``\\ud800`` 500 the Apps page."""
-    if not isinstance(payload, dict):
+    """Starlette encodes with allow_nan=False; leftover inf/bytes/dates/``\\ud800`` 500 the Apps page.
+
+    _isa, not a bare isinstance: an action result whose ``__class__`` is a
+    raising property used to detonate this very gate — a raw 500 on
+    POST /api/apps/managed/action one line past the apps8 collaborator
+    seam, after the action had already run.  A payload that cannot be
+    laundered into a dict (a lying-``__class__`` dict impostor drops out of
+    ``_jsonable``'s ``dict()`` copy) is handed back as-is: ``action()`` /
+    ``_native_logs`` own the answer for an unusable shape.
+    """
+    if not _isa(payload, dict):
         return payload
     cleaned = _jsonable(payload)
     if not isinstance(cleaned, dict):
@@ -1052,13 +1182,22 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
     if source_id == "native-cloudflared":
         from hub import cloudflared_svc
         try:
-            return cloudflared_svc.logs(lines=lines)
+            cf_logs = cloudflared_svc.logs(lines=lines)
         except Exception as e:
             # A raising backend used to 500 the logs modal; exc_detail, not
             # bare str(e): a leftover ``\ud800`` / RecursionError in the
             # message must cost the message, never the modal (the _vm_logs
             # convention).
             return {"ok": False, "log": exc_detail(e)}
+        # The one branch of logs() that hands another module's payload back
+        # verbatim: a return whose ``__class__`` is a raising property (or a
+        # lying dict impostor) used to ride into logs()'s _safe_payload and
+        # 500 GET /api/apps/managed/logs where a *raising* backend already
+        # answered ok:false.  Same contract: junk shapes cost the log body.
+        cleaned = _jsonable(cf_logs) if _isa(cf_logs, dict) else None
+        if isinstance(cleaned, dict):
+            return cleaned
+        return {"ok": False, "log": f"unusable log payload ({type(cf_logs).__name__})"}
     pkg = app.get("package")
     chunks = []
     home = user_home()
@@ -1178,7 +1317,11 @@ def _launchd_apps() -> list[dict]:
             # _collect's fallback.  The override is cosmetics (name, group,
             # port, url) — losing it must cost those fields, not the agent.
             ov = None
-        if not isinstance(ov, dict):
+        # _isa, not a bare isinstance: an override whose ``__class__`` is a
+        # raising property used to detonate this gate one line past the
+        # apps8 try — a raw 500 on GET /api/apps/managed/detail?id=launchd:*
+        # and a silently emptied launchd section via _collect's fallback.
+        if not _isa(ov, dict):
             ov = {}
         # _mapping_get: an override payload that is a dict subclass whose
         # ``.get`` bombs (the ups_svc convention) costs its fields only.
@@ -1512,7 +1655,13 @@ def inventory(force: bool = False) -> dict:
         # stringified into the payload as an object repr; the flag's
         # contract is a bool, and a value that cannot even answer
         # __bool__ reads as down (the tools7 convention).
-        "engine_up": engine if isinstance(engine, bool) else _truthy(engine),
+        # ``type(engine) is bool``, not isinstance: an engine probe leftover
+        # whose ``__class__`` is a raising property detonated the gate
+        # itself, and a *lying* ``__class__`` (claims bool, is not) rode
+        # through it verbatim into Starlette's encoder — both raw 500s on
+        # GET /api/apps/managed.  bool cannot be subclassed, so the exact
+        # check is complete; everything else answers through _truthy.
+        "engine_up": engine if type(engine) is bool else _truthy(engine),
     }
     return _safe_payload(v)
 
@@ -1589,7 +1738,18 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         raise
     except Exception as e:
         result = {"ok": False, "message": exc_detail(e)}
-    return _safe_payload(result)
+    safe = _safe_payload(result)
+    if type(safe) is dict:
+        return safe
+    # A collaborator that *returned* junk instead of raising it: a
+    # ``__class__``-property bomb or a lying dict impostor rode past the
+    # seam above (the try only covers a raising call) and 500'd — first on
+    # ``_safe_payload``'s old bare isinstance, then in Starlette's encoder
+    # when the unlaunderable shape came back verbatim.  Same contract as a
+    # raising collaborator: the action answers ``ok: false``, never a 500.
+    # ``type(...)`` never consults ``__class__``, so naming the shape in
+    # the message cannot re-detonate the bomb it reports.
+    return {"ok": False, "message": f"unusable action result ({type(result).__name__})"}
 
 
 def _action(app_id: str, action_name: str, **kwargs) -> dict:
@@ -1736,9 +1896,14 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                 # A torn registry row / raising backend used to 500 the
                 # action instead of reporting the failure.
                 return {"ok": False, "message": _as_text(e)}
+            # _rc_int: an rc-subclass ``__eq__`` bomb in run_action's return
+            # used to detonate the bare ``rc == 0`` probe — the action()
+            # seam absorbed it, but the action's own output text was folded
+            # into a bare ``ok: false`` with it.  _truthy on the ``or``:
+            # a ``__bool__`` bomb riding *out* must cost its text only.
             return {
-                "ok": rc == 0,
-                "message": _as_text(out or err).strip() or action_name,
+                "ok": _rc_int(rc) == 0,
+                "message": _as_text(out if _truthy(out) else err).strip() or action_name,
             }
         raise api_error("apps.native_action_unsupported", action=action_name)
 

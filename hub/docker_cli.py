@@ -119,7 +119,13 @@ def _jsonable(value, depth: int = 0):
     # property used to detonate the *first* isinstance below and 500
     # GET /api/stacks and GET /api/stacks/jobs/{id} on one poisoned job-row
     # scalar (rc/started/…) — one step ahead of every scrub in this funnel.
-    if value is None or _isa(value, bool):
+    # ``type(value) is bool``, not _isa: a liar whose ``__class__`` *answers*
+    # bool passed the old gate and rode raw through every consumer of this
+    # funnel into Starlette's encoder (an autostart toggle's ``ok`` field
+    # 500'd POST /api/apps/managed/action); bool cannot be subclassed, so
+    # the exact check is complete and the impostor falls to the int arm's
+    # unbound coercion (the jobs/scheduler_svc convention).
+    if value is None or type(value) is bool:
         return value
     if _isa(value, int):
         if type(value) is not int:
