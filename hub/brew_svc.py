@@ -38,15 +38,31 @@ def _as_text(value) -> str:
     # 500 the post-spawn tail of service_action, which runs outside its try.
     # Guarded isinstance throughout: a leftover whose ``__class__`` property
     # raises used to blow the chain itself and cost every sibling row.
+    #
+    # The unbound base calls run inside a ``try`` (the health10 rule): a
+    # *lying*-``__class__`` impostor — ``isinstance`` answers bytes/str, the
+    # real object is neither — passes the gate but makes the unbound
+    # ``bytes.decode`` / ``str.encode`` descriptor itself raise TypeError.
+    # A bytes/str-liar stdout used to 500 GET /api/brew/services from the
+    # fallback tail, and a liar ``msg`` 500'd POST
+    # /api/brew/services/{name}/action after the run had finished.  A liar
+    # falls through to the generic guarded ``str()`` probe instead.
+    text = None
     if _isinstance(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
+        try:
+            text = bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isinstance(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
+        try:
+            text = bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
-    else:
+    if text is None:
         try:
             text = str(value)
         except RecursionError:
@@ -56,7 +72,19 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A str-liar rode the ``_isinstance(value, str)`` branch as *text*
+        # itself, and unbound ``str.encode`` cannot apply to it — one last
+        # guarded ``str()`` renders its honest ``__str__`` instead of 500ing.
+        try:
+            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except Exception:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
 
 
 def _json_safe(value, depth: int = 0):
@@ -78,11 +106,29 @@ def _json_safe(value, depth: int = 0):
     probe here and wipe every sibling row into the text fallback.  The depth
     cap matches brew_cache._json_safe: a two-object ``isoformat`` cycle used
     to recurse until wherever RecursionError happened to land.
+
+    The unbound base calls run inside a ``try`` (the health10/modules9
+    rule): a *lying*-``__class__`` impostor — ``isinstance`` answers the
+    claimed type, the real object is something else — passes the gate but
+    makes the unbound descriptor itself raise TypeError.  A bool-liar
+    ``user``/``file``/``exit_code`` used to ride through the old
+    ``return value`` arm raw and 500 Starlette's encoder on GET
+    /api/brew/services; a str/bytes-liar field raised out of this launderer
+    and wiped every sibling row into the text fallback.
     """
     if depth > 16:
         return None
-    if _isinstance(value, bool) or value is None:
+    if value is None:
         return value
+    if _isinstance(value, bool):
+        if type(value) is bool:
+            return value
+        # Only a lying ``__class__`` property lands here (bool is final).
+        # It used to ride through as-is and 500 Starlette's encoder.
+        try:
+            return bool(value)
+        except Exception:
+            return None
     if _isinstance(value, int):
         if type(value) is not int:
             try:
@@ -114,11 +160,22 @@ def _json_safe(value, depth: int = 0):
         return value
     if _isinstance(value, str):
         # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
+        # Guarded: a str-liar the descriptor refuses drops to None instead
+        # of raising out and wiping every sibling row.
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            return None
     if _isinstance(value, bytes):
-        return bytes.decode(value, "utf-8", "replace")
+        try:
+            return bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isinstance(value, bytearray):
-        return bytearray.decode(value, "utf-8", "replace")
+        try:
+            return bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isinstance(value, (list, tuple, set, frozenset)):
         return None
     try:
@@ -151,9 +208,16 @@ def _plain_rc(value):
     override; anything non-numeric degrades to None ("exit unknown").
     Guarded isinstance: a leftover rc whose ``__class__`` property raises
     used to blow the first probe here — this helper runs outside every try.
+    The bool arm's coercion is guarded too (bool is final, so only a
+    *lying*-``__class__`` impostor can fail it): ``int(liar)`` used to
+    TypeError out of this helper and 500 both GET /api/brew/services'
+    fallback tail and POST /api/brew/services/{name}/action.
     """
     if _isinstance(value, bool):
-        return int(value)
+        try:
+            return int(value)
+        except Exception:
+            return None
     if _isinstance(value, int):
         try:
             return int.__index__(value)
@@ -220,28 +284,37 @@ def list_services() -> list:
     if rows:
         try:
             for s in rows:
-                # Unbound dict reads, the brew_cache._json_safe convention: a
-                # dict-subclass row whose ``get`` raises used to cost every
-                # sibling row instead of nothing.
-                name = _as_text(dict.get(s, "name")).strip()
-                if not name or name in _HIDE_BREW:
-                    continue
-                status = _as_text(dict.get(s, "status")).lower()
+                # Per-row guard: a *lying*-``__class__`` impostor row —
+                # ``isinstance`` answers dict, the real object is not one —
+                # passes the filter above and then the unbound ``dict.get``
+                # descriptor refuses it with TypeError; under the old
+                # loop-wide try that one row wiped every sibling into the
+                # text fallback.  It now costs only itself.
+                try:
+                    # Unbound dict reads, the brew_cache._json_safe
+                    # convention: a dict-subclass row whose ``get`` raises
+                    # used to cost every sibling row instead of nothing.
+                    name = _as_text(dict.get(s, "name")).strip()
+                    if not name or name in _HIDE_BREW:
+                        continue
+                    status = _as_text(dict.get(s, "status")).lower()
 
-                # started|stopped|error|none
-                state = "ok" if status in ("started", "running") else (
-                    "warn" if status in ("error",) else "down"
-                )
-                items.append({
-                    "id": name,
-                    "name": name,
-                    "status": status or "unknown",
-                    "state": state,
-                    "user": _json_safe(dict.get(s, "user")),
-                    "file": _json_safe(dict.get(s, "file")),
-                    "exit_code": _json_safe(dict.get(s, "exit_code")),
-                    "actions": ["restart", "stop"] if state == "ok" else ["start"],
-                })
+                    # started|stopped|error|none
+                    state = "ok" if status in ("started", "running") else (
+                        "warn" if status in ("error",) else "down"
+                    )
+                    items.append({
+                        "id": name,
+                        "name": name,
+                        "status": status or "unknown",
+                        "state": state,
+                        "user": _json_safe(dict.get(s, "user")),
+                        "file": _json_safe(dict.get(s, "file")),
+                        "exit_code": _json_safe(dict.get(s, "exit_code")),
+                        "actions": ["restart", "stop"] if state == "ok" else ["start"],
+                    })
+                except Exception:
+                    continue
             return items
         except Exception:
             items = []

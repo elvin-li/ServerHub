@@ -78,15 +78,29 @@ def _as_text(value) -> str:
     # ``.encode`` does) used to raise out of _services_from_output and cost
     # the whole fresh snapshot instead of nothing.  Guarded isinstance:
     # a ``__class__`` property bomb used to blow the chain itself.
+    #
+    # The unbound base calls run inside a ``try`` (the health10 rule): a
+    # *lying*-``__class__`` impostor — ``isinstance`` answers bytes/str, the
+    # real object is neither — passes the gate but makes the unbound
+    # descriptor itself raise TypeError, discarding the fresh snapshot and
+    # the last-good rows the same way.  A liar falls through to the generic
+    # guarded ``str()`` probe instead.
+    text = None
     if _isinstance(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
+        try:
+            text = bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isinstance(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
+        try:
+            text = bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
-    else:
+    if text is None:
         try:
             text = str(value)
         except RecursionError:
@@ -96,7 +110,18 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A str-liar rode the ``_isinstance(value, str)`` branch as *text*
+        # itself; one last guarded ``str()`` renders its honest ``__str__``.
+        try:
+            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except Exception:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
 
 
 def _json_safe(value, depth: int = 0):
@@ -118,11 +143,30 @@ def _json_safe(value, depth: int = 0):
     Guarded isinstance throughout (see :func:`_isinstance`): a leftover
     value — or a leftover mapping *key* — whose ``__class__`` property
     raises used to blow the probes here and wipe every sibling row.
+
+    The unbound base calls run inside a ``try`` (the health10/modules9
+    rule): a *lying*-``__class__`` impostor — ``isinstance`` answers the
+    claimed type, the real object is something else — passes the gate but
+    makes the unbound descriptor itself raise TypeError.  A bool-liar field
+    used to ride through the old ``return value`` arm raw, survive both
+    launderers and 500 Starlette's encoder on GET /api/brew/services; a
+    str/bytes/dict/list-liar (value, element, or mapping key) raised out of
+    ``_copy_items`` and wiped the whole fresh snapshot instead of costing
+    only the poisoned value.
     """
     if depth > 16:
         return None
-    if _isinstance(value, bool) or value is None:
+    if value is None:
         return value
+    if _isinstance(value, bool):
+        if type(value) is bool:
+            return value
+        # Only a lying ``__class__`` property lands here (bool is final).
+        # It used to ride through as-is and 500 Starlette's encoder.
+        try:
+            return bool(value)
+        except Exception:
+            return None
     if _isinstance(value, int):
         if type(value) is not int:
             try:
@@ -155,25 +199,55 @@ def _json_safe(value, depth: int = 0):
         return value
     if _isinstance(value, str):
         # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
+        # Guarded: a str-liar the descriptor refuses drops to None instead
+        # of raising out of _copy_items and wiping the whole snapshot.
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            return None
     if _isinstance(value, bytes):
-        return bytes.decode(value, "utf-8", "replace")
+        try:
+            return bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isinstance(value, bytearray):
-        return bytearray.decode(value, "utf-8", "replace")
+        try:
+            return bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isinstance(value, dict):
-        out = {}
         # Unbound base view: reads the C-level storage, so a dict-subclass
         # row whose ``items``/``keys``/``__iter__``/``get`` raises still
         # yields its real pairs.  Key probes guarded too: one mapping key
         # whose ``__class__`` property raises used to wipe the whole row.
-        for k, v in dict.items(value):
+        # The view call itself runs in a try: a dict-liar the unbound
+        # descriptor refuses used to TypeError out of _copy_items and wipe
+        # every sibling row; it degrades to None like any other impostor.
+        try:
+            pairs = list(dict.items(value))
+        except Exception:
+            return None
+        out = {}
+        for k, v in pairs:
+            key = None
             if _isinstance(k, bytes):
-                key = bytes.decode(k, "utf-8", "replace")
-            elif _isinstance(k, bytearray):
-                key = bytearray.decode(k, "utf-8", "replace")
-            else:
+                # Guarded unbound decode: a bytes-liar key used to
+                # TypeError here and wipe the whole row; it falls through
+                # to the generic ``str()`` probe below.
                 try:
-                    key = k if _isinstance(k, str) else str(k)
+                    key = bytes.decode(k, "utf-8", "replace")
+                except Exception:
+                    key = None
+            elif _isinstance(k, bytearray):
+                try:
+                    key = bytearray.decode(k, "utf-8", "replace")
+                except Exception:
+                    key = None
+            elif _isinstance(k, str):
+                key = k
+            if key is None:
+                try:
+                    key = str(k)
                 except RecursionError:
                     try:
                         key = type(k).__name__
@@ -184,15 +258,27 @@ def _json_safe(value, depth: int = 0):
             try:
                 key = str.encode(key, "utf-8", "replace").decode("utf-8")
             except Exception:
-                continue
+                # A str-liar rode the str gate as *key* itself; render its
+                # honest ``__str__`` instead of dropping the pair.
+                try:
+                    key = str.encode(str(k), "utf-8", "replace").decode("utf-8")
+                except Exception:
+                    continue
             out[key] = _json_safe(v, depth + 1)
         return out
     if _isinstance(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
             if _isinstance(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot fire and the real elements still survive.
-                return [_json_safe(v, depth + 1) for v in base.__iter__(value)]
+                # cannot fire and the real elements still survive.  In a
+                # try: a sequence-liar the descriptor refuses used to
+                # TypeError out of _copy_items and wipe the snapshot; it
+                # drops to None like the other impostors.
+                try:
+                    elems = list(base.__iter__(value))
+                except Exception:
+                    return None
+                return [_json_safe(v, depth + 1) for v in elems]
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -220,9 +306,15 @@ def _plain_rc(value):
     brew_svc/autostart_svc ``_plain_rc`` convention.  Guarded isinstance:
     a leftover rc whose ``__class__`` property raises used to blow the
     first probe here, raise out of ``_load`` and discard the fresh snapshot.
+    The bool arm's coercion is guarded too (bool is final, so only a
+    *lying*-``__class__`` impostor can fail it): ``int(liar)`` used to
+    TypeError out of ``_load`` and discard the last-good snapshot.
     """
     if _isinstance(value, bool):
-        return int(value)
+        try:
+            return int(value)
+        except Exception:
+            return None
     if _isinstance(value, int):
         try:
             return int.__index__(value)
@@ -263,7 +355,14 @@ def _copy_items(items) -> list[dict]:
     # Unbound base iteration: a primed list-subclass ``__iter__`` bomb
     # cannot cost the snapshot its real rows.  Guarded element probe: one
     # ``__class__``-bomb element used to blow the filter and cost them all.
-    for x in list.__iter__(items):
+    # The descriptor call runs in a try: a list-liar the unbound
+    # ``list.__iter__`` refuses used to TypeError out of every caller
+    # (_fresh/_publish/_load) instead of reading as "no rows".
+    try:
+        rows = list.__iter__(items)
+    except Exception:
+        return []
+    for x in rows:
         if not _isinstance(x, dict):
             continue
         row = _json_safe(x)
@@ -401,8 +500,14 @@ def _services_from_output(out) -> list[dict] | None:
         return None
     # Unbound base iteration, like _copy_items: a stub that returned a
     # list-*subclass* whose ``__iter__`` raises used to raise out of _load
-    # and cost the whole fresh snapshot instead of nothing.
-    return [x for x in list.__iter__(parsed) if _isinstance(x, dict)]
+    # and cost the whole fresh snapshot instead of nothing.  In a try: a
+    # list-liar stdout the descriptor refuses used to TypeError out of
+    # _load the same way; it reads as "not a successful list" so the
+    # last-good snapshot survives.
+    try:
+        return [x for x in list.__iter__(parsed) if _isinstance(x, dict)]
+    except Exception:
+        return None
 
 
 def _brew_argv_patterns() -> tuple[str, str]:
