@@ -244,6 +244,31 @@ def _key_text(value) -> str | None:
     return _utf8_text(s) or None
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 rule on the bookmarks surface: even a plain-dict lookup
+    still runs the *stored keys'* own ``__eq__`` during the hash probe.
+    ``resolve_value`` launders row keys to exact strs, but its
+    all-or-nothing fallback keeps the whole ``quick_links`` list raw when
+    any sibling row bombs — and ``_plain_dict``'s C-level copy preserves a
+    raw row's keys.  A leftover str-subclass key whose hash shadows
+    ``url`` / ``name`` / ``service`` and whose ``__eq__`` raises then
+    detonated every bound ``link.get(...)`` downstream — the url launder
+    loop, the dedupe ``any()``, the probe-decision gate,
+    ``_resolve_backend`` and ``_compose_result`` — a raw 500 on
+    GET /api/bookmarks after every probe had already succeeded.  Only the
+    shadowed field degrades to its default; the row's other fields and
+    every sibling row survive.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _plain_dict(value) -> dict | None:
     """*value* as a plain ``dict``, or None.
 
@@ -504,16 +529,18 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
     """Find linked backend for a bookmark entry."""
     if not _isinst(link, dict):
         return None
+    # _mapping_get throughout: a raw-kept row's hash-shadowing key (see
+    # _mapping_get) used to detonate these bound reads per link.
     for key in (
-        link.get("service"),
-        link.get("id"),
-        link.get("vm"),
-        link.get("backend_id"),
+        _mapping_get(link, "service"),
+        _mapping_get(link, "id"),
+        _mapping_get(link, "vm"),
+        _mapping_get(link, "backend_id"),
     ):
         hit = _index_lookup(idx, key)
         if hit is not None:
             return hit
-    url = (_key_text(link.get("url")) or "").rstrip("/")
+    url = (_key_text(_mapping_get(link, "url")) or "").rstrip("/")
     if url:
         hit = _index_lookup(idx, f"url:{url}")
         if hit is not None:
@@ -547,11 +574,13 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
         backend = None
     # _truthy, not a bare ``or``: a __bool__-bomb id/service value used to
     # raise here and 500 the list route with every healthy sibling row.
-    lid = link.get("id")
-    service = link.get("service")
+    # _mapping_get: a raw-kept row's hash-shadowing key detonated the
+    # bound reads the same way (see _mapping_get).
+    lid = _mapping_get(link, "id")
+    service = _mapping_get(link, "service")
     base = {
-        "name": link.get("name"),
-        "url": link.get("url"),
+        "name": _mapping_get(link, "name"),
+        "url": _mapping_get(link, "url"),
         "id": lid if _truthy(lid) else service,
         "service": service if _truthy(service) else lid,
     }
@@ -833,7 +862,9 @@ def list_bookmarks() -> dict:
     # rewritten; a lying ``__class__`` impostor raises here and keeps its
     # existing drop/error path.
     for row in links:
-        u = row.get("url")
+        # _mapping_get: a raw-kept row's hash-shadowing ``url`` key used to
+        # detonate this bound read — the first seam of the request loop.
+        u = _mapping_get(row, "url")
         if _isinst(u, str) and type(u) is not str:
             try:
                 row["url"] = str.encode(u, "utf-8", "replace").decode("utf-8")
@@ -868,10 +899,12 @@ def list_bookmarks() -> dict:
             # never equal a str link url, so it skips the scan entirely.
             ov_url = ov["url"]
             ov_cmp = _utf8_text(ov_url) if _isinst(ov_url, str) else None
+            # _mapping_get in the scan: a raw-kept link row's shadow ``url``
+            # key used to detonate the bound read inside this any().
             if ov_cmp is None or not any(
                 _isinst(l, dict)
-                and _isinst(l.get("url"), str)
-                and _utf8_text(l.get("url")) == ov_cmp
+                and _isinst(_mapping_get(l, "url"), str)
+                and _utf8_text(_mapping_get(l, "url")) == ov_cmp
                 for l in links
             ):
                 links.append({
@@ -895,8 +928,10 @@ def list_bookmarks() -> dict:
     preassigned: dict[int, dict] = {}  # link index → result without probe
     for i, link in enumerate(links):
         # _truthy: a __bool__-bomb url value used to raise out of the bare
-        # ``not link.get("url")`` and 500 the route.
-        if not _isinst(link, dict) or not _truthy(link.get("url")):
+        # ``not link.get("url")`` and 500 the route.  _mapping_get: a
+        # raw-kept row's hash-shadowing ``url`` key detonated the bound
+        # read itself the same way (see _mapping_get).
+        if not _isinst(link, dict) or not _truthy(_mapping_get(link, "url")):
             continue
         backend = _resolve_backend(link, idx)
         # _cmp_text on state / status / kind: a __bool__-bomb status used
@@ -926,7 +961,7 @@ def list_bookmarks() -> dict:
     probes: dict[int, dict] = {
         i: _compose_result(link, result, backend)
         for (i, link, backend), result in zip(
-            to_probe, fan_out(probe, [link["url"] for _, link, _ in to_probe])
+            to_probe, fan_out(probe, [_mapping_get(link, "url") for _, link, _ in to_probe])
         )
     }
 
@@ -935,7 +970,9 @@ def list_bookmarks() -> dict:
     for i, link in enumerate(links):
         if not _isinst(link, dict):
             continue
-        u = link.get("url")
+        # _mapping_get: same raw-kept shadow-``url`` class as the probe
+        # decision loop — this dedupe runs after every probe succeeded.
+        u = _mapping_get(link, "url")
         if not _isinst(u, str):
             continue
         # Exact-str copy *before any truthiness*: the old ``… or not u``

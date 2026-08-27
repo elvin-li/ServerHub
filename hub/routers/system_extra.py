@@ -66,6 +66,37 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The nginx/docker11 guarded-shape rule: this router does not own ``sh``
+    (tests and tooling patch it), and a leftover riding the *shape* of the
+    return — a 2-tuple, a scalar, a tuple subclass whose ``__iter__``
+    raises, a lying-``__class__`` tuple impostor — used to detonate the
+    bare ``rc, hostname, _ = …`` unpacks in ``_host_snapshot``, one seam
+    past the ``_result`` guard that only absorbs a *raising* future — a
+    raw 500 on GET /api/system/host.  Junk degrades to ``(-255, "", "")``:
+    nonzero, never a success rc, so the platform fallbacks stay in force.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
@@ -285,8 +316,10 @@ def _host_snapshot() -> dict:
             return fallback
 
     # `.result()` re-raises; one sysctl/docker timeout must not 500 /api/system/host.
-    rc, hostname, _ = _result(f_hostname, (1, "", ""))
-    rc3, model, _ = _result(f_model, (1, "", ""))
+    # _sh3 on the raw sh futures: an answer-shape bomb used to detonate
+    # the bare unpack itself, which no _result fallback could absorb.
+    rc, hostname, _ = _sh3(_result(f_hostname, (1, "", "")))
+    rc3, model, _ = _sh3(_result(f_model, (1, "", "")))
     rc4, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
     hostname, model = _as_text(hostname), _as_text(model)
     ncpu, memsize = _as_text(ncpu), _as_text(memsize)

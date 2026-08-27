@@ -58,6 +58,42 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _sh_run(cmd, timeout) -> tuple:
+    """Spawn with the unpack inside the guard (the nginx `_sh_triple` rule).
+
+    This module does not own ``sh`` (tests and tooling patch it), and a
+    patched/odd one — raising outright, or answering a 2-tuple, a scalar,
+    a tuple subclass whose ``__iter__`` raises, or a lying-``__class__``
+    tuple impostor — used to detonate the bare ``rc, output, _ = sh(…)``
+    unpacks in ``_default_route_fields`` / ``_interface_address``.  The
+    raise rode ``detect_lan_ip`` out of ``host_ip()`` and 500'd its one
+    unguarded consumer, GET /api/system/host (and GET /api/settings).
+    Junk degrades to ``(-255, "", "")`` — nonzero, never a success rc, so
+    the callers keep their empty-answer branch.
+    """
+    try:
+        value = sh(cmd, timeout=timeout)
+    except Exception:
+        return (-255, "", "")
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
 def _rc_int(rc) -> int:
     """Exact exit status for the ``==`` / ``!=`` probes; a bomb reads as failure.
 
@@ -169,7 +205,10 @@ def _default_route_fields() -> tuple[tuple[str, str], ...]:
     drops it alongside the interface and service-order caches, so a manual address
     change, a service reorder or an alias edit is reflected immediately.
     """
-    rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
+    # _sh_run: an sh answer-*shape* bomb (2-tuple, scalar, iter-bomb tuple
+    # subclass, tuple liar) used to detonate this bare unpack itself and
+    # 500 every host_ip() consumer, one seam ahead of the rc probe below.
+    rc, output, _ = _sh_run(["/sbin/route", "-n", "get", "default"], timeout=5)
     # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
     # to detonate this bare probe and 500 every host_ip() consumer.
     if _rc_int(rc) != 0:
@@ -222,7 +261,8 @@ def default_interface(*, force: bool = False) -> str:
 
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
-    rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
+    # _sh_run: same answer-shape bomb class as _default_route_fields.
+    rc, output, _ = _sh_run(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
     # _rc_int: same rc-``__eq__`` bomb class as _default_route_fields.
     return _as_text(output).strip() if _rc_int(rc) == 0 else ""
 
