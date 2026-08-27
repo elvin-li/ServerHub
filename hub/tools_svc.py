@@ -70,10 +70,13 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     try:
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # Unbound base encode (the storage7 rule): a ``__str__`` override may
+        # *return* a str subclass whose bound ``encode`` bombs, and the old
+        # ``value.encode(...)`` dispatched into it — degrading a readable
+        # cross-module answer (a DNS ip, a ps row) to "".  ``str.encode``
+        # reads the real char storage, so the text survives the bomb.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     except Exception:
-        # str() of a subclass copies to an exact str, but a ``__str__``
-        # override may *return* a str subclass whose ``encode`` bombs.
         return ""
 
 
@@ -222,12 +225,22 @@ def _docker_gone(rc: int, out: str, err: str) -> bool:
     suspicious = looks_engine_down(text) or (
         looks_cli_vanished(text) and not cli_on_disk()
     )
-    return suspicious and not engine_up(force=True)
+    # _safe_flag: the forced probe is a cross-module read, and a leftover
+    # ``__bool__`` bomb riding its answer used to raise here — a raw 500 on
+    # GET /api/docker/df and POST /api/tools/docker/prune instead of the
+    # engine-down classification.  An unanswerable probe counts as down.
+    return suspicious and not _safe_flag(engine_up(force=True))
 
 
 @ttl_memo(_DOCKER_DF_TTL)
 def docker_disk_usage() -> dict:
-    if not engine_up():
+    # _safe_flag: ``engine_up()`` is a cross-module read and these three
+    # docker views trusted its bool contract wholesale — a leftover
+    # ``__bool__`` bomb answer used to raise out of the bare ``if not`` and
+    # 500 GET /api/docker/df, GET /api/docker/sizes and
+    # POST /api/tools/docker/prune (diagnostics' probe_docker was already
+    # guarded).  An unanswerable flag degrades to engine-down.
+    if not _safe_flag(engine_up()):
         return {"engine_up": False, "raw": "", "lines": []}
     rc, out, err = _docker("system", "df", timeout=30)
     if _docker_gone(rc, out, err):
@@ -259,7 +272,9 @@ def docker_disk_usage() -> dict:
 
 
 def container_sizes() -> list:
-    if not engine_up():
+    # _safe_flag: same cross-module ``__bool__``-bomb guard as
+    # docker_disk_usage above.
+    if not _safe_flag(engine_up()):
         return []
     # -s/--size is what populates {{.Size}}.  OrbStack happens to fill it in
     # anyway, but stock Docker Engine leaves the column empty without it, so the
@@ -291,7 +306,10 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     """
     if not confirm:
         return soft_fail("tools.confirm_required")
-    if not engine_up():
+    # _safe_flag: same cross-module ``__bool__``-bomb guard as
+    # docker_disk_usage above — the bomb becomes the coded engine-down
+    # soft-fail, never a raw 500.
+    if not _safe_flag(engine_up()):
         return soft_fail("container.engine_down")
     cmds = {
         "dangling": ["image", "prune", "-f"],
@@ -472,7 +490,11 @@ def diagnostics() -> dict:
         "docker_cli": _as_text(DOCKER),
         "orb_cli": _as_text(ORB),
         "python": _as_text(platform.python_version()),
-        "host_ip": ip,
+        # host_ip() sanitizes its own answer today, but this boundary echoed
+        # it raw while every sibling field goes through _as_text — a leftover
+        # lone-surrogate address 500'd the UTF-8 encode and a >4300-digit int
+        # ValueError'd Starlette's json.dumps on GET /api/system/diagnostics.
+        "host_ip": _as_text(ip),
         "docker_df": df,
         "metrics_points": metrics_points,
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
@@ -1790,7 +1812,9 @@ def about_info() -> dict:
         "name": "ServerHub",
         "version": __version__,
         "tagline_key": "tools.about_tagline",
-        "host_ip": ip,
+        # Scrubbed for the same reason as diagnostics(): the raw echo used
+        # to 500 GET /api/tools/about on a leftover surrogate / over-cap int.
+        "host_ip": _as_text(ip),
         "platform": _as_text(plat),
         "python": _as_text(platform.python_version()),
         # BASE derives from __file__; a checkout path with a leftover non-UTF-8
