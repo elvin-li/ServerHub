@@ -93,17 +93,43 @@ def _brew_env() -> dict:
     return env
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through.
+
+    The catalog/docker_cli rule: CPython's ``isinstance`` reads the operand's
+    ``__class__`` whenever the real-type fast check misses, so a subprocess
+    leftover whose ``__class__`` is a raising property used to detonate
+    ``_as_text``'s bytes gate itself — straight out of the screen-sharing
+    install/uninstall probes and the filebrowser/homeassistant bootout scrub.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """Subprocess leftovers (bytes/None/int/``\\ud800``) must not 500 native listing/install."""
-    if isinstance(value, (bytes, bytearray)):
+    decoded = None
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if isinstance(value, bytes) else bytearray
-        text = base.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A *lying* ``__class__`` (claims bytes, is not): the unbound
+            # descriptor rejects the foreign operand.  A raise means "not
+            # really bytes" — render like any other object instead of 500ing
+            # the launchctl/brew output scrub (the modules9/json9 impostor
+            # class).
+            decoded = None
+    if decoded is not None:
+        text = decoded
+    elif _isinst(value, str):
         text = value
     elif value is None:
         return ""
-    elif isinstance(value, float):
+    elif _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -126,7 +152,12 @@ def _as_text(value) -> str:
             return ""
     # Unbound base encode: a str subclass whose ``__str__`` returns self
     # keeps its bound ``.encode`` bomb live (the modules5 unbound convention).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor lands here (it passed the
+        # str gate without being one): junk, never worth a raw 500.
+        return ""
 
 
 def _exists(path: Path) -> bool:
@@ -955,22 +986,43 @@ def _launchd_or_process_running(
 
 
 def _port_list(raw) -> list:
-    if isinstance(raw, list):
-        items = raw
-    elif isinstance(raw, (int, str)) and str(raw).strip():
+    # _isinst gates throughout: a leftover ``__class__``-property bomb must
+    # answer False, not raise out of the listing.
+    if _isinst(raw, list):
+        try:
+            # Base copy first: a lying ``__class__`` claiming list is not
+            # actually iterable, and must cost only itself.
+            items = list(raw)
+        except Exception:
+            return []
+    elif _isinst(raw, (int, str)):
+        try:
+            if not str(raw).strip():
+                return []
+        except Exception:
+            # Over-digit-cap int (str() is ValueError) or a lying impostor.
+            return []
         items = [raw]
     else:
         return []
     out = []
     for p in items:
-        if p is None or p == "" or isinstance(p, bool):
+        if p is None or p == "" or _isinst(p, bool):
             continue
-        if isinstance(p, float) and (p != p or p in (float("inf"), float("-inf"))):
+        if _isinst(p, float) and type(p) is float and (
+            p != p or p in (float("inf"), float("-inf"))
+        ):
             continue
-        if isinstance(p, (int, str)):
+        if _isinst(p, (int, str)):
             out.append(p)
-        elif isinstance(p, (bytes, bytearray)):
-            text = p.decode("utf-8", "replace").strip()
+        elif _isinst(p, (bytes, bytearray)):
+            # Unbound base decode: a subclass ``.decode`` bomb cannot fire,
+            # and a lying ``__class__`` claiming bytes drops alone.
+            base = bytes if _isinst(p, bytes) else bytearray
+            try:
+                text = base.decode(p, "utf-8", "replace").strip()
+            except Exception:
+                continue
             if text:
                 out.append(text)
     return out

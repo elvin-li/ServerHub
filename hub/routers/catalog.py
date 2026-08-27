@@ -10,15 +10,33 @@ from hub import apps_manage_svc, audit, auth, autostart_svc, catalog, catalog_re
 from ..errors import api_error
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through
+    (the catalog/native_catalog rule)."""
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """Drop leftover inf / ``\\ud800`` so POST /api/apps/credentials cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    decoded = None
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` claiming bytes rejects the unbound
+            # descriptor: not really bytes, render like any other object
+            # (the modules9/json9 impostor class).
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
-    elif isinstance(value, float):
+    elif _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -42,7 +60,12 @@ def _as_text(value) -> str:
     # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
     # returns self keeps the subclass, so a bound ``.encode`` bomb could
     # still fire (the modules5 unbound convention).
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor whose ``__str__`` returned
+        # itself lands here: junk.
+        return ""
 
 
 router = APIRouter(tags=["catalog"])
