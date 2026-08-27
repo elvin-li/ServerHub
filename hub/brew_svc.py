@@ -15,15 +15,34 @@ from hub.util import run_capped, sh
 from hub.paths import BREW  # noqa: E402
 
 
+def _isinstance(value, types) -> bool:
+    """isinstance that survives a leftover raising ``__class__`` property.
+
+    When the type check fails, CPython's isinstance consults
+    ``value.__class__`` — so a leftover object whose ``__class__`` is a
+    raising property blew every ``isinstance`` gate that runs outside a try:
+    the snapshot gate in :func:`list_services` and the fallback-tail
+    ``rc``/``out`` probes each used to 500 GET /api/brew/services.  A real
+    subclass never reaches the ``__class__`` lookup (the type check answers
+    first), so degrading the raise to False only reclassifies impostors.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     # Unbound through the base types: a leftover bytes-subclass whose bound
     # ``.decode`` raises (or a str-subclass whose ``.encode`` does) used to
     # 500 the post-spawn tail of service_action, which runs outside its try.
-    if isinstance(value, bytes):
+    # Guarded isinstance throughout: a leftover whose ``__class__`` property
+    # raises used to blow the chain itself and cost every sibling row.
+    if _isinstance(value, bytes):
         text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
+    elif _isinstance(value, bytearray):
         text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+    elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
@@ -40,7 +59,7 @@ def _as_text(value) -> str:
     return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
-def _json_safe(value):
+def _json_safe(value, depth: int = 0):
     """Starlette encodes with allow_nan=False; leftover NaN/bytes 500 the list.
 
     ``exit_code`` was the first field brew put NaN in.  ``user`` / ``file``
@@ -53,10 +72,18 @@ def _json_safe(value):
     ``__str__``/``__eq__``/``encode``/``decode`` raises used to raise out of
     this launderer instead of costing only the poisoned value — the
     docker_cli/modules ``_jsonable`` convention.
+
+    Guarded isinstance throughout (see :func:`_isinstance`): a leftover
+    field whose ``__class__`` property raises used to blow the very first
+    probe here and wipe every sibling row into the text fallback.  The depth
+    cap matches brew_cache._json_safe: a two-object ``isoformat`` cycle used
+    to recurse until wherever RecursionError happened to land.
     """
-    if isinstance(value, bool) or value is None:
+    if depth > 16:
+        return None
+    if _isinstance(value, bool) or value is None:
         return value
-    if isinstance(value, int):
+    if _isinstance(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -74,7 +101,7 @@ def _json_safe(value):
             # same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinstance(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -85,14 +112,14 @@ def _json_safe(value):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinstance(value, str):
         # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
         return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, bytes):
+    if _isinstance(value, bytes):
         return bytes.decode(value, "utf-8", "replace")
-    if isinstance(value, bytearray):
+    if _isinstance(value, bytearray):
         return bytearray.decode(value, "utf-8", "replace")
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinstance(value, (list, tuple, set, frozenset)):
         return None
     try:
         iso = getattr(value, "isoformat", None)
@@ -109,7 +136,7 @@ def _json_safe(value):
             return None
         if stamped is value:
             return None
-        return _json_safe(stamped)
+        return _json_safe(stamped, depth + 1)
     return None
 
 
@@ -122,15 +149,17 @@ def _plain_rc(value):
     ``__float__`` raises used to 500 POST /api/brew/services/{name}/action
     after the run had already finished.  Unbound base-type calls dodge the
     override; anything non-numeric degrades to None ("exit unknown").
+    Guarded isinstance: a leftover rc whose ``__class__`` property raises
+    used to blow the first probe here — this helper runs outside every try.
     """
-    if isinstance(value, bool):
+    if _isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
+    if _isinstance(value, int):
         try:
             return int.__index__(value)
         except Exception:
             return None
-    if isinstance(value, float):
+    if _isinstance(value, float):
         try:
             return float.__float__(value)
         except Exception:
@@ -173,14 +202,19 @@ def list_services() -> list:
     except Exception:
         data = []
     rows = []
-    if isinstance(data, list):
+    # Guarded isinstance: a leftover snapshot object whose ``__class__``
+    # property raises used to blow this gate — it runs outside the try
+    # above — and 500 GET /api/brew/services.
+    if _isinstance(data, list):
         # Unbound base iteration into an exact list before the truth test:
         # ``isinstance(data, list) and data`` ran *outside* the try above, so
         # a leftover list-subclass whose ``__bool__``/``__len__`` raises
         # 500'd GET /api/brew/services at the gate, and an ``__iter__`` bomb
-        # inside the loop wiped every row into the text fallback.
+        # inside the loop wiped every row into the text fallback.  The
+        # per-element probe is guarded too: one ``__class__``-bomb element
+        # used to blow the filter and wipe every sibling row.
         try:
-            rows = [s for s in list.__iter__(data) if isinstance(s, dict)]
+            rows = [s for s in list.__iter__(data) if _isinstance(s, dict)]
         except Exception:
             rows = []
     if rows:
@@ -222,7 +256,9 @@ def list_services() -> list:
     # non-numeric rc reads as failure.
     if _plain_rc(rc) != 0:
         return []
-    if isinstance(out, (str, bytes, bytearray)):
+    # Guarded: a leftover stdout whose ``__class__`` property raises used to
+    # blow this probe (it runs outside the spawn try) and 500 the fallback.
+    if _isinstance(out, (str, bytes, bytearray)):
         # _as_text, not bound ``.decode``/raw str: a bytes-subclass whose
         # ``decode`` raises (or a str-subclass whose ``splitlines`` does)
         # used to 500 the same fallback; the unbound base calls yield an

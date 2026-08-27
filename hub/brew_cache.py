@@ -54,16 +54,35 @@ _DISK = DATA_DIR / "brew-services.cache.json"
 _DISK_CAP = 256 * 1024
 
 
+def _isinstance(value, types) -> bool:
+    """isinstance that survives a leftover raising ``__class__`` property.
+
+    When the type check fails, CPython's isinstance consults
+    ``value.__class__`` — so a leftover object whose ``__class__`` is a
+    raising property used to blow ``_plain_rc`` / ``_services_from_output``
+    / ``_json_safe`` and discard the *fresh* snapshot (or the last-good one)
+    instead of costing only the poisoned value.  A real subclass never
+    reaches the ``__class__`` lookup (the type check answers first), so
+    degrading the raise to False only reclassifies impostors — the
+    brew_svc._isinstance convention.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     # Unbound through the base types, like brew_svc._as_text: a leftover
     # bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
     # ``.encode`` does) used to raise out of _services_from_output and cost
-    # the whole fresh snapshot instead of nothing.
-    if isinstance(value, bytes):
+    # the whole fresh snapshot instead of nothing.  Guarded isinstance:
+    # a ``__class__`` property bomb used to blow the chain itself.
+    if _isinstance(value, bytes):
         text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
+    elif _isinstance(value, bytearray):
         text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+    elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
@@ -95,12 +114,16 @@ def _json_safe(value, depth: int = 0):
     ``_copy_items`` and wipe every brew row from the whole snapshot instead
     of costing only the poisoned value — the docker_cli/modules ``_jsonable``
     convention.
+
+    Guarded isinstance throughout (see :func:`_isinstance`): a leftover
+    value — or a leftover mapping *key* — whose ``__class__`` property
+    raises used to blow the probes here and wipe every sibling row.
     """
     if depth > 16:
         return None
-    if isinstance(value, bool) or value is None:
+    if _isinstance(value, bool) or value is None:
         return value
-    if isinstance(value, int):
+    if _isinstance(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -119,7 +142,7 @@ def _json_safe(value, depth: int = 0):
             # sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinstance(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -130,26 +153,27 @@ def _json_safe(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinstance(value, str):
         # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
         return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, bytes):
+    if _isinstance(value, bytes):
         return bytes.decode(value, "utf-8", "replace")
-    if isinstance(value, bytearray):
+    if _isinstance(value, bytearray):
         return bytearray.decode(value, "utf-8", "replace")
-    if isinstance(value, dict):
+    if _isinstance(value, dict):
         out = {}
         # Unbound base view: reads the C-level storage, so a dict-subclass
         # row whose ``items``/``keys``/``__iter__``/``get`` raises still
-        # yields its real pairs.
+        # yields its real pairs.  Key probes guarded too: one mapping key
+        # whose ``__class__`` property raises used to wipe the whole row.
         for k, v in dict.items(value):
-            if isinstance(k, bytes):
+            if _isinstance(k, bytes):
                 key = bytes.decode(k, "utf-8", "replace")
-            elif isinstance(k, bytearray):
+            elif _isinstance(k, bytearray):
                 key = bytearray.decode(k, "utf-8", "replace")
             else:
                 try:
-                    key = k if isinstance(k, str) else str(k)
+                    key = k if _isinstance(k, str) else str(k)
                 except RecursionError:
                     try:
                         key = type(k).__name__
@@ -163,9 +187,9 @@ def _json_safe(value, depth: int = 0):
                 continue
             out[key] = _json_safe(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinstance(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isinstance(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot fire and the real elements still survive.
                 return [_json_safe(v, depth + 1) for v in base.__iter__(value)]
@@ -193,16 +217,18 @@ def _plain_rc(value):
     snapshot the spawn had just produced and wiping every brew row for the
     caller.  Unbound base-type calls dodge the override; anything
     non-numeric degrades to None (reads as failure), the
-    brew_svc/autostart_svc ``_plain_rc`` convention.
+    brew_svc/autostart_svc ``_plain_rc`` convention.  Guarded isinstance:
+    a leftover rc whose ``__class__`` property raises used to blow the
+    first probe here, raise out of ``_load`` and discard the fresh snapshot.
     """
-    if isinstance(value, bool):
+    if _isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
+    if _isinstance(value, int):
         try:
             return int.__index__(value)
         except Exception:
             return None
-    if isinstance(value, float):
+    if _isinstance(value, float):
         try:
             return float.__float__(value)
         except Exception:
@@ -231,13 +257,14 @@ def _capped_json_int(text):
 
 
 def _copy_items(items) -> list[dict]:
-    if not isinstance(items, list):
+    if not _isinstance(items, list):
         return []
     cleaned = []
     # Unbound base iteration: a primed list-subclass ``__iter__`` bomb
-    # cannot cost the snapshot its real rows.
+    # cannot cost the snapshot its real rows.  Guarded element probe: one
+    # ``__class__``-bomb element used to blow the filter and cost them all.
     for x in list.__iter__(items):
-        if not isinstance(x, dict):
+        if not _isinstance(x, dict):
             continue
         row = _json_safe(x)
         if isinstance(row, dict):
@@ -357,8 +384,10 @@ def _services_from_output(out) -> list[dict] | None:
 
     Distinguishes a real empty install (`[]`) from garbage/timeouts (None).
     A stub that already returned a list used to AttributeError on ``.strip``.
+    Guarded probes: a stdout — or one element — whose ``__class__`` property
+    raises used to raise out of ``_load`` and cost the whole fresh snapshot.
     """
-    if isinstance(out, list):
+    if _isinstance(out, list):
         parsed = out
     else:
         text = _as_text(out).strip()
@@ -368,12 +397,12 @@ def _services_from_output(out) -> list[dict] | None:
             parsed = safe_json_loads(text, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             return None
-    if not isinstance(parsed, list):
+    if not _isinstance(parsed, list):
         return None
     # Unbound base iteration, like _copy_items: a stub that returned a
     # list-*subclass* whose ``__iter__`` raises used to raise out of _load
     # and cost the whole fresh snapshot instead of nothing.
-    return [x for x in list.__iter__(parsed) if isinstance(x, dict)]
+    return [x for x in list.__iter__(parsed) if _isinstance(x, dict)]
 
 
 def _brew_argv_patterns() -> tuple[str, str]:
@@ -412,10 +441,18 @@ def _brew_busy() -> bool:
                     env=utf8_env(),
                 )
                 captured = getattr(proc, "stdout", None)
-                if isinstance(captured, (bytes, bytearray)):
-                    text = bytes(captured)[:_PGREP_CAP]
-                elif isinstance(captured, str):
-                    text = captured.encode("utf-8", "replace")[:_PGREP_CAP]
+                if _isinstance(captured, (bytes, bytearray)):
+                    try:
+                        # bytes() dispatches a subclass ``__bytes__`` bomb —
+                        # RuntimeError from one escaped the except tuple
+                        # below and raised out of _load via _brew_busy.
+                        text = bytes(memoryview(captured))[:_PGREP_CAP]
+                    except Exception:
+                        text = b""
+                elif _isinstance(captured, str):
+                    # Unbound base encode: a str-subclass ``.encode`` bomb
+                    # cannot fire.
+                    text = str.encode(captured, "utf-8", "replace")[:_PGREP_CAP]
                 else:
                     # Live path: stdout is the TemporaryFile, not a buffer
                     # on the CompletedProcess.  Treating the file object as

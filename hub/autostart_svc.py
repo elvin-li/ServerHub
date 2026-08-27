@@ -45,6 +45,23 @@ CODES.setdefault(
 )
 
 
+def _isinstance(value, types) -> bool:
+    """isinstance that survives a leftover raising ``__class__`` property.
+
+    When the type check fails, CPython's isinstance consults
+    ``value.__class__`` — so a leftover object whose ``__class__`` is a
+    raising property used to blow the snapshot gate / field probes in
+    :func:`_brew_service_items` (wiping every Homebrew row into overview()'s
+    _safe fallback) and the ``_plain_rc`` probes that run outside the toggle
+    trys.  A real subclass never reaches the ``__class__`` lookup (the type
+    check answers first) — the brew_svc/brew_cache ``_isinstance`` convention.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON.
 
@@ -52,12 +69,13 @@ def _as_text(value) -> str:
     bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
     ``.encode`` does — including one minted by a self-``__str__``) used to
     raise out of the launchctl log tail below and 500 POST /api/apps/autostart.
+    Guarded isinstance: a ``__class__`` property bomb used to blow the chain.
     """
-    if isinstance(value, bytes):
+    if _isinstance(value, bytes):
         text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
+    elif _isinstance(value, bytearray):
         text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+    elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
@@ -83,16 +101,17 @@ def _plain_rc(value):
     ``__eq__`` raises used to 500 POST /api/apps/autostart after the run had
     already finished — the exact class brew_svc.service_action sealed, left
     over in this sibling.  Unbound base-type calls dodge the override;
-    anything non-numeric degrades to None.
+    anything non-numeric degrades to None.  Guarded isinstance: a leftover
+    rc whose ``__class__`` property raises used to blow the first probe here.
     """
-    if isinstance(value, bool):
+    if _isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
+    if _isinstance(value, int):
         try:
             return int.__index__(value)
         except Exception:
             return None
-    if isinstance(value, float):
+    if _isinstance(value, float):
         try:
             return float.__float__(value)
         except Exception:
@@ -319,9 +338,15 @@ def _brew_service_items() -> list[dict]:
         return []
     items = []
     # Shared TTL cache: this list was being fetched once per caller, and
-    # `brew services list --json` costs ~1.3s each time.
-    data = brew_services_list()
-    if not isinstance(data, list):
+    # `brew services list --json` costs ~1.3s each time.  Guarded probes:
+    # a snapshot object — or one element — whose ``__class__`` property
+    # raises used to blow the gates below (which run outside any try here)
+    # into overview()'s _safe fallback and wipe every Homebrew row.
+    try:
+        data = brew_services_list()
+    except Exception:
+        return []
+    if not _isinstance(data, list):
         return []
     # Unbound base iteration into an exact list, the brew_cache._copy_items
     # convention: a leftover list-subclass ``__iter__`` bomb (or a
@@ -329,7 +354,7 @@ def _brew_service_items() -> list[dict]:
     # collector into overview()'s _safe fallback and wipe every Homebrew row
     # from GET /api/apps/autostart instead of costing only the poisoned value.
     try:
-        rows = [s for s in list.__iter__(data) if isinstance(s, dict)]
+        rows = [s for s in list.__iter__(data) if _isinstance(s, dict)]
     except Exception:
         rows = []
     for s in rows:
@@ -342,7 +367,7 @@ def _brew_service_items() -> list[dict]:
             pass
         status = _as_text(dict.get(s, "status")).lower()
         raw_file = dict.get(s, "file")
-        if isinstance(raw_file, (str, bytes, bytearray)):
+        if _isinstance(raw_file, (str, bytes, bytearray)):
             # _as_text, not bound ``.decode``: a bytes-subclass decode bomb
             # used to raise here and cost the whole collector.
             file_path = _as_text(raw_file)
