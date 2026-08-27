@@ -13,6 +13,27 @@ from hub.paths import user_home
 from hub.util import tail_file_lines
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves — planted as the cfg() root
+    (``_mapping_get``'s dict gate), the ``log_sources`` value (``_entries``'
+    list gate), an entry, or an entry's id/name/path field
+    (``_config_text``'s rank gates, ``_entries``' bytes/str gates) — and
+    500'd GET /api/logs and GET /api/logs/{id} together, one line ahead of
+    the laundering built to absorb junk shapes (the ups_svc / vms_svc /
+    smart_test_svc rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
 
@@ -21,8 +42,8 @@ def _utf8_text(value) -> str:
     bound ``.encode`` used to dispatch into a leftover override and 500 both
     logs routes; the same held for a bytes/bytearray-subclass ``.decode``.
     """
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
         try:
             return base.decode(value, "utf-8", "replace")
         except Exception:
@@ -51,8 +72,11 @@ def _mapping_get(mapping, key):
     out of :func:`_entries` and 500 GET /api/logs and GET /api/logs/{id}
     at once.  ``dict.get`` reads the real storage underneath the override,
     so a subclass that only poisoned its method keeps its sane fields.
+    The gate itself goes through :func:`_isa`: a ``__class__``-property
+    bomb as the cfg root or an entry used to detonate the bare isinstance
+    one line ahead of everything this helper absorbs.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return None
     try:
         return mapping.get(key)
@@ -96,9 +120,9 @@ def _stat_size(path: Path) -> int:
         # riding a poisoned stat used to raise past the conversion catch and
         # 500 GET /api/logs and GET /api/logs/{id} together.  The unbound
         # slots read the real number stored underneath the override.
-        if isinstance(raw, int):
+        if _isa(raw, int):
             size = int.__index__(raw)
-        elif isinstance(raw, float):
+        elif _isa(raw, float):
             value = float.__float__(raw)
             if value != value or value in (float("inf"), float("-inf")):
                 return 0
@@ -132,7 +156,7 @@ def _config_text(value) -> str | None:
     list.  bytes replace-decode (never 500), dates keep the isoformat
     text the encoder used to publish.
     """
-    if isinstance(value, str):
+    if _isa(value, str):
         # Exact-str launder (the json6 ``str.__str__`` convention): a
         # subclass returned verbatim kept its poisoned ``encode``/``__len__``
         # in play for every later bound read, and one self-``__str__``
@@ -142,21 +166,26 @@ def _config_text(value) -> str | None:
             return str.__str__(value)
         except Exception:
             return None
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound decode: ``bytes(value)`` dispatches into a subclass
         # ``__bytes__`` override, and one such bomb as an id used to 500
         # both logs routes before anything was listed.
-        base = bytes if isinstance(value, bytes) else bytearray
+        base = bytes if _isa(value, bytes) else bytearray
         try:
             return base.decode(value, "utf-8", "replace")
         except Exception:
             return None
-    if isinstance(value, (datetime.date, datetime.datetime)):
+    if _isa(value, (datetime.date, datetime.datetime)):
         try:
             return str(value.isoformat())
         except Exception:
             return None
-    if isinstance(value, bool) or not isinstance(value, int):
+    if _isa(value, bool) or not _isa(value, int):
+        # ``_isa`` for the bool head too, not ``type(x) is bool``: a
+        # ``__class__`` liar claiming bool would otherwise slip past the
+        # exact-type check, match the int gate through the same lie, and
+        # publish its object repr as a configured id/name.  A value that
+        # claims to be bool renders like one — dropped, never "True".
         return None
     try:
         return str(value)
@@ -187,7 +216,7 @@ def _lookup_id(value) -> str | None:
     renderable int coerces (matching the ``"42"`` the listing publishes
     for ``id: 0x2A``), bool and over-cap ints match nothing.
     """
-    if not isinstance(value, str):
+    if not _isa(value, str):
         value = _config_text(value)
         if value is None:
             return None
@@ -220,31 +249,44 @@ def _entries() -> list[tuple[Path, dict]]:
     # such bomb used to 500 GET /api/logs and GET /api/logs/{id} together.
     # The unbound reads keep the sane data stored underneath the override.
     sources = _mapping_get(cfg(), "log_sources")
-    if not isinstance(sources, list) or not list.__len__(sources):
+    rows = None
+    if _isa(sources, list):
+        try:
+            # Unbound ``list.__iter__`` doubles as the impostor gate: a
+            # lying ``__class__`` property that *returns* list passes
+            # ``_isa`` yet is no list at all, and the bare
+            # ``list.__len__(sources)`` used to raise the descriptor
+            # TypeError out of :func:`_entries` — 500ing GET /api/logs and
+            # GET /api/logs/{id} together.  Only a real list (or subclass,
+            # its poisoned ``__iter__``/``__len__`` bypassed) snapshots.
+            rows = list(list.__iter__(sources))
+        except Exception:
+            rows = None
+    if not rows:
         home = user_home()
         if home is None:
             return []
-        sources = [
+        rows = [
             {"id": "autostart", "name": "Autostart", "path": str(home / "Library/Logs/server-autostart.log")},
             {"id": "serverhub", "name": "ServerHub", "path": str(home / "Library/Logs/serverhub.err.log")},
             {"id": "ha", "name": "Home Assistant", "path": str(home / "Services/homeassistant/config/home-assistant.log")},
         ]
     out = []
-    for s in list.__iter__(sources):
+    for s in rows:
         raw_path = _mapping_get(s, "path")
         if not _truthy(raw_path):
             continue
         raw_id = _config_text(_mapping_get(s, "id"))
         if not raw_id:
             continue
-        if isinstance(raw_path, (bytes, bytearray)):
+        if _isa(raw_path, (bytes, bytearray)):
             # A bytes path (os.listdir(b"...") leftover) used to stringify
             # to the garbage relative name ``b'/…'``; the fs-encoding decode
             # keeps the surrogateescape text that names the real on-disk
             # file.  Unbound, because ``os.fsdecode(bytes(raw_path))``
             # dispatched into a subclass ``__bytes__`` override — one such
             # bomb as a path used to 500 both logs routes.
-            base = bytes if isinstance(raw_path, bytes) else bytearray
+            base = bytes if _isa(raw_path, bytes) else bytearray
             try:
                 raw_path = base.decode(
                     raw_path,
@@ -253,7 +295,7 @@ def _entries() -> list[tuple[Path, dict]]:
                 )
             except Exception:
                 continue
-        if isinstance(raw_path, str):
+        if _isa(raw_path, str):
             # Exact-str launder (the json6 ``str.__str__`` convention, the
             # same one ``_config_text`` gives the id/name fields): a str
             # *subclass* left the poisoned ``__str__`` in play for the bound
@@ -306,7 +348,7 @@ def log_sources() -> list:
 
 
 def _clamp_lines(raw, default: int = 200) -> int:
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         value = default
     else:
         try:
@@ -324,7 +366,7 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
     if source_id not in sources:
         raise api_error("logs.unknown_source")
     meta = sources[source_id]
-    name = meta.get("name") if isinstance(meta.get("name"), str) else source_id
+    name = meta.get("name") if _isa(meta.get("name"), str) else source_id
     name = _utf8_text(name)
 
     def _missing(path: Path) -> dict:
