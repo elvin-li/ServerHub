@@ -1034,7 +1034,20 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
             known.add(_as_text(vol))
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
-    result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
+    try:
+        result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        # Guarded call (the scan_roots default_roots / usage8 spotlight_status
+        # rule, one seam later): run_admin answers coded dicts for everything
+        # it anticipates, but a seam replacement or a leftover that slips its
+        # own guards still raised *out of the call itself* and 500'd
+        # POST /api/storage/spotlight raw — the only unguarded seam left on
+        # the route.  The synthesized failure keeps the funnel's contract:
+        # the vanish classification below still reads the message, so a
+        # spawn-of-a-gone-binary raise ("No such file or directory") earns
+        # the coded 503 only after the fresh disk probe confirms mdutil is
+        # really gone, exactly like the sentinel-shaped failure.
+        result = {"ok": False, "error": "failed", "message": _as_text(exc)}
     # _isa: a ``__class__``-property bomb result detonated the bare gate
     # itself — a raw 500 on POST /api/storage/spotlight one line ahead of
     # the laundering built to absorb junk shapes.
