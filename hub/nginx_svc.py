@@ -44,10 +44,23 @@ def _isinst(value, types) -> bool:
         return False
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+def _decode_bytes(value) -> str | None:
+    """Unbound base decode; ``None`` when *value* only lies about being bytes.
+
+    The unbound call bypasses a leftover subclass ``.decode`` bomb, but a
+    *lying* ``__class__`` impostor (claims bytes/bytearray over no real byte
+    storage — the vms10 class) passes ``_isinst`` and then TypeErrors the
+    descriptor itself; that blew out of ``_as_text`` on the ``sh`` seam and
+    out of ``_jsonable`` at value and key rank, and 500'd GET /api/nginx and
+    POST /api/nginx/test|reload.  Real bytes with ``errors="replace"`` never
+    raise, so ``None`` means "not really bytes" and the caller falls back to
+    the plain text probe.
+    """
     base = bytes if _isinst(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _as_text(value) -> str:
@@ -59,20 +72,23 @@ def _as_text(value) -> str:
     GET /api/nginx, and a str subclass whose ``__str__`` returns *itself*
     kept the bound ``encode`` bomb live through the final scrub line.
     """
-    if _isinst(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    if _isinst(value, (bytes, bytearray)):
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
+        # A lying ``__class__`` impostor: no real byte storage behind the
+        # claim — fall through to the str() probe like any other object.
+    try:
+        value = str(value)
+    except RecursionError:
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return type(value).__name__
         except Exception:
             return ""
+    except Exception:
+        return ""
     # ``str(x)`` on a subclass whose ``__str__`` answers self is still the
     # subclass: the unbound base encode dodges its ``encode`` override.
     return str.encode(value, "utf-8", "replace").decode("utf-8")
@@ -80,6 +96,77 @@ def _as_text(value) -> str:
 
 def _sh_message(err, out, fallback: str = "") -> str:
     return (_as_text(err) or _as_text(out) or fallback).strip()
+
+
+def _rc_int(rc) -> int:
+    """Exact int from an ``sh()`` return code; junk reads as -255.
+
+    ``rc == 0`` / ``rc == -1`` / ``rc != 0`` run a leftover int-subclass's
+    own ``__eq__``/``__ne__``; ``int.__index__`` reads the real value
+    underneath a subclass override, so an honest exit in a bombed wrapper
+    survives, while a *lying* ``__class__`` impostor (claims int/bool over
+    no real int storage) TypeErrors on the unbound read and drops with the
+    junk.  Junk degrades to ``-255`` (the vms10/shares10 rule), never
+    ``-1``: that value is the ``sh`` spawn-failure *sentinel*, and a junk
+    rc that read as -1 beside a leftover "not found" stderr could forge
+    the vanished-CLI classifier in :func:`_raise_if_cli_vanished` — a
+    coded 503 minted out of a poisoned object instead of a real missing
+    binary.  -255 is no honest nginx exit, so junk always keeps the plain
+    failure branch.  An over-cap exact int (>4300 digits — YAML/plist hex
+    loads dodge the parse-time cap) is unrenderable and reads as junk too.
+    """
+    if type(rc) is int:
+        pass
+    elif rc is True:
+        return 1
+    elif rc is False:
+        return 0
+    elif _isinst(rc, int):
+        try:
+            rc = int.__index__(rc)
+        except Exception:
+            return -255
+        if type(rc) is not int:
+            return -255
+    else:
+        return -255
+    try:
+        str(rc)
+    except ValueError:
+        return -255
+    return rc
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh``: a tuple/list *subclass* whose bound ``__iter__`` bombs — or
+    a lying ``__class__`` impostor claiming tuple/list over no real sequence
+    storage — raised straight out of the callers' unpack, and a wrong-arity
+    answer was a ValueError the same way.  The unbound base reads see the
+    real C-level storage, so an honest answer in a subclass wrapper survives
+    untouched, while junk degrades to ``(-255, "", "")``: nonzero (a
+    poisoned answer is not consent to claim success) and never the ``-1``
+    sentinel (an unusable answer cannot forge the vanished-CLI 503).
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _sh_triple(cmd, timeout: int) -> tuple:
@@ -90,26 +177,19 @@ def _sh_triple(cmd, timeout: int) -> tuple:
     or odd one (the same class ``_sh_message`` guards at value rank) can
     raise outright or answer a wrong-arity tuple / bare None — both used to
     ride to Starlette uncaught and 500 POST /api/nginx/test and /reload.
-    Degrade to the failure triple instead; the vanished-CLI classification
-    stays with the callers, disk-confirmed, so a raise whose text merely
-    reads "not found" is never misclassified while nginx is still on disk.
+    A raising runner keeps the ``(-1, "", text)`` spawn shape (gateway5:
+    the vanished-CLI classification stays with the callers, disk-confirmed,
+    so a raise whose text merely reads "not found" is never misclassified
+    while nginx is still on disk); an unusable *answer* degrades through
+    :func:`_sh3` / :func:`_rc_int` to -255 instead, so a poisoned object
+    can never forge the spawn sentinel.
     """
     try:
-        rc, out, err = sh(cmd, timeout=timeout)
+        answer = sh(cmd, timeout=timeout)
     except Exception as exc:
         return -1, "", _as_text(exc)
-    # Exact-int rc, the same base coercion _jsonable applies: the callers
-    # compare ``rc == 0`` / ``rc == -1`` / ``rc != 0``, and an rc whose
-    # ``__eq__`` raises (an int-subclass bomb, or a non-int shape) used to
-    # ride those comparisons to Starlette and 500 POST /api/nginx/test and
-    # both spawn ranks of POST /api/nginx/reload.  A junk rc degrades to the
-    # same failure code as a raising runner; the vanished-CLI classification
-    # stays disk-confirmed either way.
-    try:
-        rc = int.__index__(rc) if isinstance(rc, int) else -1
-    except Exception:
-        rc = -1
-    return rc, out, err
+    rc, out, err = _sh3(answer)
+    return _rc_int(rc), out, err
 
 
 def _jsonable(value, depth: int = 0):
@@ -127,7 +207,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isinst(value, bool):
+    # ``type(x) is bool``, not ``_isinst``: a *bool-liar* (a lying
+    # ``__class__`` property answering ``bool`` over no real bool storage)
+    # passed the guarded isinstance and rode raw into Starlette's
+    # ``json.dumps`` — a TypeError 500 on GET /api/nginx.  It now falls to
+    # the int arm (bool claims int too), where the unbound ``int.__index__``
+    # drops the impostor to null; real bools keep passing through.
+    if value is None or type(value) is bool:
         return value
     if _isinst(value, int):
         if type(value) is not int:
@@ -165,17 +251,37 @@ def _jsonable(value, depth: int = 0):
         # Unbound base decode: ``bytes(value)`` re-enters a subclass
         # ``__bytes__`` bomb before the copy, and a bound ``.decode`` bomb
         # was live for bytearray shapes — both used to 500 GET /api/nginx.
-        return _decode_bytes(value)
+        # ``None`` means a lying ``__class__`` impostor with no real byte
+        # storage (the unbound descriptor TypeError'd out of this arm and
+        # 500'd GET /api/nginx pre-fix): degrade to its text.
+        decoded = _decode_bytes(value)
+        return decoded if decoded is not None else _as_text(value)
     if _isinst(value, dict):
-        out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises used
         # to wipe its whole row (pre-fix the raise escaped overview()'s
         # comprehension and 500'd the route, taking every sane sibling site
-        # down with it); the base view cannot raise and the real entries
-        # survive.
-        for k, v in dict.items(value):
+        # down with it); the base view cannot raise off real storage.  A
+        # lying ``__class__`` impostor claiming dict over no real mapping
+        # storage TypeErrors the descriptor itself — that blew out of this
+        # arm at row and value rank and 500'd GET /api/nginx; it degrades
+        # to its text now.
+        try:
+            items = list(dict.items(value))
+        except Exception:
+            return _as_text(value)
+        out = {}
+        for k, v in items:
             if _isinst(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
+                decoded = _decode_bytes(k)
+                if decoded is not None:
+                    k = decoded
+                else:
+                    # A lying-bytes key: str(k) off the real type, the same
+                    # fallback every other non-str key takes.
+                    try:
+                        k = str(k)
+                    except Exception:
+                        continue
             elif not _isinst(k, str):
                 try:
                     k = str(k)
@@ -189,7 +295,14 @@ def _jsonable(value, depth: int = 0):
             if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb used
                 # to drop the whole field — the real elements survive now.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # A lying ``__class__`` impostor claiming the base over no
+                # real sequence storage TypeErrors the descriptor — that
+                # used to 500 GET /api/nginx; it degrades to its text.
+                try:
+                    elems = list(base.__iter__(value))
+                except Exception:
+                    return _as_text(value)
+                return [_jsonable(v, depth + 1) for v in elems]
     return _as_text(value)
 
 
@@ -210,7 +323,10 @@ def _pid_text(value) -> str | None:
     * digit runs past pid_t (signed 32-bit) are no real process — the same
       bound cloudflared_svc applies before ``os.kill``.
     """
-    if value is None or _isinst(value, bool):
+    # ``type(x) is bool`` (the bool-liar rule _jsonable applies): a lying
+    # ``__class__`` claiming bool falls to the int arm, where the unbound
+    # coercion drops it; a real True can never render as "pid 1".
+    if value is None or type(value) is bool:
         return None
     if _isinst(value, int):
         if type(value) is not int:
