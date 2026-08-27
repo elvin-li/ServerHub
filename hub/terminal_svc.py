@@ -282,6 +282,15 @@ _AUDIT_KEEP_LINES = 1000
 #: temp-file swap, and this trail is the only record of what was typed into
 #: a root-capable shell.
 _AUDIT_LOCK = threading.Lock()
+#: Longest string one field may contribute to a trail line.  Unbounded, a
+#: leftover runaway field wrote a line wider than every tail window this
+#: module uses: the reader's seek landed mid-line and the torn-row prefix
+#: drop hid every intact command row behind it, and the trim's own tail-read
+#: held no complete line.  hub/audit.py bounds its trail the same way; the
+#: cap is applied to the *audit* payload only — ``_response`` still carries
+#: run output up to MAX_OUTPUT untouched.  64 KB keeps the largest
+#: legitimate field (MAX_COMMAND_LEN is 8000) intact many times over.
+_AUDIT_STR_CAP = 64 * 1024
 
 
 def _now() -> int:
@@ -425,12 +434,42 @@ def _response(result: dict) -> dict:
     return cleaned if isinstance(cleaned, dict) else result
 
 
+def _clip_audit_text(text: str) -> str:
+    """One audit field, bounded.  Same marker shape as util.py's log tailer;
+    slicing is by code point, so the clip cannot mint a torn surrogate."""
+    if len(text) > _AUDIT_STR_CAP:
+        return text[:_AUDIT_STR_CAP] + " …[truncated]"
+    return text
+
+
+def _clip_audit(value):
+    """Bound every string in an already-``_jsonable`` audit payload.
+
+    Runs on write (so a runaway field can never mint a trail line wider
+    than the tail windows) and on read (so a leftover fat field already on
+    disk is bounded on its way to the browser).  The input is post-shaping
+    plain JSON types, so plain bound calls are safe here.
+    """
+    if isinstance(value, str):
+        return _clip_audit_text(value)
+    if isinstance(value, dict):
+        return {_clip_audit_text(k): _clip_audit(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip_audit(v) for v in value]
+    return value
+
+
 def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
         payload = _jsonable(entry)
         if not isinstance(payload, dict):
             return
+        # Clip after shaping: a leftover unbounded field (the auth trail's
+        # found case was a 300 KB command) used to write a line wider than
+        # the trim's own 512 KB tail window, turning the next trim into a
+        # rewrite that kept nothing.
+        payload = _clip_audit(payload)
         # create_secret_text first, so the file is 0600 from the moment it
         # exists.  Appending and *then* chmod'ing left the first write at the
         # umask default -- 0644 on this host -- and this log holds whatever the
@@ -457,9 +496,15 @@ def _audit(entry: dict[str, Any]) -> None:
                 lines = tail_file_lines(
                     AUDIT_PATH, _AUDIT_KEEP_LINES, max_bytes=_AUDIT_MAX_BYTES
                 )
-                secure_io.replace_secret_text(
-                    AUDIT_PATH, "\n".join(lines) + ("\n" if lines else "")
-                )
+                # Refuse the rewrite when the tail window holds no complete
+                # line (a leftover torn fat line glued to the append).  The
+                # unguarded rewrite emptied the *entire* command history on
+                # the next audited command — the one loss this trail exists
+                # to prevent.  hub/audit.py's _trim has the same guard.
+                if lines:
+                    secure_io.replace_secret_text(
+                        AUDIT_PATH, "\n".join(lines) + "\n"
+                    )
     except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
         # RecursionError: leftover nested terminal audit after _jsonable is not
         # ValueError; POST /api/terminal/run used to 500 after the command ran.
@@ -820,7 +865,16 @@ def recent_audit(limit: int = 50) -> list[dict]:
     try:
         if not AUDIT_PATH.exists():
             return []
-        lines = tail_file_lines(AUDIT_PATH, n)
+        # The byte window must match what the trim legitimately keeps
+        # (_AUDIT_MAX_BYTES), not tail_file_lines' 256 KB default.  With the
+        # smaller window, one leftover fat line at the tail put the seek
+        # mid-line and the torn-row prefix-drop then discarded every complete
+        # row in the window — GET /api/terminal/history answered an empty
+        # pane while intact command rows sat on disk right before the fat
+        # line.  The same undersizing quietly under-filled honest requests:
+        # 500 rows of ~1 KB each need ~500 KB.  hub/audit.recent fixed the
+        # identical mismatch for the auth trail.
+        lines = tail_file_lines(AUDIT_PATH, n, max_bytes=_AUDIT_MAX_BYTES)
     except OSError:
         return []
     out: list[dict] = []
@@ -832,5 +886,8 @@ def recent_audit(limit: int = 50) -> list[dict]:
         if isinstance(parsed, dict):
             cleaned = _jsonable(parsed)
             if isinstance(cleaned, dict):
-                out.append(cleaned)
+                # Clip on read too: a leftover fat field written by an older
+                # build (or another writer) is bounded before Starlette
+                # renders it, the same both-ways clip the auth trail applies.
+                out.append(_clip_audit(cleaned))
     return out
