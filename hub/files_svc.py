@@ -180,6 +180,101 @@ def _setting(key: str, default=None):
         return default
 
 
+def _rc_int(rc) -> int:
+    """Exact int from an ``sh()`` return code; junk reads as ``-255``.
+
+    ``rc == 0`` in :func:`filebrowser_status` ran a leftover int-subclass's
+    own ``__eq__``/``__ne__`` — a bomb there raised straight out of the
+    status read and 500'd GET /api/files (the Files page's first request:
+    ``overview()`` embeds the FileBrowser status next to the roots), GET
+    /api/files/filebrowser and both sidecar mutations.  ``int.__index__``
+    reads the real value underneath a subclass override, so an honest exit
+    in a bombed wrapper survives, while a *lying* ``__class__`` impostor
+    (claims int/bool over no real int storage) TypeErrors on the unbound
+    read and drops with the junk (the nginx/docker_cli/host_address
+    ``_rc_int`` rule).  ``-255`` is no honest exit status, so junk always
+    keeps the not-running/failure branch — it can never read as success.
+    """
+    if type(rc) is int:
+        pass
+    elif rc is True:
+        return 1
+    elif rc is False:
+        return 0
+    elif _isinst(rc, int):
+        try:
+            rc = int.__index__(rc)
+        except Exception:
+            return -255
+    else:
+        try:
+            rc = int(rc)
+        except Exception:
+            return -255
+    try:
+        # An over-cap exact int (>4300 digits — YAML/plist hex loads dodge
+        # the parse-time cap) is unrenderable anywhere downstream; junk.
+        str(rc)
+    except Exception:
+        return -255
+    return rc
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it — the gateway5/brew rule): a
+    tuple/list *subclass* whose bound ``__iter__`` bombs — or a lying
+    ``__class__`` impostor claiming tuple/list over no real sequence
+    storage — raised straight out of ``rc, out, _ = sh(...)`` in
+    :func:`filebrowser_status`, and a wrong-arity answer (bare ``None``, a
+    2-tuple) was a TypeError/ValueError the same way — each a raw 500 on
+    GET /api/files.  The unbound base reads see the real C-level storage,
+    so an honest answer in a subclass wrapper survives untouched, while
+    junk degrades to ``(-255, "", "")``.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _sh_triple(cmd, timeout: int) -> tuple:
+    """Spawn with the unpack inside the guard (the brew/nginx ``_sh_triple`` rule).
+
+    The production ``sh`` never raises and always answers ``(rc, out,
+    err)``, but a patched or odd one can raise outright (RecursionError
+    from a leftover ``str(e)`` on a nested exception is not ValueError;
+    FileNotFoundError from a stub) or answer a wrong-arity tuple / bare
+    ``None`` — every one of those used to ride to Starlette uncaught and
+    500 GET /api/files, GET /api/files/filebrowser, POST
+    /api/files/filebrowser/ensure and /stop.  A raising or unusable runner
+    degrades to the ``-255`` failure triple: no files caller classifies
+    rc values beyond zero/nonzero, so the sidecar simply reads as
+    not-running and the roots/listing payload beside it keeps serving.
+    """
+    try:
+        answer = sh(cmd, timeout=timeout)
+    except Exception as exc:
+        return -255, "", _as_text(exc)
+    rc, out, err = _sh3(answer)
+    return _rc_int(rc), out, err
+
+
 def _isinst(value, types) -> bool:
     """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
 
@@ -1127,7 +1222,12 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
 def filebrowser_status() -> dict:
     running = False
     pid = None
-    rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{UID}/{FB_LABEL}"], timeout=5)
+    # _sh_triple, not a bare unpack + ``rc == 0``: this module does not own
+    # ``sh``, and a raising runner / wrong-arity answer / rc-``__eq__`` bomb
+    # each used to raise out of this status read and 500 GET /api/files
+    # (overview embeds this status beside the roots), GET
+    # /api/files/filebrowser and both sidecar mutations.
+    rc, out, _ = _sh_triple(["/bin/launchctl", "print", f"gui/{UID}/{FB_LABEL}"], timeout=5)
     out = _as_text(out)
     if rc == 0 and "state = running" in out:
         running = True
@@ -1138,7 +1238,7 @@ def filebrowser_status() -> dict:
                 except (TypeError, ValueError, OverflowError):
                     pass
     if not running:
-        rc2, out2, _ = sh(["/usr/bin/pgrep", "-x", "filebrowser-bin"], timeout=5)
+        rc2, out2, _ = _sh_triple(["/usr/bin/pgrep", "-x", "filebrowser-bin"], timeout=5)
         out2 = _as_text(out2)
         if rc2 == 0 and out2.strip():
             running = True
@@ -1205,8 +1305,11 @@ def ensure_filebrowser() -> dict:
 
     dom = f"gui/{UID}"
     if _exists(FB_PLIST):
-        sh(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=10)
-        sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{FB_LABEL}"], timeout=10)
+        # _sh_triple: the results are ignored, but a *raising* patched/odd
+        # runner used to escape these fire-and-forget spawns and 500 POST
+        # /api/files/filebrowser/ensure raw.
+        _sh_triple(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=10)
+        _sh_triple(["/bin/launchctl", "kickstart", "-k", f"{dom}/{FB_LABEL}"], timeout=10)
     elif _exists(FB_BIN):
         # Direct start without KeepAlive. Pass an argv vector so spaces or shell
         # metacharacters in the user's home path can never change the command.
@@ -1276,10 +1379,12 @@ def stop_filebrowser() -> dict:
     global _started_by_hub
     dom = f"gui/{UID}"
     if _exists(FB_PLIST):
-        sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=10)
+        # _sh_triple: a raising patched/odd runner used to escape these
+        # fire-and-forget spawns and 500 POST /api/files/filebrowser/stop.
+        _sh_triple(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=10)
     # Exact comm, not ``-f``: an editor or ``tail`` whose argv mentions the
     # binary must not be SIGTERM'd.
-    sh(["/usr/bin/pkill", "-x", "filebrowser-bin"], timeout=5)
+    _sh_triple(["/usr/bin/pkill", "-x", "filebrowser-bin"], timeout=5)
     _started_by_hub = False
     time.sleep(0.3)
     st = filebrowser_status()
@@ -1332,13 +1437,15 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
         secure_io.replace_bytes(FB_PLIST, payload)
     except OSError:
         raise api_error("files.permission_denied", path=str(FB_PLIST))
-    # reload definition if loaded
+    # reload definition if loaded.  _sh_triple: a raising patched/odd runner
+    # used to escape these fire-and-forget spawns and 500 POST
+    # /api/files/filebrowser/ondemand *after* the plist was already written.
     dom = f"gui/{UID}"
-    sh(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)
+    _sh_triple(["/bin/launchctl", "bootout", f"{dom}/{FB_LABEL}"], timeout=8)
     if not enabled:
         # re-enable resident mode
-        sh(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=8)
-        sh(["/bin/launchctl", "kickstart", f"{dom}/{FB_LABEL}"], timeout=8)
+        _sh_triple(["/bin/launchctl", "bootstrap", dom, str(FB_PLIST)], timeout=8)
+        _sh_triple(["/bin/launchctl", "kickstart", f"{dom}/{FB_LABEL}"], timeout=8)
     return {
         "ok": True,
         "ondemand": enabled,
