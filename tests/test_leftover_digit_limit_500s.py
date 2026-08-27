@@ -234,8 +234,8 @@ class AuditListFilterDigitLimitPinTests(unittest.TestCase):
                     self.assertEqual(len(rows), 1)
                     _starlette([audit.redact(r) for r in rows])
 
-    def test_huge_digit_journal_int_is_skipped_not_500(self):
-        """A journal row whose int field exceeds the parse cap is dropped whole."""
+    def test_huge_digit_journal_int_costs_its_field_not_500(self):
+        """An over-cap int field nulls; the row keeps its event (audit7)."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "auth-audit.jsonl"
             path.write_text(
@@ -245,7 +245,10 @@ class AuditListFilterDigitLimitPinTests(unittest.TestCase):
             )
             with patch.object(audit, "AUDIT_PATH", path):
                 rows = audit.recent(10)
-        self.assertEqual([r["event"] for r in rows], ["auth.logout"])
+        self.assertEqual(
+            [r["event"] for r in rows], ["auth.login.ok", "auth.logout"]
+        )
+        self.assertIsNone(rows[0]["retry"])
         _starlette(rows)
 
 
