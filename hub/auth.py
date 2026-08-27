@@ -127,11 +127,26 @@ def _mapping_items(mapping) -> list:
             return []
 
 
-def _iter_list(value):
-    """Unbound ``list.__iter__`` (the modules rule): a list-subclass
-    ``__iter__`` bomb as ``accounts`` / ``resources`` used to raise out of
-    the walk and 500 login; the real elements still come through."""
-    return list.__iter__(value)
+def _iter_list(value) -> list:
+    """Elements of a list, guarded against both bomb shapes at once.
+
+    Unbound ``list.__iter__`` (the modules rule) reads the C-level storage,
+    so a list-*subclass* ``__iter__`` bomb as ``accounts`` / ``resources``
+    yields its real elements instead of 500ing login.  But the same unbound
+    call is a *descriptor* that type-checks its operand, so a leftover whose
+    ``__class__`` property lies ``list`` — passing the ``_isinst`` gate one
+    line up while its real type is not a list underneath — TypeError'd the
+    call itself (``descriptor '__iter__' requires a 'list' object``) and rode
+    that raise straight out of ``accounts`` / ``_account_rows``, 500ing every
+    login and session-cookie check through ``verify_session``.  The
+    ``_mapping_get`` / ``_mapping_items`` rule, which this reader never got:
+    fail closed to an empty walk, so a value that only pretends to be a list
+    is treated as no list at all rather than a server error.
+    """
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
 
 
 def _auth_cfg() -> dict:
