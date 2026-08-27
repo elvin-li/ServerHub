@@ -399,7 +399,10 @@ class AskRouteEngineDownTests(_QuietCollectors):
         body = resp.json()
         _starlette(body)
         self.assertNotIn("\ud800", json.dumps(body, ensure_ascii=False))
-        self.assertIsNone(body["model"])
+        # assistant8: the unrenderable over-cap model cell used to be nulled
+        # by the final _jsonable; the str-gated pick now keeps the model this
+        # call actually used, matching the assistant7 bool-bomb fallback.
+        self.assertEqual(body["model"], "m")
         self.assertIsNone(body["duration_s"])
 
 

@@ -58,10 +58,27 @@ def _load_json(name: str):
         return None
 
 
+def _isa(value, types) -> bool:
+    """``isinstance`` that survives a raising ``__class__`` property.
+
+    ``isinstance`` consults ``value.__class__`` whenever the real type does
+    not already match, so a leftover object whose ``__class__`` is a raising
+    property blew up the *gate itself* — every ``isinstance(panel, dict)``
+    outside a try, including the ones ``suggest_panels`` runs inside the
+    router's own error fallback, where the re-raise was a guaranteed 500 on
+    POST /api/assistant/ask.  A value the probe cannot classify is junk the
+    caller's existing not-a-match branch already handles.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _safe_int(raw, default: int = 0) -> int:
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return default
-    if isinstance(raw, int) and type(raw) is not int:
+    if _isa(raw, int) and type(raw) is not int:
         # Base coercion to an exact int: a subclass ``__int__``/``__str__``
         # bomb used to blow int() / the digit-cap probe below, wiping the
         # whole snapshot to the minimal brief.
@@ -69,7 +86,7 @@ def _safe_int(raw, default: int = 0) -> int:
             raw = int.__index__(raw)
         except Exception:
             return default
-    if isinstance(raw, float):
+    if _isa(raw, float):
         if type(raw) is not float:
             # Base coercion first: a float-subclass ``__eq__`` bomb used to
             # blow the NaN/inf probes below, outside every catch.
@@ -94,13 +111,13 @@ def _safe_int(raw, default: int = 0) -> int:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isa(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -133,16 +150,32 @@ def _dget(mapping, key):
     The ups/ollama settings rule: ``dict.get`` reads the real storage
     underneath the override, so a subclass that only poisoned its method
     keeps its sane data.  Non-dicts answer ``None``.
+
+    The items-walk fallback covers the *stored key* being the bomb: a
+    str-subclass key whose ``__eq__`` raises shares ``"system"``'s hash, so
+    even ``dict.get`` hits the poisoned comparison in the probe — the whole
+    section under that key used to silently drop from the snapshot even
+    though the sane value sat right there.  ``str.__eq__`` with the exact
+    probe key on the left compares character data without dispatching to
+    the subclass.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return None
     try:
         return mapping.get(key)
     except Exception:
-        try:
-            return dict.get(mapping, key)
-        except Exception:
-            return None
+        pass
+    try:
+        return dict.get(mapping, key)
+    except Exception:
+        pass
+    try:
+        for k, v in dict.items(mapping):
+            if _isa(k, str) and str.__eq__(key, k) is True:
+                return v
+    except Exception:
+        pass
+    return None
 
 
 def _reply_text(value) -> str:
@@ -154,9 +187,9 @@ def _reply_text(value) -> str:
     answer this call already had.  The exact-str coercion keeps its real
     text; non-text junk (0, False, []) keeps the old falsy-drop semantics.
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return ""
-    if isinstance(value, (str, bytes, bytearray)):
+    if _isa(value, (str, bytes, bytearray)):
         return _utf8_text(value)
     return _utf8_text(value) if _truthy(value) else ""
 
@@ -164,16 +197,16 @@ def _reply_text(value) -> str:
 def _exact_number(raw):
     """Exact ``int``/``float`` or ``None`` — a numeric-subclass comparison
     bomb (``__ge__``/``__eq__``) cannot ride a threshold check."""
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return None
-    if isinstance(raw, int):
+    if _isa(raw, int):
         if type(raw) is not int:
             try:
                 raw = int.__index__(raw)
             except Exception:
                 return None
         return raw
-    if isinstance(raw, float):
+    if _isa(raw, float):
         if type(raw) is not float:
             try:
                 raw = float.__float__(raw)
@@ -196,9 +229,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: an int-subclass truthiness /
@@ -215,7 +248,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__ge__`` bomb
@@ -227,18 +260,18 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a nested dict-subclass ``items()`` bomb used to
         # wipe the whole snapshot to the minimal brief.
         for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
+            if _isa(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -249,9 +282,9 @@ def _jsonable(value, depth: int = 0):
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot raise and the real elements still survive.
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
@@ -284,9 +317,9 @@ def _panel_id(raw) -> str:
     digit-cap ValueError ``json.dumps`` would — drops only its row.  bool
     passes ``isinstance(int)`` and must not become ``"True"``.
     """
-    if isinstance(raw, str):
+    if _isa(raw, str):
         return _utf8_text(raw).strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if _isa(raw, bool) or not _isa(raw, int):
         return ""
     try:
         # int.__index__ first: an int-subclass ``__str__`` bomb that raised
@@ -358,7 +391,7 @@ def _title(panel: dict, locale: str) -> str:
     # map used to raise out of suggest_panels — inside the router's error
     # fallback too, which nothing above catches: a raw 500.
     raw_titles = _dget(panel, "title")
-    titles = raw_titles if isinstance(raw_titles, dict) else {}
+    titles = raw_titles if _isa(raw_titles, dict) else {}
     # _utf8_text with fallthrough, not one bare str(): an over-cap already-int
     # title (>4300 digits — the int->str digit cap) used to ValueError out of
     # catalog()/match_panels()/resolve_path(), which wiped the whole Cmd+K
@@ -375,8 +408,8 @@ def _title(panel: dict, locale: str) -> str:
 
 
 def _blurb(panel_id: str, locale: str) -> str:
-    raw_row = _BLURBS.get(panel_id)
-    row = raw_row if isinstance(raw_row, dict) else {}
+    raw_row = _dget(_BLURBS, panel_id)
+    row = raw_row if _isa(raw_row, dict) else {}
     for candidate in (_dget(row, locale), _dget(row, "en")):
         if candidate is None or not _truthy(candidate):
             continue
@@ -399,18 +432,18 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
     # a dict-subclass ``get`` bomb or a str-subclass ``__eq__`` bomb on one
     # row used to kill the page turn for *every* row at once.
     for panel in PANELS:
-        if not isinstance(panel, dict):
+        if not _isa(panel, dict):
             continue
         pth = _dget(panel, "path")
-        if isinstance(pth, str) and _utf8_text(pth) == raw:
+        if _isa(pth, str) and _utf8_text(pth) == raw:
             hit = panel
             break
     if hit is None:
         for panel in PANELS:
-            if not isinstance(panel, dict):
+            if not _isa(panel, dict):
                 continue
             pth = _dget(panel, "path")
-            if isinstance(pth, str):
+            if _isa(pth, str):
                 text = _utf8_text(pth)
                 if text != "/" and raw.startswith(text + "/"):
                     hit = panel
@@ -420,7 +453,7 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
     # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used to
     # lose the page turn's ``here`` context even though its path matched.
     pid, pth = _panel_id(_dget(hit, "id")), _dget(hit, "path")
-    if not pid or not isinstance(pth, str):
+    if not pid or not _isa(pth, str):
         return None
     return {
         "id": pid,
@@ -434,7 +467,7 @@ def catalog(locale: str | None = None) -> list[dict]:
     loc = normalize_locale(locale)
     out = []
     for panel in PANELS:
-        if not isinstance(panel, dict):
+        if not _isa(panel, dict):
             continue
         # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used
         # to vanish from the Cmd+K catalog (the numeric-YAML-ids rule).  The
@@ -443,9 +476,9 @@ def catalog(locale: str | None = None) -> list[dict]:
         pid = _panel_id(_dget(panel, "id"))
         path = _dget(panel, "path")
         aliases = _dget(panel, "aliases")
-        if not pid or not isinstance(path, str):
+        if not pid or not _isa(path, str):
             continue
-        if not isinstance(aliases, list):
+        if not _isa(aliases, list):
             aliases = []
         out.append({
             "id": pid,
@@ -476,14 +509,14 @@ def _score_panel(panel: dict, needle: str, locale: str) -> int:
     # _dget + a str gate, not ``str(panel.get("path") or "")``: a subclass
     # ``get`` or truthiness bomb must score zero, not raise out of the find.
     raw_path = _dget(panel, "path")
-    path = _utf8_text(raw_path).lower() if isinstance(raw_path, str) else ""
+    path = _utf8_text(raw_path).lower() if _isa(raw_path, str) else ""
     raw_aliases = _dget(panel, "aliases")
     # _utf8_text, not bare str(): an over-cap already-int alias used to
     # ValueError out of match_panels() and turn every find into the brief.
     aliases = [
         text.lower() for a in list.__iter__(raw_aliases)
         if a is not None and (text := _utf8_text(a))
-    ] if isinstance(raw_aliases, list) else []
+    ] if _isa(raw_aliases, list) else []
     # _panel_id, not bare str(): callers gate rows on the probe, but this
     # comparison must not be the one bare int->str left to re-raise.
     if needle == title or needle == _panel_id(_dget(panel, "id")) or needle == path.lstrip("/"):
@@ -515,12 +548,12 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
         return []
     scored: list[tuple[int, dict]] = []
     for panel in PANELS:
-        if not isinstance(panel, dict):
+        if not _isa(panel, dict):
             continue
         # _panel_id, not an isinstance(pid, str) gate: a find used to skip a
         # numeric-id row even when the query hit its alias dead-on.
         pid, pth = _panel_id(_dget(panel, "id")), _dget(panel, "path")
-        if not pid or not isinstance(pth, str):
+        if not pid or not _isa(pth, str):
             continue
         score = _score_panel(panel, needle, loc)
         if score <= 0:
@@ -579,27 +612,27 @@ def build_snapshot() -> dict:
         # dict-subclass ``__bool__`` bomb on the cached snapshot used to
         # fall into this except and wipe every field even though the real
         # rows were right there.
-        if not (isinstance(status, dict) and dict.__len__(status)):
+        if not (_isa(status, dict) and dict.__len__(status)):
             status = full_status()
     except Exception:
         status = {}
-    if not isinstance(status, dict):
+    if not _isa(status, dict):
         status = {}
     # _dget, not bound ``.get``: a dict-subclass ``get`` bomb used to raise
     # out of here and wipe the whole snapshot to the minimal brief.
     system = _dget(status, "system")
-    system = system if isinstance(system, dict) else {}
+    system = system if _isa(system, dict) else {}
     counts = _dget(status, "counts")
-    counts = counts if isinstance(counts, dict) else {}
+    counts = counts if _isa(counts, dict) else {}
     raw_problems = _dget(status, "problems")
     problems = []
-    if isinstance(raw_problems, list):
+    if _isa(raw_problems, list):
         # list.__iter__: a subclass iterator bomb drops nothing but itself.
         rows = [row for row in list.__iter__(raw_problems)][:8]
     else:
         rows = []
     for row in rows:
-        if not isinstance(row, dict):
+        if not _isa(row, dict):
             continue
         detail = _dget(row, "detail")
         name = _dget(row, "name")
@@ -633,7 +666,7 @@ def build_snapshot() -> dict:
         ollama = ollama_svc.status()
     except Exception:
         ollama = None
-    if isinstance(ollama, dict):
+    if _isa(ollama, dict):
         # _dget / _truthy / list.__iter__, not bound ``.get`` and bare
         # truthiness: a dict-subclass ``get`` bomb on the status wrapper (or
         # on one resident row) used to fall into the old blanket except and
@@ -642,12 +675,12 @@ def build_snapshot() -> dict:
         raw_resident = _dget(ollama, "resident")
         rows = [
             row for row in list.__iter__(raw_resident)
-        ][:2] if isinstance(raw_resident, list) else []
+        ][:2] if _isa(raw_resident, list) else []
         snap["ollama"] = {
             "reachable": _truthy(_dget(ollama, "reachable")),
             "resident": [
                 name for row in rows
-                if isinstance(row, dict) and _truthy(name := _dget(row, "name"))
+                if _isa(row, dict) and _truthy(name := _dget(row, "name"))
             ],
         }
     try:
@@ -657,7 +690,7 @@ def build_snapshot() -> dict:
         ups = None
     # Same rule: a ``get`` bomb on the ups wrapper used to drop the whole
     # ups block, so the brief lost a real on-battery state.
-    if isinstance(ups, dict) and _truthy(_dget(ups, "present")):
+    if _isa(ups, dict) and _truthy(_dget(ups, "present")):
         snap["ups"] = {
             "source": _dget(ups, "source"),
             "percent": _dget(ups, "percent"),
@@ -673,7 +706,7 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     # Everything here runs a second time inside the router's own error
     # fallback with the same snapshot; a raise there is a guaranteed 500.
     counts = _dget(snapshot, "counts")
-    counts = counts if isinstance(counts, dict) else {}
+    counts = counts if _isa(counts, dict) else {}
     if _safe_int(_dget(counts, "down")) or _safe_int(_dget(counts, "warn")):
         wanted.extend(["services", "health", "logs"])
     # _exact_number, not a raw ``>=`` on the snapshot value: a float-subclass
@@ -683,11 +716,11 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     if disk is not None and disk >= 85:
         wanted.append("main")
     ollama = _dget(snapshot, "ollama")
-    ollama = ollama if isinstance(ollama, dict) else {}
+    ollama = ollama if _isa(ollama, dict) else {}
     if _truthy(ollama) and not _truthy(_dget(ollama, "reachable")):
         wanted.append("ollama")
     ups = _dget(snapshot, "ups")
-    ups = ups if isinstance(ups, dict) else {}
+    ups = ups if _isa(ups, dict) else {}
     # _utf8_text, not a bare set-membership on the raw value: an unhashable
     # leftover source (a YAML ``source: [battery]`` list, or a dict) used to
     # TypeError this ``in {...}`` — and the router's error fallback calls
@@ -702,11 +735,14 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     # and the emitted id is the coerced text — never the raw (possibly int)
     # value, which _jsonable would null out past the digit cap.  _dget, not
     # bound ``.get``: a dict-subclass ``get`` bomb on one row used to 500
-    # the whole turn from right here.
+    # the whole turn from right here.  _isa, not bare isinstance: a row (or
+    # its id) whose ``__class__`` is a raising property blew the gate itself
+    # on both passes of the turn — a raw 500 from inside the router's own
+    # error fallback.
     by_id = {
         pid: panel
         for panel in PANELS
-        if isinstance(panel, dict) and (pid := _panel_id(_dget(panel, "id")))
+        if _isa(panel, dict) and (pid := _panel_id(_dget(panel, "id")))
     }
     out: list[dict] = []
     seen: set[str] = set()
@@ -715,7 +751,7 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
         # ``is None``, not truthiness: a dict-subclass ``__bool__`` bomb on
         # the row must not raise out of the guard itself.
         path = _dget(panel, "path") if panel is not None else None
-        if panel is None or not isinstance(path, str):
+        if panel is None or not _isa(path, str):
             continue
         # _utf8_text before the dedupe set: a str-subclass ``__hash__`` bomb
         # used to raise out of this membership probe on both passes.
@@ -748,14 +784,14 @@ def fallback_brief(snapshot: dict, locale: str | None = None) -> str:
     # raise anywhere below is a guaranteed 500: _dget instead of bound
     # ``.get``, _truthy instead of bare truthiness.
     counts = _dget(snapshot, "counts")
-    counts = counts if isinstance(counts, dict) else {}
+    counts = counts if _isa(counts, dict) else {}
     # _truthy: an int-subclass ``__bool__`` bomb as engine_up used to raise
     # out of this conditional on both passes of the turn.
     engine = "on" if _truthy(_dget(snapshot, "engine_up")) else "off"
     raw_problems = _dget(snapshot, "problems")
     problems = [
-        p for p in list.__iter__(raw_problems) if isinstance(p, dict)
-    ] if isinstance(raw_problems, list) else []
+        p for p in list.__iter__(raw_problems) if _isa(p, dict)
+    ] if _isa(raw_problems, list) else []
     lines = [
         f"Overview: load {_brief_cell(_dget(snapshot, 'load'))} (~{_brief_cell(_dget(snapshot, 'cpu_load_pct'), keep_zero=True)}%)"
         f" · memory used {_brief_cell(_dget(snapshot, 'mem_used_pct'), keep_zero=True)}%"
@@ -784,12 +820,12 @@ def _pick_model() -> str | None:
     # raise into _run_llm's blanket except and silently skip the model the
     # sane data underneath still named — every turn fell to the template
     # brief while the daemon was up.
-    if not isinstance(snap, dict) or not _truthy(_dget(snap, "reachable")):
+    if not _isa(snap, dict) or not _truthy(_dget(snap, "reachable")):
         return None
     for key in ("resident", "models"):
         rows = _dget(snap, key)
-        for row in list.__iter__(rows) if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
+        for row in list.__iter__(rows) if _isa(rows, list) else []:
+            if not _isa(row, dict):
                 continue
             name = _dget(row, "name")
             # _utf8_text, not bare str(): an over-cap already-int name used
@@ -813,7 +849,7 @@ def _system_prompt(snapshot: dict, locale: str) -> str:
     pages = ", ".join(
         f"{_title(p, loc)} {_utf8_text(pth)}"
         for p in PANELS
-        if isinstance(p, dict) and isinstance(pth := _dget(p, "path"), str)
+        if _isa(p, dict) and _isa(pth := _dget(p, "path"), str)
     )
     try:
         snap_json = json.dumps(
@@ -857,7 +893,7 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         if not model:
             return {}
         messages = [{"role": "system", "content": _system_prompt(snapshot, locale)}]
-        raw_hist = history if isinstance(history, list) else []
+        raw_hist = history if _isa(history, list) else []
         for raw in raw_hist[-MAX_HISTORY:]:
             if not isinstance(raw, dict):
                 continue
@@ -869,7 +905,10 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         result = ollama_svc.chat(model, messages, MAX_NUM_PREDICT)
     except Exception:
         return {}
-    if not isinstance(result, dict):
+    # _isa, not bare isinstance: this gate runs *outside* the try above, so
+    # a chat result whose ``__class__`` is a raising property used to drop
+    # the whole turn to the router's rebuilt fallback.
+    if not _isa(result, dict):
         return {}
     # _dget + _reply_text, not bound ``.get`` and a bare ``or``: everything
     # below runs *outside* the try above, so a dict-subclass ``get`` bomb on
@@ -882,10 +921,13 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
     if not text:
         return {}
     picked = _dget(result, "model")
+    # str gate: a non-text model cell (a ``__class__`` bomb, a numeric id)
+    # would only be nulled by the final _jsonable — keep the model this
+    # call actually picked instead.
     return {
         "text": text,
         "thinking": _reply_text(_dget(result, "thinking")),
-        "model": picked if _truthy(picked) else model,
+        "model": picked if _isa(picked, str) and _truthy(picked) else model,
         "duration_s": _jsonable(_dget(result, "duration_s")),
     }
 
