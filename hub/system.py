@@ -102,8 +102,16 @@ def _jsonable(value, depth: int = 0):
     # property used to detonate the *first* isinstance below — as a value
     # or a mapping key in the SMART cache — raising out of collect_system
     # and wiping the whole ``system`` tile from GET /api/status.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor.  It
+        # used to be returned verbatim — every other liar drops at its
+        # unbound base call, but the bool gate had nothing to call — and
+        # the C-level JSON encoder then refused it out of the SMART cache:
+        # a raw 500 on GET /api/status?force through the system tile.
+        return value if type(value) is bool else None
     if _isa(value, int):
         if type(value) is not int:
             try:

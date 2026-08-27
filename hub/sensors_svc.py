@@ -126,8 +126,16 @@ def _jsonable(value, depth: int = 0):
     # a mapping key or the whole planted cache — and 500
     # GET /api/system/sensors on the cache hit, the light peek and the
     # cold collect's final sweep.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor.  It
+        # used to be returned verbatim — every other liar drops at its
+        # unbound base call, but the bool gate had nothing to call — and
+        # the C-level JSON encoder then refused it: a raw 500 on cache-hit
+        # GET /api/system/sensors and the light peek.
+        return value if type(value) is bool else None
     if _isa(value, int):
         if type(value) is not int:
             try:

@@ -165,8 +165,17 @@ def _jsonable(value, depth: int = 0):
     # property — planted as (or nested in) the cached snapshot, a collector
     # row or a config value — used to detonate the *first* isinstance below
     # and 500 GET /api/status and GET /api/services.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor.  It
+        # used to be returned verbatim here — every other liar drops at its
+        # unbound base call, but the bool gate had nothing to call — and
+        # the C-level JSON encoder then refused it: a raw 500 on cache-hit
+        # and cold GET /api/status alike (and through resolve_value, which
+        # rightly passes a non-container non-str leaf untouched).
+        return value if type(value) is bool else None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -391,7 +400,20 @@ def _future_result(fut, fallback):
 def _rows(value) -> list:
     # _isa: a collector answering a ``__class__``-property bomb used to
     # detonate this gate and 500 a cold GET /api/status.
-    return value if _isa(value, list) else []
+    if type(value) is list:
+        return value
+    if not _isa(value, list):
+        return []
+    # Copy through the unbound base iterator: a collector answering a
+    # *lying* ``__class__`` list impostor used to pass the gate above and
+    # TypeError the ``+`` concatenation in ``_build_status``; a real list
+    # subclass with an ``__add__``/``__radd__``/``__iter__`` bomb detonated
+    # the same seam.  Either way the C-level call reads the real storage
+    # (subclass rows survive) and a liar drops here, not on the route.
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
 
 
 def _container_pair(value):
@@ -492,10 +514,15 @@ def _build_status() -> dict:
             orphans = discover_orphan_listeners(known_ports, known_names)
         except Exception:
             orphans = []
-        if isinstance(orphans, list):
-            # Same per-row scrub as the collector rows above; ``list.extend``
-            # of a list subclass falls back to its (bombable) ``__iter__``.
-            services.extend(_jsonable(o) for o in list.__iter__(orphans))
+        # _rows, not a bare ``isinstance`` + ``list.__iter__``: a scan
+        # answering a ``__class__``-property bomb detonated the isinstance
+        # itself, and a lying-``__class__`` list impostor passed it and
+        # TypeError'd the unbound iterator — each a raw 500 on a cold
+        # GET /api/status, one line past the try that guards the call.
+        # Same per-row scrub as the collector rows above; ``list.extend``
+        # of a list subclass falls back to its (bombable) ``__iter__``,
+        # which _rows has already neutralized.
+        services.extend(_jsonable(o) for o in _rows(orphans))
 
     # Defensive counts: always include core keys; unknown states get their own bucket.
     groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
