@@ -160,6 +160,44 @@ def _as_text(value) -> str:
         return ""
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    docker_cli / nfs_svc ``_rc_int`` rule), and every launchctl helper
+    compared the *rc* slot raw while ``_as_text`` laundered only the two
+    text streams:
+
+    * an rc-subclass whose ``__eq__`` / ``__ne__`` raises detonated the bare
+      ``rc == 0`` probes in ``_screen_sharing_on`` (a raw 500 on
+      POST /api/catalog/native-screen-sharing/install and /uninstall) and
+      the ``rc != 0`` / ``rc in (0, 3, 5)`` probes in ``_launchctl_unload``
+      (a raw 500 on POST /api/catalog/native-filebrowser/uninstall and
+      /native-homeassistant/uninstall);
+    * a >4300-digit int passed every comparison untouched and then
+      ValueError'd ``_launchctl_unload``'s ``f"exit {rc}"`` fallback and
+      ``_launchctl_load``'s ``f"bootstrap={…}"`` line past CPython's
+      int->str digit cap — the same routes, one step later.
+
+    ``int.__index__`` reads the real value underneath a subclass override;
+    a *lying* ``__class__`` impostor (claims int over no int storage)
+    TypeErrors on the unbound read and drops with the junk.  ``-255`` is no
+    honest exit status and is distinct from the ``-1`` timeout / not-found
+    sentinel, so junk can never be misread as a timeout, a vanished CLI, or
+    success.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def _exists(path: Path) -> bool:
     try:
         return path.exists()
@@ -301,14 +339,17 @@ def _screen_sharing_on() -> bool:
         ["/bin/launchctl", "print", "system/com.apple.screensharing"],
         timeout=5,
     )
-    if rc == 0 and "state = running" in _as_text(out):
+    # _rc_int, not a bare compare: a leftover rc-subclass ``__eq__`` bomb
+    # used to detonate here, straight out of the screen-sharing install and
+    # uninstall routes (this probe runs after every enable/disable attempt).
+    if _rc_int(rc) == 0 and "state = running" in _as_text(out):
         return True
     # older
     rc2, out2, _ = sh(
         ["/bin/launchctl", "list", "com.apple.screensharing"],
         timeout=4,
     )
-    return rc2 == 0
+    return _rc_int(rc2) == 0
 
 
 # Catalog definition (prefer native)
@@ -980,7 +1021,9 @@ def _launchd_or_process_running(
                 ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
                 timeout=5,
             )
-            if rc == 0 and "state = running" in _as_text(out):
+            # _rc_int: a leftover rc bomb must read as "not running", not
+            # raise out of the Home Assistant install path.
+            if _rc_int(rc) == 0 and "state = running" in _as_text(out):
                 return True
     return _process_running(process_substr)
 
@@ -1007,14 +1050,44 @@ def _port_list(raw) -> list:
         return []
     out = []
     for p in items:
-        if p is None or p == "" or _isinst(p, bool):
+        # ``p == ""`` used to run first: an item whose ``__eq__`` raises
+        # detonated the loop and emptied the whole row's ports instead of
+        # costing only itself.  Identity/_isinst gates carry no ``__eq__``;
+        # the empty-string drop moved into the str arm below.
+        if p is None or _isinst(p, bool):
             continue
         if _isinst(p, float) and type(p) is float and (
             p != p or p in (float("inf"), float("-inf"))
         ):
             continue
-        if _isinst(p, (int, str)):
+        if _isinst(p, int):
+            if type(p) is not int:
+                try:
+                    # Base coercion to an exact int: a subclass ``__str__``/
+                    # ``__eq__`` bomb must not outlive this launder — the
+                    # row's url resolver and the store's JSON encoder both
+                    # render these (the catalog._plain_ports convention).
+                    p = int.__index__(p)
+                except Exception:
+                    continue
+            try:
+                # Digit-cap probe: a leftover >4300-digit port renders
+                # nowhere — ``str(port)`` in _resolve_url was the ValueError
+                # that emptied the native half of GET /api/catalog.
+                str(p)
+            except ValueError:
+                continue
             out.append(p)
+        elif _isinst(p, str):
+            try:
+                # Unbound base encode: keeps a plain str (a subclass
+                # ``__str__``/``encode`` bomb cannot ride into _resolve_url),
+                # and a lying ``__class__`` claiming str drops alone.
+                text = str.encode(p, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                continue
+            if text:
+                out.append(text)
         elif _isinst(p, (bytes, bytearray)):
             # Unbound base decode: a subclass ``.decode`` bomb cannot fire,
             # and a lying ``__class__`` claiming bytes drops alone.
@@ -1048,7 +1121,14 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
         "32400", "51821", "8443", "8888", "3030",
     }
     for p in ports:
-        ps = str(p).split("/")[0]
+        try:
+            # _port_list already drops unrenderable ports, but this helper
+            # is also handed raw lists by callers under test; a >4300-digit
+            # int (str() is the digit-cap ValueError) or a ``__str__`` bomb
+            # costs only its own entry, never the whole URL.
+            ps = str(p).split("/")[0]
+        except Exception:
+            continue
         if ps in webish or ps.isdigit():
             # skip pure protocol ports without UI
             if ps in ("1883", "5432", "6379", "3306", "5900", "9100", "22000"):
@@ -1071,7 +1151,12 @@ def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
         rc, msg = run_capped(
             argv, timeout=timeout, env=_brew_env(), cap=4000,
         )
-        msg = _as_text(msg)
+        # _rc_int before anything compares or stores it: the raw slot rode
+        # into the result dict, where _brew_vanished's ``== -1`` and
+        # _brew_install_ok's ``== 0`` probes ran outside this try.  Junk
+        # reads -255 — never the -1 timeout / not-found sentinel, so a bomb
+        # cannot impersonate a vanished brew.
+        rc, msg = _rc_int(rc), _as_text(msg)
         if rc == -1 and not msg.strip():
             msg = "command timed out"
         return {"ok": rc == 0, "message": (msg or f"exit {rc}").strip(), "rc": rc}
@@ -1269,7 +1354,11 @@ def _forget_host_state() -> None:
 def _launchctl_is_loaded(label: str) -> bool:
     from hub.paths import UID
     rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{UID}/{label}"], timeout=5)
-    return rc == 0 and bool(out)
+    # _rc_int + _as_text: a leftover rc-subclass ``__eq__`` bomb and a
+    # stdout whose ``__bool__`` raises each used to detonate this probe —
+    # a raw 500 on the filebrowser / homeassistant uninstall routes, which
+    # ask it whether the bootout worked.
+    return _rc_int(rc) == 0 and bool(_as_text(out))
 
 
 def _launchctl_load(label: str, plist: Path) -> dict:
@@ -1283,7 +1372,7 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     # If already loaded, prefer kickstart -k (restart in place)
     if _launchctl_is_loaded(label):
         rc, out, err = sh(["/bin/launchctl", "kickstart", "-k", target], timeout=20)
-        if rc == 0:
+        if _rc_int(rc) == 0:
             return {"ok": True, "message": f"kickstart ok · {label}"}
         # fall through to re-bootstrap
         sh(["/bin/launchctl", "bootout", target], timeout=10)
@@ -1298,14 +1387,19 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     # first, the confirmation would be a listing taken before the bootstrap -- so a
     # successful start could be reported as a failure.
     _forget_host_state()
-    ok = r2[0] == 0 or _launchctl_is_loaded(label)
+    ok = _rc_int(r2[0]) == 0 or _launchctl_is_loaded(label)
     # process probe fallback
     if not ok:
         time.sleep(0.5)
         ok = _launchd_or_process_running(label, label.split(".")[-1])
+    # _rc_int + _as_text on every slot: a >4300-digit rc used to ValueError
+    # this f-string past the int->str digit cap, a stream whose ``__bool__``
+    # raises used to detonate the ``or`` chain, and a lone-surrogate stream
+    # rode raw into the install response body where Starlette's UTF-8
+    # encode 500'd it after the install itself had already succeeded.
     msg = (
-        f"bootstrap={r1[0]} kickstart={r2[0]} "
-        f"{(r1[2] or r1[1] or '')} {(r2[2] or r2[1] or '')}"
+        f"bootstrap={_rc_int(r1[0])} kickstart={_rc_int(r2[0])} "
+        f"{(_as_text(r1[2]) or _as_text(r1[1]))} {(_as_text(r2[2]) or _as_text(r2[1]))}"
     ).strip()
     return {"ok": ok, "message": msg or ("ok" if ok else "start failed")}
 
@@ -1316,7 +1410,11 @@ def _launchctl_unload(label: str) -> dict:
     target = f"{dom}/{label}"
     # prefer bootout; also try legacy unload
     rc, out, err = sh(["/bin/launchctl", "bootout", target], timeout=10)
-    out, err = _as_text(out), _as_text(err)
+    # _rc_int next to the text launder: the ``rc != 0`` / ``rc in (0, 3, 5)``
+    # probes and the ``f"exit {rc}"`` fallback below each used to be a raw
+    # 500 on the filebrowser / homeassistant uninstall routes under an
+    # rc-subclass ``__ne__``/``__eq__`` bomb or a >4300-digit leftover rc.
+    rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     if rc != 0:
         home = user_home()
         pl = (home / "Library/LaunchAgents" / f"{label}.plist") if home is not None else None
