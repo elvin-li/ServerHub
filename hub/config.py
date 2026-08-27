@@ -545,29 +545,66 @@ _UNRENDERABLE = object()
 
 
 def _renderable_tree(value, depth: int = 0):
-    """Drop over-cap ints so one leftover cannot wedge every save forever.
+    """Drop over-cap ints and launder subclass leftovers so one node cannot
+    wedge every save forever.
 
     A ``str()`` probe, not an isinstance-str gate: the poison is an
     *already-parsed* int (YAML hex/octal loads through ``int(x, 16)``, which
     CPython's 4300-digit cap does not bound), and it can sit in a value, a
-    mapping key, a list item or a ``!!set`` member.  Everything else --
-    surrogate strings, dates, normal ints -- passes through untouched.
+    mapping key, a list item or a ``!!set`` member.
+
+    Subclass instances are coerced to their base type through unbound base
+    calls: ``yaml.safe_dump`` looks representers up by *exact* type, so a
+    leftover str/int/float/dict/list subclass riding a stored section back
+    through a save raised RepresenterError — a YAMLError, not the ValueError
+    :func:`_dump` retried on — a raw 500 out of PUT /api/settings (the
+    terminal/ui/thresholds branches all merge ``settings_section(...)``
+    values back in).  The base copy also bypasses subclass method bombs
+    (``items``/``__iter__``/``__str__``/``__index__`` raising), which used
+    to blow this walk itself on the retry path.  Everything genuinely
+    plain -- surrogate strings, dates, normal ints -- passes through
+    untouched.
     """
     if depth > 64:
         return value
-    if isinstance(value, bool) or not isinstance(
-        value, (int, dict, list, tuple, set, frozenset)
-    ):
+    if isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                value = int.__index__(value)
+            except Exception:
+                return _UNRENDERABLE
         try:
             str(value)
         except ValueError:
             return _UNRENDERABLE
         return value
+    if isinstance(value, float):
+        if type(value) is float:
+            return value
+        try:
+            # NaN/inf stay: YAML renders them as ``.nan`` / ``.inf``.
+            return float.__float__(value)
+        except Exception:
+            return _UNRENDERABLE
+    if isinstance(value, str):
+        return value if type(value) is str else str.__str__(value)
+    if isinstance(value, (bytes, bytearray)):
+        # bytearray as well: SafeDumper only represents exact bytes.
+        try:
+            return bytes(value)
+        except Exception:
+            return _UNRENDERABLE
+    if not isinstance(value, (dict, list, tuple, set, frozenset)):
+        return value
     if isinstance(value, dict):
+        try:
+            items = list(dict.items(value))
+        except Exception:
+            return _UNRENDERABLE
         out = {}
-        for k, v in value.items():
+        for k, v in items:
             k2 = _renderable_tree(k, depth + 1)
             if k2 is _UNRENDERABLE:
                 continue
@@ -577,9 +614,19 @@ def _renderable_tree(value, depth: int = 0):
             out[k2] = v2
         return out
     if isinstance(value, (set, frozenset)):
-        cleaned = (_renderable_tree(v, depth + 1) for v in value)
+        base = set if isinstance(value, set) else frozenset
+        try:
+            members = list(base.__iter__(value))
+        except Exception:
+            return _UNRENDERABLE
+        cleaned = (_renderable_tree(v, depth + 1) for v in members)
         return {v for v in cleaned if v is not _UNRENDERABLE}
-    cleaned = [_renderable_tree(v, depth + 1) for v in value]
+    base = list if isinstance(value, list) else tuple
+    try:
+        members = list(base.__iter__(value))
+    except Exception:
+        return _UNRENDERABLE
+    cleaned = [_renderable_tree(v, depth + 1) for v in members]
     return [v for v in cleaned if v is not _UNRENDERABLE]
 
 
@@ -600,7 +647,7 @@ def _dump(data: dict) -> str:
     except RecursionError:
         # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
         raise api_error("settings.save_failed")
-    except ValueError:
+    except (ValueError, yaml.YAMLError):
         # A leftover YAML hex int past CPython's int->str digit cap loads fine
         # (``int(x, 16)`` is uncapped) but cannot be re-dumped.  The coded 503
         # alone left every settings save stuck for good: the auth sweep scrubs
@@ -610,6 +657,14 @@ def _dump(data: dict) -> str:
         # was hand-edited.  Retry once with only the unrenderable nodes
         # dropped -- the value cannot be persisted either way; losing the rest
         # of the save with it bought nothing.
+        #
+        # YAMLError too, not just ValueError: SafeDumper looks representers up
+        # by *exact* type, so a leftover str/int/dict *subclass* riding a
+        # stored section back through a save (PUT /api/settings merges
+        # ``settings_section("terminal")`` and friends into the patch) raised
+        # RepresenterError straight out of mutate() — a raw 500 where the
+        # digit-cap sibling one line up already degraded.  The retry launders
+        # subclasses to their base type, so the value itself still persists.
         try:
             return yaml.safe_dump(
                 _renderable_tree(data),

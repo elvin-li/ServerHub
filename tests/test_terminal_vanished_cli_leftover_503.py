@@ -272,7 +272,11 @@ class TerminalRoutesStayImmunePinTests(_TerminalSandbox):
         self.assertIn("sane", commands)
         self.assertIn("inf-line", commands)      # Infinity ts nulled, row kept
         self.assertIn("surrogate-key", commands)  # key scrubbed, row kept
-        self.assertNotIn("poison", commands)      # over-cap line skipped alone
+        # term7: the over-cap number loads as None (recent_audit's parse_int
+        # hook) instead of erasing the whole row from the shell audit view.
+        self.assertIn("poison", commands)
+        poisoned = next(e for e in body["entries"] if e.get("command") == "poison")
+        self.assertIsNone(poisoned["ts"])
         self.assertNotIn("\ud800", resp.text)
 
     def test_history_route_infinity_value_is_nulled_field_level(self):
