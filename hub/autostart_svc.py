@@ -321,20 +321,31 @@ def _brew_service_items() -> list[dict]:
     # Shared TTL cache: this list was being fetched once per caller, and
     # `brew services list --json` costs ~1.3s each time.
     data = brew_services_list()
-    for s in data:
-        if not isinstance(s, dict):
-            continue
-        name = s.get("name") if isinstance(s.get("name"), str) else _as_text(s.get("name"))
+    if not isinstance(data, list):
+        return []
+    # Unbound base iteration into an exact list, the brew_cache._copy_items
+    # convention: a leftover list-subclass ``__iter__`` bomb (or a
+    # dict-subclass row whose ``get`` raises below) used to raise out of this
+    # collector into overview()'s _safe fallback and wipe every Homebrew row
+    # from GET /api/apps/autostart instead of costing only the poisoned value.
+    try:
+        rows = [s for s in list.__iter__(data) if isinstance(s, dict)]
+    except Exception:
+        rows = []
+    for s in rows:
+        # _as_text yields an exact, surrogate-scrubbed str: a str-subclass
+        # name/status whose ``__format__``/``.lower()`` raises used to bomb
+        # the f-string / bound-lower below the same way.
+        name = _as_text(dict.get(s, "name"))
         if not name or name == "nginx":  # managed separately via custom conf often
             # still show nginx but mark custom
             pass
-        raw_status = s.get("status")
-        status = raw_status.lower() if isinstance(raw_status, str) else _as_text(raw_status).lower()
-        raw_file = s.get("file")
-        if isinstance(raw_file, str):
-            file_path = raw_file
-        elif isinstance(raw_file, (bytes, bytearray)):
-            file_path = raw_file.decode("utf-8", "replace")
+        status = _as_text(dict.get(s, "status")).lower()
+        raw_file = dict.get(s, "file")
+        if isinstance(raw_file, (str, bytes, bytearray)):
+            # _as_text, not bound ``.decode``: a bytes-subclass decode bomb
+            # used to raise here and cost the whole collector.
+            file_path = _as_text(raw_file)
         else:
             file_path = ""
         pl = {}

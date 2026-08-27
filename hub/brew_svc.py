@@ -172,15 +172,27 @@ def list_services() -> list:
         data = brew_services_list()
     except Exception:
         data = []
-    if isinstance(data, list) and data:
+    rows = []
+    if isinstance(data, list):
+        # Unbound base iteration into an exact list before the truth test:
+        # ``isinstance(data, list) and data`` ran *outside* the try above, so
+        # a leftover list-subclass whose ``__bool__``/``__len__`` raises
+        # 500'd GET /api/brew/services at the gate, and an ``__iter__`` bomb
+        # inside the loop wiped every row into the text fallback.
         try:
-            for s in data:
-                if not isinstance(s, dict):
-                    continue
-                name = _as_text(s.get("name")).strip()
+            rows = [s for s in list.__iter__(data) if isinstance(s, dict)]
+        except Exception:
+            rows = []
+    if rows:
+        try:
+            for s in rows:
+                # Unbound dict reads, the brew_cache._json_safe convention: a
+                # dict-subclass row whose ``get`` raises used to cost every
+                # sibling row instead of nothing.
+                name = _as_text(dict.get(s, "name")).strip()
                 if not name or name in _HIDE_BREW:
                     continue
-                status = _as_text(s.get("status")).lower()
+                status = _as_text(dict.get(s, "status")).lower()
 
                 # started|stopped|error|none
                 state = "ok" if status in ("started", "running") else (
@@ -191,9 +203,9 @@ def list_services() -> list:
                     "name": name,
                     "status": status or "unknown",
                     "state": state,
-                    "user": _json_safe(s.get("user")),
-                    "file": _json_safe(s.get("file")),
-                    "exit_code": _json_safe(s.get("exit_code")),
+                    "user": _json_safe(dict.get(s, "user")),
+                    "file": _json_safe(dict.get(s, "file")),
+                    "exit_code": _json_safe(dict.get(s, "exit_code")),
                     "actions": ["restart", "stop"] if state == "ok" else ["start"],
                 })
             return items

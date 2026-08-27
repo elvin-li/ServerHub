@@ -185,6 +185,31 @@ def _json_safe(value, depth: int = 0):
     return None
 
 
+def _plain_rc(value):
+    """Exact-type spawn rc for :func:`_load`'s success gate.
+
+    ``if rc == 0`` used to dispatch into a leftover numeric-subclass
+    ``__eq__`` bomb and raise out of ``_load`` — discarding the *fresh*
+    snapshot the spawn had just produced and wiping every brew row for the
+    caller.  Unbound base-type calls dodge the override; anything
+    non-numeric degrades to None (reads as failure), the
+    brew_svc/autostart_svc ``_plain_rc`` convention.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        try:
+            return float.__float__(value)
+        except Exception:
+            return None
+    return None
+
+
 def _capped_json_int(text):
     """``json.loads`` parse_int hook: an over-cap digit run drops to None.
 
@@ -345,7 +370,10 @@ def _services_from_output(out) -> list[dict] | None:
             return None
     if not isinstance(parsed, list):
         return None
-    return [x for x in parsed if isinstance(x, dict)]
+    # Unbound base iteration, like _copy_items: a stub that returned a
+    # list-*subclass* whose ``__iter__`` raises used to raise out of _load
+    # and cost the whole fresh snapshot instead of nothing.
+    return [x for x in list.__iter__(parsed) if isinstance(x, dict)]
 
 
 def _brew_argv_patterns() -> tuple[str, str]:
@@ -415,10 +443,16 @@ def _load() -> list[dict]:
         # Do not cache emptiness: that made every brew row vanish for `_TTL`
         # after invalidate + a still-held Homebrew lock.
         return []
-    rc, out, _ = sh(
-        [BREW, "services", "list", "--json"], timeout=20, env=_brew_env(),
-    )
-    if rc == 0:
+    try:
+        rc, out, _ = sh(
+            [BREW, "services", "list", "--json"], timeout=20, env=_brew_env(),
+        )
+    except (TypeError, ValueError):
+        # A malformed spawn result (wrong-arity/non-iterable stub tuple)
+        # used to raise out of the unpack and wipe the last-good snapshot;
+        # it must degrade to the keep-last-good tail like any other failure.
+        rc, out = None, None
+    if _plain_rc(rc) == 0:
         items = _services_from_output(out)
         if items is not None:
             return _publish(items, write_disk=True, gen=gen)
