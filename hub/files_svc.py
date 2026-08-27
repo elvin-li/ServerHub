@@ -151,6 +151,26 @@ def _settings() -> dict:
     return settings_section("files")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew straight through a bare type gate before any
+    launderer could run.  Two such gates sat outside a try and 500'd raw:
+    ``isinstance(_settings().get("roots"), list)`` in :func:`default_roots`
+    (every Files route starts there) and ``isinstance(raw, bool)`` on a
+    ``max_upload_mb`` leftover in :func:`_max_upload_mb` (POST
+    /api/files/upload).  A raising ``__class__`` is treated as "none of
+    these types" — fail closed to the default/scrub branch (the
+    modules8/catalog10/tools ``_isinst`` rule).
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 Files JSON.
 
@@ -163,8 +183,8 @@ def _as_text(value) -> str:
     overriding ``decode``.  ``str.encode(value, ...)`` reads the C-level
     storage, bypassing the override at no copy cost.
     """
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    if _isinst(value, (bytes, bytearray)):
+        base = bytes if _isinst(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8", "replace")
         except Exception:
@@ -181,7 +201,7 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    if not isinstance(value, str):
+    if not _isinst(value, str):
         return ""
     try:
         return str.encode(value, "utf-8", "replace").decode("utf-8")
@@ -227,7 +247,11 @@ def _max_upload_mb() -> int:
     numbers get.
     """
     raw = _settings().get("max_upload_mb")
-    if isinstance(raw, bool) or raw is None:
+    # ``_isinst``, not bare ``isinstance``: a leftover ``max_upload_mb`` whose
+    # ``__class__`` is a raising property read the operand's ``__class__`` on
+    # the real-type miss and 500'd POST /api/files/upload before the
+    # ``_finite_int`` scrub could reject it (the modules8/_isinst rule).
+    if raw is None or _isinst(raw, bool):
         return 512
     max_mb = _finite_int(raw, 512)
     if max_mb <= 0:
@@ -250,7 +274,7 @@ def _root_label(value) -> str:
     YAML's ``id: yes`` footgun, junk everywhere else in this file — fall back
     to the basename.
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return ""
     return _as_text(value).strip()
 
@@ -294,7 +318,14 @@ def _exists(p: Path) -> bool:
 def default_roots() -> list[dict]:
     """Allowlisted roots. Configurable via settings.files.roots."""
     custom = _settings().get("roots")
-    if isinstance(custom, list):
+    # ``_isinst``, not bare ``isinstance``: this gate is the first thing every
+    # Files route runs (``_resolve_safe`` → ``default_roots``), and a leftover
+    # ``roots`` value whose ``__class__`` is a raising property made
+    # ``isinstance`` consult that property on the real-type miss and 500'd GET
+    # /api/files, /api/files/list and every sibling raw.  A raising
+    # ``__class__`` fails closed here to "not a list", so the section degrades
+    # to the default candidates like an absent key (the modules8/_isinst rule).
+    if _isinst(custom, list):
         # Materialised once, guarded: settings_section() launders the section
         # mapping but not the values inside it, so a leftover list *subclass*
         # whose ``__iter__`` (or ``__len__``, via the old truthiness test)
@@ -312,7 +343,7 @@ def default_roots() -> list[dict]:
         out = []
         for r in custom:
             try:
-                if isinstance(r, str):
+                if _isinst(r, str):
                     p = _try_resolve(r)
                     if p is None:
                         continue
@@ -321,7 +352,7 @@ def default_roots() -> list[dict]:
                         "name": _as_text(p.name or str(p)) or "root",
                         "path": _as_text(p),
                     })
-                elif isinstance(r, dict):
+                elif _isinst(r, dict):
                     # Unbound ``dict.get`` (the settings_section convention):
                     # a leftover dict *subclass* row whose bound ``.get`` /
                     # ``__getitem__`` raises used to blow up here — and when
