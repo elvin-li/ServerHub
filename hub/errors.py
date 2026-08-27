@@ -627,6 +627,23 @@ CODES: dict[str, tuple[int, str]] = {
 }
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that never escapes a raising ``__class__`` property.
+
+    ``isinstance`` reads ``value.__class__`` when the concrete type is not an
+    exact/subtype match, so a leftover whose ``__class__`` is a *property that
+    raises* (the account8 class) blew the unguarded type dispatch below
+    straight out of the sanitizer — a raw HTTP 500 while building a coded
+    error's own body.  Treat such an object as "none of these types" and let
+    it fall through to the guarded ``str(value)`` tail, which launders it to a
+    renderable string or drops it — the code/message beside it still answer.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _jsonable_param(value, depth: int = 0):
     """Coerce leftover params so Starlette's allow_nan=False encoder cannot 500.
 
@@ -636,9 +653,9 @@ def _jsonable_param(value, depth: int = 0):
     """
     if depth > 8:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         try:
             # Base coercion to an exact int first: an int *subclass* whose
             # ``__index__``/``__str__`` bombs (the settings8/modules5 class)
@@ -656,7 +673,7 @@ def _jsonable_param(value, depth: int = 0):
             # photoshub/immich ``_jsonable`` drop.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below (the modules5 rule).
@@ -666,17 +683,17 @@ def _jsonable_param(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         # Unbound str.encode, not the bound ``.encode``: ``str(x)`` of a str
         # *subclass* whose ``__str__`` returns itself keeps the subclass, so a
         # bound ``.encode`` dispatched into a leftover override — the json6
         # self-``__str__`` encode bomb — and raised out of the error body.
         return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         # bytes(...) first: a bytes subclass whose decode() bombs (the
         # modules5 class) must not raise out of the sanitizer.
         return bytes(value).decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         out = {}
         try:
             items = list(value.items())
@@ -686,16 +703,16 @@ def _jsonable_param(value, depth: int = 0):
             # scalar; the code/message beside it in ``detail`` still render.
             return None
         for k, v in items:
-            if isinstance(k, (bytes, bytearray)):
+            if _isinst(k, (bytes, bytearray)):
                 k = bytes(k).decode("utf-8", "replace")
-            elif not isinstance(k, str):
+            elif not _isinst(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[str.encode(k, "utf-8", "replace").decode("utf-8")] = _jsonable_param(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
         except Exception:
@@ -703,7 +720,15 @@ def _jsonable_param(value, depth: int = 0):
             # than raising out of the encode; the error body survives.
             return None
         return [_jsonable_param(v, depth + 1) for v in seq]
-    iso = getattr(value, "isoformat", None)
+    try:
+        # getattr, not attribute access: a leftover whose ``isoformat`` is a
+        # *property that raises* (not a method) blew this lookup out of the
+        # sanitizer before ``callable`` ever ran — a raw 500 for the coded
+        # body.  A raising descriptor is not AttributeError, so the getattr
+        # default does not catch it; the try does.
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -719,7 +744,7 @@ def _jsonable_param(value, depth: int = 0):
         return None
     except Exception:
         return None
-    if not isinstance(text, str):
+    if not _isinst(text, str):
         return None
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
