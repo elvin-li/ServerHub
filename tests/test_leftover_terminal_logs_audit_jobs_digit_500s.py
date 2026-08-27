@@ -20,9 +20,10 @@ set of already-guarded survivors:
   All three now go through ``terminal_svc._duration_ms``, which answers a
   finite non-negative int;
 * the terminal history pane (``recent_audit``): a poisoned audit line whose
-  ``ts`` is a >4300-digit literal is a ValueError inside ``json.loads`` itself
-  — the line is skipped and GET /api/terminal/history keeps its other rows;
-  an over-cap or inf ``limit`` falls back to 50;
+  ``ts`` is a >4300-digit literal used to be a ValueError inside
+  ``json.loads`` itself and the whole line was skipped; since term7 the
+  parse_int hook loads the huge literal as None and the row survives.
+  An over-cap or inf ``limit`` still falls back to 50;
 * the auth audit trail (``audit.recent``): same skip-the-poisoned-line shape
   for GET /api/audit/auth, and an over-cap ``limit`` falls back to 100;
 * the central log tail (``logs_svc``): an over-cap ``lines`` string falls back
@@ -122,16 +123,21 @@ class TerminalHistoryPoisonedLinePinTests(unittest.TestCase):
         self.path.unlink(missing_ok=True)
         self.dir.rmdir()
 
-    def test_huge_digit_line_is_skipped_not_a_500(self):
-        # json.loads itself raises the 4300-digit ValueError; the poisoned
-        # line vanishes and the rest of the history renders.
+    def test_huge_digit_line_keeps_its_row_not_a_500(self):
+        # json.loads used to raise the 4300-digit ValueError for the whole
+        # line and the poisoned row vanished from the shell audit view;
+        # term7's parse_int hook loads the huge literal as None instead.
         entries = terminal_svc.recent_audit()
-        self.assertEqual([e["command"] for e in entries], ["under-cap", "ls"])
+        self.assertEqual(
+            [e["command"] for e in entries], ["poison", "under-cap", "ls"]
+        )
+        self.assertIsNone(entries[0]["ts"])
         _starlette(entries)
 
     def test_under_cap_400_digit_ts_still_renders(self):
         entries = terminal_svc.recent_audit()
-        self.assertEqual(entries[0]["ts"], int(_BIG_DIGITS))
+        by_command = {e["command"]: e for e in entries}
+        self.assertEqual(by_command["under-cap"]["ts"], int(_BIG_DIGITS))
         _starlette(entries)
 
     def test_huge_and_inf_limits_fall_back_to_fifty(self):
