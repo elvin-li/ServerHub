@@ -653,8 +653,19 @@ def _jsonable_param(value, depth: int = 0):
     """
     if depth > 8:
         return None
-    if value is None or _isinst(value, bool):
+    if value is None:
         return value
+    if _isinst(value, bool):
+        # ``bool`` is final, so a value that answers this gate while its real
+        # type is not ``bool`` is a *lying* ``__class__`` impostor, not a
+        # genuine bool.  The old arm returned it raw, handing Starlette's
+        # ``allow_nan=False`` encoder a non-serializable object that 500'd
+        # the coded error's own body (the modules9 bool-liar).  Only a real
+        # bool renders; the impostor drops to ``None`` like the lying
+        # numeric coercions below.
+        if type(value) is bool:
+            return value
+        return None
     if _isinst(value, int):
         try:
             # Base coercion to an exact int first: an int *subclass* whose
@@ -688,11 +699,25 @@ def _jsonable_param(value, depth: int = 0):
         # *subclass* whose ``__str__`` returns itself keeps the subclass, so a
         # bound ``.encode`` dispatched into a leftover override — the json6
         # self-``__str__`` encode bomb — and raised out of the error body.
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
+        # The unbound descriptor is bound to the real str layout, so a
+        # *lying* ``__class__`` claiming str (real type is not) rejected the
+        # foreign operand with a TypeError outside any try — a raw 500 for
+        # the coded body.  A raise means "not really a str"; the impostor
+        # drops to ``None`` like the lying numeric coercions above.
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            return None
     if _isinst(value, (bytes, bytearray)):
         # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+        # modules5 class) must not raise out of the sanitizer.  The copy
+        # itself rejects a *lying* ``__class__`` claiming bytes/bytearray
+        # (real type is neither) with a TypeError that used to escape — a
+        # raise means "not really bytes", so the impostor drops to ``None``.
+        try:
+            return bytes(value).decode("utf-8", "replace")
+        except Exception:
+            return None
     if _isinst(value, dict):
         out = {}
         try:
@@ -702,15 +727,35 @@ def _jsonable_param(value, depth: int = 0):
             # must not 500 the error body — drop the node like an unrenderable
             # scalar; the code/message beside it in ``detail`` still render.
             return None
-        for k, v in items:
+        for entry in items:
+            try:
+                k, v = entry
+            except Exception:
+                # An items() that yields non-pairs (an overriding dict
+                # subclass, or a lying-``__class__`` impostor's own items()):
+                # the tuple unpack used to raise TypeError outside any try —
+                # drop the entry, keep the rest of the mapping.
+                continue
             if _isinst(k, (bytes, bytearray)):
-                k = bytes(k).decode("utf-8", "replace")
+                try:
+                    k = bytes(k).decode("utf-8", "replace")
+                except Exception:
+                    # A lying-``__class__`` key claiming bytes rejects the
+                    # copy — drop just this entry, keep the siblings.
+                    continue
             elif not _isinst(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
-            out[str.encode(k, "utf-8", "replace").decode("utf-8")] = _jsonable_param(v, depth + 1)
+            try:
+                key = str.encode(k, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                # A lying-``__class__`` key claiming str skipped the str(k)
+                # coercion above, and the unbound encode rejects the foreign
+                # operand — drop the entry rather than 500 the error body.
+                continue
+            out[key] = _jsonable_param(v, depth + 1)
         return out
     if _isinst(value, (list, tuple, set, frozenset)):
         try:
