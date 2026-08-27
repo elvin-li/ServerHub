@@ -230,7 +230,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isa(value, bool):
+    # Identity, not ``_isa(value, bool)``: bool cannot be subclassed, so a
+    # real flag is one of the two singletons — but a *bool-liar* (a
+    # ``__class__`` property that *returns* bool on a plain object) passed
+    # the old gate and rode out of this scrub as itself, straight into the
+    # encoder for a 500 on the plan/drill routes.  The liar now falls to
+    # the int rank below, where the unbound base coercion refuses it.
+    if value is None or type(value) is bool:
         return value
     if _isa(value, int):
         if type(value) is not int:
@@ -644,7 +650,11 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
         # still produce it, and "never" beats guessing a floor.
         return False, ""
     hits = [reason for ok, reason in checks if ok]
-    triggered = len(hits) == len(checks) if policy.get("require_both") and len(checks) > 1 else bool(hits)
+    # _truthy on require_both: ups_svc._jsonable launders the policy, but a
+    # bool-liar flag carrying a ``__bool__`` bomb used to ride through its
+    # old bool gate and detonate this bare truth-test — a 500 on the
+    # plan/drill routes and a raise out of sweep().
+    triggered = len(hits) == len(checks) if _truthy(policy.get("require_both")) and len(checks) > 1 else bool(hits)
     return triggered, " and ".join(hits) if triggered else ""
 
 
@@ -873,9 +883,13 @@ def drill() -> dict:
     # ``__class__``-property bomb status detonated this very isinstance.
     present = _isa(status, dict) and _truthy(_row_get(status, "present"))
     would, reason = (_condition(status, policy) if present else (False, ""))
+    # _truthy on enabled, matching _condition's require_both: a bool-liar
+    # flag with a ``__bool__`` bomb used to detonate the bare bool() here
+    # after passing ups_svc._jsonable's old bool gate.
+    enabled = _truthy(policy.get("enabled"))
     return _jsonable({
-        "enabled": bool(policy.get("enabled")),
-        "would_trigger_now": bool(policy.get("enabled")) and would,
+        "enabled": enabled,
+        "would_trigger_now": enabled and would,
         "reason": reason,
         "sensor_present": present,
         "on_battery": _truthy(_row_get(status, "on_battery")),
@@ -921,7 +935,10 @@ def _sweep_locked(now: int) -> list[dict]:
         return []
 
     if phase == PHASE_IDLE:
-        if not policy.get("enabled"):
+        # _truthy: same bool-liar ``__bool__`` bomb class as drill()'s
+        # enabled read — a bare truth-test here raised out of sweep() into
+        # check_once's containment and silently killed every policy tick.
+        if not _truthy(policy.get("enabled")):
             return []
         hit, reason = _condition(status, policy)
         if not hit:
