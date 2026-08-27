@@ -367,7 +367,19 @@ def _task_id(raw) -> str:
 
 def maintenance_tasks():
     out = {}
-    raw = cfg().get("maintenance")
+    # Guarded like scheduler_svc.list_jobs (the sched7 config-read seam): a
+    # cfg() snapshot provider that raises used to escape this reader and 500
+    # GET /api/maintenance and POST /api/maintenance/{tid}/run at once.
+    try:
+        data = cfg()
+    except Exception:
+        data = {}
+    # dict.get, not the bound method: cfg() parses YAML to exact types, but
+    # the snapshot is whatever an in-process caller last stored, and a
+    # dict-*subclass* config root with a bombing ``.get`` used to detonate
+    # here and 500 both routes.  The unbound builtin reads the C-level
+    # storage underneath the override.
+    raw = dict.get(data, "maintenance") if isinstance(data, dict) else None
     if isinstance(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
