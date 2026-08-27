@@ -31,6 +31,24 @@ JOB_TIMEOUT_DEFAULT = 600
 JOB_TIMEOUT_MAX = 24 * 3600
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a value whose ``__class__`` is a raising
+    property blew every ``isinstance`` gate in this module — at value, id,
+    mapping-key and whole-row rank — straight out of GET /api/maintenance,
+    the run/log routes and the scheduler's callers (the modules8 rule).
+    A lying ``__class__`` (answers ``int``) is *not* an error and still
+    reports its claim here; the unbound base coercions downstream then drop
+    the impostor, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _clamp_timeout(raw, default: int = JOB_TIMEOUT_DEFAULT) -> int:
     """Positive seconds for ``threading.Timer`` / ``Event.wait``.
 
@@ -39,15 +57,30 @@ def _clamp_timeout(raw, default: int = JOB_TIMEOUT_DEFAULT) -> int:
     (``finished.wait`` → C ``_PyTime_t``). Inf/NaN/bytes/datetime took the
     same path after a bare ``int()``.
     """
-    if isinstance(raw, bool) or raw is None:
+    # ``type(raw) is bool``, not isinstance: bool cannot be subclassed, and
+    # the exact check never reads a leftover's bombing ``__class__``.
+    if type(raw) is bool or raw is None:
         return default
-    if isinstance(raw, (bytes, bytearray)):
+    if _isinst(raw, (bytes, bytearray)):
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if _isinst(raw, float):
+        if type(raw) is not float:
+            try:
+                # Base coercion first: a float-subclass timeout whose
+                # ``__eq__``/``__ne__`` raised used to blow the NaN probe
+                # below straight out of run_watchdog's pre-try clamp.
+                raw = float.__float__(raw)
+            except Exception:
+                return default
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
     try:
         n = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Broad on purpose: an int-subclass ``__int__``/``__index__`` bomb
+        # (or a ``__class__`` bomb with no numeric protocol at all) raised
+        # RuntimeError here, past the old (TypeError, ValueError,
+        # OverflowError) net.
         return default
     if n < 1:
         return default
@@ -168,7 +201,11 @@ def _plain_dict(value) -> dict | None:
     """
     if type(value) is dict:
         return value
-    if isinstance(value, dict):
+    # _isinst, not a bare isinstance: a leftover non-dict row whose
+    # ``__class__`` is a raising property used to detonate the gate itself
+    # (the real-type fast check misses, CPython reaches for ``__class__``)
+    # and 500 all three Maintenance routes before the copy ever ran.
+    if _isinst(value, dict):
         try:
             return dict(value)
         except Exception:
@@ -190,8 +227,15 @@ def _truthy(value) -> bool:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    base = bytes if _isinst(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        # A liar whose ``__class__`` *answers* bytes passes the callers'
+        # _isinst gates but is not really bytes: the unbound descriptor
+        # refuses it with TypeError, which used to ride out of _jsonable's
+        # bytes arm and 500 GET /api/maintenance.
+        return ""
 
 
 def _utf8_text(value) -> str:
@@ -206,9 +250,9 @@ def _utf8_text(value) -> str:
     guarantees an *exact* ``str`` return, so callers' own ``.strip()`` /
     ``.replace()`` / truth tests cannot hit a subclass override either.
     """
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, str):
+    if _isinst(value, str):
         text = value
     else:
         try:
@@ -238,9 +282,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # ``type(value) is bool``, not isinstance: a liar whose ``__class__``
+    # *answers* bool passed the old gate and rode raw into json.dumps
+    # (TypeError, 500); bool cannot be subclassed, so the exact check is
+    # complete and the impostor falls to the int arm's unbound coercion.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a leftover subclass
@@ -257,7 +305,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a leftover subclass
@@ -269,14 +317,14 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
         # (a poisoned task name — or a bytes mapping *key*, which reaches
         # _utf8_text below) used to 500 the encoder walk.
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
             # items()/keys()/__iter__ — a leftover subclass method bomb
@@ -287,14 +335,14 @@ def _jsonable(value, depth: int = 0):
                 return None
         out = {}
         for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
         except Exception:
@@ -346,10 +394,12 @@ def _task_id(raw) -> str:
     other control character routes fine).  The id is only ever a mapping
     key, so folding the newline to a space keeps the task runnable.
     """
-    if isinstance(raw, str):
+    if _isinst(raw, str):
+        # _utf8_text returns an exact str, so a liar claiming str degrades
+        # to "" and drops its entry instead of bombing the bound calls.
         text = _utf8_text(raw).replace("\r\n", "\n").replace("\n", " ")
         return text.strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if type(raw) is bool or not _isinst(raw, int):
         return ""
     if type(raw) is not int:
         try:
@@ -378,8 +428,8 @@ def maintenance_tasks():
         data = cfg()
     except Exception:
         data = None
-    raw = dict.get(data, "maintenance") if isinstance(data, dict) else None
-    if isinstance(raw, list):
+    raw = dict.get(data, "maintenance") if _isinst(data, dict) else None
+    if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
             # __iter__ raises used to 500 GET /api/maintenance.
@@ -423,14 +473,14 @@ def _jobs_row(tid: str):
         return _jobs.get(tid)
     except Exception:
         for k, v in list(_jobs.items()):
-            if isinstance(k, str) and str.__eq__(k, tid) is True:
+            if _isinst(k, str) and str.__eq__(k, tid) is True:
                 return v
         return None
 
 
 def job_state(tid):
     empty = {"running": False, "rc": None, "finished": None}
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return empty
     # _plain_dict + _truthy: a leftover dict-subclass row (or a __bool__-bomb
     # ``running`` value) used to 500 GET /api/maintenance for every task.
@@ -446,7 +496,7 @@ def job_state(tid):
 
 
 def get_job(tid):
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return None
     # The plain-dict copy also neutralises a subclass .get() bomb for the
     # only caller (job_log); rows this module writes are already plain.
@@ -454,10 +504,17 @@ def get_job(tid):
 
 
 def _log_lines(raw) -> list[str]:
-    """String lines from a leftover job-row ``log`` field.  Never raises."""
-    if isinstance(raw, str):
+    """String lines from a leftover job-row ``log`` field.  Never raises.
+
+    Only *exact* strs come back: ``job_log`` joins the result with
+    ``str.join``, and a liar whose ``__class__`` answers str (not a real
+    str at all) used to TypeError that join outside every net.
+    """
+    if _isinst(raw, str):
+        if type(raw) is not str:
+            raw = _utf8_text(raw)
         return [raw] if raw else []
-    if not isinstance(raw, (list, tuple)):
+    if not _isinst(raw, (list, tuple)):
         return []
     try:
         # A leftover list-subclass whose __iter__ raises used to 500 the
@@ -467,9 +524,16 @@ def _log_lines(raw) -> list[str]:
         return []
     out: list[str] = []
     for item in items:
-        if isinstance(item, str):
-            out.append(item)
-        elif isinstance(item, (bytes, bytearray)):
+        if _isinst(item, str):
+            if type(item) is str:
+                out.append(item)
+            else:
+                # Laundered leftovers that degrade to "" are junk, not
+                # blank lines; only real content survives.
+                text = _utf8_text(item)
+                if text:
+                    out.append(text)
+        elif _isinst(item, (bytes, bytearray)):
             # Unbound base decode: a bytes-subclass ``decode`` bomb in a
             # leftover log list used to 500 GET /api/maintenance/{tid}/log.
             out.append(_decode_bytes(item))
@@ -483,7 +547,7 @@ def job_log(tid):
     KeyError'd, and ``log: [bytes, None]`` TypeError'd ``str.join``.
     """
     missing = {"running": False, "rc": None, "log": "(not run yet)"}
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return missing
     j = get_job(tid)
     if j is None:
@@ -515,7 +579,10 @@ def _row_running(j) -> bool:
 def start_job(task):
     task = _plain_dict(task)
     tid = task.get("id") if task is not None else None
-    if not isinstance(tid, str):
+    # _isinst: a leftover id whose ``__class__`` is a raising property
+    # (tools_svc hands start_job its own dicts) used to detonate this gate
+    # straight into the calling route.
+    if not _isinst(tid, str):
         return None
     # Exact-str copy before the emptiness probe and the ``_jobs`` insert:
     # a leftover str-*subclass* id (tools_svc hands start_job its own
