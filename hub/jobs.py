@@ -38,7 +38,8 @@ def _isinst(value, types) -> bool:
     real-type fast check misses, so a value whose ``__class__`` is a raising
     property blew every bare ``isinstance`` gate in this module — at cfg
     root, row, id, nested-value, ``_jobs``-row and log-line rank — straight
-    out of all three Maintenance routes (the modules8/bookmarks8 rule).
+    out of all three Maintenance routes and the scheduler's callers
+    (the modules8/bookmarks8 rule).
     A lying ``__class__`` (answers ``int``) is *not* an error and still
     reports its claim here; the numeric arms' unbound base coercion then
     drops it, exactly as before.
@@ -57,15 +58,30 @@ def _clamp_timeout(raw, default: int = JOB_TIMEOUT_DEFAULT) -> int:
     (``finished.wait`` → C ``_PyTime_t``). Inf/NaN/bytes/datetime took the
     same path after a bare ``int()``.
     """
-    if _isinst(raw, bool) or raw is None:
+    # ``type(raw) is bool``, not isinstance: bool cannot be subclassed, and
+    # the exact check never reads a leftover's bombing ``__class__``.
+    if type(raw) is bool or raw is None:
         return default
     if _isinst(raw, (bytes, bytearray)):
         return default
-    if _isinst(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if _isinst(raw, float):
+        if type(raw) is not float:
+            try:
+                # Base coercion first: a float-subclass timeout whose
+                # ``__eq__``/``__ne__`` raised used to blow the NaN probe
+                # below straight out of run_watchdog's pre-try clamp.
+                raw = float.__float__(raw)
+            except Exception:
+                return default
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
     try:
         n = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Broad on purpose: an int-subclass ``__int__``/``__index__`` bomb
+        # (or a ``__class__`` bomb with no numeric protocol at all) raised
+        # RuntimeError here, past the old (TypeError, ValueError,
+        # OverflowError) net.
         return default
     if n < 1:
         return default
@@ -186,6 +202,10 @@ def _plain_dict(value) -> dict | None:
     """
     if type(value) is dict:
         return value
+    # _isinst, not a bare isinstance: a leftover non-dict row whose
+    # ``__class__`` is a raising property used to detonate the gate itself
+    # (the real-type fast check misses, CPython reaches for ``__class__``)
+    # and 500 all three Maintenance routes before the copy ever ran.
     if _isinst(value, dict):
         try:
             return dict(value)
@@ -209,7 +229,14 @@ def _truthy(value) -> bool:
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if _isinst(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        # A liar whose ``__class__`` *answers* bytes passes the callers'
+        # _isinst gates but is not really bytes: the unbound descriptor
+        # refuses it with TypeError, which used to ride out of _jsonable's
+        # bytes arm and 500 GET /api/maintenance.
+        return ""
 
 
 def _utf8_text(value) -> str:
@@ -256,7 +283,11 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isinst(value, bool):
+    # ``type(value) is bool``, not isinstance: a liar whose ``__class__``
+    # *answers* bool passed the old gate and rode raw into json.dumps
+    # (TypeError, 500); bool cannot be subclassed, so the exact check is
+    # complete and the impostor falls to the int arm's unbound coercion.
+    if value is None or type(value) is bool:
         return value
     if _isinst(value, int):
         if type(value) is not int:
@@ -365,9 +396,11 @@ def _task_id(raw) -> str:
     key, so folding the newline to a space keeps the task runnable.
     """
     if _isinst(raw, str):
+        # _utf8_text returns an exact str, so a liar claiming str degrades
+        # to "" and drops its entry instead of bombing the bound calls.
         text = _utf8_text(raw).replace("\r\n", "\n").replace("\n", " ")
         return text.strip()
-    if _isinst(raw, bool) or not _isinst(raw, int):
+    if type(raw) is bool or not _isinst(raw, int):
         return ""
     if type(raw) is not int:
         try:
@@ -472,7 +505,12 @@ def get_job(tid):
 
 
 def _log_lines(raw) -> list[str]:
-    """String lines from a leftover job-row ``log`` field.  Never raises."""
+    """String lines from a leftover job-row ``log`` field.  Never raises.
+
+    Only *exact* strs come back: ``job_log`` joins the result with
+    ``str.join``, and a liar whose ``__class__`` answers str (not a real
+    str at all) used to TypeError that join outside every net.
+    """
     if _isinst(raw, str):
         # Laundered before the truth test: a str-subclass ``__bool__``/
         # ``__len__`` bomb used to blow ``if raw`` right here.
@@ -491,8 +529,10 @@ def _log_lines(raw) -> list[str]:
         if _isinst(item, str):
             # _utf8_text launders a str-subclass line to an exact str: a
             # leftover whose bound methods bomb cannot reach str.join or
-            # the encoder downstream.
-            out.append(_utf8_text(item))
+            # the encoder downstream. Empty laundered junk is dropped.
+            text = _utf8_text(item)
+            if text:
+                out.append(text)
         elif _isinst(item, (bytes, bytearray)):
             # Unbound base decode: a bytes-subclass ``decode`` bomb in a
             # leftover log list used to 500 GET /api/maintenance/{tid}/log.
@@ -539,6 +579,9 @@ def _row_running(j) -> bool:
 def start_job(task):
     task = _plain_dict(task)
     tid = task.get("id") if task is not None else None
+    # _isinst: a leftover id whose ``__class__`` is a raising property
+    # (tools_svc hands start_job its own dicts) used to detonate this gate
+    # straight into the calling route.
     if not _isinst(tid, str):
         return None
     # Exact-str copy before the emptiness probe and the ``_jobs`` insert:
