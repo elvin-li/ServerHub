@@ -66,9 +66,27 @@ class NfsConfigError(ValueError):
         self.params = params
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_admin_result``'s dict gate 500'd
+    POST /api/nfs/exports and /api/nfs/server one line ahead of the
+    laundering that exists to absorb junk shapes, and ``_validate_entry``'s
+    entry gate raised raw past the router's NfsConfigError catch.  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/nfs."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         value = value.decode("utf-8", "replace")
     elif value is None:
         return ""
@@ -107,9 +125,11 @@ def _admin_result(result) -> dict:
     on POST /api/nfs/exports and /api/nfs/server one call ahead of the
     router funnel that already knows how to answer coded.  ``dict()``
     copies through the C-level storage, so an overridden method cannot
-    fire; junk shapes degrade to the coded generic failure.
+    fire; junk shapes degrade to the coded generic failure.  _isa, not a
+    bare isinstance: a ``__class__``-property bomb detonated the gate
+    itself before the non-dict branch could answer.
     """
-    if isinstance(result, dict):
+    if _isa(result, dict):
         try:
             plain = dict(result)
         except Exception:
@@ -149,7 +169,7 @@ def _classify_admin_failure(result: dict) -> dict:
     operator back to a password dialog that cannot help.  The probe runs only
     on this failure path, never on a successful mutation.
     """
-    if not isinstance(result, dict):
+    if not _isa(result, dict):
         return {"ok": False, "error": "failed"}
     # _as_text on both probes, no bare ``or`` / ``==`` on the raw fields:
     # a leftover ``__eq__``-bomb error value used to detonate the
@@ -260,8 +280,10 @@ def _validate_entry(entry: dict) -> dict:
     # called in-process, and a leftover dict-*subclass* entry whose bound
     # ``.get`` raises a non-ValueError — or a non-dict entry AttributeError'ing
     # the read — used to raise raw past the router's NfsConfigError catch
-    # where every other junk entry earns its coded refusal.
-    if not isinstance(entry, dict):
+    # where every other junk entry earns its coded refusal.  _isa: a
+    # ``__class__``-property bomb entry detonated this very gate the same
+    # raw way before the refusal below could answer.
+    if not _isa(entry, dict):
         raise NfsConfigError("nfs.bad_path")
     try:
         # A str() probe, not an isinstance gate: a numeric leftover keeps
@@ -318,9 +340,9 @@ def _validate_entry(entry: dict) -> dict:
         raise NfsConfigError("nfs.bad_path") from error
 
     clients_raw = dict.get(entry, "clients")
-    if isinstance(clients_raw, str):
+    if _isa(clients_raw, str):
         clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
-    elif isinstance(clients_raw, list):
+    elif _isa(clients_raw, list):
         # Materialized under the unbound base walk: a list-subclass client
         # table whose ``__iter__`` raises used to blow the loop below raw.
         try:
@@ -469,7 +491,7 @@ def _entry_rows(raw) -> list:
     usage_svc.scan_roots / storage_pool_svc._candidates rule).  No entries
     is the honest degrade: the page renders an empty table.
     """
-    if not isinstance(raw, list):
+    if not _isa(raw, list):
         return []
     try:
         return list(list.__iter__(raw))
@@ -518,9 +540,9 @@ def save_exports(entries: list[dict]) -> dict:
     # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
     # used to blow the old ``(entries or [])`` — a raw raise where every junk
     # entry already earns its coded NfsConfigError refusal.
-    if isinstance(entries, list):
+    if _isa(entries, list):
         rows = list.__iter__(entries)
-    elif isinstance(entries, tuple):
+    elif _isa(entries, tuple):
         rows = tuple.__iter__(entries)
     else:
         rows = iter(())

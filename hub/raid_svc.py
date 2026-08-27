@@ -57,9 +57,9 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
     rc, out, _ = sh(argv, timeout=timeout)
     if rc != 0 or not out:
         return {}
-    if isinstance(out, (bytes, bytearray)):
+    if _isa(out, (bytes, bytearray)):
         out = bytes(out).decode("utf-8", "replace")
-    elif not isinstance(out, str):
+    elif not _isa(out, str):
         try:
             out = str(out)
         except RecursionError:
@@ -86,6 +86,24 @@ def _disk_info(device: str) -> dict:
     return _plist([DISKUTIL, "info", "-plist", device], timeout=10)
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_admin_result``'s dict gate — and
+    ``_jsonable``'s rank gates under it — 500'd every POST /api/raid/*
+    mutation one line ahead of the laundering built to absorb junk shapes,
+    and ``_listing``'s list gate blew GET /api/raid outside its own try.
+    A real subclass still matches through the C-level type check; only a
+    value that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _ident(value) -> str:
     """Plist device / mount field as text.
 
@@ -94,11 +112,16 @@ def _ident(value) -> str:
     as ``b'disk0s2'`` and drop the APFS physical store from the boot-disk
     union; array-shaped leftovers used to skip the store the same way.
     """
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (list, tuple)):
+        try:
+            # A leftover subclass ``__bool__``/``__getitem__`` bomb must
+            # cost this field, never the page.
+            value = value[0] if value else ""
+        except Exception:
+            return ""
+    if _isa(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
-    if not isinstance(value, str):
+    if not _isa(value, str):
         return ""
     # Leftover ``\\ud800`` in a plist Name used to 500 GET /api/raid.
     return value.encode("utf-8", "replace").decode("utf-8")
@@ -112,50 +135,72 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 16:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa at every rank (the nas_common rule): a ``__class__``-property
+    # bomb nested in a run_admin payload used to detonate the first gate it
+    # failed and 500 every POST /api/raid/* mutation; it now falls through
+    # to the final text probe like any other unrecognized leftover.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
+            # Base coercion first (the snapshots/smart rule): an int
+            # subclass ``__str__`` bomb raised a non-ValueError past the
+            # digit-cap probe below.
+            if type(value) is not int:
+                value = int.__index__(value)
             str(value)
-        except ValueError:
+        except Exception:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except Exception:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _ident(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return bytes(value).decode("utf-8", "replace")
-    if isinstance(value, dict):
-        try:
-            items = list(value.items())
-        except Exception:
-            # A mapping that refuses iteration (odd dict subclass in a
-            # run_admin result): nothing to salvage, but its *siblings* must
-            # survive — pre-fix this raised out of _admin_result and 500'd
-            # POST /api/raid/* (the ups_svc/nginx_svc._jsonable rule).
-            return None
+    if _isa(value, dict):
+        # Unbound base view (the nas_common rule): the old bound
+        # ``value.items()`` guarded its own raise but unpacked *outside*
+        # the try, so a dict subclass whose ``items()`` answers non-pair
+        # rows blew ``for k, v in items`` raw — a 500 on POST /api/raid/*
+        # where every sibling module already reads the C-level storage.
         out = {}
-        for k, v in items:
-            if not isinstance(k, (str, bytes, bytearray)):
-                try:
+        for k, v in dict.items(value):
+            try:
+                # Per-pair guard: a ``__class__``-bomb key drops alone;
+                # its sibling keys survive.
+                if not _isa(k, (str, bytes, bytearray)):
                     k = str(k)
-                except Exception:
-                    continue
-            out[_ident(k)] = _jsonable(v, depth + 1)
+                out[_ident(k)] = _jsonable(v, depth + 1)
+            except Exception:
+                continue
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # getattr's default only swallows AttributeError; a leftover whose
+        # ``isoformat`` is a *raising property* (or a ``__getattr__`` bomb)
+        # still raised out of the probe itself and 500'd POST /api/raid/*
+        # — the guard nas_common._jsonable already carries.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
@@ -187,11 +232,11 @@ def _req_text(raw) -> str:
     its string form and earn the same coded refusal path.  Lone surrogates
     are scrubbed so a refusal's own params cannot 500 the error body.
     """
-    if raw is None or isinstance(raw, bool):
+    if raw is None or _isa(raw, bool):
         return ""
-    if isinstance(raw, (bytes, bytearray)):
+    if _isa(raw, (bytes, bytearray)):
         return bytes(raw).decode("utf-8", "replace")
-    if not isinstance(raw, str):
+    if not _isa(raw, str):
         try:
             raw = str(raw)
         except Exception:
@@ -221,7 +266,10 @@ _VANISH_MARKERS = ("command not found", "no such file or directory", "not found"
 
 
 def _admin_result(result) -> dict:
-    cleaned = _jsonable(result) if isinstance(result, dict) else {}
+    # _isa: a ``__class__``-property bomb result detonated the bare gate
+    # itself — a raw 500 on every raid mutation one line ahead of the
+    # laundering built to absorb junk shapes.
+    cleaned = _jsonable(result) if _isa(result, dict) else {}
     if not isinstance(cleaned, dict):
         return {"ok": False, "error": "failed"}
     # A diskutil that vanished between the eligibility check and the spawn
@@ -253,13 +301,16 @@ def _size_fields(raw) -> tuple:
     the raw plist number).  A huge finite integer OverflowError'd the GB
     conversion the same way a 400-digit ``df`` block count did.
     """
-    if isinstance(raw, bool) or raw is None:
-        return None, None
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+    if _isa(raw, bool) or raw is None:
         return None, None
     try:
+        # One guard around the probes and the coercion: a float-subclass
+        # ``__eq__``/``__ne__`` bomb Size used to detonate the NaN/inf
+        # probes themselves (not the numeric trio the old except named).
+        if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+            return None, None
         n = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return None, None
     try:
         str(n)
@@ -278,11 +329,14 @@ def _size_fields(raw) -> tuple:
 
 
 def _finite_float(raw):
-    if isinstance(raw, bool) or raw in (None, ""):
-        return None
     try:
+        # One guard around the gate and the coercion: an ``__eq__``-bomb
+        # rebuild percent used to detonate the ``in (None, "")`` membership
+        # probe itself (not the numeric trio the old except named).
+        if _isa(raw, bool) or raw in (None, ""):
+            return None
         value = float(raw)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return None
     if value != value or value in (float("inf"), float("-inf")):
         return None
@@ -307,7 +361,7 @@ def disk_topology() -> dict[str, dict]:
         return topology.setdefault(whole, {"volumes": [], "system": False, "containers": []})
 
     raw_disks = data.get("AllDisksAndPartitions")
-    entries = [d for d in raw_disks if isinstance(d, dict)] if isinstance(raw_disks, list) else []
+    entries = [d for d in raw_disks if _isa(d, dict)] if _isa(raw_disks, list) else []
 
     # Pass 1: plain partition tables — a mount here belongs to this disk directly.
     for disk in entries:
@@ -315,8 +369,8 @@ def disk_topology() -> dict[str, dict]:
         if not whole:
             continue
         record = slot(whole)
-        for part in disk.get("Partitions") if isinstance(disk.get("Partitions"), list) else []:
-            if not isinstance(part, dict):
+        for part in disk.get("Partitions") if _isa(disk.get("Partitions"), list) else []:
+            if not _isa(part, dict):
                 continue
             mount = _ident(part.get("MountPoint"))
             if mount:
@@ -328,13 +382,13 @@ def disk_topology() -> dict[str, dict]:
 
     # Pass 2: APFS containers — attribute their volumes to the physical stores.
     for disk in entries:
-        stores = disk.get("APFSPhysicalStores") if isinstance(disk.get("APFSPhysicalStores"), list) else []
-        volumes = disk.get("APFSVolumes") if isinstance(disk.get("APFSVolumes"), list) else []
+        stores = disk.get("APFSPhysicalStores") if _isa(disk.get("APFSPhysicalStores"), list) else []
+        volumes = disk.get("APFSVolumes") if _isa(disk.get("APFSVolumes"), list) else []
         if not stores:
             continue
         backing: set[str] = set()
         for store in stores:
-            if isinstance(store, dict):
+            if _isa(store, dict):
                 raw = store.get("DeviceIdentifier") or store.get("APFSPhysicalStore")
             else:
                 raw = store
@@ -349,13 +403,13 @@ def disk_topology() -> dict[str, dict]:
             if container_internal:
                 record["system"] = True
             for vol in volumes:
-                if not isinstance(vol, dict):
+                if not _isa(vol, dict):
                     continue
                 mounts = [_ident(vol.get("MountPoint"))]
                 # A sealed system volume is mounted as a snapshot, so its own
                 # MountPoint is empty and `/` only appears under MountedSnapshots.
-                for snap in vol.get("MountedSnapshots") if isinstance(vol.get("MountedSnapshots"), list) else []:
-                    if isinstance(snap, dict):
+                for snap in vol.get("MountedSnapshots") if _isa(vol.get("MountedSnapshots"), list) else []:
+                    if _isa(snap, dict):
                         mounts.append(_ident(snap.get("SnapshotMountPoint")))
                 for mount in [m for m in mounts if m]:
                     record["volumes"].append({
@@ -377,10 +431,10 @@ def disk_topology() -> dict[str, dict]:
 
 def _parse_members(raw) -> list[dict]:
     members = []
-    if not isinstance(raw, list):
+    if not _isa(raw, list):
         return members
     for entry in raw:
-        if not isinstance(entry, dict):
+        if not _isa(entry, dict):
             continue
         status = _ident(entry.get("MemberStatus") or entry.get("AppleRAIDMemberStatus") or "")
         size_bytes, size_gb = _size_fields(entry.get("Size"))
@@ -400,10 +454,13 @@ def list_sets() -> list[dict]:
     data = _plist([DISKUTIL, "appleRAID", "list", "-plist"], timeout=15)
     sets = []
     raw_sets = data.get("AppleRAIDSets")
-    if not isinstance(raw_sets, list):
+    if not _isa(raw_sets, list):
         raw_sets = []
     for entry in raw_sets:
-        if not isinstance(entry, dict):
+        # _isa: a ``__class__``-bomb set row used to detonate this gate on
+        # the mutation path (_resolve_set walks list_sets outside the
+        # _listing guard) and 500 POST /api/raid/* raw.
+        if not _isa(entry, dict):
             continue
         members = _parse_members(entry.get("AppleRAIDMembers") or entry.get("Members") or [])
         status = _ident(entry.get("Status") or entry.get("AppleRAIDSetStatus") or "")
@@ -446,8 +503,8 @@ def candidate_devices() -> list[dict]:
     raw_disks = data.get("AllDisksAndPartitions")
     disks = [
         (_ident(disk.get("DeviceIdentifier")), disk)
-        for disk in (raw_disks if isinstance(raw_disks, list) else [])
-        if isinstance(disk, dict)
+        for disk in (raw_disks if _isa(raw_disks, list) else [])
+        if _isa(disk, dict)
     ]
     disks = [(device, disk) for device, disk in disks if _DEV_RE.fullmatch(device)]
 
@@ -499,10 +556,12 @@ def _listing(provider) -> list:
         rows = provider()
     except Exception:
         return []
-    if not isinstance(rows, list):
+    # _isa: a ``__class__``-bomb listing detonated this gate *outside* the
+    # trys on either side of it and 500'd GET /api/raid.
+    if not _isa(rows, list):
         return []
     try:
-        return [r for r in list.__iter__(rows) if isinstance(r, dict)]
+        return [r for r in list.__iter__(rows) if _isa(r, dict)]
     except Exception:
         return []
 
@@ -553,9 +612,9 @@ def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
     # used to blow the old ``(devices or [])`` raw — past the router's
     # RaidError catch — where every junk device already earns the coded
     # ``raid.bad_device`` refusal.
-    if isinstance(devices, list):
+    if _isa(devices, list):
         rows = list.__iter__(devices)
-    elif isinstance(devices, tuple):
+    elif _isa(devices, tuple):
         rows = tuple.__iter__(devices)
     else:
         rows = iter(())
@@ -616,9 +675,17 @@ def create_set(
         timeout=900,
     )
     invalidate()
-    if isinstance(result, dict) and result.get("ok"):
-        result = dict(result)
-        result.update(level=level, name=name, members=members)
+    # _isa + guarded reads: a ``__class__``-bomb result — or a subclass
+    # whose ``.get``/copy raises — must reach _admin_result's laundering,
+    # never 500 POST /api/raid/sets at this enrichment step.
+    if _isa(result, dict):
+        try:
+            enriched = dict(result)
+            if enriched.get("ok"):
+                enriched.update(level=level, name=name, members=members)
+                result = enriched
+        except Exception:
+            pass
     return _admin_result(result)
 
 

@@ -91,9 +91,27 @@ _SCAN_WORKERS = 4
 _LEASE = 4096
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``scan_roots``' per-row gates 500'd all four
+    usage routes on one poisoned root/share row, and ``set_spotlight``'s
+    result gate blew POST /api/storage/spotlight one line ahead of the
+    laundering built to absorb junk shapes.  A real subclass still matches
+    through the C-level type check; only a value that cannot answer what
+    it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 usage JSON."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the modules5 / nas_common rule): a leftover
         # bytes-subclass whose bound ``.decode`` raises used to 500
         # GET /api/storage/usage out of _spotlight_query.
@@ -229,7 +247,7 @@ def scan_roots() -> list[dict]:
         # all along; the volumes and shares below still contribute.
         incoming = []
     # None/int leftover used to TypeError GET /api/storage/usage.
-    if not isinstance(incoming, (list, tuple)):
+    if not _isa(incoming, (list, tuple)):
         incoming = []
     try:
         incoming = list(incoming)
@@ -241,7 +259,10 @@ def scan_roots() -> list[dict]:
         # shares below still contribute their roots.
         incoming = []
     for entry in incoming:
-        if not isinstance(entry, dict):
+        # _isa: a ``__class__``-property bomb row used to detonate this
+        # gate itself and 500 all four usage routes, where every other
+        # junk row already drops alone.
+        if not _isa(entry, dict):
             continue
         try:
             # Per-row guard, the storage_pool_svc._candidates class: a dict
@@ -289,7 +310,7 @@ def scan_roots() -> list[dict]:
     except Exception:
         # Share enumeration is a convenience here, never a hard dependency.
         listed = []
-    if not isinstance(listed, (list, tuple)):
+    if not _isa(listed, (list, tuple)):
         listed = []
     try:
         listed = list(listed)
@@ -299,7 +320,9 @@ def scan_roots() -> list[dict]:
         # section, never the request — the roots already gathered survive.
         listed = []
     for share in listed:
-        if not isinstance(share, dict):
+        # _isa, same class as the roots loop above: a ``__class__``-bomb
+        # share row must drop alone, never 500 the usage routes.
+        if not _isa(share, dict):
             continue
         try:
             # Per-row guard, same class as the roots loop above: a dict
@@ -996,20 +1019,26 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         listing = spotlight_status()
     except Exception:
         listing = []
-    if not isinstance(listing, (list, tuple)):
+    if not _isa(listing, (list, tuple)):
         listing = []
     known = {"/"}
-    base = list if isinstance(listing, list) else tuple
+    base = list if _isa(listing, list) else tuple
     for v in base.__iter__(listing):
-        if not isinstance(v, dict):
+        # _isa on both reads: a ``__class__``-bomb status row (or volume
+        # field) used to detonate the gates themselves ahead of the coded
+        # ``bad_volume`` refusal.
+        if not _isa(v, dict):
             continue
         vol = dict.get(v, "volume")
-        if isinstance(vol, str):
+        if _isa(vol, str):
             known.add(_as_text(vol))
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
     result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
-    if not isinstance(result, dict):
+    # _isa: a ``__class__``-property bomb result detonated the bare gate
+    # itself — a raw 500 on POST /api/storage/spotlight one line ahead of
+    # the laundering built to absorb junk shapes.
+    if not _isa(result, dict):
         return {"ok": False, "error": "failed"}
     try:
         # dict() copies through the C-level storage (nas_common._plain_result
