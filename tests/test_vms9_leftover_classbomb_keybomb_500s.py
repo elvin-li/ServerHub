@@ -500,8 +500,11 @@ class HelperUnitPins(unittest.TestCase):
         self.assertEqual(vms_svc._rc_int(_RcBomb(0)), 0)
         self.assertEqual(vms_svc._rc_int(_RcBomb(-1)), -1)
         self.assertEqual(vms_svc._rc_int(7), 7)
-        self.assertEqual(vms_svc._rc_int("junk"), -1)
-        self.assertEqual(vms_svc._rc_int(_ClassBomb()), -1)
+        # vms10 moved junk off the forgeable ``-1`` spawn sentinel: an
+        # unreadable rc now degrades to -255 (still nonzero, still a
+        # failure) so it can never satisfy the vanished-CLI classifier.
+        self.assertEqual(vms_svc._rc_int("junk"), -255)
+        self.assertEqual(vms_svc._rc_int(_ClassBomb()), -255)
 
     def test_cli_missing_still_requires_the_disk_confirm(self):
         # The vanished-CLI 503 stays gated on the disk re-check: a bombed
