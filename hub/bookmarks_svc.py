@@ -188,6 +188,24 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a value whose ``__class__`` is a raising
+    property blew every unguarded gate here — the ``overrides`` /
+    ``quick_links`` row plain-dict, the ``service:`` key scrub, the final
+    ``_jsonable`` scrub and the merge-loop url compare — straight out of
+    GET /api/bookmarks (the modules8 rule).  A lying ``__class__`` (answers
+    ``int``) is *not* an error and still reports its claim here; the numeric
+    arms' unbound base coercion then drops it, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _key_text(value) -> str | None:
     """Coerce a YAML/backend leftover into a scrubbed lookup key, or None.
 
@@ -205,9 +223,9 @@ def _key_text(value) -> str | None:
       keyed by different forms and a stopped VM's bookmark probed red
       instead of gray.  Keys are scrubbed on both put and lookup.
     """
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
+    if _isinst(value, bool) or not _isinst(value, (str, int)):
         return None
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 rule): an
@@ -238,7 +256,7 @@ def _plain_dict(value) -> dict | None:
     ``dict()`` copies through the C-level storage, so an overridden method
     cannot fire.
     """
-    if not isinstance(value, dict):
+    if not _isinst(value, dict):
         return None
     try:
         return dict(value)
@@ -258,7 +276,7 @@ def _cmp_text(value) -> str:
     side.  Non-strs answer ``""``: they never matched a state literal
     before either, and ``""`` is not in any of the tuples compared here.
     """
-    if not isinstance(value, str):
+    if not _isinst(value, str):
         return ""
     return _utf8_text(value)
 
@@ -426,18 +444,18 @@ def _index_lookup(idx: dict, key) -> dict | None:
     (:func:`_key_text`): a hex-YAML over-cap int used to ValueError the
     bare ``str(key)`` here — a 500 on GET /api/bookmarks.
     """
-    if not isinstance(idx, dict):
+    if not _isinst(idx, dict):
         return None
     s = _key_text(key)
     if not s:
         return None
     row = idx.get(s)
-    return row if isinstance(row, dict) else None
+    return row if _isinst(row, dict) else None
 
 
 def _resolve_backend(link: dict, idx: dict) -> dict | None:
     """Find linked backend for a bookmark entry."""
-    if not isinstance(link, dict):
+    if not _isinst(link, dict):
         return None
     for key in (
         link.get("service"),
@@ -475,7 +493,7 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
 
 def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dict:
     """Merge HTTP probe + backend expected-state into tri-state health."""
-    if not isinstance(backend, dict):
+    if not _isinst(backend, dict):
         backend = None
     # _truthy, not a bare ``or``: a __bool__-bomb id/service value used to
     # raise here and 500 the list route with every healthy sibling row.
@@ -563,13 +581,13 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isinst(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -599,9 +617,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (modules5): a subclass
@@ -619,7 +637,7 @@ def _jsonable(value, depth: int = 0):
             # ValueError — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -630,11 +648,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         try:
             items = list(value.items())
         except Exception:
@@ -652,7 +670,7 @@ def _jsonable(value, depth: int = 0):
                 k, v = pair
             except Exception:
                 continue
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except Exception:
@@ -663,7 +681,7 @@ def _jsonable(value, depth: int = 0):
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         try:
             vals = list(value)
         except Exception:
@@ -715,14 +733,14 @@ def list_bookmarks() -> dict:
         # used to raise out of ``list(raw_links)`` here and then raise a
         # second time out of the identical call in the except fallback — a
         # 500 from the exception handler itself.
-        base_links = list(raw_links) if isinstance(raw_links, list) else []
+        base_links = list(raw_links) if _isinst(raw_links, list) else []
     except Exception:
         base_links = []
     try:
         links = resolve_value(list(base_links))
     except Exception:
         links = base_links
-    if not isinstance(links, list):
+    if not _isinst(links, list):
         links = []
     # Plain-dict every row up front: resolve_value launders well-behaved
     # rows into plain dicts, but its all-or-nothing fallback keeps the raw
@@ -757,10 +775,10 @@ def list_bookmarks() -> dict:
             # 500 this dedupe from the reflected side.  A non-str url can
             # never equal a str link url, so it skips the scan entirely.
             ov_url = ov["url"]
-            ov_cmp = _utf8_text(ov_url) if isinstance(ov_url, str) else None
+            ov_cmp = _utf8_text(ov_url) if _isinst(ov_url, str) else None
             if ov_cmp is None or not any(
-                isinstance(l, dict)
-                and isinstance(l.get("url"), str)
+                _isinst(l, dict)
+                and _isinst(l.get("url"), str)
                 and _utf8_text(l.get("url")) == ov_cmp
                 for l in links
             ):
@@ -777,7 +795,7 @@ def list_bookmarks() -> dict:
         # `_backend_index` already absorbs per-CLI failures; this is the
         # last net so a raise there still leaves the bookmark list.
         idx = {}
-    if not isinstance(idx, dict):
+    if not _isinst(idx, dict):
         idx = {}
 
     # decide which need probe
@@ -786,7 +804,7 @@ def list_bookmarks() -> dict:
     for i, link in enumerate(links):
         # _truthy: a __bool__-bomb url value used to raise out of the bare
         # ``not link.get("url")`` and 500 the route.
-        if not isinstance(link, dict) or not _truthy(link.get("url")):
+        if not _isinst(link, dict) or not _truthy(link.get("url")):
             continue
         backend = _resolve_backend(link, idx)
         # _cmp_text on state / status / kind: a __bool__-bomb status used
@@ -823,10 +841,10 @@ def list_bookmarks() -> dict:
     ordered = []
     seen = set()
     for i, link in enumerate(links):
-        if not isinstance(link, dict):
+        if not _isinst(link, dict):
             continue
         u = link.get("url")
-        if not isinstance(u, str) or not u:
+        if not _isinst(u, str) or not u:
             continue
         # Exact-str copy before the set: a raw-kept str subclass whose
         # ``__hash__`` raises (or is None — the classic unhashable-membership
