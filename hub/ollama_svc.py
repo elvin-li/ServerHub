@@ -211,8 +211,18 @@ def _jsonable(value, depth: int = 0):
     # property used to detonate the *first* bare isinstance below — as a
     # pull-row value, a nested ``model`` mapping value, or a status field —
     # and 500 GET /api/ollama/pull/log raw (coded-500 on /api/ollama/status).
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor (the
+        # dash10/json9 shape).  It used to be returned verbatim — every
+        # other liar drops at its unbound base call, but the bool gate had
+        # nothing to call — and the C-level JSON encoder then refused it:
+        # a raw 500 on GET /api/ollama/pull/log (pull-row ``rc``/``model``/
+        # ``started``, or nested in a ``model`` mapping) and a raw 500 on
+        # GET /api/ollama/status riding the pull state into the snapshot.
+        return value if type(value) is bool else None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -342,7 +352,16 @@ def _as_text(value) -> str:
     # Unbound base encode: a str-subclass ``.encode`` bomb planted as a
     # settings value used to raise out of every ``base_url()`` caller —
     # a raw 500 on the daemon POSTs and a whole-page coded 500 on status.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    # In a try (the ups_svc/wireguard rule): a *lying* ``__class__``
+    # (claims str, is not — the dash10/json9 impostor) passed the gate but
+    # made the unbound descriptor itself TypeError, taking
+    # GET /api/ollama/status to the coded 500 ``status_failed`` through
+    # ``settings_text``/``configured_url`` and lying a 502 onto the daemon
+    # POSTs.  An impostor is junk text, not a URL or label: it drops to "".
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def settings_text(value) -> str:
@@ -998,6 +1017,17 @@ def _pull_log_lines(raw) -> list[str]:
         # used to detonate outside the materializing try above and 500 the
         # route; it drops alone and the real lines still survive.
         if _isa(item, str):
+            try:
+                # Unbound base probe: a *lying* ``__class__`` line (claims
+                # str, is not — the dash10/json9 impostor) passed the gate
+                # and was appended raw, so ``str.join`` in :func:`pull_log`
+                # TypeError'd GET /api/ollama/pull/log.  The probe reads
+                # the real storage, so a genuine str subclass (even one
+                # with bound ``__len__``/``__bool__`` bombs) still passes;
+                # only an impostor TypeErrors and drops alone.
+                str.__len__(item)
+            except Exception:
+                continue
             out.append(item)
         elif _isa(item, (bytes, bytearray)):
             try:
