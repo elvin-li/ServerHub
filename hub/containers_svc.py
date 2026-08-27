@@ -16,7 +16,7 @@ from hub import cli_args
 from hub.config import cfg, maintenance_env, override
 from hub.errors import api_error, soft_fail
 from hub.docker_cli import (
-    _as_text, _jsonable, cli_on_disk, docker, docker_json, engine_up,
+    _as_text, _isa, _jsonable, cli_on_disk, docker, docker_json, engine_up,
     inspect_object, looks_cli_vanished, looks_engine_down, parse_int_capped,
     redact_env,
 )
@@ -81,8 +81,15 @@ def _plain_job(value) -> dict | None:
     not a key inside a row).  ``str.__str__`` copies through the C storage,
     so laundering cannot itself detonate; non-str keys drop — no reader
     ever looks a row up by one.
+
+    The entry gate is ``_isa``, not a bare isinstance: ``isinstance``
+    consults ``value.__class__`` when the exact-type check misses, so a
+    leftover row whose ``__class__`` is a *raising property* used to
+    detonate the gate itself and 500 GET /api/stacks,
+    GET /api/stacks/jobs/{id} and — through the single-runner mutex scan —
+    POST /api/stacks/{id}/run (the nas8 / catalog10 rule).
     """
-    if not isinstance(value, dict):
+    if not _isa(value, dict):
         return None
     if type(value) is not dict:
         try:
@@ -97,7 +104,10 @@ def _plain_job(value) -> dict | None:
     for k, v in value.items():
         if type(k) is str:
             out[k] = v
-        elif isinstance(k, str):
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew the bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
             try:
                 out[str.__str__(k)] = v
             except Exception:
@@ -131,10 +141,15 @@ def _plain_text(value) -> str | None:
     GET /api/stacks or GET /api/stacks/jobs/{id} until the panel restarted.
     ``str.__str__`` copies through the C-level storage, so an override
     cannot fire (the docker_cli._jsonable unbound convention).
+
+    ``_isa`` on the subclass gate: a leftover field whose ``__class__`` is
+    a raising property used to detonate the bare isinstance and 500 the
+    job scans this helper exists to protect (the nas8 rule).  A lying
+    ``__class__`` impostor TypeErrors the unbound copy and drops to None.
     """
     if type(value) is str:
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         try:
             return str.__str__(value)
         except Exception:
@@ -432,10 +447,15 @@ def _field_text(value, fallback: str = "") -> str:
 
     ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
     used to leak into GET /api/containers and /api/stacks.
+
+    Every rank gate is ``_isa``, not a bare isinstance: a leftover stack
+    field whose ``__class__`` is a raising property used to detonate the
+    first gate below and 500 GET /api/stacks and POST /api/stacks/{id}/run
+    ahead of every scrub in this funnel (the nas8 rule).
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return fallback
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a leftover float-subclass
@@ -448,7 +468,7 @@ def _field_text(value, fallback: str = "") -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: an int-subclass ``__str__``
@@ -467,14 +487,19 @@ def _field_text(value, fallback: str = "") -> str:
             # raise here and 500 GET /api/stacks, GET /api/containers and
             # GET /api/compose/{id}.
             return fallback
-    if isinstance(value, str):
+    if _isa(value, str):
         text = value
-    elif isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a leftover bytes-subclass ``.decode`` bomb in
-        # a stack/override field used to 500 GET /api/stacks here.
-        base = bytes if isinstance(value, bytes) else bytearray
-        text = base.decode(value, "utf-8", "replace")
-    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+    elif _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a leftover bytes-subclass ``.decode`` bomb
+            # in a stack/override field used to 500 GET /api/stacks here.
+            # The try is for a *lying* ``__class__`` (claims bytes, is not):
+            # the unbound call TypeErrors and the impostor falls back.
+            base = bytes if _isa(value, bytes) else bytearray
+            text = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return fallback
+    elif _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     else:
         try:
@@ -485,11 +510,17 @@ def _field_text(value, fallback: str = "") -> str:
     # ``__str__`` returns self keeps the subclass (and the str branch above
     # never converted at all), so a bound ``.encode`` / ``__len__`` bomb in
     # a leftover stack id/name used to detonate on the two lines below and
-    # 500 GET /api/stacks (the docker6 _plain_text convention).
-    text = str.__str__(text)
-    if not text:
+    # 500 GET /api/stacks (the docker6 _plain_text convention).  The try is
+    # for a lying-``__class__`` str impostor: the unbound copy TypeErrors
+    # on a value that only *claims* to be a str, which used to 500 the same
+    # routes one line past the gate it lied to.
+    try:
+        text = str.__str__(text)
+        if not text:
+            return fallback
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except Exception:
         return fallback
-    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _optional_text(value) -> str | None:
@@ -498,8 +529,13 @@ def _optional_text(value) -> str | None:
 
 
 def _str_list(raw) -> list[str]:
-    """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500."""
-    if not isinstance(raw, list):
+    """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500.
+
+    ``_isa`` gates: a ``containers:`` value (or item) whose ``__class__`` is
+    a raising property used to detonate the bare isinstance and 500
+    GET /api/stacks (the nas8 rule).
+    """
+    if not _isa(raw, list):
         return []
     try:
         # list() through the C storage: a leftover list-subclass whose
@@ -509,7 +545,7 @@ def _str_list(raw) -> list[str]:
         return []
     out = []
     for n in rows:
-        if not isinstance(n, str):
+        if not _isa(n, str):
             continue
         # _field_text, not a raw ``not n`` truthiness probe: a str-subclass
         # item whose ``__len__`` raised used to 500 the same routes.
@@ -1656,7 +1692,10 @@ def _stack_paths() -> list[dict]:
         raw = dict.get(data, "stacks") if isinstance(data, dict) else None
     except Exception:
         raw = None
-    if isinstance(raw, list):
+    # _isa, not a bare isinstance: a ``stacks:`` value whose ``__class__``
+    # is a raising property used to detonate this gate itself and 500
+    # GET /api/stacks and POST /api/stacks/{id}/run (the nas8 rule).
+    if _isa(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
             # ``__iter__`` raises used to 500 GET /api/stacks and every
@@ -1674,19 +1713,31 @@ def _stack_paths() -> list[dict]:
         if s is None:
             continue
         path = s.get("path")
-        if isinstance(path, str):
+        # _isa + a guarded copy: a ``path`` whose ``__class__`` is a raising
+        # property used to detonate the bare isinstance, and a lying
+        # ``__class__`` impostor used to TypeError the unbound copy — each
+        # one a 500 on GET /api/stacks and POST /api/stacks/{id}/run.
+        if _isa(path, str):
             # Exact-str copy: a str-subclass path whose ``__len__`` raised
             # used to detonate the truthiness probe below.
-            path = str.__str__(path)
-        if isinstance(path, str) and path:
+            try:
+                path = str.__str__(path)
+            except Exception:
+                path = None
+        else:
+            path = None
+        if type(path) is str and path:
             try:
                 p = Path(path)
                 # No bare ``or`` over the raw value: a leftover
                 # ``__bool__``-bomb ``compose_file`` used to 500 here.
                 compose_name = s.get("compose_file")
-                if isinstance(compose_name, str):
-                    compose_name = str.__str__(compose_name)
-                if not isinstance(compose_name, str) or not compose_name:
+                if _isa(compose_name, str):
+                    try:
+                        compose_name = str.__str__(compose_name)
+                    except Exception:
+                        compose_name = None
+                if type(compose_name) is not str or not compose_name:
                     compose_name = "docker-compose.yml"
                 compose = p / compose_name
             except (OSError, ValueError, TypeError):
@@ -1936,8 +1987,11 @@ def _job_field(value) -> str | None:
     GET /api/stacks render until the panel restarted.  The entry gates now
     keep such values out of new jobs; this funnel keeps a dict poisoned any
     other way from taking the listing routes down with it.
+
+    ``_isa``: a field whose ``__class__`` is a raising property used to
+    detonate the bare gate and 500 the same renders (the nas8 rule).
     """
-    return _as_text(value) if isinstance(value, str) else None
+    return _as_text(value) if _isa(value, str) else None
 
 
 def _job_log_lines(raw) -> list:
@@ -1945,9 +1999,10 @@ def _job_log_lines(raw) -> list:
 
     ``list()`` through the C storage: a leftover list-subclass whose
     ``__iter__`` raises used to 500 the log route past the isinstance gate
-    (the hub.jobs._log_lines rule).
+    (the hub.jobs._log_lines rule).  ``_isa``: a ``log`` value whose
+    ``__class__`` is a raising property used to detonate the gate itself.
     """
-    if not isinstance(raw, list):
+    if not _isa(raw, list):
         return []
     try:
         return list(raw)
