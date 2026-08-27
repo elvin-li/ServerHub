@@ -206,12 +206,19 @@ def _as_text(value) -> str:
     whose ``__str__`` returns itself and whose bound ``.encode`` raises, used
     to detonate this launderer instead of costing only the poisoned value —
     a raw 500 out of GET /api/wireguard, /readiness and POST /ping.
+
+    :func:`_isa` gates, not bare ``isinstance``: this launderer is the first
+    thing every leftover value hits, and a value whose ``__class__`` is a
+    *raising property* detonated the type gates themselves (isinstance
+    consults ``__class__`` when the exact-type check misses) — a raw 500 on
+    GET /api/wireguard, GET /api/wireguard/settings and POST
+    /api/wireguard/ping for a value this function exists to absorb.
     """
-    if isinstance(value, bytes):
+    if _isa(value, bytes):
         text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
+    elif _isa(value, bytearray):
         text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+    elif _isa(value, str):
         text = value
     elif value is None:
         return ""
@@ -263,7 +270,7 @@ def _conf_int(raw, fallback) -> int:
     first, then everything through :func:`_plain_int`, which never raises.
     """
     blank = raw is None or (
-        isinstance(raw, (str, bytes, bytearray)) and not _as_text(raw).strip()
+        _isa(raw, (str, bytes, bytearray)) and not _as_text(raw).strip()
     )
     number = _plain_int(fallback if blank else raw)
     if number is None:
@@ -280,7 +287,8 @@ def _truthy(value) -> bool:
 
 
 def _nonfinite(value) -> bool:
-    if not isinstance(value, float):
+    # _isa: a raising-``__class__``-property leftover detonated the bare gate.
+    if not _isa(value, float):
         return False
     try:
         # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
@@ -301,11 +309,13 @@ def _plain_int(value):
     :func:`settings` — a raw 500 on GET /api/wireguard, GET
     /api/wireguard/settings and /readiness, on a value the range check below
     would have rejected anyway.  Over-cap digit runs (CPython's 4300-digit
-    str->int cap) degrade to None the same way.
+    str->int cap) degrade to None the same way.  :func:`_isa` gates
+    throughout: a raising-``__class__``-property leftover detonated the bare
+    ``isinstance`` checks themselves.
     """
-    if isinstance(value, bool):
+    if _isa(value, bool):
         return int(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             value = int.__index__(value)
             # str() probe (the _save_registry rule): an over-cap already-int
@@ -316,7 +326,7 @@ def _plain_int(value):
             return value
         except Exception:
             return None
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             value = float.__float__(value)
         except Exception:
@@ -324,7 +334,7 @@ def _plain_int(value):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return int(value)
-    if isinstance(value, (str, bytes, bytearray)):
+    if _isa(value, (str, bytes, bytearray)):
         try:
             return int(_as_text(value).strip())
         except (TypeError, ValueError, OverflowError):
@@ -447,36 +457,50 @@ def settings() -> dict:
     except Exception:
         stored = {}
     merged = dict(DEFAULTS)
-    items = dict.items(stored) if isinstance(stored, dict) else ()
+    # _isa, not bare isinstance: a patched section whose ``__class__`` is a
+    # raising property detonated the shape gate itself — a raw 500 on GET
+    # /api/wireguard and GET /api/wireguard/settings before any value ran.
+    items = dict.items(stored) if _isa(stored, dict) else ()
     for key, value in items:
-        if key not in merged or value is None:
+        # Per-item try (the mapping-key lesson): ``key not in merged`` and
+        # ``DEFAULTS[key]`` both run the stored *key*'s own hash/__eq__ —
+        # dict lookup calls the probe key's reflected ``__eq__`` first when
+        # it is a str subclass — so one poisoned key used to 500 every
+        # settings read.  A bomb key now costs only its own entry; sibling
+        # keys keep merging.
+        try:
+            if key not in merged or value is None:
+                continue
+            # YAML leftover ``endpoint: 2026-08-19`` / ``!!binary`` / ``!!set``
+            # used to leak into GET /api/wireguard and GET /api/wireguard/settings
+            # under Starlette's encoder (this payload never went through _jsonable).
+            #
+            # Type-gated per key, and *before* any probe that calls into the
+            # value: the old ``value in (None, "")`` blank test invoked a stored
+            # subclass's ``__eq__``, and the bytes launder called its bound
+            # ``.decode`` — either bomb was a raw 500 out of every settings read.
+            expected = DEFAULTS[key]
+            if isinstance(expected, bool):
+                # bool cannot be subclassed, so a surviving value is exact.
+                # False is a real stored value for wstunnel_enabled; keep it.
+                # _isa on the *stored* value: a raising-__class__ leftover
+                # detonated the bare gate itself.
+                if _isa(value, bool):
+                    merged[key] = value
+                continue
+            if isinstance(expected, str):
+                if _isa(value, (str, bytes, bytearray)):
+                    # _as_text launders surrogates, bytes, and subclass
+                    # encode/decode bombs into an exact str; blanks keep the
+                    # default, as before.
+                    text = _as_text(value)
+                    if text:
+                        merged[key] = text
+                continue
+            # Numeric keys: kept raw here, coerced and range-checked below.
+            merged[key] = value
+        except Exception:
             continue
-        # YAML leftover ``endpoint: 2026-08-19`` / ``!!binary`` / ``!!set``
-        # used to leak into GET /api/wireguard and GET /api/wireguard/settings
-        # under Starlette's encoder (this payload never went through _jsonable).
-        #
-        # Type-gated per key, and *before* any probe that calls into the
-        # value: the old ``value in (None, "")`` blank test invoked a stored
-        # subclass's ``__eq__``, and the bytes launder called its bound
-        # ``.decode`` — either bomb was a raw 500 out of every settings read.
-        expected = DEFAULTS[key]
-        if isinstance(expected, bool):
-            # bool cannot be subclassed, so a surviving value is exact.
-            # False is a real stored value for wstunnel_enabled; keep it.
-            if isinstance(value, bool):
-                merged[key] = value
-            continue
-        if isinstance(expected, str):
-            if isinstance(value, (str, bytes, bytearray)):
-                # _as_text launders surrogates, bytes, and subclass
-                # encode/decode bombs into an exact str; blanks keep the
-                # default, as before.
-                text = _as_text(value)
-                if text:
-                    merged[key] = text
-            continue
-        # Numeric keys: kept raw here, coerced and range-checked below.
-        merged[key] = value
     iface = str(merged["interface"])
     if not _IFACE_RE.match(iface):
         merged["interface"] = DEFAULTS["interface"]
@@ -607,8 +631,12 @@ def _binary_version(binary: str) -> str:
     if not _path_exists(binary):
         return ""
     rc, out, err = sh([binary, "--version"], timeout=8)
+    # _ping_rc before the comparison (the health9 rc rule): this probe does
+    # not own ``sh`` — tests and tooling patch it — and an rc-subclass whose
+    # ``__eq__`` raises used to detonate ``rc == 0`` through installation()'s
+    # fan_out, a raw 500 on GET /api/wireguard and GET /api/wireguard/settings.
     text = (_as_text(out) or _as_text(err)).strip().splitlines()
-    return text[0][:120] if text and rc == 0 else ""
+    return text[0][:120] if text and _ping_rc(rc) == 0 else ""
 
 
 def installation() -> dict:
@@ -779,9 +807,13 @@ def _conf_interface(parsed) -> dict:
     /api/wireguard/readiness and GET /api/wireguard/next-ip.  ``dict(...)``
     copies through the C-level storage, bypassing the override; the values
     are still leftovers and stay individually laundered at each use.
+
+    _isa gates: a parsed conf (or block) whose ``__class__`` is a raising
+    property used to detonate the bare ``isinstance`` here — a raw 500 on
+    GET /api/wireguard out of the very launder that exists to absorb junk.
     """
-    block = dict.get(parsed, "interface") if isinstance(parsed, dict) else None
-    if not isinstance(block, dict):
+    block = dict.get(parsed, "interface") if _isa(parsed, dict) else None
+    if not _isa(block, dict):
         return {}
     try:
         return dict(block)
@@ -798,13 +830,17 @@ def _plain_rows(value) -> list[dict]:
     :func:`peer_records`, :func:`used_addresses` and :func:`status` — a raw
     500 where a blank row already drops silently.  Unbound ``list.__iter__``
     walks the real entries; ``dict(row)`` launders each row's own methods.
+
+    _isa on every gate (the health9 rule): a listing or row whose
+    ``__class__`` is a raising property used to detonate the bare
+    ``isinstance`` checks themselves — the same raw 500 they exist to stop.
     """
-    if isinstance(value, list):
+    if _isa(value, list):
         try:
             rows = list.__iter__(value)
         except Exception:
             return []
-    elif isinstance(value, tuple):
+    elif _isa(value, tuple):
         rows = tuple.__iter__(value)
     elif value is None:
         return []
@@ -816,7 +852,7 @@ def _plain_rows(value) -> list[dict]:
     out: list[dict] = []
     try:
         for row in rows:
-            if not isinstance(row, dict):
+            if not _isa(row, dict):
                 continue
             try:
                 out.append(dict(row))
@@ -830,7 +866,7 @@ def _plain_rows(value) -> list[dict]:
 
 def _conf_peers(parsed) -> list[dict]:
     """The parsed ``[Peer]`` blocks as exact dicts; see :func:`_conf_interface`."""
-    peers = dict.get(parsed, "peers") if isinstance(parsed, dict) else None
+    peers = dict.get(parsed, "peers") if _isa(parsed, dict) else None
     return _plain_rows(peers)
 
 
@@ -1205,10 +1241,14 @@ def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
     what makes it usable as a fallback: when the utun cannot be worked out from
     the filesystem, the interface can still be recognised by its own public key.
     """
+    # _ping_rc on every exit probe: an rc-subclass ``__eq__``/``__ne__`` bomb
+    # from a patched/odd sh or sudo_capture used to detonate the bare
+    # ``rc != 0`` — a raw 500 on GET /api/wireguard.  ``int.__index__``
+    # salvages the honest exit; only a value that cannot answer one fails.
     rc, out, err = sh([WG, "show", "all", "dump"], timeout=10)
-    if rc != 0:
+    if _ping_rc(rc) != 0:
         rc, out, err = sudo_capture([WG, "show", "all", "dump"], timeout=10)
-    if rc != 0:
+    if _ping_rc(rc) != 0:
         del out  # carries key material; never reported
         return {}, _tool_error(err, "could not read interface state")
     grouped: dict[str, list[list[str]]] = {}
@@ -1269,13 +1309,15 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
     device = real_interface(interface)
     first_error = ""
     if device:
+        # _ping_rc on the exit probes (the health9 rc rule): a bombed rc
+        # from a patched sh/sudo_capture used to 500 GET /api/wireguard.
         rc, out, err = sh([WG, "show", device, "dump"], timeout=10)
-        if rc != 0:
+        if _ping_rc(rc) != 0:
             # The UAPI socket is root-owned: retry with root.  sudo_capture uses
             # the web-entered password when this request carries one (management
             # from another device), else the packaged passwordless sudoers rules.
             rc, out, err = sudo_capture([WG, "show", device, "dump"], timeout=10)
-        if rc == 0:
+        if _ping_rc(rc) == 0:
             return device, _dump_rows(out, device), ""
         first_error = _tool_error(err, "")
 
@@ -1286,7 +1328,7 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
         # responses -- start the interface, or fix the sudoers rule -- and the old
         # code reported the kernel's "No such file or directory" for both.
         rc, out, _ = sh([WG, "show", "interfaces"], timeout=8)
-        if rc == 0 and not _as_text(out).strip():
+        if _ping_rc(rc) == 0 and not _as_text(out).strip():
             return "", [], "not running"
         return "", [], first_error or error or "interface not found"
     device = _identify(grouped)
@@ -1404,9 +1446,11 @@ def status(force: bool = False) -> dict:
         active += 1 if is_active else 0
         stale += 1 if is_stale else 0
         # Scalar-gated: _as_text of an arbitrary junk object is its repr,
-        # which would read as "keepalive set" in the count below.
+        # which would read as "keepalive set" in the count below.  _isa: a
+        # stored value whose __class__ is a raising property detonated this
+        # very gate — a raw 500 on every GET /api/wireguard poll.
         raw_keep = record.get("keepalive")
-        if not isinstance(raw_keep, (str, bytes, bytearray, int, float)):
+        if not _isa(raw_keep, (str, bytes, bytearray, int, float)):
             raw_keep = ""
         keepalive = (
             _as_text(stats.get("keepalive")) or _as_text(raw_keep).strip() or "off"
@@ -2256,6 +2300,11 @@ def _ping_rc(rc) -> int:
     and 500'd POST /api/wireguard/ping.  ``-255`` is no honest ping exit and
     never the ``sh`` spawn sentinel, so a bomb reads as one unreachable peer,
     never the tool-absent 503.
+
+    Also the launder for every other read-path exit probe
+    (:func:`_binary_version`, :func:`_dump_all`, :func:`live_interface`):
+    the same bomb out of those bare comparisons was a raw 500 on GET
+    /api/wireguard and GET /api/wireguard/settings.
     """
     try:
         if isinstance(rc, bool):

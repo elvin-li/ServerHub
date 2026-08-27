@@ -26,19 +26,63 @@ from hub.util import read_bytes_capped, sh, ttl_memo
 LABEL = "com.elvin.wstunnel-wg-server"
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a snapshot (or value) whose ``__class__`` is a *raising
+    property* detonated the type gates themselves — a raw 500 on GET
+    /api/wireguard and GET /api/wireguard/settings (the wireguard_svc._isa
+    rule).  A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__``/``__len__`` bomb."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status; a bomb reads as failure (the health9 rc rule).
+
+    :func:`local_ipv4s` does not own ``sh`` (tests and tooling patch it),
+    and an rc-subclass whose ``__eq__``/``__ne__`` raises used to detonate
+    the bare ``rc != 0`` probe — a raw 500 on GET /api/wireguard, GET
+    /api/wireguard/settings and /readiness through ``status()``'s
+    stale-restrict check.  ``int.__index__`` salvages the honest exit.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/wireguard cannot UTF-8 500.
 
     Unbound through the base types: a bytes-subclass whose bound ``.decode``
     raises, or a str-subclass whose ``__str__`` returns itself and whose
     bound ``.encode`` raises, must cost only the poisoned value, never the
-    status/settings/readiness payload it rides in.
+    status/settings/readiness payload it rides in.  :func:`_isa` gates: a
+    value whose ``__class__`` is a raising property used to detonate the
+    launder itself.
     """
-    if isinstance(value, bytes):
+    if _isa(value, bytes):
         text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
+    elif _isa(value, bytearray):
         text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
+    elif _isa(value, str):
         text = value
     elif value is None:
         return ""
@@ -223,7 +267,7 @@ def live(ps_text: str | None = None) -> dict[str, Any]:
 def local_ipv4s() -> frozenset[str]:
     """IPv4 addresses currently on this host, for stale ``--restrict-to`` checks."""
     rc, out, _err = sh(["/sbin/ifconfig", "-a"], timeout=5)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return frozenset()
     return frozenset(_INET_RE.findall(_as_text(out)))
 
@@ -396,18 +440,20 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     generated command that names a dest the running process will refuse is
     worse than a slightly-unstable LAN address that still works today.
     """
-    cfg = dict(settings) if isinstance(settings, dict) else {}
+    cfg = dict(settings) if _isa(settings, dict) else {}
     # Laundered snapshot (the settings_section rule): this read does not own
     # its provider — tests and tooling patch ``live`` — and a snapshot that
     # is a dict *subclass* with a bombing ``.get`` used to raise out of the
     # bare method calls below, a raw 500 on GET /api/wireguard, GET
     # /api/wireguard/settings and /readiness.  ``dict(...)`` copies through
     # the C-level storage; the values stay laundered individually below.
+    # _isa: a snapshot whose ``__class__`` is a raising property used to
+    # detonate the shape gate itself.
     try:
         found = live()
     except Exception:
         found = None
-    if isinstance(found, dict):
+    if _isa(found, dict):
         try:
             found = dict(found)
         except Exception:
@@ -427,9 +473,14 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     desired_restrict = _as_text(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
         listen_port
     )
-    live_listen = _as_text(found.get("listen") or "")
-    live_restrict = _as_text(found.get("restrict_to") or "")
-    running = bool(found.get("running"))
+    # _as_text straight on the stored value, no ``or ""`` first: the old
+    # blank probe reflected into a leftover value's own ``__bool__`` — a
+    # raw 500 on GET /api/wireguard and GET /api/wireguard/settings for a
+    # value the launder degrades to "" anyway.  Same for ``running`` and
+    # ``binary``/``plist`` below (``_truthy``, launder-then-or).
+    live_listen = _as_text(found.get("listen"))
+    live_restrict = _as_text(found.get("restrict_to"))
+    running = _truthy(found.get("running"))
     # Export dest must match the process that will accept it.
     restrict_to = live_restrict if running and live_restrict else desired_restrict
     listen = live_listen if running and live_listen else desired_listen
@@ -438,8 +489,9 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     _scheme, _host, port = listen_parts(listen)
     if not listen_port:
         listen_port = int(port) if str(port).isdigit() else 0
-    enabled = bool(cfg.get("wstunnel_enabled"))
-    binary = _as_text(found.get("binary") or "") or find_binary()
+    enabled = _truthy(cfg.get("wstunnel_enabled"))
+    binary = _as_text(found.get("binary")) or find_binary()
+    plist_path = _as_text(found.get("plist"))
     aligned = (not running) or (
         live_listen == desired_listen and live_restrict == desired_restrict
     )
@@ -448,14 +500,16 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     stale = restrict_is_stale(restrict_to, addresses)
     # Default listen is always filled by settings(); it does not mean the
     # operator turned this on.  A live process or an explicit public/restrict
-    # value does.
+    # value does.  Laundered strings, not the raw snapshot values: the raw
+    # ``found.get(...)`` truthiness probes reflected into a leftover value's
+    # own ``__bool__`` and 500'd the read.
     configured = bool(
         enabled
         or running
-        or found.get("listen")
-        or found.get("plist")
-        or str(cfg.get("wstunnel_public") or "").strip()
-        or str(cfg.get("wstunnel_restrict_to") or "").strip()
+        or live_listen
+        or plist_path
+        or _as_text(cfg.get("wstunnel_public")).strip()
+        or _as_text(cfg.get("wstunnel_restrict_to")).strip()
     )
     needs_stabilize = enabled and (not stable or stale)
     needs_apply = enabled and (not running or not aligned)
@@ -476,7 +530,7 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         "client_command": client_command(
             public=public, restrict_to=restrict_to, local_port=listen_port,
         ),
-        "plist": _as_text(found.get("plist") or ""),
+        "plist": plist_path,
         "binary": _as_text(binary),
         "binary_ok": bool(binary) and _path_is_file(binary),
         "aligned": aligned,
@@ -520,7 +574,9 @@ def _int_or_zero(value) -> int:
 
 def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     """A ports-tab row for a root wstunnel that ``lsof`` without sudo misses."""
-    if not isinstance(snapshot, dict):
+    # _isa: a snapshot whose ``__class__`` is a raising property detonated
+    # the bare shape gate itself.
+    if not _isa(snapshot, dict):
         return None
     # Unbound ``dict.get`` + laundered values: a dict-subclass snapshot with
     # a bombing ``.get``, a listen value whose str-subclass methods raise
