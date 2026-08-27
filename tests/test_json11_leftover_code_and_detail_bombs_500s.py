@@ -292,7 +292,10 @@ class HttpRoutePins(unittest.TestCase):
             raise HTTPException(404, GetBombDict(code="nginx.conf_missing"))
 
         client = self._client()
-        with mock.patch.object(health_svc, "nginx_overview", _boom):
+        # The snapshot is TTL-cached module-wide; expire it so this request
+        # collects fresh rows (and restore whatever the suite had cached).
+        with mock.patch.dict(health_svc._cache, {"t": 0.0, "v": None}), \
+                mock.patch.object(health_svc, "nginx_overview", _boom):
             resp = client.get("/api/health/checks")
         self.assertEqual(resp.status_code, 200, resp.text[:400])
         rows = [c for c in resp.json()["checks"]
