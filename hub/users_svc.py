@@ -109,7 +109,18 @@ def list_users() -> list:
                         groups.append(gn)
                         if gn in ("admin", "wheel"):
                             is_admin = True
-                    except (KeyError, OSError, TypeError, OverflowError):
+                    except Exception:
+                        # Broad, not (KeyError, OSError, TypeError,
+                        # OverflowError): a leftover Open Directory gid whose
+                        # getgrgid lookup raises something else — a RuntimeError
+                        # from an int-subclass ``__index__`` / ``__hash__``, an
+                        # AttributeError on a struct missing ``gr_name`` —
+                        # escaped into the outer catch and aborted the *whole*
+                        # membership walk.  Every group after the poisoned gid
+                        # was dropped and the ``admin``/``wheel`` classification
+                        # silently flipped off (the users7 "a poisoned id costs
+                        # itself only" rule at group rank).  One unanswerable
+                        # gid now costs only its own entry.
                         pass
             except Exception:
                 pass
