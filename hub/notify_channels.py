@@ -271,6 +271,17 @@ def _plain_row(ch) -> dict | None:
     raise out of dispatch() on the alert thread.  ``str.__str__`` copies
     the real text, so the shadowed field keeps its value under the plain
     key; a key that cannot even render drops alone.
+
+    Non-str keys drop entirely.  The str-subclass launder above never ran
+    for a *plain-object* shadow key (same ``__hash__`` as ``"id"`` /
+    ``"type"`` / a flag name, ``__eq__`` that raises — or answers a
+    ``__bool__``-bomb comparison result): it survived the copy verbatim,
+    and because CPython's dict lookup compares the *stored* key against the
+    probe, every later ``ch.get("id")`` / ``ch["id"] = cid`` on the
+    colliding slot detonated it — a raw 500 on all six channel routes,
+    POST /api/alerts/test, and a raise out of dispatch() /
+    effective_settings() on the alert thread.  No schema read ever looks a
+    row field up under a non-str key, so dropping them loses nothing.
     """
     if not _isa(ch, dict):
         return None
@@ -280,7 +291,9 @@ def _plain_row(ch) -> dict | None:
         return None
     out = {}
     for k, v in items:
-        if type(k) is not str and _isa(k, str):
+        if type(k) is not str:
+            if not _isa(k, str):
+                continue
             try:
                 k = str.__str__(k)
             except Exception:
@@ -525,7 +538,17 @@ def effective_settings(raw: dict) -> dict:
     enabled = [c for c in channels(raw) if _truthy(c.get("enabled", True))]
     if not enabled:
         return raw
-    out = dict(raw)
+    # _plain_row, not ``dict(raw)``: the bare copy keeps a plain-object
+    # hash-shadowing key (same hash as "enabled"/"include_warn"/
+    # "notify_resolve", raising ``__eq__``) verbatim, and the widening
+    # writes below detonated the stored key's comparison — the raise fell
+    # back to the raw legacy flags in alerts.notify_settings(), whose
+    # _mapping_get then read the shadowed flag as junk: every explicit
+    # channel silently stopped notifying.  The laundered copy holds only
+    # exact-str keys, so the writes always land and the widening survives.
+    out = _plain_row(raw)
+    if out is None:
+        out = {}
     out["enabled"] = True
     if any(_min_rank(c) <= LEVELS["warn"] for c in enabled):
         out["include_warn"] = True
