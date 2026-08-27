@@ -63,6 +63,30 @@ def _utf8_text(value) -> str:
         return ""
 
 
+def _exact_str(text) -> str | None:
+    """*text* as an exact ``str``, or None when it cannot be copied.
+
+    ``str(x)`` hands back its operand's ``tp_str`` result *verbatim* when
+    that result is a str subclass: an int-subclass id whose ``__str__``
+    returns a poisoned subclass, and a date-subclass id whose
+    ``isoformat()`` returns a self-``__str__`` subclass (the json6
+    convention), both sailed through ``_config_text`` still carrying their
+    ``__len__``/``__bool__`` bombs — and the bare ``if not raw_id:``
+    truthiness probe in :func:`_entries` detonated them, 500ing
+    GET /api/logs and GET /api/logs/{id} together.  The unbound
+    ``str.__str__`` copies a subclass to an exact str (CPython returns a
+    plain-str copy for non-exact operands), so nothing poisoned survives.
+    """
+    if type(text) is str:
+        return text
+    if not _isa(text, str):
+        return None
+    try:
+        return str.__str__(text)
+    except Exception:
+        return None
+
+
 def _mapping_get(mapping, key):
     """Field read that a dict-subclass ``.get`` bomb cannot 500.
 
@@ -176,8 +200,13 @@ def _config_text(value) -> str | None:
         except Exception:
             return None
     if _isa(value, (datetime.date, datetime.datetime)):
+        # _exact_str: ``str(...)`` keeps a str-*subclass* isoformat result
+        # verbatim when its ``__str__`` returns itself (the json6 self-str
+        # convention), so a subclass ``__len__``/``__bool__`` bomb riding a
+        # leftover date's isoformat used to detonate the ``if not raw_id:``
+        # truthiness probe in _entries — 500ing both logs routes.
         try:
-            return str(value.isoformat())
+            return _exact_str(str(value.isoformat()))
         except Exception:
             return None
     if _isa(value, bool) or not _isa(value, int):
@@ -188,7 +217,13 @@ def _config_text(value) -> str | None:
         # claims to be bool renders like one — dropped, never "True".
         return None
     try:
-        return str(value)
+        # _exact_str: ``str(x)`` returns the ``tp_str`` result *verbatim*
+        # when an int-subclass ``__str__`` override hands back a str
+        # subclass, so a poisoned ``__len__``/``__bool__`` riding that
+        # result used to detonate the ``if not raw_id:`` truthiness probe
+        # in _entries — 500ing both logs routes after this catch had
+        # already passed.
+        return _exact_str(str(value))
     except Exception:
         # ValueError is the >4300-digit cap; anything else is an
         # int-subclass ``__str__`` bomb, which used to raise past the
@@ -242,13 +277,24 @@ def _entries() -> list[tuple[Path, dict]]:
     "(file does not exist)" for a file the listing had just stat'ed.
     The tail therefore reads through the raw ``Path`` kept here.
     """
+    # Guarded cfg() (the try/except-around-cfg() union rule ups_svc /
+    # status / scheduler_svc / smart_test_svc already follow): the call
+    # itself sat outside any try, so a config snapshot provider that
+    # *raises* on read (a dying seam or a patched loader) escaped every
+    # _mapping_get below and 500'd GET /api/logs and GET /api/logs/{id}
+    # at once.  No config degrades to the unconfigured defaults, the same
+    # answer an empty services.yaml gets.
+    try:
+        root = cfg()
+    except Exception:
+        root = None
     # _mapping_get / unbound list reads throughout: cfg() normally hands out
     # plain parsed YAML, but a leftover cache poisoned with dict/list
     # *subclasses* passes every isinstance gate here while its ``.get`` /
     # ``__bool__`` / ``__iter__`` / ``__getitem__`` overrides raise — one
     # such bomb used to 500 GET /api/logs and GET /api/logs/{id} together.
     # The unbound reads keep the sane data stored underneath the override.
-    sources = _mapping_get(cfg(), "log_sources")
+    sources = _mapping_get(root, "log_sources")
     rows = None
     if _isa(sources, list):
         try:
@@ -311,7 +357,18 @@ def _entries() -> list[tuple[Path, dict]]:
             except Exception:
                 continue
         try:
-            p = Path(os.path.expanduser(str(raw_path)))
+            # _exact_str before Path(): ``str(raw_path)`` of a non-str
+            # leftover returns its ``__str__`` result *verbatim* when that
+            # result is a str subclass, and ``Path`` stores the raw text and
+            # parses it *lazily* — so a poisoned ``__getitem__``/``replace``
+            # riding the subclass detonated later, inside
+            # ``_log_path_allowed`` / ``is_file``, outside this guard, and
+            # 500'd both logs routes.  The exact-str copy leaves nothing
+            # poisoned for pathlib to trip on.
+            path_text = _exact_str(str(raw_path))
+            if path_text is None:
+                continue
+            p = Path(os.path.expanduser(path_text))
         except Exception:
             # RuntimeError: leftover HOME unset on a ``~/…`` log path.
             # ValueError: an over-cap int path is the digit-cap ``str()``.
@@ -389,8 +446,11 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
             p = raw
     if p is None:
         try:
-            p = Path(str(meta_path or ""))
-        except (OSError, ValueError, TypeError):
+            # _exact_str, same as _entries: a stubbed log_sources() can hand
+            # back a path whose ``str()`` is a poisoned str subclass, and
+            # Path parses its stored text lazily — outside this guard.
+            p = Path(_exact_str(str(meta_path or "")) or "")
+        except Exception:
             raise api_error("logs.read_failed")
     if not _log_path_allowed(p):
         raise api_error("logs.protected")
