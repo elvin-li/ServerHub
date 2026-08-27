@@ -831,7 +831,13 @@ def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required")
         except ValueError:
             raise api_error("cloudflared.invalid_name")
     if not isinstance(value, str):
-        if value in (None, ""):
+        try:
+            empty = value in (None, "")
+        except Exception:
+            # A leftover ``__eq__`` bomb on a non-string used to raise out
+            # of this emptiness probe itself instead of the coded 400.
+            empty = False
+        if empty:
             raise api_error(empty_code)
         raise api_error("cloudflared.invalid_name")
     # Unbound base strip: a str-subclass ``strip`` bomb cannot 500, and the
@@ -1336,7 +1342,10 @@ def login_poll() -> dict:
 
 
 def create_tunnel(name: str) -> dict:
-    name = re.sub(r"[^a-zA-Z0-9._-]", "", (name or "").strip())
+    # _as_text + unbound strip: ``(name or "").strip()`` ran a str-subclass
+    # ``__bool__`` / ``strip`` bomb from an in-process caller (the HTTP route
+    # is pydantic-typed) and raised past the sanitize into a 500.
+    name = re.sub(r"[^a-zA-Z0-9._-]", "", str.strip(_as_text(name)))
     # The charset class includes ``-``, so ``--help`` survived the strip and
     # became ``cloudflared tunnel create --help``.
     if not name or not cli_args.is_safe_positional(name):
@@ -1363,7 +1372,12 @@ def start_with_tunnel(tunnel: str) -> dict:
     _write_launchagent_token()
     r = _launchctl_bootstrap()
     _raise_if_start_failed(r)
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``update`` bomb
+    # from the _load_state seam used to 500 POST /start after the tunnel
+    # itself was already up.  The scrub answers an exact dict.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.update({"mode": "token", "tunnel_name": tunnel, "updated": time.time()})
     _save_state(st)
     return {
@@ -1379,14 +1393,23 @@ def start_with_token(token: str, label: str | None = None) -> dict:
     token = _normalize_token(token)
     if not token_looks_valid(token):
         raise api_error("cloudflared.invalid_token")
+    # _as_text + unbound strip: ``(label or "").strip()`` ran a str-subclass
+    # ``__bool__`` / ``strip`` bomb from an in-process caller (the HTTP route
+    # is pydantic-typed) and 500'd after the tunnel was already up.
+    label_text = str.strip(_as_text(label))
     _write_token(token)
     _write_launchagent_token()
     r = _launchctl_bootstrap()
     _raise_if_start_failed(r)
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``update`` bomb
+    # from the _load_state seam used to 500 POST /start-token after the
+    # tunnel itself was already up.  The scrub answers an exact dict.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.update({
         "mode": "token",
-        "tunnel_name": (label or "").strip() or "token",
+        "tunnel_name": label_text or "token",
         "updated": time.time(),
     })
     _save_state(st)
@@ -1441,7 +1464,11 @@ def restart() -> dict:
 def route_dns(tunnel: str, hostname: str) -> dict:
     """cloudflared tunnel route dns <tunnel> <hostname>"""
     tunnel = _tunnel_argv(tunnel, empty_code="cloudflared.route_args_required")
-    hostname = (hostname or "").strip().lower()
+    # _as_text + unbound strip: ``(hostname or "").strip()`` ran a
+    # str-subclass ``__bool__`` / ``strip`` bomb from an in-process caller
+    # (the HTTP route is pydantic-typed) and raised into a 500.  ``lower``
+    # was already safe — strip answers an exact str — and stays bound.
+    hostname = str.strip(_as_text(hostname)).lower()
     if not hostname or not cli_args.is_safe_hostname(hostname):
         raise api_error("cloudflared.route_args_required")
     if not _logged_in():
@@ -1520,7 +1547,14 @@ def uninstall_service() -> dict:
                 removed.append(str(p))
         except Exception:
             pass
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``pop`` bomb from
+    # the _load_state seam used to 500 POST /uninstall-service after the
+    # agent was already stopped and the plist/token already removed.  The
+    # scrub answers an exact dict, so the pops and the persisted journal
+    # keep every sane sibling.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.pop("tunnel_name", None)
     st.pop("mode", None)
     _save_state(st)
