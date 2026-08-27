@@ -36,7 +36,11 @@ def _scutil_missing(rc, err) -> bool:
     Timeouts keep their own sentinel and are deliberately not classified;
     an authorization failure is a real scutil exit and never matches.
     """
-    if rc != -1 or _as_text(err).strip() != "not found":
+    # _rc_int: an rc-subclass ``__eq__``/``__ne__`` bomb from a patched/odd
+    # ``sh`` used to detonate this bare probe out of PUT /api/identity.  A
+    # bomb reads as -255, which is not the spawn sentinel, so the 503 is
+    # still only ever raised after an honest sentinel plus the disk confirm.
+    if _rc_int(rc) != -1 or _as_text(err).strip() != "not found":
         return False
     try:
         return not Path(SCUTIL).is_file()
@@ -129,6 +133,24 @@ def _truthy(value) -> bool:
         return bool(value)
     except Exception:
         return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a leftover hash-shadowing key cannot detonate.
+
+    The laundered ``dict(raw)`` copy in :func:`get_identity` bypasses a
+    subclass's bound ``.get``, but the C-level lookup still calls the
+    *stored* key's ``__eq__`` when the probe's hash lands on its slot — a
+    leftover key carrying ``hash("server_comment")`` with a raising
+    ``__eq__`` used to 500 GET /api/identity straight out of the compare
+    (the alerts/system_settings ``_mapping_get`` rule).
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
 
 
 def _pick(value, fallback):
@@ -231,7 +253,12 @@ def get_identity() -> dict:
         "host_ip_config": _as_text(configured_host()),
         # _pick, not ``or``: a leftover ``__bool__``-bomb comment value used
         # to detonate the truth test itself and 500 GET /api/identity.
-        "comment": _as_text(_pick(s.get("server_comment"), _pick(s.get("description"), ""))),
+        # _mapping_get, not the laundered ``.get``: a hash-shadowing key in
+        # the stored settings raised inside the C-level compare the same way.
+        "comment": _as_text(_pick(
+            _mapping_get(s, "server_comment"),
+            _pick(_mapping_get(s, "description"), ""),
+        )),
         "timezone": _as_text(tz),
     }
 
@@ -298,7 +325,10 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             raise api_error("identity.bad_name")
         # Try without sudo first
         rc, out, err = sh([SCUTIL, "--set", "ComputerName", name], timeout=5)
-        if rc != 0:
+        # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh``
+        # used to detonate this bare probe and 500 PUT /api/identity; a bomb
+        # reads as failure and takes the privileges-message branch.
+        if _rc_int(rc) != 0:
             if _scutil_missing(rc, err):
                 # A vanished scutil used to answer ok:true with a message
                 # blaming administrator privileges — the rename was silently

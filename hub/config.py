@@ -418,10 +418,21 @@ def settings_section(name: str) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    s = dict.get(data, "settings")
+    # The unbound reads sit inside a try too: ``dict.get`` bypasses a
+    # subclass's own ``.get`` but still runs the hash lookup, and a leftover
+    # *hash-shadowing* key (same hash as "settings"/<name>, raising
+    # ``__eq__``) detonated the compare inside the C lookup itself — a raw
+    # 500 on GET /api/settings/other and /thresholds (the host10 rule).
+    try:
+        s = dict.get(data, "settings")
+    except Exception:
+        return {}
     if not isinstance(s, dict):
         return {}
-    raw = dict.get(s, name)
+    try:
+        raw = dict.get(s, name)
+    except Exception:
+        return {}
     if not isinstance(raw, dict):
         return {}
     try:

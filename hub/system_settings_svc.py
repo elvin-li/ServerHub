@@ -112,11 +112,34 @@ def _as_text(value) -> str:
         return ""
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that neither a dict-subclass ``.get`` bomb nor a leftover
+    *hash-shadowing* key can detonate.
+
+    ``dict.get`` (unbound) bypasses a subclass's own ``.get`` override, but
+    the C-level lookup still calls the *stored* key's ``__eq__`` when the
+    probe's hash lands on its slot — so a leftover key carrying
+    ``hash("label")`` / ``hash("server_comment")`` with a raising ``__eq__``
+    used to 500 GET /api/settings/scheduler, /disk, /other and
+    /api/identity straight out of the compare (the alerts/notify_channels
+    ``_mapping_get`` rule, which these host surfaces never got).
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _finite_number(value, default=None):
     """YAML leftover ``.inf`` / a date used to 500 GET /api/settings/other."""
-    if isinstance(value, bool) or value is None:
+    # type-is for the bool gate and _isa for the ranks: a ``__class__``-
+    # property bomb used to detonate the first bare isinstance itself and
+    # 500 GET /api/settings/other on the metrics_interval read.
+    if type(value) is bool or value is None:
         return default
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Base coercion to an exact int first: an int *subclass* whose
             # ``__index__``/``__str__`` bombs (the modules5 class) used to
@@ -129,7 +152,7 @@ def _finite_number(value, default=None):
             # (CPython's int->str digit cap) — fall back like inf.
             return default
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -145,7 +168,12 @@ def _finite_number(value, default=None):
 def _truthy(value) -> bool:
     """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
     stored flag must degrade to False, never raise out of a settings read."""
-    if isinstance(value, bool):
+    # ``type(value) is bool``, not isinstance: a *bool-liar* (lying
+    # ``__class__`` claims bool, is not) passed isinstance and was returned
+    # raw into the payload, where the C encoder's exact-type check refused
+    # it — a raw 500 on GET /api/settings/system.  bool() below coerces the
+    # liar to an honest True/False without ever consulting ``__class__``.
+    if type(value) is bool:
         return value
     try:
         return bool(value)
@@ -161,7 +189,9 @@ def _as_map(value) -> dict:
     usage5/json5 sealed elsewhere), so every read on the returned map is on
     a plain dict.
     """
-    if not isinstance(value, dict):
+    # _isa: a ``__class__``-property bomb handed in as a row used to
+    # detonate the gate itself instead of degrading to {}.
+    if not _isa(value, dict):
         return {}
     try:
         return dict(value)
@@ -185,11 +215,19 @@ def _settings_map() -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    return _as_map(dict.get(data, "settings"))
+    # _mapping_get, not a bare ``dict.get``: the unbound read dodges a
+    # subclass ``.get`` bomb but a hash-shadowing "settings" key still
+    # raised inside the C lookup and 500'd GET /api/settings/other.
+    return _as_map(_mapping_get(data, "settings"))
 
 
 def _json_bool(value, default: bool = True) -> bool:
-    return value if isinstance(value, bool) else default
+    # ``type(value) is bool``: a bool-liar (lying ``__class__``) passed
+    # isinstance and rode raw into the payload — the C encoder's exact-type
+    # check refused it and 500'd GET /api/settings/other.  A class-bomb
+    # (raising ``__class__``) detonated the isinstance itself.  type() never
+    # dispatches into the leftover.
+    return value if type(value) is bool else default
 
 
 def _json_atom(value):
@@ -236,10 +274,13 @@ def _json_atom(value):
         if stamped is value:
             return None
         return _json_atom(stamped)
-    if _isa(value, int) and not _isa(value, bool):
+    if _isa(value, int) and type(value) is not bool:
         try:
             # Base coercion first: an int subclass ``__index__``/``__str__``
             # bomb used to raise past the ValueError-only digit-cap catch.
+            # A *bool-liar* (lying ``__class__`` claims bool) lands here too
+            # — bool subclasses int — and the coercion TypeErrors it into
+            # the same drop instead of returning it raw.
             value = int.__index__(value)
             str(value)
         except Exception:
@@ -247,7 +288,11 @@ def _json_atom(value):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if value is None or _isa(value, bool):
+    if value is None or type(value) is bool:
+        # ``type(value) is bool``, not ``_isa``: a bool-liar passed the
+        # lying-``__class__`` check and was returned raw, and Starlette's
+        # C encoder — which checks the exact type — refused it with a
+        # TypeError: a raw 500 on every _json_atom rider.
         return value
     try:
         return _utf8_text(value)
@@ -265,7 +310,14 @@ def _json_tree(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isa(value, bool):
+    if value is None or type(value) is bool:
+        # ``type(value) is bool``, not ``_isa``: a *bool-liar* (lying
+        # ``__class__`` claims bool, is not) passed this gate and was
+        # returned raw — Starlette's C encoder checks the exact type and
+        # TypeError'd it, a raw 500 on GET /api/scheduler and
+        # /api/system/scheduler.  The liar now falls through to the int
+        # gate (bool subclasses int), where ``int.__index__`` refuses it
+        # and it drops to null like any other unrenderable.
         return value
     if _isa(value, int):
         try:
@@ -665,17 +717,22 @@ def get_disk_settings() -> dict:
         power_disks = []
     rows = []
     for d in power_disks[:20]:
-        if not isinstance(d, dict):
+        # _isa: a class-bomb row used to blow the gate itself and 500
+        # GET /api/settings/disk before the laundering ever ran.
+        if not _isa(d, dict):
             continue
         # Launder each row: a power-disk row that is a dict subclass with a
         # bombing ``.get`` (the jobs/metrics row-bomb class) used to raise
         # out of the field reads below and 500 GET /api/settings/disk.
+        # _mapping_get on the field reads: a hash-shadowing "id"/"name" key
+        # survives the plain-dict copy and used to detonate the C-level
+        # compare under the laundered ``.get`` — the same 500.
         d = _as_map(d)
         rows.append({
-            "id": _json_atom(d.get("id")),
-            "name": _json_atom(d.get("name")) or _json_atom(d.get("id")),
-            "power_state": _json_atom(d.get("power_state")),
-            "size_gb": _finite_number(d.get("size_gb")),
+            "id": _json_atom(_mapping_get(d, "id")),
+            "name": _json_atom(_mapping_get(d, "name")) or _json_atom(_mapping_get(d, "id")),
+            "power_state": _json_atom(_mapping_get(d, "power_state")),
+            "size_gb": _finite_number(_mapping_get(d, "size_gb")),
         })
     cleaned = _json_tree({
         # ``smart`` used to pass through raw — the one section of this
@@ -683,7 +740,7 @@ def get_disk_settings() -> dict:
         # over-cap int / non-UTF-8 bytes / items()-bomb subclass inside the
         # SMART snapshot 500'd GET /api/settings/disk while the same data
         # rendered fine inside the bundle (which _json_tree's everything).
-        "disksleep_minutes": _finite_number(power.get("disksleep")),
+        "disksleep_minutes": _finite_number(_mapping_get(power, "disksleep")),
         "smart": smart,
         "disk_count": len(disks) or len(power_disks),
         "power_disks": rows,
@@ -709,15 +766,17 @@ def get_management_access() -> dict:
     # ``__bool__`` bomb — degrading this whole section of the Settings
     # bundle to an error row.
     auth = settings_section("auth")
-    username = _json_atom(auth.get("username"))
+    # _mapping_get: a hash-shadowing key in the stored auth section used to
+    # detonate the bare ``.get`` reads and degrade this whole section.
+    username = _json_atom(_mapping_get(auth, "username"))
     if not isinstance(username, str) or not username:
         username = "admin"
     # leftover ``\ud800`` in host_ip() / configured_host() used to 500
     # GET /api/settings/system and the Management Access tile.
     cleaned = _json_tree({
         "panel_port": 8086,
-        "auth_enabled": _truthy(auth.get("enabled")),
-        "allow_localhost": _json_bool(auth.get("allow_localhost", True), True),
+        "auth_enabled": _truthy(_mapping_get(auth, "enabled")),
+        "allow_localhost": _json_bool(_mapping_get(auth, "allow_localhost", True), True),
         "username": username,
         "host_ip": host_ip(),
         "host_ip_config": configured_host(),
@@ -758,14 +817,22 @@ def get_thresholds() -> dict:
         # ``\ud800`` YAML key blew up Starlette's UTF-8 encode, and a
         # >4300-digit int key ValueError'd the encoder's key stringify —
         # both 500'd GET /api/settings/thresholds.
-        if isinstance(k, (bytes, bytearray)):
-            # Unbound base decode (the _json_tree key-arm rule): the old
-            # ``bytes(k)`` copy ran a subclass ``__bytes__`` bomb and 500'd
-            # GET /api/settings/thresholds and /other.
-            k = (bytes if isinstance(k, bytes) else bytearray).decode(
-                k, "utf-8", "replace",
-            )
-        elif not isinstance(k, str):
+        # _isa on the key gates (the _json_tree key-arm rule): a
+        # ``__class__``-property bomb as a key detonated the first bare
+        # isinstance itself and 500'd the route one step ahead of the scrub.
+        if _isa(k, (bytes, bytearray)):
+            try:
+                # Unbound base decode: the old ``bytes(k)`` copy ran a
+                # subclass ``__bytes__`` bomb and 500'd GET
+                # /api/settings/thresholds and /other.  The try is for a
+                # lying ``__class__`` (claims bytes, is not): the entry
+                # drops, its siblings stay.
+                k = (bytes if isinstance(k, bytes) else bytearray).decode(
+                    k, "utf-8", "replace",
+                )
+            except Exception:
+                continue
+        elif not _isa(k, str):
             try:
                 k = str(k)
             except Exception:
@@ -774,7 +841,9 @@ def get_thresholds() -> dict:
         if not k or v is None:
             continue
         if k in ("enabled", "smart_enabled"):
-            if isinstance(v, bool):
+            # type-is, not isinstance: a class-bomb value detonated the
+            # gate and a bool-liar rode raw into the payload.
+            if type(v) is bool:
                 out[k] = v
             continue
         n = _finite_number(v)
@@ -791,9 +860,15 @@ def get_other_settings() -> dict:
     # read (the json5 bomb class, already laundered in settings_api).
     s = _settings_map()
     alias = settings_section("ip_aliases")
-    ips = alias.get("ips")
+    # _mapping_get on every stored read: the section maps are plain-dict
+    # copies but a leftover *hash-shadowing* key inside them (same hash as
+    # "ips"/"adaptive"/…, raising ``__eq__``) survived the laundering copy
+    # and detonated the C-level compare under a bare ``.get`` — a raw 500
+    # on GET /api/settings/other.
+    ips = _mapping_get(alias, "ips")
     clean_ips = []
-    if isinstance(ips, list):
+    # _isa: a class-bomb ips value used to blow the gate itself.
+    if _isa(ips, list):
         try:
             items = list(ips)
         except Exception:
@@ -804,22 +879,22 @@ def get_other_settings() -> dict:
             text = _json_atom(item)
             if isinstance(text, str) and text:
                 clean_ips.append(text)
-    netmask = _json_atom(alias.get("netmask")) or "255.255.255.255"
+    netmask = _json_atom(_mapping_get(alias, "netmask")) or "255.255.255.255"
     if not isinstance(netmask, str):
         netmask = "255.255.255.255"
     # _as_text first, then membership: the raw tuple compare gave a
     # str-subclass ``__eq__`` bomb (and any non-str leftover's reflected
     # ``__eq__``) priority — a raw 500 where every sibling degraded fine.
-    resource_mode = _as_text(s.get("resource_mode"))
+    resource_mode = _as_text(_mapping_get(s, "resource_mode"))
     return {
-        "adaptive": _json_bool(s.get("adaptive", True), True),
-        "metrics_interval": _finite_number(s.get("metrics_interval"), 90),
-        "alert_interval": _finite_number(s.get("alert_interval"), 90),
+        "adaptive": _json_bool(_mapping_get(s, "adaptive", True), True),
+        "metrics_interval": _finite_number(_mapping_get(s, "metrics_interval"), 90),
+        "alert_interval": _finite_number(_mapping_get(s, "alert_interval"), 90),
         "resource_mode": resource_mode if resource_mode in ("low", "high") else "low",
         "ip_aliases": {
-            "auto_bind": _json_bool(alias.get("auto_bind", True), True),
-            "prefer_wired": _json_bool(alias.get("prefer_wired", True), True),
-            "interval": _finite_number(alias.get("interval"), 60),
+            "auto_bind": _json_bool(_mapping_get(alias, "auto_bind", True), True),
+            "prefer_wired": _json_bool(_mapping_get(alias, "prefer_wired", True), True),
+            "interval": _finite_number(_mapping_get(alias, "interval"), 60),
             "ips": clean_ips,
             "netmask": netmask,
         },
@@ -836,9 +911,15 @@ def get_other_settings() -> dict:
 
 def _first_truthy(mapping: dict, *keys):
     """First truthy ``mapping[key]``, with a leftover ``__bool__`` bomb in a
-    value degrading to "not it" instead of raising out of the ``or`` chain."""
+    value degrading to "not it" instead of raising out of the ``or`` chain.
+
+    _mapping_get, not a bare ``.get``: the rows are laundered plain dicts
+    but a hash-shadowing key (same hash as "label"/"interval"/…, raising
+    ``__eq__``) survives the copy and used to detonate the C-level compare
+    — a raw 500 on GET /api/settings/scheduler.
+    """
     for key in keys:
-        value = mapping.get(key)
+        value = _mapping_get(mapping, key)
         if _truthy(value):
             return value
     return None
@@ -856,7 +937,9 @@ def get_scheduler_summary() -> dict:
         return {"timers": [], "count": 0, "error": _as_text(e)}
     slim = []
     for t in timers[:40]:
-        if not isinstance(t, dict):
+        # _isa: a class-bomb row used to blow this gate itself and 500
+        # GET /api/settings/scheduler ahead of the laundering.
+        if not _isa(t, dict):
             continue
         # Launder the row: a timer row that is a dict subclass with a bombing
         # ``.get`` passed the isinstance gate and raised out of the field
