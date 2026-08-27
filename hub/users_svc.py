@@ -38,11 +38,14 @@ def list_users() -> list:
     admin_gids = set()
     try:
         admin_gids.add(grp.getgrnam("admin").gr_gid)
-    except (KeyError, OSError, TypeError):
+    except Exception:
+        # Broad, not (KeyError, OSError, TypeError): a leftover int-subclass
+        # gr_gid whose ``__hash__`` raises detonated ``set.add`` itself and
+        # 500'd GET /api/users before the first pwd row was even read.
         pass
     try:
         admin_gids.add(grp.getgrnam("staff").gr_gid)
-    except (KeyError, OSError, TypeError):
+    except Exception:
         pass
     # dscl for UniqueID >= 500 typically; macOS can emit duplicate root via OD
     users = []
@@ -73,7 +76,13 @@ def list_users() -> list:
                 # every healthy row.  The str() probe reuses this except.
                 str(uid)
                 str(gid)
-            except (TypeError, ValueError, OverflowError, AttributeError):
+            except Exception:
+                # Broad, not (TypeError, ValueError, OverflowError,
+                # AttributeError): a leftover int-subclass id whose
+                # ``__int__``/``__index__`` raises something else used to
+                # escape into the walk's mid-iteration catch and silently
+                # wipe every healthy row after (and including) the poisoned
+                # one.  A row whose ids are unanswerable costs itself only.
                 continue
             name = _pwd_text(getattr(u, "pw_name", ""))
             if not name:

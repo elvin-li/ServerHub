@@ -404,11 +404,14 @@ def set_user_access(path: str, username: str, level: str) -> dict:
     else:
         result = _plain_result(macos_admin.run_admin_sequence(commands))
     if not result.get("ok"):
-        # isinstance + _truthy, not a bare ``or``: a leftover non-str error
-        # field (or a ``__bool__``-bomb one) used to raise out of the
-        # fallback chain / the ``==`` probe below.
+        # isinstance + _as_text, not a bare ``raw_error and``: the truth test
+        # detonated a str-subclass ``__bool__`` bomb, and keeping the subclass
+        # instance let an ``__eq__`` bomb blow the ``== "failed"`` probe below
+        # (and the router's mapping lookup after it).  The unbound scrub reads
+        # the real text underneath the override, so a bombed-but-legible
+        # "cancelled" still earns its coded refusal instead of the generic one.
         raw_error = result.get("error")
-        error = raw_error if isinstance(raw_error, str) and raw_error else "failed"
+        error = (_as_text(raw_error) if isinstance(raw_error, str) else "") or "failed"
         # A chmod confirmed vanished by a fresh disk probe answers the coded
         # 503, not the generic 500 sharing failure.  Only the generic failure
         # shape is eligible — timeouts and authorization outcomes (cancelled,
