@@ -295,7 +295,16 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    # Unbound ``str.encode`` (the modules6 rule sensors_svc already follows):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips CPython's
+    # exact-str copy, so the bound ``encode`` tail ran the subclass override —
+    # a raise killed the sampler tick in record_sample() past metrics6's
+    # guards (jsonl row silently lost) and raised back at record_sample's
+    # callers; an override that *returned* a hostile buffer walked a lone
+    # surrogate past this scrub into Starlette's UTF-8 encode (a 500).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
