@@ -1169,8 +1169,20 @@ def _launchd_apps() -> list[dict]:
         entry = listing.jobs.get(label)
         last = entry[1] if entry else None
         keep = bool(data.get("KeepAlive")) if data else False
-        ov = config.override(label) or {}
-        name = _field_text(ov.get("name"), label) or label
+        try:
+            ov = config.override(label)
+        except Exception:
+            # A torn services.yaml read used to raise out of this loop:
+            # GET /api/apps/managed/detail?id=launchd:* was a raw 500, and
+            # the whole launchd section of the inventory vanished via
+            # _collect's fallback.  The override is cosmetics (name, group,
+            # port, url) — losing it must cost those fields, not the agent.
+            ov = None
+        if not isinstance(ov, dict):
+            ov = {}
+        # _mapping_get: an override payload that is a dict subclass whose
+        # ``.get`` bombs (the ups_svc convention) costs its fields only.
+        name = _field_text(_mapping_get(ov, "name"), label) or label
         acts = (
             ["stop", "restart", "detail", "logs", "uninstall"]
             if running
@@ -1197,12 +1209,12 @@ def _launchd_apps() -> list[dict]:
             "package": None,
             "method": "launchd",
             "installed": True,
-            "ports_summary": _field_text(ov.get("port"), ""),
+            "ports_summary": _field_text(_mapping_get(ov, "port"), ""),
             "autostart": True,
             "autostart_id": f"launchd:{label}",
             "actions": acts,
-            "category": _field_text(ov.get("group"), "other") or "other",
-            "url": _optional_text(ov.get("url")),
+            "category": _field_text(_mapping_get(ov, "group"), "other") or "other",
+            "url": _optional_text(_mapping_get(ov, "url")),
         })
     return items
 
@@ -1560,8 +1572,24 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
     uninstall previews), and a lone surrogate, a >4300-digit int or raw
     bytes in one of those used to 500 Starlette's encoder *after* the
     action had already run.
+
+    The same branches hand the *call* to another module too, and a raising
+    collaborator (a torn autostart toggle, ``vm_action``, an uninstall
+    backend, ``_launchctl_load``/``_launchctl_unload``) still 500'd the
+    route where junk in the returned payload no longer could.  The seam is
+    here rather than at each of the dozen call sites because the contract
+    is uniform: coded HTTPExceptions stay coded for the SPA to translate,
+    everything else answers ``ok: false`` with the failure text —
+    exc_detail, not bare str(e), so a leftover ``\\ud800`` /
+    RecursionError in the message costs the message, never the response.
     """
-    return _safe_payload(_action(app_id, action_name, **kwargs))
+    try:
+        result = _action(app_id, action_name, **kwargs)
+    except HTTPException:
+        raise
+    except Exception as e:
+        result = {"ok": False, "message": exc_detail(e)}
+    return _safe_payload(result)
 
 
 def _action(app_id: str, action_name: str, **kwargs) -> dict:
@@ -1614,7 +1642,14 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                 ident = str(c.get("id") or "")
                 if not ident:
                     continue
-                r = autostart_svc.set_docker_autostart(ident, enabled)
+                try:
+                    r = autostart_svc.set_docker_autostart(ident, enabled)
+                except Exception as e:
+                    # One container's raising toggle must cost its own line,
+                    # not the containers already toggled: the blanket seam in
+                    # action() would fold their results into one bare
+                    # ``ok: false`` after the work had partially run.
+                    r = {"ok": False, "message": exc_detail(e)}
                 # _mapping_get/_truthy/_as_text: the toggle result is another
                 # module's payload — a subclass ``.get`` bomb or ``__bool__``
                 # bomb here used to 500 the action after toggles already ran.
