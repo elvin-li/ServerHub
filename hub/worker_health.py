@@ -91,6 +91,43 @@ def _utf8_text(value) -> str:
     return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
+def _mapping_get(mapping, key, default=None):
+    """Entry field read that a hostile mapping *key* cannot detonate.
+
+    The health_svc/vms_svc rule: even a plain-dict lookup still runs the
+    *stored keys'* own ``__eq__`` during the hash probe, so a leftover
+    str-subclass key planted in an entry (same hash as ``thread``/``beat``/
+    ``interval``, raising ``__eq__``) used to raise out of ``snapshot()``'s
+    bound ``entry.get`` and silently wipe the workers row from GET
+    /api/health/checks.  Only the shadowed field degrades to its default.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _evict_unusable_keys() -> None:
+    """Drop registry keys that cannot survive a hash-probe compare.
+
+    Called under ``_lock``, on the failure path only.  Production keys are
+    always the exact ``str`` that ``_name_key`` answers, so anything else in
+    the table is a planted leftover — and a str-subclass key whose hash
+    shadows a real worker name (raising ``__eq__``) used to raise out of the
+    C-level insert/lookup inside :func:`register` / :func:`beat` /
+    :func:`unregister` *on the worker's own thread*, killing the exact loop
+    this registry exists to watch.  ``items()`` iteration and ``clear()``
+    never compare keys, and re-inserting exact-str keys only ever compares
+    exact strings, so this salvage cannot re-detonate.
+    """
+    salvaged = [(k, v) for k, v in _workers.items() if type(k) is str]
+    _workers.clear()
+    for k, v in salvaged:
+        _workers[k] = v
+
+
 def _coerce_interval(interval) -> float:
     """A positive finite loop interval, even when a hand-edit passed ``90s``.
 
@@ -243,14 +280,33 @@ def register(name: str, interval: float, thread: threading.Thread | None = None)
         "beat": _wall_now(),
     }
     with _lock:
-        _workers[_name_key(name)] = entry
+        # Guarded insert: a planted hash-shadowing junk key (same hash as
+        # this worker's name, raising ``__eq__``) used to raise out of the
+        # C-level compare on the worker's own thread — killing the
+        # sampler/alerter/scheduler loop at its very first act.  Evict the
+        # poison and retry so the honest registration still lands.
+        try:
+            _workers[_name_key(name)] = entry
+        except Exception:
+            try:
+                _evict_unusable_keys()
+                _workers[_name_key(name)] = entry
+            except Exception:
+                pass
 
 
 def beat(name: str) -> None:
     """Record one loop iteration.  A beat for an unregistered name is a no-op
     (the worker may have been unregistered by a concurrent ``stop_*``)."""
     with _lock:
-        entry = _workers.get(_name_key(name))
+        # Guarded lookup (the register() rule): a planted hash-shadowing
+        # junk key used to raise out of the C-level compare inside
+        # ``_workers.get`` on the worker's own thread — the same loop kill,
+        # one call later.  An unreadable slot reads as unregistered.
+        try:
+            entry = _workers.get(_name_key(name))
+        except Exception:
+            entry = None
         # _isa + unbound ``dict.__setitem__``: a planted entry whose
         # ``__class__`` is a raising property (or a dict subclass with a
         # ``__setitem__`` bomb) used to raise out of beat() on the worker's
@@ -264,7 +320,18 @@ def beat(name: str) -> None:
 
 def unregister(name: str) -> None:
     with _lock:
-        _workers.pop(_name_key(name), None)
+        # Guarded pop (the register() rule): the C-level lookup compare of a
+        # planted hash-shadowing junk key raised out of the ``stop_*``
+        # teardown path.  Evict the poison and retry so a genuinely stopped
+        # worker cannot linger as a false "thread died" health row.
+        try:
+            _workers.pop(_name_key(name), None)
+        except Exception:
+            try:
+                _evict_unusable_keys()
+                _workers.pop(_name_key(name), None)
+            except Exception:
+                pass
 
 
 def snapshot(now: float | None = None) -> list[dict]:
@@ -277,20 +344,33 @@ def snapshot(now: float | None = None) -> list[dict]:
             # this gate and silently wiped the workers row from GET
             # /api/health/checks; the poisoned entry drops alone instead.
             if _isa(entry, dict):
-                items.append((name, dict(entry)))
+                # Copy in a try: a dict-subclass ``keys``/``__iter__`` bomb
+                # (or colliding junk keys raising out of the C-level insert
+                # compare) used to raise out of the copy itself — the same
+                # silent wipe, one call earlier.  The unreadable entry
+                # drops alone; its siblings keep their rows.
+                try:
+                    items.append((name, dict(entry)))
+                except Exception:
+                    continue
     out = []
     # _name_key, not bare str(): a planted name key that is an over-cap int
     # (YAML/plist hex loads uncapped) ValueError'd the sort key itself, and a
     # subclass ``__str__`` bomb raised the same way — snapshot() blew up and
     # the workers row silently vanished from GET /api/health/checks.
     for name, entry in sorted(items, key=lambda kv: _name_key(kv[0])):
-        thread = entry.get("thread")
+        # _mapping_get, not bound ``.get``: a hash-shadowing junk key riding
+        # the copied entry (same hash as ``thread``/``beat``/``interval``,
+        # raising ``__eq__``) used to detonate the plain-dict lookup here
+        # and silently wipe the workers row; the shadowed field now degrades
+        # alone and the worker still renders.
+        thread = _mapping_get(entry, "thread")
         try:
             alive = bool(thread is not None and thread.is_alive())
         except Exception:
             alive = False
-        beat = _finite_beat(entry.get("beat"))
-        interval = _coerce_interval(entry.get("interval"))
+        beat = _finite_beat(_mapping_get(entry, "beat"))
+        interval = _coerce_interval(_mapping_get(entry, "interval"))
         age = max(0.0, now_f - beat)
         if age != age or age in (float("inf"), float("-inf")):
             age = 0.0

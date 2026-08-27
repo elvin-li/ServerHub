@@ -44,6 +44,27 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The ups_svc/vms_svc rule, which this module's bound ``.get`` probes and
+    the module cache's bare ``_cache["v"]`` subscript never got: even a
+    plain-dict lookup still runs the *stored keys'* own ``__eq__`` during
+    the hash probe, so a leftover str-subclass key whose hash shadows the
+    real key and whose ``__eq__`` raises used to detonate
+    ``_fresh_snapshot`` / ``_collect_checks``'s cache write — a raw 500 on
+    every GET /api/health/checks — and to collapse a *running* nginx into
+    the combined not-installed error row inside ``_nginx_pair``.  Only the
+    shadowed field degrades to its default; siblings keep their sane data.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _rc_int(rc) -> int:
     """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
 
@@ -144,8 +165,20 @@ def _jsonable(value, depth: int = 0):
     # Immich/Ollama check row used to detonate the first gate it failed and
     # 500 GET /api/health/checks; it now falls through to the final text
     # probe like any other leftover.
-    if value is None or _isa(value, bool):
+    if value is None or type(value) is bool:
         return value
+    if _isa(value, bool):
+        # ``type is bool`` above, not the old bare ``_isa`` return: bool
+        # cannot be subclassed, so anything else that answers bool here is a
+        # *lying*-``__class__`` impostor (the docker10/json9 shape) — and
+        # returned raw it rode ``_serve_cached`` / the fresh collection into
+        # Starlette's encoder and 500'd GET /api/health/checks on every TTL
+        # hit.  Launder to the truth value it claims to be; a ``__bool__``
+        # bomb drops like any other unreadable leftover.
+        try:
+            return bool(value)
+        except Exception:
+            return None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -298,7 +331,12 @@ def _nginx_pair() -> list[dict]:
     """
     try:
         ngx = nginx_overview()
-        ok = bool(ngx.get("running"))
+        # _mapping_get, not bound ``.get``: this function does not own the
+        # overview dict, and a leftover hash-shadowing str-subclass key
+        # (same hash as ``running``/``pid``/``site_count``, raising
+        # ``__eq__``) detonated the plain-dict lookup inside the pair-wide
+        # try — the same collapse as the over-cap ints below, one seam over.
+        ok = bool(_mapping_get(ngx, "running"))
         # _as_text per field, not the bare f-string: this function does not
         # own the overview dict, and an already-int over-cap pid/site_count
         # leftover (YAML/plist hex loads uncapped) ValueError'd str() inside
@@ -309,19 +347,20 @@ def _nginx_pair() -> list[dict]:
             "nginx", "System Nginx gateway",
             "error", ok,
             (
-                f"running pid={_as_text(ngx.get('pid')) or '?'}"
-                f" · sites {_as_text(ngx.get('site_count')) or '?'}"
+                f"running pid={_as_text(_mapping_get(ngx, 'pid')) or '?'}"
+                f" · sites {_as_text(_mapping_get(ngx, 'site_count')) or '?'}"
             ) if ok else "not running",
             "launchctl kickstart -k gui/$(id -u)/local.system-nginx" if not ok else "",
         )]
         t = nginx_test()
+        t_ok = _mapping_get(t, "ok")
         pair.append(_check(
             "nginx_conf", "Nginx config syntax",
-            "error", t.get("ok"),
+            "error", t_ok,
             # `(message or "")[:160]` TypeError'd a leftover int message into
             # the same pair-wide collapse.
-            _as_text(t.get("message"))[:160],
-            "Check ~/Services/nginx/conf.d/" if not t.get("ok") else "",
+            _as_text(_mapping_get(t, "message"))[:160],
+            "Check ~/Services/nginx/conf.d/" if not t_ok else "",
         ))
         return pair
     except Exception as e:
@@ -427,7 +466,23 @@ def _smart_checks() -> list[dict]:
     root).  A hardcoded Homebrew path here matches no rule, so this probe would
     ask for a password nobody can type and the health card would go blank.
     """
-    rc, out, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10)
+    # Guarded unwrap of the whole ``sh`` answer, not just its slots (the
+    # docker_cli.docker rule): this function does not own ``sh`` (tests and
+    # tooling patch it), and a leftover riding the *shape* of the return —
+    # a 2-tuple, a scalar, a tuple subclass whose ``__iter__`` raises, a
+    # lying-``__class__`` tuple impostor — used to detonate the bare
+    # ``rc, out, _ = …`` unpack itself; ``_safe`` swallowed the raise and
+    # the SMART row silently vanished from GET /api/health/checks.  A junk
+    # shape carries no exit status and no output: it reads as the same
+    # ``-255`` failure ``_rc_int`` assigns junk rc values — never the
+    # ``-1`` timeout / not-found sentinel, never success — and keeps the
+    # empty-row fallback.
+    try:
+        rc, out, _err = sh(
+            ["/usr/bin/sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10
+        )
+    except Exception:
+        rc, out = -255, ""
     # The production sh always decodes (utf-8, replace), but this function
     # does not own the provider (nginx_svc guards the same class with
     # ``_sh_message``): bytes stdout from a patched/odd sh TypeError'd
@@ -662,7 +717,13 @@ def _serve_cached(hit: dict) -> dict:
 
 
 def _fresh_snapshot() -> dict | None:
-    hit = _cache["v"]
+    # _mapping_get, not the bare ``_cache["v"]`` subscript: a leftover
+    # hash-shadowing str-subclass key planted in the module cache (same
+    # hash as ``v``, raising ``__eq__``) used to detonate the C-level
+    # lookup itself and 500 every GET /api/health/checks — the one cache
+    # poisoning ``_serve_cached`` could never reach.  An unreadable slot
+    # reads as expired and re-collects like every other poisoning.
+    hit = _mapping_get(_cache, "v")
     # _isa: a ``__class__``-property bomb planted as the whole cached
     # snapshot used to detonate this gate on every GET /api/health/checks —
     # a 500 where every other cache poisoning already re-collects.
@@ -969,7 +1030,12 @@ def _collect_checks() -> dict:
         if not _isa(c, dict):
             return None
         try:
-            return bool(c.get("ok")), _as_text(c.get("level"))
+            # _mapping_get: the raw Immich/Ollama rows are plain dicts too,
+            # and a hash-shadowing junk key (same hash as ``ok``/``level``,
+            # raising ``__eq__``) used to knock the whole row out of the
+            # summary through this try; the shadowed field now degrades
+            # alone and the row still counts.
+            return bool(_mapping_get(c, "ok")), _as_text(_mapping_get(c, "level"))
         except Exception:
             return None
 
@@ -990,5 +1056,17 @@ def _collect_checks() -> dict:
             "checks": [],
             "healthy": False,
         }
-    _cache.update(t=time.time(), v=v)
+    try:
+        _cache.update(t=time.time(), v=v)
+    except Exception:
+        # A hash-shadowing junk key planted in the module cache raises out
+        # of the C-level insert compare (never out of a plain ``t``/``v``
+        # overwrite) — pre-fix that 500'd GET /api/health/checks at the
+        # very end of a successful collection.  ``clear()`` never compares
+        # keys, so evicting the poison and rewriting always lands.
+        try:
+            _cache.clear()
+            _cache.update(t=time.time(), v=v)
+        except Exception:
+            pass
     return v
