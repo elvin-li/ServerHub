@@ -489,6 +489,27 @@ def _exact_str(value) -> str | None:
         return None
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a poisoned ``backups`` / ``config_archive`` / ``postgres``
+    value (or one of its entries) whose ``__class__`` is a *raising
+    property* detonated the very type gates below — every one of which sits
+    *outside* a try — and 500'd GET /api/backups, POST /api/backups/postgres
+    and POST /api/backups/configs before any of this module's ``_mapping_get``
+    / ``_truthy`` / ``_iter_list`` unbound reads got a turn.  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch (the worker_health /
+    smart_test_svc ``_isa`` rule) — which for these gates means "drop this
+    entry" or "treat as unset", never a raise.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -514,7 +535,7 @@ def _mapping_get(mapping, key):
     POST /api/backups/postgres and POST /api/backups/configs at once.
     ``dict.get`` reads the real storage underneath the override.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return None
     try:
         return mapping.get(key)
@@ -535,13 +556,16 @@ def _iter_list(value):
 
 
 def _backups_cfg() -> dict:
+    # _isa, not bare isinstance: a ``backups:`` value whose ``__class__`` is a
+    # raising property detonated this gate itself — a 500 on GET /api/backups
+    # and both POST dumps before any reader ran.
     raw = _mapping_get(cfg(), "backups")
-    return raw if isinstance(raw, dict) else {}
+    return raw if _isa(raw, dict) else {}
 
 
 def _config_archive_cfg() -> dict:
     raw = _mapping_get(_backups_cfg(), "config_archive")
-    return raw if isinstance(raw, dict) else {}
+    return raw if _isa(raw, dict) else {}
 
 
 def pg_targets(raw: list | None = None) -> list[dict]:
@@ -554,12 +578,15 @@ def pg_targets(raw: list | None = None) -> list[dict]:
     """
     if raw is None:
         raw = _mapping_get(_backups_cfg(), "postgres")
-    if not isinstance(raw, list):
+    # _isa, not bare isinstance: a ``backups.postgres`` value (or one of its
+    # entries) whose ``__class__`` is a raising property detonated these gates
+    # and 500'd GET /api/backups instead of dropping the one bad entry.
+    if not _isa(raw, list):
         return []
     out: list[dict] = []
     seen: set[str] = set()
     for entry in _iter_list(raw):
-        if not isinstance(entry, dict):
+        if not _isa(entry, dict):
             continue
         # _cfg_text, not str(): a YAML hex over-cap int or lone-surrogate
         # value in any of these fields used to raise out of this loop and
@@ -1545,9 +1572,12 @@ def agent_keywords() -> tuple[str, ...]:
     """
     merged = list(DEFAULT_AGENT_KEYWORDS)
     extras = _mapping_get(_config_archive_cfg(), "agent_keywords")
-    if isinstance(extras, list):
+    # _isa, not bare isinstance: a keywords list (or entry) whose ``__class__``
+    # is a raising property detonated these gates and 500'd
+    # POST /api/backups/configs instead of degrading to the defaults.
+    if _isa(extras, list):
         for kw in _iter_list(extras):
-            if isinstance(kw, str):
+            if _isa(kw, str):
                 # _exact_str first: a str-subclass entry whose bound
                 # ``.strip()`` / ``__eq__`` raises used to 500
                 # POST /api/backups/configs as soon as one LaunchAgents
@@ -1572,10 +1602,13 @@ def config_archive_extra_paths() -> list[Path]:
     """
     out: list[Path] = []
     raw = _mapping_get(_config_archive_cfg(), "extra_paths")
-    if not isinstance(raw, list):
+    # _isa, not bare isinstance: an extra_paths list (or entry) whose
+    # ``__class__`` is a raising property detonated these gates and 500'd
+    # POST /api/backups/configs out of this loop.
+    if not _isa(raw, list):
         return out
     for entry in _iter_list(raw):
-        if not isinstance(entry, str):
+        if not _isa(entry, str):
             continue
         # _exact_str first: a str-subclass entry whose bound ``.strip()``
         # raises used to 500 POST /api/backups/configs out of this loop.
