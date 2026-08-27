@@ -310,6 +310,31 @@ def _tool_on_disk(tool) -> bool:
         return False
 
 
+def _exit_code(rc):
+    """*rc* as an exact int, or None when it is seam junk (never raises).
+
+    ``run_capped`` results are the same seam the backups7 sweep sealed for
+    *text* — and the *rc* half still ran raw dunders everywhere it landed.
+    An int subclass whose ``__eq__``/``__ne__`` raises passed
+    ``isinstance`` and detonated ``_cli_vanished``'s ``rc != -1`` (a bare
+    500 out of POST /api/backups/immich, whose comparisons sit outside the
+    spawn's try) and the jobs' ``ok = rc == 0`` — inside the postgres /
+    configs broad catches, where the raise ``_discard``'ed an artefact that
+    had already written every byte and reported a 200 that lied ok:false
+    with the bomb's text as the dump's failure.  ``int.__index__`` is the
+    unbound base coercion ``_jsonable`` already uses: it reads the real
+    exit status underneath the override, so a bomb wrapping a genuine 0
+    keeps its successful run.  Anything uncoercible is junk, not an exit
+    status — None fails every ``== 0`` / ``!= -1`` probe closed.
+    """
+    if type(rc) is int:
+        return rc
+    try:
+        return int.__index__(rc)
+    except Exception:
+        return None
+
+
 def _exit_text(rc) -> str:
     """``exit <rc>`` for result messages, or ``exit unknown`` when *rc* cannot
     be rendered at all (the brew_svc rule).
@@ -322,9 +347,15 @@ def _exit_text(rc) -> str:
     compose stop/start/config and tar renders feed the scheduler journal
     through the same f-strings.
     """
+    if rc is None:
+        return "exit unknown"
     try:
         return f"exit {rc}"
-    except (ValueError, TypeError, RecursionError, OverflowError):
+    except Exception:
+        # ValueError past the digit cap — but the f-string's empty format
+        # spec also dispatches to a subclass ``__str__``, so a seam rc
+        # bomb raised RuntimeError past the old narrow tuple and 500'd
+        # POST /api/backups/immich on the empty-output failure path.
         return "exit unknown"
 
 
@@ -347,7 +378,11 @@ def _cli_vanished(rc, text, tool) -> bool:
     apply — the vms ``_cli_missing`` / ollama ``delete_model`` rule.  The
     re-check runs only on this failure path, never on a successful spawn.
     """
-    if rc != -1 or _as_text(text).strip() != "not found":
+    # _exit_code, not the bare compare: ``!=`` dispatches to the value's
+    # own ``__ne__`` first, so a seam rc bomb 500'd POST /api/backups/immich
+    # out of this very probe.  The spawn sentinel is a literal exact -1, so
+    # junk that cannot coerce (None) is never the sentinel.
+    if _exit_code(rc) != -1 or _as_text(text).strip() != "not found":
         return False
     return not _tool_on_disk(tool)
 
@@ -1211,6 +1246,11 @@ def _backup_immich_script() -> dict:
             [str(IMMICH_SCRIPT)], timeout=600, cwd=str(IMMICH_ROOT),
         )
         text = _as_text(text)
+        # _exit_code beside _as_text: the rc half of the seam still ran raw
+        # dunders through ``rc == 0`` and ``_exit_text`` *outside* this try,
+        # so an int-subclass ``__eq__`` / ``__str__`` bomb 500'd the route
+        # after the script had already produced its artefact.
+        rc = _exit_code(rc)
     except Exception as exc:
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
         return {"ok": False, "message": _as_text(exc)[:500]}
@@ -1429,6 +1469,11 @@ def _dump_one_postgres(target: dict) -> dict:
     try:
         rc, text = run_capped(cmd, timeout=600, env=_pg_env(target))
         text = _as_text(text)
+        # _exit_code beside _as_text: an int-subclass ``__eq__`` bomb in the
+        # rc half of the seam used to raise at ``ok = rc == 0`` inside this
+        # broad catch — the *successful* dump was ``_discard``'ed and the
+        # 200 lied ok:false with the bomb's text as the dump's failure.
+        rc = _exit_code(rc)
         if _cli_vanished(rc, text, cmd[0]):
             # pg_dump itself could not be spawned — never installed, or
             # uninstalled while this ran.  The coded 503 instead of the
@@ -1583,7 +1628,13 @@ def _run_argv(argv: list[str], *, timeout: int, cap: int = 4000) -> tuple[int, s
         # Combined stream: callers already do ``(err or out)``.
         # Leftover bytes/None used to TypeError ``.strip()`` / JSON-encode
         # POST /api/backups/stack and the postgres/immich/config dumps.
-        return rc, _as_text(text), ""
+        # _exit_code on the rc half: _backup_stack compares ``rc != 0``
+        # bare (including in its finally-restart), so a seam rc bomb used
+        # to raise past the one promise this module makes — the compose
+        # start after an attempted stop — and out into the scheduler run.
+        # Junk that cannot coerce maps to the same -1 the except arm uses.
+        rc = _exit_code(rc)
+        return (-1 if rc is None else rc), _as_text(text), ""
     except Exception as e:  # noqa: BLE001 — a backup step must report, not raise
         return -1, "", _as_text(e)
 
@@ -2105,6 +2156,10 @@ def _backup_configs() -> dict:
             timeout=120,
         )
         text = _as_text(text)
+        # _exit_code beside _as_text: same rc-seam rule as the postgres dump
+        # — a subclass ``__eq__`` bomb used to discard the finished archive
+        # inside the broad catch and report a 200 that lied ok:false.
+        rc = _exit_code(rc)
         if _cli_vanished(rc, text, "/usr/bin/tar"):
             # tar itself could not be spawned: the coded 503 instead of the
             # bare "not found" sentinel in an uncoded ok:false.
