@@ -128,9 +128,43 @@ def _as_rc(value) -> int:
     return value
 
 
+def _sh_triple(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The network_svc ``_sh_triple`` rule: a real spawn always answers an
+    exact 3-tuple, but ``sh`` is stubbed in-process, and the bare
+    ``rc, out, err = sh(...)`` unpack dispatched into the answer's own
+    iteration — a tuple/list *subclass* whose bound ``__iter__`` bombs, or
+    a lying ``__class__`` claiming tuple/list over no real sequence
+    storage (the modules9/bookmarks9 impostor class) — a raw 500 on
+    POST /api/tools/net/ping and /net/flush-dns before the per-slot
+    laundering could run.  Unbound base reads keep an honest answer in a
+    subclass wrapper intact (the vanished-spawn sentinel included); junk
+    degrades to ``(-255, "", "")`` — nonzero, and never the ``-1``
+    sentinel, so it can neither claim success nor forge the coded 503.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
-    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
+    rc, out, err = _sh_triple(sh(cmd, timeout=timeout, **kwargs))
     return _as_rc(rc), _as_text(out), _as_text(err)
 
 

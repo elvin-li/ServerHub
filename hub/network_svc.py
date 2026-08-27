@@ -175,9 +175,46 @@ def _as_rc(value) -> int:
     return value
 
 
+def _sh_triple(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but ``sh`` is stubbed
+    in-process, and the bare ``rc, out, err = sh(...)`` unpack dispatched
+    into the answer's own iteration: a tuple/list *subclass* whose bound
+    ``__iter__`` bombs — or a lying ``__class__`` that claims tuple/list
+    over no real sequence storage at all (the modules9/bookmarks9 impostor
+    class) — raised straight out of ``_sh`` before the per-slot laundering
+    below could run, a raw 500 on every spawning route in this module at
+    once (dhcp/manual/dns/enabled/order, wifi, alias add/remove,
+    dns-lookup…).  The unbound base reads see the real C-level storage, so
+    an honest answer in a subclass wrapper survives untouched — the
+    vanished-spawn sentinel included — while junk degrades to
+    ``(-255, "", "")``: nonzero (a poisoned answer is not consent to claim
+    success) and never the ``-1`` sentinel (an unusable answer cannot
+    forge the coded 503 either).
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
-    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
+    rc, out, err = _sh_triple(sh(cmd, timeout=timeout, **kwargs))
     return _as_rc(rc), _as_text(out), _as_text(err)
 
 
@@ -534,6 +571,7 @@ def _service_actions(name: str, info: dict, disabled: bool) -> list:
 def set_service_dhcp(service: str) -> dict:
     service = _validate_service(service)
     rc, out, err = _sh([NS, "-setdhcp", service], timeout=15)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Switched to DHCP" if rc == 0 else f"exit {rc}")}
 
@@ -551,6 +589,7 @@ def set_service_manual(service: str, ip: str, subnet: str, router: str = "") -> 
         # networksetup requires router for setmanual on some versions — use 0.0.0.0
         args.append(router or "0.0.0.0")
     rc, out, err = _sh(args, timeout=15)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Static IP configured" if rc == 0 else f"exit {rc}")}
 
@@ -575,6 +614,7 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
             if not _valid_dns_server(s):
                 raise api_error("network.invalid_dns", server=s)
         rc, out, err = _sh([NS, "-setdnsservers", service, *servers], timeout=10)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("DNS updated" if rc == 0 else f"exit {rc}")}
 
@@ -629,6 +669,11 @@ def set_wifi_power(on: bool) -> dict:
     device = devices[0]
     rc, out, err = _sh([NS, "-setairportpower", device, arg], timeout=10)
     if rc != 0:
+        # Before the sudo fallback (the flush-dns rule): a networksetup
+        # that vanished after the hardware listing named a Wi-Fi port must
+        # not be re-spawned under sudo, and the 200 ok:false "not found"
+        # answer read like the radio toggle failed for an unknown reason.
+        _raise_if_networksetup_vanished(rc, out, err)
         rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", NS, "-setairportpower", device, arg], timeout=10
         )
@@ -648,6 +693,7 @@ def set_service_enabled(service: str, enabled: bool) -> dict:
         [NS, "-setnetworkserviceenabled", service, "on" if enabled else "off"],
         timeout=15,
     )
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {
         "ok": rc == 0,
@@ -681,6 +727,7 @@ def set_service_order(services: list[str]) -> dict:
         if n not in cleaned:
             cleaned.append(n)
     rc, out, err = _sh([NS, "-ordernetworkservices", *cleaned], timeout=20)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {
         "ok": rc == 0,
@@ -740,6 +787,39 @@ def _ifconfig_missing() -> bool:
     path only, and only a confirmed-absent binary answers the coded 503.
     """
     return _cli_gone(IFCONFIG)
+
+
+def _raise_if_networksetup_vanished(rc, out: str, err: str) -> None:
+    """The mutation-*spawn* twin of the empty-listing probes above.
+
+    a11y4–a11y8 sealed the listing side: an empty service/hardware listing
+    with networksetup confirmed absent answers the coded 503 instead of a
+    404/200 lie.  But the binary can also vanish *after* the listing
+    validated the name — the listings are cached for 6s — and the mutation
+    spawn itself then answered ``sh``'s sentinel: POST dhcp/manual/dns/
+    enabled/order and wifi/{state} all returned 200
+    ``{"ok": false, "message": "not found"}``, which reads like the
+    *configuration change* failed for an unknown reason.  Same rule as
+    everywhere else: the disk probe runs on the spawn-sentinel failure
+    path only, and a present-but-failing networksetup (a genuine nonzero
+    exit, even one whose output says "not found") keeps its honest answer.
+    """
+    if _spawn_sentinel(rc, out, err) and _networksetup_missing():
+        raise api_error("network.networksetup_missing")
+
+
+def _raise_if_ifconfig_vanished(rc, out: str, err: str) -> None:
+    """The same mutation-spawn rule for the alias routes' ifconfig.
+
+    POST alias/add and alias/remove validate the device against the cached
+    ``interfaces()`` listing, so an ifconfig that vanished inside the TTL
+    still reached the spawn — 200 ``{"ok": false, "message": "not found"}``
+    (plus a "run manually: sudo ifconfig …" hint for a binary that is not
+    there to run).  Callers check *before* their sudo fallback, the
+    flush-dns precedent: nothing re-spawns over a confirmed-gone binary.
+    """
+    if _spawn_sentinel(rc, out, err) and _ifconfig_missing():
+        raise api_error("network.ifconfig_missing")
 
 
 def switch_profile(profile: str) -> dict:
@@ -928,6 +1008,7 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     # try without sudo first
     rc, out, err = _sh([IFCONFIG, device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
+        _raise_if_ifconfig_vanished(rc, out, err)
         rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", IFCONFIG, device, "alias", ip, "netmask", netmask],
             timeout=10,
@@ -946,6 +1027,7 @@ def remove_ip_alias(device: str, ip: str) -> dict:
         raise api_error("network.invalid_ip")
     rc, out, err = _sh([IFCONFIG, device, "-alias", ip], timeout=10)
     if rc != 0:
+        _raise_if_ifconfig_vanished(rc, out, err)
         rc, out, err = _sh(["/usr/bin/sudo", "-n", IFCONFIG, device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
