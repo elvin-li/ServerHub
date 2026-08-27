@@ -129,6 +129,23 @@ def _ups_status() -> dict:
     return ups_svc.ups_status()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a seam value whose ``__class__`` is a *raising property*
+    detonated the sanitizer gates themselves — ``_row_get``'s dict gate,
+    ``drill()``'s status gate, ``_jsonable``'s rank heads — one step ahead
+    of every scrub in this module (the host9 identity_svc rule).  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -137,8 +154,14 @@ def _decode_bytes(value) -> str:
 
 def _as_text(value) -> str:
     """Exception/subprocess text that cannot RecursionError leftover ``str(e)``."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # _isa + guarded decode: a ``__class__``-property bomb detonated the
+    # gate itself, and a lying ``__class__`` (claims bytes, is not)
+    # TypeError'd the unbound decode; both render as junk text below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
     if value is None:
         return ""
     try:
@@ -152,7 +175,10 @@ def _as_text(value) -> str:
         return ""
     # Unbound base encode: a str-subclass ``.encode`` bomb cannot raise out
     # of the laundering pass itself.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
@@ -196,12 +222,17 @@ def _jsonable(value, depth: int = 0):
     ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode`` bomb and a
     str ``encode`` bomb (value or key) each used to raise out of this scrub
     (the hub.modules unbound-base rule).
+    A seam value whose ``__class__`` is a *raising property* detonated the
+    bare isinstance rank gates themselves, and a *lying* ``__class__``
+    (claims bytes, is not) TypeError'd the unguarded unbound decode — each
+    still 500'd the plan/drill routes after all of the above (the host9
+    _json_tree rule), hence ``_isa`` on every gate and the guarded decode.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -216,7 +247,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -227,17 +258,22 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         # str() then unbound base encode: a str-subclass ``encode`` bomb
         # used to raise out of the surrogate laundering itself.
         try:
             value = str(value)
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
         except Exception:
             return None
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, dict):
         try:
             items = list(value.items())
         except Exception:
@@ -255,9 +291,14 @@ def _jsonable(value, depth: int = 0):
                 k, v = pair
             except Exception:
                 continue
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    # A lying ``__class__`` key TypeErrors the unbound
+                    # decode; it renders through str() below instead.
+                    pass
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -271,12 +312,12 @@ def _jsonable(value, depth: int = 0):
             # raising out of the laundering itself.
             try:
                 k = str(k)
+                k = str.encode(k, "utf-8", "replace").decode("utf-8")
             except Exception:
                 continue
-            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             out[k] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
@@ -311,8 +352,11 @@ def _row_get(row, key):
     GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with every
     sane sibling row.  ``dict.get`` reads the real storage underneath the
     override, so a subclass that only poisoned its method keeps its data.
+    _isa, not bare isinstance: a seam value whose ``__class__`` is a raising
+    property used to detonate this gate itself — one dunder ahead of the
+    ``.get`` bomb it guards against — and 500 the same routes.
     """
-    if not isinstance(row, dict):
+    if not _isa(row, dict):
         return None
     try:
         return row.get(key)
@@ -400,14 +444,16 @@ def _service_states() -> dict[str, str]:
     except Exception:
         groups = []
     for g in groups:
-        if not isinstance(g, dict):
+        # _isa: a ``__class__``-property bomb group used to raise out of
+        # this bare isinstance and wipe every sibling group's states.
+        if not _isa(g, dict):
             continue
         # _row_get: a group whose ``get`` raises used to abort the whole
         # scan and wipe every sibling group's states along with its own.
         # isinstance, not ``or []``: truth-testing a __bool__ bomb value
         # would raise the same way.
         services = _row_get(g, "services")
-        if not isinstance(services, list):
+        if not _isa(services, list):
             continue
         try:
             services = list(services)
@@ -416,7 +462,7 @@ def _service_states() -> dict[str, str]:
             # alone; the states already collected keep their rows honest.
             continue
         for s in services:
-            if not isinstance(s, dict):
+            if not _isa(s, dict):
                 continue
             # str() probe, not a bare render: an already-int over-cap id or
             # state (YAML hex) used to ValueError here and drop every
@@ -617,9 +663,11 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     # Materialize inside the guard: a list *subclass* passes isinstance but
     # one whose ``__iter__`` raises used to blow up the scrub comprehension
     # *outside* this try and 500 GET /api/ups/shutdown/plan and
-    # POST /api/ups/shutdown/drill (the nginx overview() rule).
+    # POST /api/ups/shutdown/drill (the nginx overview() rule).  _isa per
+    # row: a ``__class__``-property bomb row used to trip this try and wipe
+    # every sane sibling stack out of the plan with it.
     try:
-        stacks = [s for s in _list_stacks() if isinstance(s, dict)]
+        stacks = [s for s in _list_stacks() if _isa(s, dict)]
     except Exception:
         stacks = []
     # _cfg_text probe, not a bare str(): an already-int over-cap id (YAML
@@ -705,18 +753,23 @@ def _cfg_text(value) -> str:
     bombs — its ``__hash__``/``__eq__`` then blew up ``build_plan``'s dedupe
     set, its by-id index and the service-state compare, 500ing the plan and
     drill routes with every sane sibling row.  The unbound ``str.__str__``
-    base copy strips the subclass while keeping its rendered text.
+    base copy strips the     subclass while keeping its rendered text.
+
+    _isa on the rank gates: an id/name whose ``__class__`` is a raising
+    property used to detonate the first bare isinstance here — after every
+    guard above — and 500 GET /api/ups/shutdown/plan and
+    POST /api/ups/shutdown/drill out of build_plan's bare ``_cfg_text`` call.
     """
-    if isinstance(value, bool) or value is None:
+    if _isa(value, bool) or value is None:
         return ""
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Unbound base coercion first, so the str() probe never runs a
             # subclass ``__str__``; past the digit cap it stays ValueError.
             return str(int.__index__(value))
         except Exception:
             return ""
-    if isinstance(value, str) and type(value) is str:
+    if _isa(value, str) and type(value) is str:
         return value
     try:
         text = str(value)
@@ -738,9 +791,10 @@ def _catalog() -> dict:
     auto-scanned) and every script entry from services.yaml.
     """
     # Same materialize-under-guard as build_plan: an iteration-refusing
-    # list subclass from the seam used to 500 the plan/drill routes.
+    # list subclass from the seam used to 500 the plan/drill routes, and a
+    # ``__class__``-property bomb row used to wipe its sane siblings.
     try:
-        stacks = [s for s in _list_stacks() if isinstance(s, dict)]
+        stacks = [s for s in _list_stacks() if _isa(s, dict)]
     except Exception:
         stacks = []
     from hub.config import cfg
@@ -750,11 +804,14 @@ def _catalog() -> dict:
         # A scripts list whose iteration raises passed the isinstance gate
         # and 500'd the catalog the same way; an unreadable list means an
         # empty picker, never a dead settings form.
-        raw_scripts = list(raw_scripts) if isinstance(raw_scripts, list) else []
+        raw_scripts = list(raw_scripts) if _isa(raw_scripts, list) else []
     except Exception:
         raw_scripts = []
     for s in raw_scripts:
-        if not isinstance(s, dict):
+        # _isa: a ``__class__``-property bomb script row used to detonate
+        # this bare isinstance outside any try and 500 the plan/drill
+        # routes with every sane sibling entry.
+        if not _isa(s, dict):
             continue
         # _row_get: a dict-subclass row whose ``get`` raises used to 500 the
         # plan/drill routes out of this loop with every sane sibling.
@@ -812,8 +869,9 @@ def drill() -> dict:
         status = {"present": False}
     # _row_get + _truthy on every status read: a dict-subclass ``.get`` or
     # ``__bool__`` bomb from the _ups_status seam used to 500 both
-    # GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill.
-    present = isinstance(status, dict) and _truthy(_row_get(status, "present"))
+    # GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill — and a
+    # ``__class__``-property bomb status detonated this very isinstance.
+    present = _isa(status, dict) and _truthy(_row_get(status, "present"))
     would, reason = (_condition(status, policy) if present else (False, ""))
     return _jsonable({
         "enabled": bool(policy.get("enabled")),
@@ -857,8 +915,9 @@ def _sweep_locked(now: int) -> list[dict]:
     # outage latched until AC power is positively seen is the safe direction.
     # _row_get + _truthy: a dict-subclass ``.get``/``__bool__`` bomb from the
     # seam used to raise out of sweep() into check_once's containment and
-    # silently kill every UPS tick.
-    if not isinstance(status, dict) or not _truthy(_row_get(status, "present")):
+    # silently kill every UPS tick — and a ``__class__``-property bomb
+    # status detonated this very isinstance the same way.
+    if not _isa(status, dict) or not _truthy(_row_get(status, "present")):
         return []
 
     if phase == PHASE_IDLE:
