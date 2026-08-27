@@ -47,6 +47,42 @@ _REMAIN_RE = re.compile(r"(\d+):(\d{2})\s+remaining")
 _SOURCE_RE = re.compile(r"now drawing from\s+'([^']+)'", re.I)
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property* —
+    planted in settings.ups or a snapshot field — detonated the sanitizer
+    gates themselves, one step ahead of every scrub in this module (the
+    host9 identity_svc rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate the bare
+    ``rc == 0`` probes in :func:`ups_snapshot` — a raw 500 on GET /api/ups
+    (the host9 identity_svc rule).  ``-255`` is no honest exit status, so a
+    bomb keeps the failure branch and pmset output reads as empty.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -55,25 +91,39 @@ def _decode_bytes(value) -> str:
 
 def _as_text(value) -> str:
     """pmset stdout as text.  Leftover ``str()`` RecursionError used to 500 GET /api/ups."""
-    if isinstance(value, str):
-        text = value
-    elif isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # _isa, not bare isinstance: a ``__class__``-property bomb handed
+    # through the sh seam used to detonate this gate itself.
+    if _isa(value, str):
+        try:
+            # Unbound base encode: a str-subclass ``.encode`` bomb used to
+            # raise out of the laundering pass itself.  The try is for a
+            # *lying* ``__class__`` (claims str, is not): the unbound call
+            # TypeErrors and the impostor renders like junk below.
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            pass
+    elif _isa(value, (bytes, bytearray)):
+        try:
+            # Same impostor guard: a lying ``__class__`` that claims bytes
+            # TypeErrors the unbound base decode and renders as junk below.
+            return _decode_bytes(value)
+        except Exception:
+            pass
     elif value is None:
         return ""
-    else:
+    try:
+        text = str(value)
+    except RecursionError:
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return type(value).__name__
         except Exception:
             return ""
-    # Unbound base encode: a str-subclass ``.encode`` bomb used to raise out
-    # of the laundering pass itself.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _jsonable(value, depth: int = 0):
@@ -88,12 +138,17 @@ def _jsonable(value, depth: int = 0):
     ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode`` bomb and a
     str ``encode`` bomb (value or key) each used to raise out of this scrub
     and 500 GET /api/ups — the hub.modules unbound-base rule.
+    A leftover whose ``__class__`` is a *raising property* detonated the
+    bare isinstance rank gates themselves, and a *lying* ``__class__``
+    (claims bytes, is not) TypeError'd the unguarded unbound decode — each
+    still a raw 500 on GET /api/ups after all of the above (the host9
+    _json_tree rule), hence ``_isa`` on every gate and the guarded decode.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -108,7 +163,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -119,17 +174,22 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         # str() then unbound base encode: a str-subclass ``encode`` bomb
         # used to raise out of the surrogate laundering itself.
         try:
             value = str(value)
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
         except Exception:
             return None
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, dict):
         try:
             items = list(value.items())
         except Exception:
@@ -147,9 +207,14 @@ def _jsonable(value, depth: int = 0):
                 k, v = pair
             except Exception:
                 continue
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    # A lying ``__class__`` key TypeErrors the unbound
+                    # decode; it renders through str() below instead.
+                    pass
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -163,10 +228,13 @@ def _jsonable(value, depth: int = 0):
                 k = str(k)
             except Exception:
                 continue
-            k = str.encode(k, "utf-8", "replace").decode("utf-8")
+            try:
+                k = str.encode(k, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                continue
             out[k] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
@@ -202,8 +270,11 @@ def _mapping_get(mapping, key):
     the sibling ``items()`` call right next to it was already guarded.
     ``dict.get`` reads the real storage underneath the override, so a subclass
     that only poisoned its method keeps its sane data.
+    _isa, not bare isinstance: a ``__class__``-property bomb planted as the
+    settings block (or as the whole config root) used to detonate this gate
+    itself and 500 the same four routes at once.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return None
     try:
         return mapping.get(key)
@@ -223,10 +294,12 @@ def _finite_int(raw, default: int | None):
     ``try``, and an object whose ``__int__`` raises something other than
     Type/Value/OverflowError escaped it — both used to 500 GET /api/ups
     through ``low_battery_pct`` / ``trigger_pct``.
+    _isa on the rank gates: a ``__class__``-property bomb stored as the
+    threshold used to detonate the first bare isinstance the same way.
     """
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return default
-    if isinstance(raw, float):
+    if _isa(raw, float):
         try:
             # Base coercion to an exact float, so the NaN/inf probe below
             # never runs a subclass ``__eq__``.
@@ -235,7 +308,7 @@ def _finite_int(raw, default: int | None):
             return default
         if raw != raw or raw in (float("inf"), float("-inf")):
             return default
-    if isinstance(raw, int) and type(raw) is not int:
+    if _isa(raw, int) and type(raw) is not int:
         try:
             # Base coercion: an int subclass whose ``__int__``/``__str__``
             # raises must fall back, not 500.
@@ -346,11 +419,14 @@ def _parse_ups_thresholds(text: str) -> dict | None:
 @cached_snapshot(30.0)
 def ups_snapshot() -> dict:
     """Hardware state only; policy settings are merged in ups_status()."""
+    # _rc_int on both probes: an rc-subclass ``__eq__`` bomb from a patched
+    # or odd ``sh`` used to detonate the bare ``rc == 0`` reads here and 500
+    # GET /api/ups (the host9 identity_svc rule).
     rc, out, _ = sh(["/usr/bin/pmset", "-g", "batt"], timeout=5)
-    snapshot = _parse_batt(out if rc == 0 else "")
+    snapshot = _parse_batt(out if _rc_int(rc) == 0 else "")
     if snapshot["present"]:
         rc2, out2, _ = sh(["/usr/bin/pmset", "-g", "ups"], timeout=5)
-        snapshot["halt_levels"] = _parse_ups_thresholds(out2 if rc2 == 0 else "")
+        snapshot["halt_levels"] = _parse_ups_thresholds(out2 if _rc_int(rc2) == 0 else "")
     else:
         snapshot["halt_levels"] = None
     return snapshot
@@ -362,9 +438,11 @@ def _normalized_shutdown(raw: dict | None) -> dict:
     Unlike the flat keys above, ``None`` is a *meaningful* stored value here
     (a trigger condition switched off), so only unknown keys are filtered —
     explicit nulls pass through instead of being replaced by the default.
+    _isa: a ``__class__``-property bomb stored as the shutdown block used to
+    detonate this gate itself instead of falling back to the defaults.
     """
     out = dict(SHUTDOWN_DEFAULTS)
-    if isinstance(raw, dict):
+    if _isa(raw, dict):
         try:
             items = list(raw.items())
         except Exception:
@@ -398,7 +476,9 @@ def ups_settings() -> dict:
     # gates below, and this function backs four routes at once.
     settings = _mapping_get(cfg(), "settings")
     raw = _mapping_get(settings, "ups")
-    if not isinstance(raw, dict):
+    # _isa: a ``__class__``-property bomb stored as settings.ups used to
+    # detonate this gate ahead of the guarded items() read below.
+    if not _isa(raw, dict):
         raw = {}
     try:
         raw_items = list(raw.items())
@@ -446,4 +526,13 @@ def save_ups_settings(patch: dict) -> dict:
 
 def ups_status(force: bool = False) -> dict:
     """Snapshot + policy, the shape /api/ups serves and the alert sweep reads."""
-    return _jsonable({**ups_snapshot(force=force), "settings": ups_settings()})
+    snap = ups_snapshot(force=force)
+    try:
+        # ``{**snap}`` TypeErrors on a non-mapping (a lying ``__class__``
+        # impostor from a patched seam passes no isinstance gate honestly);
+        # the settings half of the payload must survive it.
+        merged = {**snap} if _isa(snap, dict) else {}
+    except Exception:
+        merged = {}
+    merged["settings"] = ups_settings()
+    return _jsonable(merged)
