@@ -31,6 +31,24 @@ JOB_TIMEOUT_DEFAULT = 600
 JOB_TIMEOUT_MAX = 24 * 3600
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a value whose ``__class__`` is a raising
+    property blew every bare ``isinstance`` gate in this module — at cfg
+    root, row, id, nested-value, ``_jobs``-row and log-line rank — straight
+    out of all three Maintenance routes (the modules8/bookmarks8 rule).
+    A lying ``__class__`` (answers ``int``) is *not* an error and still
+    reports its claim here; the numeric arms' unbound base coercion then
+    drops it, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _clamp_timeout(raw, default: int = JOB_TIMEOUT_DEFAULT) -> int:
     """Positive seconds for ``threading.Timer`` / ``Event.wait``.
 
@@ -39,11 +57,11 @@ def _clamp_timeout(raw, default: int = JOB_TIMEOUT_DEFAULT) -> int:
     (``finished.wait`` → C ``_PyTime_t``). Inf/NaN/bytes/datetime took the
     same path after a bare ``int()``.
     """
-    if isinstance(raw, bool) or raw is None:
+    if _isinst(raw, bool) or raw is None:
         return default
-    if isinstance(raw, (bytes, bytearray)):
+    if _isinst(raw, (bytes, bytearray)):
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+    if _isinst(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return default
     try:
         n = int(raw)
@@ -168,7 +186,7 @@ def _plain_dict(value) -> dict | None:
     """
     if type(value) is dict:
         return value
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         try:
             return dict(value)
         except Exception:
@@ -190,7 +208,7 @@ def _truthy(value) -> bool:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isinst(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
@@ -206,9 +224,9 @@ def _utf8_text(value) -> str:
     guarantees an *exact* ``str`` return, so callers' own ``.strip()`` /
     ``.replace()`` / truth tests cannot hit a subclass override either.
     """
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, str):
+    if _isinst(value, str):
         text = value
     else:
         try:
@@ -238,9 +256,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a leftover subclass
@@ -257,7 +275,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a leftover subclass
@@ -269,14 +287,14 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
         # (a poisoned task name — or a bytes mapping *key*, which reaches
         # _utf8_text below) used to 500 the encoder walk.
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
             # items()/keys()/__iter__ — a leftover subclass method bomb
@@ -287,14 +305,14 @@ def _jsonable(value, depth: int = 0):
                 return None
         out = {}
         for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
         except Exception:
@@ -346,10 +364,10 @@ def _task_id(raw) -> str:
     other control character routes fine).  The id is only ever a mapping
     key, so folding the newline to a space keeps the task runnable.
     """
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         text = _utf8_text(raw).replace("\r\n", "\n").replace("\n", " ")
         return text.strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if _isinst(raw, bool) or not _isinst(raw, int):
         return ""
     if type(raw) is not int:
         try:
@@ -378,8 +396,8 @@ def maintenance_tasks():
         data = cfg()
     except Exception:
         data = None
-    raw = dict.get(data, "maintenance") if isinstance(data, dict) else None
-    if isinstance(raw, list):
+    raw = dict.get(data, "maintenance") if _isinst(data, dict) else None
+    if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
             # __iter__ raises used to 500 GET /api/maintenance.
@@ -400,7 +418,7 @@ def maintenance_tasks():
         row = dict(row)
         row["id"] = tid
         cleaned = _jsonable(row)
-        if isinstance(cleaned, dict):
+        if _isinst(cleaned, dict):
             # tid is already scrubbed, so this key equals cleaned["id"] —
             # the id the list serves is the id the run/log routes can find.
             out[tid] = cleaned
@@ -423,14 +441,14 @@ def _jobs_row(tid: str):
         return _jobs.get(tid)
     except Exception:
         for k, v in list(_jobs.items()):
-            if isinstance(k, str) and str.__eq__(k, tid) is True:
+            if _isinst(k, str) and str.__eq__(k, tid) is True:
                 return v
         return None
 
 
 def job_state(tid):
     empty = {"running": False, "rc": None, "finished": None}
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return empty
     # _plain_dict + _truthy: a leftover dict-subclass row (or a __bool__-bomb
     # ``running`` value) used to 500 GET /api/maintenance for every task.
@@ -442,11 +460,11 @@ def job_state(tid):
         "rc": j.get("rc"),
         "finished": j.get("finished"),
     })
-    return cleaned if isinstance(cleaned, dict) else empty
+    return cleaned if _isinst(cleaned, dict) else empty
 
 
 def get_job(tid):
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return None
     # The plain-dict copy also neutralises a subclass .get() bomb for the
     # only caller (job_log); rows this module writes are already plain.
@@ -455,9 +473,12 @@ def get_job(tid):
 
 def _log_lines(raw) -> list[str]:
     """String lines from a leftover job-row ``log`` field.  Never raises."""
-    if isinstance(raw, str):
-        return [raw] if raw else []
-    if not isinstance(raw, (list, tuple)):
+    if _isinst(raw, str):
+        # Laundered before the truth test: a str-subclass ``__bool__``/
+        # ``__len__`` bomb used to blow ``if raw`` right here.
+        text = _utf8_text(raw)
+        return [text] if text else []
+    if not _isinst(raw, (list, tuple)):
         return []
     try:
         # A leftover list-subclass whose __iter__ raises used to 500 the
@@ -467,9 +488,12 @@ def _log_lines(raw) -> list[str]:
         return []
     out: list[str] = []
     for item in items:
-        if isinstance(item, str):
-            out.append(item)
-        elif isinstance(item, (bytes, bytearray)):
+        if _isinst(item, str):
+            # _utf8_text launders a str-subclass line to an exact str: a
+            # leftover whose bound methods bomb cannot reach str.join or
+            # the encoder downstream.
+            out.append(_utf8_text(item))
+        elif _isinst(item, (bytes, bytearray)):
             # Unbound base decode: a bytes-subclass ``decode`` bomb in a
             # leftover log list used to 500 GET /api/maintenance/{tid}/log.
             out.append(_decode_bytes(item))
@@ -483,7 +507,7 @@ def job_log(tid):
     KeyError'd, and ``log: [bytes, None]`` TypeError'd ``str.join``.
     """
     missing = {"running": False, "rc": None, "log": "(not run yet)"}
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return missing
     j = get_job(tid)
     if j is None:
@@ -496,7 +520,7 @@ def job_log(tid):
         "finished": j.get("finished"),
         "log": text or "(waiting for output…)",
     })
-    return cleaned if isinstance(cleaned, dict) else missing
+    return cleaned if _isinst(cleaned, dict) else missing
 
 
 def _row_running(j) -> bool:
@@ -515,7 +539,7 @@ def _row_running(j) -> bool:
 def start_job(task):
     task = _plain_dict(task)
     tid = task.get("id") if task is not None else None
-    if not isinstance(tid, str):
+    if not _isinst(tid, str):
         return None
     # Exact-str copy before the emptiness probe and the ``_jobs`` insert:
     # a leftover str-*subclass* id (tools_svc hands start_job its own
@@ -558,7 +582,7 @@ def start_job(task):
             env.update(maintenance_env())
             timeout = _clamp_timeout(task.get("timeout"))
             command = task.get("command")
-            if not isinstance(command, str) or not command.strip():
+            if not _isinst(command, str) or not command.strip():
                 # A task with no usable command (missing from services.yaml,
                 # or a junk leftover _jsonable dropped to None) used to finish
                 # rc -1 with an EMPTY log: the modal showed "(waiting for
