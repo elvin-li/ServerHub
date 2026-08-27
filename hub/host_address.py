@@ -43,7 +43,11 @@ _detect_generation = 0
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        # Unbound base decode: a bytes-subclass ``decode`` bomb planted in the
+        # detection cache must not raise out of this scrub (the modules5
+        # convention its sibling sanitizers already use).
+        base = bytes if isinstance(value, bytes) else bytearray
+        value = base.decode(value, "utf-8", "replace")
     elif value is None:
         return ""
     else:
@@ -56,7 +60,14 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(value, str):
+        return ""
+    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
+    # skips CPython's exact-str copy above and used to carry its bound
+    # ``encode`` bomb into this scrub — a leftover planted in the LAN-address
+    # detection cache then raised straight out of ``host_ip()`` and 500'd its
+    # one unguarded consumer, GET /api/system/host (the status.py convention).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def configured_host() -> str:
