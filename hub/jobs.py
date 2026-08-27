@@ -214,6 +214,32 @@ def _plain_dict(value) -> dict | None:
     return None
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a leftover hash-shadowing mapping *key* cannot 500.
+
+    The vms_svc/ups_svc rule this module never got: ``_plain_dict`` returns
+    the row (or a ``dict()`` copy) with its *keys* intact, and even a plain
+    ``dict.get`` probe still compares the probe against every stored key
+    whose hash collides — dispatching into that key's own ``__eq__``.  A
+    leftover str-subclass key whose text shadows a real field name and whose
+    ``__eq__`` raises (or returns a ``__bool__``-bomb) used to detonate
+    ``row.get("id")`` in :func:`maintenance_tasks` (500 on the list AND run
+    routes), ``j.get(...)`` in :func:`job_state` / :func:`job_log` (500 on
+    the list and log routes), and ``row.get("running")`` in
+    :func:`_row_running` (500 on the run route).  Only the shadowed field
+    degrades to its default; sibling fields and rows keep their sane data.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        # A raise can only come from a poisoned stored key (or a liar whose
+        # ``__class__`` merely answers dict, which the unbound descriptor
+        # refuses): the field is junk-shadowed either way.
+        return default
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -458,15 +484,21 @@ def maintenance_tasks():
         row = _plain_dict(t)
         if row is None:
             continue
-        tid = _task_id(row.get("id"))
+        # _mapping_get, not row.get: a leftover hash-shadowing key whose
+        # ``__eq__`` bombs used to 500 the list route AND the run route
+        # (which walks this listing) straight out of the plain-dict probe.
+        tid = _task_id(_mapping_get(row, "id"))
         if not tid:
             continue
-        row = dict(row)
-        row["id"] = tid
         cleaned = _jsonable(row)
         if _isinst(cleaned, dict):
-            # tid is already scrubbed, so this key equals cleaned["id"] —
-            # the id the list serves is the id the run/log routes can find.
+            # The id is written onto the *cleaned* copy, whose keys are all
+            # laundered exact strs — assigning through the poisoned source
+            # row used to dispatch a shadowing bomb key's ``__eq__`` on the
+            # insert probe.  tid is already scrubbed, so this key equals
+            # cleaned["id"] — the id the list serves is the id the run/log
+            # routes can find.
+            cleaned["id"] = tid
             out[tid] = cleaned
     return out
 
@@ -514,10 +546,13 @@ def job_state(tid):
     j = _plain_dict(_jobs_row(tid))
     if j is None:
         return empty
+    # _mapping_get: the plain-dict copy keeps a leftover hash-shadowing bomb
+    # key, whose ``__eq__`` used to detonate these probes and 500 the list
+    # route; only the shadowed field degrades.
     cleaned = _jsonable({
-        "running": _truthy(j.get("running")),
-        "rc": j.get("rc"),
-        "finished": j.get("finished"),
+        "running": _truthy(_mapping_get(j, "running")),
+        "rc": _mapping_get(j, "rc"),
+        "finished": _mapping_get(j, "finished"),
     })
     return cleaned if _isinst(cleaned, dict) else empty
 
@@ -578,12 +613,14 @@ def job_log(tid):
     j = get_job(tid)
     if j is None:
         return missing
-    text = "\n".join(_log_lines(j.get("log")))
+    # _mapping_get throughout: a leftover hash-shadowing bomb key in the row
+    # used to 500 this route from any of the five field probes.
+    text = "\n".join(_log_lines(_mapping_get(j, "log")))
     cleaned = _jsonable({
-        "running": _truthy(j.get("running")),
-        "rc": j.get("rc"),
-        "started": j.get("started"),
-        "finished": j.get("finished"),
+        "running": _truthy(_mapping_get(j, "running")),
+        "rc": _mapping_get(j, "rc"),
+        "started": _mapping_get(j, "started"),
+        "finished": _mapping_get(j, "finished"),
         "log": text or "(waiting for output…)",
     })
     return cleaned if _isinst(cleaned, dict) else missing
@@ -595,16 +632,21 @@ def _row_running(j) -> bool:
     ``isinstance(j, dict) and j.get("running")`` let a leftover dict-subclass
     row raise from ``.get()`` — or a ``__bool__``-bomb value raise inside
     ``any()`` — and 500 POST /api/maintenance/{tid}/run for every task.
+    ``_mapping_get``, not ``row.get``: a hash-shadowing bomb *key* in an
+    otherwise-plain row took the same route down through the copy.
     """
     row = _plain_dict(j)
     if row is None:
         return False
-    return _truthy(row.get("running"))
+    return _truthy(_mapping_get(row, "running"))
 
 
 def start_job(task):
     task = _plain_dict(task)
-    tid = task.get("id") if task is not None else None
+    # _mapping_get: a leftover hash-shadowing bomb key beside "id" (tools_svc
+    # hands start_job its own dicts) used to detonate this probe straight
+    # into the calling route.
+    tid = _mapping_get(task, "id")
     # _isinst: a leftover id whose ``__class__`` is a raising property
     # (tools_svc hands start_job its own dicts) used to detonate this gate
     # straight into the calling route.
@@ -649,8 +691,12 @@ def start_job(task):
         try:
             env = dict(os.environ)
             env.update(maintenance_env())
-            timeout = _clamp_timeout(task.get("timeout"))
-            command = task.get("command")
+            # _mapping_get: a shadowing bomb key beside "timeout"/"command"
+            # is caught by the except below either way, but degrading field-
+            # level keeps the "!! invalid command" diagnosis instead of an
+            # opaque "!! error" for the whole job.
+            timeout = _clamp_timeout(_mapping_get(task, "timeout"))
+            command = _mapping_get(task, "command")
             if not _isinst(command, str) or not command.strip():
                 # A task with no usable command (missing from services.yaml,
                 # or a junk leftover _jsonable dropped to None) used to finish
