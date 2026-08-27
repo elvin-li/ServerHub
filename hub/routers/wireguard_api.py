@@ -374,7 +374,9 @@ def api_wireguard_sync(request: Request):
 @router.post("/api/wireguard/ping")
 def api_wireguard_ping(request: Request):
     _guard(request)
-    return wireguard_svc.ping_peers()
+    # _call: a confirmed-vanished /sbin/ping raises the typed service error,
+    # which must arrive as the coded 503, not a raw ValueError 500.
+    return _call(wireguard_svc.ping_peers)
 
 
 # ── macOS readiness remediation ──────────────────────────────────────────────
