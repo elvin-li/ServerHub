@@ -317,10 +317,29 @@ def _plist_first(record: dict, key: str) -> str | None:
 
 def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
     """RecordName -> Time Machine attributes, from `dscl -plist . -readall`."""
-    data = plist_text.encode() if isinstance(plist_text, str) else plist_text
+    if _isa(plist_text, (bytes, bytearray)):
+        data = plist_text
+    elif _isa(plist_text, str):
+        # Unbound str.encode (the modules6 rule ``_as_text`` already follows):
+        # a leftover str-subclass whose ``__str__`` answers *self* would carry
+        # a bound ``encode`` bomb into a bare ``plist_text.encode()``, raising
+        # a non-ValueError past this parser's documented contract; ``replace``
+        # so a lone surrogate cannot UnicodeEncodeError either.
+        data = str.encode(plist_text, "utf-8", "replace")
+    else:
+        # shares8 sealed the torn-XML ``ExpatError`` leak; this is the same
+        # contract, one shape further out.  A non-text leftover (int / dict /
+        # list, or a value whose ``__class__`` is a raising property so it
+        # answers neither str nor bytes above) reached ``plistlib.loads`` as a
+        # bare TypeError — which is NOT a ValueError, so a caller catching the
+        # documented ``ValueError`` (the sibling ``_json_shares`` / raid_svc /
+        # snapshots_svc rule) would not stop it.  The live reader masks it with
+        # ``except Exception``, so the Shares page stays 200; refusing here as
+        # the coded input error closes the parser's own contract.
+        raise ValueError("SharePoints plist is not text")
     try:
         records = plistlib.loads(data)
-    except (ExpatError, plistlib.InvalidFileException, RecursionError) as e:
+    except (ExpatError, plistlib.InvalidFileException, RecursionError, TypeError) as e:
         # A torn ``dscl -plist . -readall`` dump — unclosed / malformed XML
         # that has already begun parsing — raises xml.parsers.expat.ExpatError,
         # which is NOT a ValueError (``InvalidFileException`` from binary junk
@@ -1143,7 +1162,14 @@ def shares_overview() -> dict:
     """
     try:
         hostname = _as_text(socket.gethostname())
-    except OSError:
+    except (OSError, UnicodeError, ValueError, TypeError):
+        # ``gethostname()`` decodes the system name, so a name it cannot decode
+        # raises UnicodeError (a *ValueError* subclass), not OSError — and this
+        # line sits one step outside the fan-out that rescues every other
+        # collector, with the route (``shares()``) pasting ``shares_overview()``
+        # in without a guard of its own, so that leftover 500'd GET /api/shares.
+        # ``detect_lan_ip`` / ``normalize_local_url`` already treat every
+        # ``gethostname`` call as raising this same family.
         hostname = ""
     def _safe(item):
         probe, fallback = item
