@@ -170,8 +170,52 @@ def _resolve_cwd(requested: str | None) -> str:
     return _home_dir()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover ``settings.terminal`` value whose ``__class__`` is
+    a *raising property* detonated the bare type gates themselves —
+    ``_config_text``'s str gate 500'd GET /api/terminal and
+    POST /api/terminal/run (and raised out of the PTY handshake's
+    ``_resolve_cwd``) one line ahead of the laundering built to absorb junk
+    scalars.  A real subclass still matches through the C-level type check;
+    only a value that cannot answer what it is takes the non-matching branch
+    (the storage_svc/vms_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The unbound ``dict.get`` bypasses a subclass ``.get`` override, but the
+    hash probe still runs the *stored keys'* own ``__eq__`` — a leftover
+    str-subclass key whose hash shadows ``host_enabled``/``cwd``/``shell``
+    and whose ``__eq__`` raises used to detonate ``host_enabled()`` /
+    ``_cfg_value`` — a 500 on GET /api/terminal and POST /api/terminal/run,
+    and an unhandled exception out of the PTY handshake's RCE gate (the
+    ups_svc/storage_pool rule).  Only the shadowed field degrades to its
+    default.
+    """
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _terminal_cfg() -> dict:
-    return dict(settings_section("terminal"))
+    # The dict() launder itself in a try: settings_section already refuses
+    # bombing containers, but tests and tooling patch the name, and a
+    # section whose ``keys()``/``__iter__`` bombs used to raise out of the
+    # copy — the same union guard config.settings_section applies.
+    try:
+        return dict(settings_section("terminal"))
+    except Exception:
+        return {}
 
 
 def _cfg_truthy(value) -> bool:
@@ -193,8 +237,12 @@ def _cfg_truthy(value) -> bool:
 
 
 def _cfg_value(section: dict, key: str):
-    """``section.get(key) or None`` without a bare truthiness probe."""
-    value = dict.get(section, key)
+    """``section.get(key) or None`` without a bare truthiness probe.
+
+    ``_mapping_get``, not the bare unbound ``dict.get``: the hash probe
+    still runs hostile stored keys' own ``__eq__`` (see ``_mapping_get``).
+    """
+    value = _mapping_get(section, key)
     return value if _cfg_truthy(value) else None
 
 
@@ -213,11 +261,19 @@ def _config_text(value) -> str:
     """
     if value is None:
         return ""
-    if isinstance(value, str):
-        if type(value) is str:
-            return value
-        # Unbound base copy: drops the subclass (and its method bombs).
-        return str.__str__(value)
+    # _isa: a leftover whose ``__class__`` is a raising property used to
+    # detonate this bare gate itself — a 500 on GET /api/terminal and
+    # POST /api/terminal/run one line ahead of the laundering below.
+    if _isa(value, str):
+        try:
+            if type(value) is str:
+                return value
+            # Unbound base copy: drops the subclass (and its method bombs).
+            return str.__str__(value)
+        except Exception:
+            # A lying ``__class__`` (claims str, is not) TypeErrors the
+            # unbound copy: unreadable, same "" as any unrenderable scalar.
+            return ""
     try:
         text = str(value)
     except Exception:
@@ -230,7 +286,7 @@ def _config_text(value) -> str:
 
 def host_enabled() -> bool:
     """True when the operator has explicitly switched the host shell on."""
-    return _cfg_truthy(_terminal_cfg().get("host_enabled", False))
+    return _cfg_truthy(_mapping_get(_terminal_cfg(), "host_enabled", False))
 
 
 def status() -> dict:
@@ -319,13 +375,20 @@ def _duration_ms(started, ended) -> int:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        # A lying ``__class__`` (claims bytes, is not) TypeErrors the unbound
+        # decode: unreadable, same "" as any undecodable leftover.
+        return ""
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb used to detonate the bare isinstance itself.
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -354,12 +417,15 @@ def _jsonable(value, depth: int = 0):
     Nested subclass bombs (bound ``items``/``decode``/``__iter__``/``__str__``
     raising) still blew the probes themselves — hence the unbound base-type
     calls below, the modules5 convention every sibling service already uses.
+    _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    property used to detonate the bare isinstance itself, one line ahead of
+    the coercion built to absorb the value (the vms_svc/system rule).
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -374,7 +440,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -385,30 +451,40 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
-        out = {}
+    if _isa(value, dict):
         # Unbound base view: a dict subclass whose ``items()`` raises used
-        # to blow the walk itself.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
+        # to blow the walk itself.  In a try: a lying ``__class__`` (claims
+        # dict, is not) TypeErrors the unbound view — the node is unreadable.
+        try:
+            items = list(dict.items(value))
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
+            if _isa(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot raise and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot raise and the real elements still survive.  In a
+                # try: a lying ``__class__`` TypeErrors the unbound call.
+                try:
+                    members = list(base.__iter__(value))
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in members]
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -714,6 +790,25 @@ def run_host(
     return _response(result)
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``!=`` probes; a bomb reads as failure.
+
+    ``run_container`` does not own ``_run``'s receipt (tests and tooling
+    patch it), and an rc *subclass* whose ``__eq__``/``__ne__`` raises used
+    to detonate ``result["rc"] != 0`` past the spawn try — a raw 500 on
+    POST /api/terminal/run *after* the command had already executed (the
+    wireguard_svc._ping_rc / health9 rule).  ``-255`` is no honest exit
+    status, so a bomb reads as one failed command, never a crash.
+    """
+    if _isa(rc, bool) or rc is None:
+        return -255
+    try:
+        # Unbound base read: bypasses subclass ``__eq__``/``__index__`` bombs.
+        return int.__index__(rc)
+    except Exception:
+        return -255
+
+
 def _docker_vanished(result: dict) -> bool:
     """True when the run receipt is ``_run``'s docker spawn sentinel and the
     CLI is confirmed gone from disk.
@@ -730,7 +825,9 @@ def _docker_vanished(result: dict) -> bool:
     still forces the ``engine_up`` probe, which cannot answer "up" while
     the CLI is gone.
     """
-    if result.get("rc") != 127:
+    # _rc_int: an rc-subclass ``__ne__`` bomb in a patched receipt used to
+    # detonate the bare comparison (the run_container rc probe rule).
+    if _rc_int(result.get("rc")) != 127:
         return False
     if _config_text(result.get("stderr")).strip() != f"not found: {DOCKER}":
         return False
@@ -790,10 +887,17 @@ def run_container(
         "rc": result["rc"],
         "duration_ms": result["duration_ms"],
     })
+    # _rc_int / _config_text on the probe inputs: run_container does not own
+    # ``_run``'s receipt (tests and tooling patch it), and an rc-subclass
+    # ``__ne__`` bomb or a stdout/stderr subclass whose ``__bool__``/``__str__``
+    # raises used to detonate the bare comparison / or-truthiness f-string —
+    # a raw 500 after the command had already executed.
     if (
-        result["rc"] != 0
+        _rc_int(result.get("rc")) != 0
         and (
-            looks_engine_down(f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}")
+            looks_engine_down(
+                f"{_config_text(result.get('stderr'))}\n{_config_text(result.get('stdout'))}"
+            )
             or _docker_vanished(result)
         )
         and not engine_up(force=True)

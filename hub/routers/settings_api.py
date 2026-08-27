@@ -164,6 +164,66 @@ def _as_map(v):
         return {}
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    ``_as_map``'s laundering ``dict(...)`` copy keeps hostile *keys*, and
+    even a plain-dict ``.get`` probe still runs the stored keys' own
+    ``__eq__`` on a hash collision — a leftover str-subclass key whose hash
+    shadows ``host_enabled`` and whose ``__eq__`` raises used to detonate
+    the terminal render and 500 GET /api/settings (the
+    vm_console/storage_svc rule).  Only the shadowed field degrades to its
+    default.
+    """
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _merged_section(name: str, patch: dict) -> dict:
+    """Stored *name* section with *patch* laid over it, bomb-key safe.
+
+    PUT /api/settings' terminal branch merges the stored section back into
+    the write (``dict(settings_section(...))`` + ``cur.update(patch)``), and
+    the update's insert probe runs hostile stored keys' own ``__eq__`` — a
+    leftover str-subclass key whose hash shadows ``host_enabled`` and whose
+    ``__eq__`` raises 500'd the save one line ahead of the dump-side
+    laundering.  Keys ride through the same launder ``config._renderable_tree``
+    would apply on the dump anyway (unbound base str copy); a stored key the
+    merge still cannot probe drops with its value, siblings and the patch
+    survive.
+    """
+    out: dict = {}
+    try:
+        items = list(dict.items(dict(settings_section(name))))
+    except Exception:
+        items = []
+    for k, v in items:
+        if _isa(k, str) and type(k) is not str:
+            try:
+                k = str.__str__(k)
+            except Exception:
+                continue
+        try:
+            out[k] = v
+        except Exception:
+            continue
+    try:
+        out.update(patch)
+    except Exception:
+        # A non-str hostile key whose hash shadows a patched field: the
+        # patch wins; keep every stored sibling that can still be probed.
+        merged = dict(patch)
+        for k, v in dict.items(out):
+            try:
+                merged.setdefault(k, v)
+            except Exception:
+                continue
+        out = merged
+    return out
+
+
 def _cfg_map():
     """Laundered top-level config snapshot for the settings render.
 
@@ -499,7 +559,12 @@ def _public_settings() -> dict:
         # Host terminal is RCE on this machine, so it ships off and the UI needs
         # to know the current state to render the gate honestly.
         "terminal": {
-            "host_enabled": _truthy(_as_map(s.get("terminal")).get("host_enabled", False)),
+            # _mapping_get: a leftover str-subclass key shadowing
+            # ``host_enabled`` with a bombing ``__eq__`` used to detonate
+            # the plain ``.get`` probe here — a 500 on GET /api/settings.
+            "host_enabled": _truthy(
+                _mapping_get(_as_map(s.get("terminal")), "host_enabled", False)
+            ),
         },
         "ollama": {
             # settings_text, not _text: a hand-edited numeric YAML value
@@ -599,9 +664,9 @@ def put_settings(body: SettingsPatch, request: Request = None):
     if body.terminal is not None:
         tm = {k: v for k, v in body.terminal.model_dump().items() if v is not None}
         if tm:
-            cur_tm = dict(settings_section("terminal"))
-            cur_tm.update(tm)
-            patch["terminal"] = cur_tm
+            # _merged_section, not dict()+update: a hostile stored key used
+            # to detonate the update's insert probe — a raw 500 on the save.
+            patch["terminal"] = _merged_section("terminal", tm)
     if body.ollama is not None:
         o: dict[str, Any] = {}
         if body.ollama.url is not None:
