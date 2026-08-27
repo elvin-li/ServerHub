@@ -481,16 +481,29 @@ def _isa(value, kinds) -> bool:
         return False
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+def _decode_bytes(value):
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Returns ``None`` for a *lying* ``__class__`` that answers ``bytes`` /
+    ``bytearray`` while the real type is neither (the modules9 rule): the
+    descriptor is bound to the real bytes layout, so it rejects the foreign
+    operand with a TypeError outside any try — a raw 500 on the SMART
+    routes through ``_as_text`` / ``_jsonable`` / ``_schedule_text``.  A
+    raise means "not really this type"; callers drop or re-probe.
+    """
+    base = bytes if _isa(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if _isa(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
     try:
         text = str(value)
     except RecursionError:
@@ -510,10 +523,14 @@ def _utf8_text(value) -> str:
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; parsers and JSON need text."""
     if _isa(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
-    elif value is None:
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            value = decoded
+        # A bytes-liar impostor falls through to the str() probe below, so
+        # a legible impostor still renders instead of 500ing the route.
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -540,8 +557,17 @@ def _jsonable(value, depth: int = 0):
     # bomb nested in a run_admin payload or a poisoned history row used to
     # detonate the first gate it failed and 500 the SMART routes; it now
     # falls through to the final text probe like any other leftover.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` is final, so a value that answers the bool gate while
+        # its real type is not bool is a *lying* ``__class__`` impostor
+        # (the modules9 rule).  The old arm returned it raw and Starlette's
+        # ``allow_nan=False`` encoder 500'd the SMART routes; only a real
+        # bool renders, the impostor drops like a lying int.
+        if type(value) is bool:
+            return value
+        return None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -573,6 +599,7 @@ def _jsonable(value, depth: int = 0):
     if _isa(value, str):
         return _utf8_text(value)
     if _isa(value, (bytes, bytearray)):
+        # A bytes-liar impostor decodes to None and drops (modules9 rule).
         return _decode_bytes(value)
     if _isa(value, dict):
         try:
@@ -596,6 +623,9 @@ def _jsonable(value, depth: int = 0):
                 # drops alone, its sibling keys survive.
                 if _isa(k, (bytes, bytearray)):
                     k = _decode_bytes(k)
+                    if k is None:
+                        # A bytes-liar key: drop just this entry.
+                        continue
                 elif not _isa(k, str):
                     k = str(k)
                 out[_utf8_text(k)] = _jsonable(v, depth + 1)
@@ -654,7 +684,14 @@ def _load_history() -> list[dict]:
         return []
     if not _isa(data, list):
         return []
-    return [_jsonable(row) for row in data if _isa(row, dict)]
+    try:
+        # Unbound base walk in a try (the modules9 rule): a *lying*
+        # ``__class__`` claiming list from a patched loader passed the gate
+        # and the loop header's TypeError 500'd GET /api/smart/history.
+        rows = list(list.__iter__(data))
+    except Exception:
+        return []
+    return [_jsonable(row) for row in rows if _isa(row, dict)]
 
 
 def _append_history(record: dict) -> None:
@@ -725,13 +762,20 @@ def _schedule_cfg() -> dict:
     # and the same raise escaped ``schedule_due()`` inside the scheduler
     # tick, silently stopping every scheduled self-test.  ``dict(...)``
     # copies the raw storage without calling any overridden method.
-    settings = dict.get(data, "settings")
-    if not _isa(settings, dict):
-        return {}
-    stored = dict.get(settings, "smart_schedule")
-    if not _isa(stored, dict):
-        return {}
+    # The whole unbound-read chain in one try: ``dict.get`` is a descriptor
+    # bound to the real dict layout, so a *lying* ``__class__`` claiming
+    # dict from a patched-out cfg() passed the ``_isa`` gate above and the
+    # TypeError raised raw — a 500 on GET /api/smart through get_schedule(),
+    # and the same raise escaped schedule_due() inside the scheduler tick
+    # (the modules9 rule, one impostor deeper than the raising-property
+    # bomb the gate already absorbs).
     try:
+        settings = dict.get(data, "settings")
+        if not _isa(settings, dict):
+            return {}
+        stored = dict.get(settings, "smart_schedule")
+        if not _isa(stored, dict):
+            return {}
         return dict(stored)
     except Exception:
         return {}
@@ -755,8 +799,10 @@ def _schedule_text(value) -> str:
         # Unbound base decode: a bytes-subclass ``.decode`` bomb stored as a
         # schedule field used to raise out of get_schedule() — a 500 on
         # GET /api/smart, and the same raise escaped schedule_due() inside
-        # the scheduler tick.
-        return _decode_bytes(value)
+        # the scheduler tick.  A bytes-liar impostor decodes to None (the
+        # modules9 rule) and coerces to "" like any other unrenderable value.
+        decoded = _decode_bytes(value)
+        return decoded if decoded is not None else ""
     try:
         text = str(value)
     except Exception:
@@ -818,8 +864,14 @@ def get_schedule() -> dict:
     # ``__iter__`` bomb stored as ``devices`` used to raise out of the loop
     # header — a 500 on GET /api/smart through get_schedule(), and the same
     # raise escaped schedule_due() inside the scheduler tick.  The real
-    # entries still walk.
-    for d in (list.__iter__(devices) if _isa(devices, list) else ()):
+    # entries still walk.  In a try (the modules9 rule): a *lying*
+    # ``__class__`` claiming list passed the gate and the descriptor's
+    # TypeError rode the same two paths; the impostor reads as no devices.
+    try:
+        device_rows = list(list.__iter__(devices)) if _isa(devices, list) else []
+    except Exception:
+        device_rows = []
+    for d in device_rows:
         # An over-cap device entry drops alone; its siblings stay scheduled.
         node = _schedule_text(d)
         if node and _DEV_RE.match(node):
@@ -849,13 +901,16 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
     # Pydantic-exact list, but the service is also called in-process, and a
     # list-subclass ``__bool__``/``__iter__`` bomb used to blow the old
     # ``(devices or [])`` — a raw 500 on PUT /api/smart/schedule where junk
-    # entries already drop silently.
+    # entries already drop silently.  In a try (the modules9 rule): a
+    # list-liar impostor passed the gate and the descriptor's TypeError
+    # raised raw; it reads as no devices.
+    try:
+        device_rows = list(list.__iter__(devices)) if _isa(devices, list) else []
+    except Exception:
+        device_rows = []
     cleaned = [
         node
-        for node in (
-            _schedule_text(d)
-            for d in (list.__iter__(devices) if _isa(devices, list) else ())
-        )
+        for node in (_schedule_text(d) for d in device_rows)
         if node and _DEV_RE.match(node) and node in known
     ]
     current = _schedule_cfg()
@@ -1052,7 +1107,15 @@ def start_test(device: str, kind: str) -> dict:
                 ok = bool(dict.get(admin, "ok"))
             except Exception:
                 ok = False
-            message = _as_text(dict.get(admin, "message"))
+            # The message read in its own try: ``dict.get`` is a descriptor
+            # bound to the real dict layout, so a *lying* ``__class__``
+            # claiming dict passed the gate above and this second unbound
+            # read raised raw — a 500 on POST /api/smart/test after the
+            # operator had already typed the admin password (modules9 rule).
+            try:
+                message = _as_text(dict.get(admin, "message"))
+            except Exception:
+                message = ""
     else:
         ok = True
         message = (_as_text(out) or _as_text(err)).strip()

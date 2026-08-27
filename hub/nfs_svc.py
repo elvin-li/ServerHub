@@ -87,10 +87,21 @@ def _isa(value, kinds) -> bool:
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/nfs."""
     if _isa(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+        # Unbound base decode in a try (the modules9 / share_acl_svc rule):
+        # the old bound ``value.decode(...)`` ran a subclass override, and a
+        # *lying* ``__class__`` impostor claiming bytes has no ``.decode`` at
+        # all — either raise rode out of the failure funnels and 500'd
+        # POST /api/nfs/exports and /api/nfs/server.  A decode that cannot
+        # answer falls through to the str() probe so a legible impostor
+        # still renders instead of costing the route.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -100,7 +111,14 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the nas_common._utf8_text / modules6 rule):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+    # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
+    # the subclass override — a leftover encode bomb 500'd the same routes.
+    try:
+        return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    except Exception:
+        return ""
 
 
 def _truthy(value) -> bool:
@@ -176,12 +194,19 @@ def _classify_admin_failure(result: dict) -> dict:
     # ``== "failed"`` read, and a ``__bool__``-bomb message blew the old
     # ``result.get("message") or ""`` — raw 500s on POST /api/nfs/exports
     # and /api/nfs/server in place of the coded refusal (the
-    # usage_svc.set_spotlight vanish-classification rule).
-    error = _as_text(dict.get(result, "error")) or "failed"
-    if not _truthy(dict.get(result, "ok")) and error == "failed":
-        message = _as_text(dict.get(result, "message")).lower()
-        if any(marker in message for marker in _VANISH_MARKERS) and not _nfsd_on_disk():
-            return {"ok": False, "error": "nfsd_missing"}
+    # usage_svc.set_spotlight vanish-classification rule).  The unbound
+    # reads in a try: ``dict.get`` is a descriptor bound to the real dict
+    # layout, so a *lying* ``__class__`` claiming dict passed the gate and
+    # the TypeError raised raw; a result that cannot even be read is the
+    # generic coded failure.
+    try:
+        error = _as_text(dict.get(result, "error")) or "failed"
+        if not _truthy(dict.get(result, "ok")) and error == "failed":
+            message = _as_text(dict.get(result, "message")).lower()
+            if any(marker in message for marker in _VANISH_MARKERS) and not _nfsd_on_disk():
+                return {"ok": False, "error": "nfsd_missing"}
+    except Exception:
+        return {"ok": False, "error": "failed"}
     return result
 
 
@@ -341,7 +366,15 @@ def _validate_entry(entry: dict) -> dict:
 
     clients_raw = dict.get(entry, "clients")
     if _isa(clients_raw, str):
-        clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
+        # re.split in a try: a *lying* ``__class__`` claiming str passes the
+        # gate but is no string underneath, and re's TypeError ("expected
+        # string or bytes-like object") used to raise raw past the router's
+        # NfsConfigError catch — a 500 where every junk client table earns
+        # its coded refusal.  An unreadable table means "no clients".
+        try:
+            clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
+        except Exception:
+            clients_raw = []
     elif _isa(clients_raw, list):
         # Materialized under the unbound base walk: a list-subclass client
         # table whose ``__iter__`` raises used to blow the loop below raw.
@@ -539,12 +572,18 @@ def save_exports(entries: list[dict]) -> dict:
     # hands over a Pydantic-exact list, but the service is also called
     # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
     # used to blow the old ``(entries or [])`` — a raw raise where every junk
-    # entry already earns its coded NfsConfigError refusal.
-    if _isa(entries, list):
-        rows = list.__iter__(entries)
-    elif _isa(entries, tuple):
-        rows = tuple.__iter__(entries)
-    else:
+    # entry already earns its coded NfsConfigError refusal.  The unbound
+    # ``__iter__`` in a try (the modules9 rule): a *lying* ``__class__``
+    # claiming list/tuple passed the gate and the descriptor's TypeError
+    # raised raw where an empty table is the honest degrade.
+    try:
+        if _isa(entries, list):
+            rows = list.__iter__(entries)
+        elif _isa(entries, tuple):
+            rows = tuple.__iter__(entries)
+        else:
+            rows = iter(())
+    except Exception:
         rows = iter(())
     validated = [_validate_entry(e) for e in rows]
     seen: set[str] = set()

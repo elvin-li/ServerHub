@@ -40,10 +40,23 @@ def _isa(value, kinds) -> bool:
         return False
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+def _decode_bytes(value):
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Returns ``None`` for a *lying* ``__class__`` that answers ``bytes`` /
+    ``bytearray`` while the real type is neither (the modules9 rule):
+    ``isinstance`` honours the lie, so such an impostor passed every ``_isa``
+    bytes gate and then blew the unbound base decode — a descriptor bound to
+    the real ``bytes``/``bytearray`` layout rejects the foreign operand with
+    a TypeError outside any try, 500ing the NAS read routes out of
+    ``_jsonable`` and the mutation funnels out of ``_utf8_text``.  A raise
+    means "not really this type"; callers drop or re-probe the impostor.
+    """
+    base = bytes if _isa(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return None
 
 
 def _truthy(value) -> bool:
@@ -82,7 +95,12 @@ def _utf8_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a leftover bytes-subclass whose bound
         # ``.decode`` raises used to 500 the shares/NAS failure funnels.
-        return _decode_bytes(value)
+        # A lying ``__class__`` claiming bytes decodes to None and falls
+        # through to the str() probe below, so a legible impostor error
+        # field still renders instead of 500ing the funnel it rode in on.
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
     if value is None:
         return ""
     try:
@@ -116,8 +134,19 @@ def _jsonable(value, depth: int = 0):
     # ``_rendered`` and the mutation ok bodies out of the funnels.  It now
     # falls through every gate to the final text probe like any other
     # unrecognized leftover.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` is final, so a value that answers the bool gate while its
+        # real type is not bool is a *lying* ``__class__`` impostor, not a
+        # genuine bool (the modules9 rule).  The old arm returned it raw,
+        # handing Starlette's ``allow_nan=False`` encoder a non-serializable
+        # object — a raw 500 on every NAS read route through ``_rendered``
+        # and on every mutation ok body through the funnels.  Only a real
+        # bool renders; the impostor drops like its lying numeric siblings.
+        if type(value) is bool:
+            return value
+        return None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -155,20 +184,32 @@ def _jsonable(value, depth: int = 0):
     if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     if _isa(value, dict):
-        out = {}
         # Unbound base view (the modules5 rule): a dict subclass whose
         # ``items()`` raises *or yields non-pairs* used to 500 the routes —
         # the raise inside the old ``list(value.items())`` was caught, but
         # the two-target unpack of a non-pair row happened outside the try.
         # ``dict.items`` reads the real C-level storage, so the salvageable
-        # keys still survive.
-        for k, v in dict.items(value):
+        # keys still survive.  ``dict.items`` is itself a descriptor bound
+        # to the real dict layout, so a *lying* ``__class__`` claiming dict
+        # (real type is neither) blew the call outside any try — a raw 500
+        # on every NAS read route and mutation funnel; the impostor drops
+        # like a lying int (the modules9 rule).
+        try:
+            items = dict.items(value)
+        except Exception:
+            return None
+        out = {}
+        for k, v in items:
             # Per-pair guard: a ``__class__``-bomb *key* used to detonate
             # its own gates below and cost the whole mapping — the torn
             # pair drops alone, its sibling keys survive.
             try:
                 if _isa(k, (bytes, bytearray)):
                     k = _decode_bytes(k)
+                    if k is None:
+                        # A lying ``__class__`` key claiming bytes — drop
+                        # just this entry, keep the rest of the mapping.
+                        continue
                 elif not _isa(k, str):
                     k = str(k)
                 out[_utf8_text(k)] = _jsonable(v, depth + 1)
