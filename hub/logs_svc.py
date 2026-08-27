@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import sys
 from pathlib import Path
 
 from hub import files_svc
@@ -13,9 +14,19 @@ from hub.util import tail_file_lines
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Unbound base methods throughout (the json6 convention): ``str(x)`` of a
+    subclass whose ``__str__`` returns *itself* keeps the subclass, so the
+    bound ``.encode`` used to dispatch into a leftover override and 500 both
+    logs routes; the same held for a bytes/bytearray-subclass ``.decode``.
+    """
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        base = bytes if isinstance(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -25,7 +36,10 @@ def _utf8_text(value) -> str:
             return ""
     except Exception:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _mapping_get(mapping, key):
@@ -72,9 +86,27 @@ def _stat_size(path: Path) -> int:
     junk test hub/files_svc.py's ``_finite_int`` applies to its stat numbers.
     """
     try:
-        size = int(path.stat().st_size)
+        raw = path.stat().st_size
+    except OSError:
+        return 0
+    try:
+        # Unbound base reads (the settings8 convention): ``int(x)`` /
+        # ``float(x)`` of a leftover int/float *subclass* dispatch into its
+        # ``__int__``/``__index__``/``__float__`` override, and one such bomb
+        # riding a poisoned stat used to raise past the conversion catch and
+        # 500 GET /api/logs and GET /api/logs/{id} together.  The unbound
+        # slots read the real number stored underneath the override.
+        if isinstance(raw, int):
+            size = int.__index__(raw)
+        elif isinstance(raw, float):
+            value = float.__float__(raw)
+            if value != value or value in (float("inf"), float("-inf")):
+                return 0
+            size = int(value)
+        else:
+            size = int(raw)
         float(size)
-    except (OSError, TypeError, ValueError, OverflowError):
+    except Exception:
         return 0
     return size if size >= 0 else 0
 
@@ -101,9 +133,24 @@ def _config_text(value) -> str | None:
     text the encoder used to publish.
     """
     if isinstance(value, str):
-        return value
+        # Exact-str launder (the json6 ``str.__str__`` convention): a
+        # subclass returned verbatim kept its poisoned ``encode``/``__len__``
+        # in play for every later bound read, and one self-``__str__``
+        # encode bomb as an id/name used to 500 both logs routes.  The
+        # unbound base ``__str__`` copies the carried text to an exact str.
+        try:
+            return str.__str__(value)
+        except Exception:
+            return None
     if isinstance(value, (bytes, bytearray)):
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound decode: ``bytes(value)`` dispatches into a subclass
+        # ``__bytes__`` override, and one such bomb as an id used to 500
+        # both logs routes before anything was listed.
+        base = bytes if isinstance(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if isinstance(value, (datetime.date, datetime.datetime)):
         try:
             return str(value.isoformat())
@@ -192,9 +239,20 @@ def _entries() -> list[tuple[Path, dict]]:
             continue
         if isinstance(raw_path, (bytes, bytearray)):
             # A bytes path (os.listdir(b"...") leftover) used to stringify
-            # to the garbage relative name ``b'/…'``; fsdecode keeps the
-            # surrogateescape text that names the real on-disk file.
-            raw_path = os.fsdecode(bytes(raw_path))
+            # to the garbage relative name ``b'/…'``; the fs-encoding decode
+            # keeps the surrogateescape text that names the real on-disk
+            # file.  Unbound, because ``os.fsdecode(bytes(raw_path))``
+            # dispatched into a subclass ``__bytes__`` override — one such
+            # bomb as a path used to 500 both logs routes.
+            base = bytes if isinstance(raw_path, bytes) else bytearray
+            try:
+                raw_path = base.decode(
+                    raw_path,
+                    sys.getfilesystemencoding(),
+                    sys.getfilesystemencodeerrors(),
+                )
+            except Exception:
+                continue
         try:
             p = Path(os.path.expanduser(str(raw_path)))
         except (OSError, ValueError, TypeError, RuntimeError):
