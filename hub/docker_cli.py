@@ -14,6 +14,24 @@ from hub.util import safe_json_loads, sh
 SENSITIVE = re.compile(r"(PASSWORD|SECRET|TOKEN|API_KEY|KEY|PASS|CREDENTIAL)", re.I)
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_jsonable``'s rank gates blew
+    GET /api/stacks and GET /api/stacks/jobs/{id} on one poisoned job-row
+    field, and ``_as_text``'s bytes gate blew the job-log join the same way
+    (the nas8 / catalog10 rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -22,8 +40,14 @@ def _decode_bytes(value) -> str:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a *lying* ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the value falls to the str()
+            # scrub below like any other junk leftover.
+            return _decode_bytes(value)
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -37,15 +61,31 @@ def _utf8_text(value) -> str:
     # returns self keeps the subclass, so a bound ``.encode`` bomb in a
     # poisoned job-row field used to raise here and 500 GET /api/stacks
     # (the modules5 unbound convention, like hub.audit._utf8_text).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A lying-``__class__`` str impostor reaches here as a non-str; junk.
+        return ""
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        value = _decode_bytes(value)
+    # _isa, not a bare isinstance: a leftover log item whose ``__class__``
+    # is a raising property used to detonate this gate and 500 the
+    # stack-job log join (GET /api/stacks/jobs/{id}).
+    decoded = None
+    if _isa(value, (bytes, bytearray)):
+        try:
+            decoded = _decode_bytes(value)
+        except Exception:
+            # Lying ``__class__``: not really bytes; render like any object.
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
-    else:
+    elif type(value) is not str:
+        # str() also keeps a str *subclass* whose ``__str__`` answers self;
+        # the unbound encode below is what disarms its bound method bombs.
         try:
             value = str(value)
         except RecursionError:
@@ -56,7 +96,11 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor lands here: junk.
+        return ""
 
 
 def _jsonable(value, depth: int = 0):
@@ -71,9 +115,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* isinstance below and 500
+    # GET /api/stacks and GET /api/stacks/jobs/{id} on one poisoned job-row
+    # scalar (rc/started/…) — one step ahead of every scrub in this funnel.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -91,7 +139,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``/
@@ -102,12 +150,17 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a subclass ``.decode`` bomb cannot fire.
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a subclass ``.decode`` bomb cannot fire.
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound call TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
             # items()/keys()/__iter__ — a leftover nested dict-subclass bomb
@@ -118,16 +171,21 @@ def _jsonable(value, depth: int = 0):
                 return None
         out = {}
         for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            # _isa on the key gates too: a ``__class__``-property-bomb KEY
+            # in a poisoned row detonated the bytes gate the same way.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
         except Exception:
