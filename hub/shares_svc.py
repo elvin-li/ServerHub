@@ -104,11 +104,19 @@ def _as_text(value) -> str:
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # whose bound ``.decode`` raises used to escape list_smb_shares'
         # parse guards and 500 GET /api/shares/acl through the share gate.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
-    elif value is None:
+        # In a try (the modules9 / share_acl_svc rule): a *lying*
+        # ``__class__`` claiming bytes passes the gate but is no bytes
+        # underneath, and the descriptor's TypeError used to 500 the share
+        # mutations out of _admin_failure's message read — it falls through
+        # to the str() probe so a legible impostor still renders.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -118,7 +126,14 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the modules6 rule the sibling services follow):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+    # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
+    # the subclass override — a leftover encode bomb 500'd the same routes.
+    try:
+        return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    except Exception:
+        return ""
 
 
 def _truthy(value) -> bool:
@@ -605,13 +620,34 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     sizes = dict(zip(wanted, measured))
     # `sharing -l` knows nothing about the Time Machine attributes, so the
     # share-point records are read once and merged into every row.
+    # A plain-dict copy first (the _plain_result rule): this module does not
+    # own the provider (tests and tooling patch it), and a *lying*
+    # ``__class__`` impostor claiming dict — or a dict subclass whose bound
+    # ``.get`` raises — used to blow the merge below, a raw 500 on the share
+    # mutations through _find_share where the TM columns are droppable
+    # collateral.  ``dict()`` copies through the C-level storage.
     tm_records = time_machine_records()
+    if type(tm_records) is not dict:
+        if _isa(tm_records, dict):
+            try:
+                tm_records = dict(tm_records)
+            except Exception:
+                tm_records = {}
+        else:
+            tm_records = {}
     for index, share in enumerate(shares):
         share["size_mb"] = sizes.get(index)
         share["url"] = _connection_url(share.get("smb_name"))
         tm = tm_records.get(share["record_name"]) or {}
-        share["time_machine"] = bool(tm.get("time_machine"))
-        share["tm_quota_gb"] = tm.get("tm_quota_gb") if share["time_machine"] else None
+        if not _isa(tm, dict):
+            tm = {}
+        try:
+            share["time_machine"] = bool(dict.get(tm, "time_machine"))
+            share["tm_quota_gb"] = dict.get(tm, "tm_quota_gb") if share["time_machine"] else None
+        except Exception:
+            # A dict-liar record: the TM columns drop, the share row stays.
+            share["time_machine"] = False
+            share["tm_quota_gb"] = None
     return shares
 
 

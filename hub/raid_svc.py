@@ -120,11 +120,28 @@ def _ident(value) -> str:
         except Exception:
             return ""
     if _isa(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
+        # Unbound base decode in a try (the modules9 rule): the old bound
+        # ``bytes(value)`` copy consulted a subclass ``__bytes__``, and a
+        # *lying* ``__class__`` claiming bytes rejects either call with a
+        # TypeError outside any try — a raw 500 on the raid mutations
+        # through _jsonable/_req_text.  An impostor that cannot decode
+        # reads as an empty field like any other junk ident.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return ""
     if not _isa(value, str):
         return ""
     # Leftover ``\\ud800`` in a plist Name used to 500 GET /api/raid.
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound ``str.encode`` in a try: a str-liar impostor passes the gate
+    # above with no ``.encode`` at all, and a subclass whose ``__str__``
+    # answers *self* carries a bound encode bomb — either raise used to
+    # escape this line raw.
+    try:
+        return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    except Exception:
+        return ""
 
 
 def _jsonable(value, depth: int = 0):
@@ -139,8 +156,17 @@ def _jsonable(value, depth: int = 0):
     # bomb nested in a run_admin payload used to detonate the first gate it
     # failed and 500 every POST /api/raid/* mutation; it now falls through
     # to the final text probe like any other unrecognized leftover.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` is final, so a value that answers the bool gate while
+        # its real type is not bool is a *lying* ``__class__`` impostor
+        # (the modules9 rule).  The old arm returned it raw and Starlette's
+        # ``allow_nan=False`` encoder 500'd the mutation; only a real bool
+        # renders, the impostor drops like a lying int.
+        if type(value) is bool:
+            return value
+        return None
     if _isa(value, int):
         try:
             # Base coercion first (the snapshots/smart rule): an int
@@ -168,15 +194,29 @@ def _jsonable(value, depth: int = 0):
     if _isa(value, str):
         return _ident(value)
     if _isa(value, (bytes, bytearray)):
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode in a try (the modules9 rule): a bytes-liar
+        # impostor rejects both the old ``bytes(value)`` copy and the
+        # descriptor — it drops instead of 500ing the mutation.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isa(value, dict):
         # Unbound base view (the nas_common rule): the old bound
         # ``value.items()`` guarded its own raise but unpacked *outside*
         # the try, so a dict subclass whose ``items()`` answers non-pair
         # rows blew ``for k, v in items`` raw — a 500 on POST /api/raid/*
         # where every sibling module already reads the C-level storage.
+        # ``dict.items`` in a try: a *lying* ``__class__`` claiming dict
+        # makes the descriptor reject the operand — the impostor drops
+        # like a lying int (the modules9 rule).
+        try:
+            items = dict.items(value)
+        except Exception:
+            return None
         out = {}
-        for k, v in dict.items(value):
+        for k, v in items:
             try:
                 # Per-pair guard: a ``__class__``-bomb key drops alone;
                 # its sibling keys survive.
@@ -235,14 +275,71 @@ def _req_text(raw) -> str:
     if raw is None or _isa(raw, bool):
         return ""
     if _isa(raw, (bytes, bytearray)):
-        return bytes(raw).decode("utf-8", "replace")
-    if not _isa(raw, str):
+        # Unbound base decode in a try (the modules9 rule): a bytes-liar
+        # argument rejects both the old ``bytes(raw)`` copy and the
+        # descriptor with a raise outside any try — a raw 500 on the raid
+        # mutations where every junk argument earns its coded refusal.  An
+        # impostor that cannot decode falls through to the str() probe.
+        base = bytes if _isa(raw, bytes) else bytearray
+        try:
+            return base.decode(raw, "utf-8", "replace")
+        except Exception:
+            pass
+    if type(raw) is not str:
         try:
             raw = str(raw)
         except Exception:
             # The digit-cap ValueError, or a leftover whose __str__ raises.
             return ""
-    return raw.encode("utf-8", "replace").decode("utf-8")
+    # Unbound ``str.encode`` in a try: a subclass whose ``__str__`` answers
+    # *self* keeps its bound encode bomb past the str() above, and the
+    # descriptor rejects nothing real — junk coerces to "" for the coded
+    # refusal path instead of raising.
+    try:
+        return bytes.decode(str.encode(raw, "utf-8", "replace"), "utf-8")
+    except Exception:
+        return ""
+
+
+def _plain_map(value) -> dict | None:
+    """*value* as a plain dict, or None for junk (the _plain_result rule).
+
+    The plist walks below gate rows with ``_isa(row, dict)`` and then read
+    them with bound ``.get`` — but ``isinstance`` honours a *lying*
+    ``__class__``, so an impostor claiming dict passed the gate with no
+    ``.get`` at all, and the AttributeError raised raw out of ``list_sets``
+    / ``disk_topology`` / ``candidate_devices`` on the mutation path
+    (``_resolve_set`` / ``_check_devices`` walk them outside ``_listing``'s
+    guard) — a raw 500 on every POST /api/raid/* where every other junk row
+    already drops.  ``dict()`` copies through the C-level storage, so a
+    genuine subclass keeps its salvageable rows and no override can fire.
+    """
+    if type(value) is dict:
+        return value
+    if not _isa(value, dict):
+        return None
+    try:
+        return dict(value)
+    except Exception:
+        return None
+
+
+def _row_list(value) -> list:
+    """A plist row table materialized under its own guard.
+
+    The unbound ``__iter__`` in a try (the modules9 rule): a *lying*
+    ``__class__`` claiming list passed the old ``_isa(value, list)`` gates
+    and the loop header's TypeError raised raw out of the same mutation
+    walks ``_plain_map`` covers.  A genuine list passes through untouched.
+    """
+    if type(value) is list:
+        return value
+    if not _isa(value, list):
+        return []
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
 
 
 def _diskutil_on_disk() -> bool:
@@ -354,14 +451,23 @@ def disk_topology() -> dict[str, dict]:
     partitions alone therefore reports ``disk0`` as carrying no mounted volume,
     which would have offered the boot disk as a RAID member.
     """
-    data = _plist([DISKUTIL, "list", "-plist"], timeout=12)
+    # _plain_map / _row_list at every rank: this module does not own the
+    # plist provider (tests and tooling patch it), and a lying-``__class__``
+    # impostor at any rank — the document, the disk table, a disk row, a
+    # partition/store/volume row — passed the old ``_isa`` gates and blew
+    # the bound read behind them, a raw 500 on every POST /api/raid/*
+    # through _check_devices' fresh enumeration.
+    data = _plain_map(_plist([DISKUTIL, "list", "-plist"], timeout=12)) or {}
     topology: dict[str, dict] = {}
 
     def slot(whole: str) -> dict:
         return topology.setdefault(whole, {"volumes": [], "system": False, "containers": []})
 
-    raw_disks = data.get("AllDisksAndPartitions")
-    entries = [d for d in raw_disks if _isa(d, dict)] if _isa(raw_disks, list) else []
+    entries = [
+        plain
+        for plain in (_plain_map(d) for d in _row_list(data.get("AllDisksAndPartitions")))
+        if plain is not None
+    ]
 
     # Pass 1: plain partition tables — a mount here belongs to this disk directly.
     for disk in entries:
@@ -369,8 +475,9 @@ def disk_topology() -> dict[str, dict]:
         if not whole:
             continue
         record = slot(whole)
-        for part in disk.get("Partitions") if _isa(disk.get("Partitions"), list) else []:
-            if not _isa(part, dict):
+        for part in _row_list(disk.get("Partitions")):
+            part = _plain_map(part)
+            if part is None:
                 continue
             mount = _ident(part.get("MountPoint"))
             if mount:
@@ -382,14 +489,15 @@ def disk_topology() -> dict[str, dict]:
 
     # Pass 2: APFS containers — attribute their volumes to the physical stores.
     for disk in entries:
-        stores = disk.get("APFSPhysicalStores") if _isa(disk.get("APFSPhysicalStores"), list) else []
-        volumes = disk.get("APFSVolumes") if _isa(disk.get("APFSVolumes"), list) else []
+        stores = _row_list(disk.get("APFSPhysicalStores"))
+        volumes = _row_list(disk.get("APFSVolumes"))
         if not stores:
             continue
         backing: set[str] = set()
         for store in stores:
-            if _isa(store, dict):
-                raw = store.get("DeviceIdentifier") or store.get("APFSPhysicalStore")
+            plain_store = _plain_map(store)
+            if plain_store is not None:
+                raw = plain_store.get("DeviceIdentifier") or plain_store.get("APFSPhysicalStore")
             else:
                 raw = store
             whole = _whole_disk(raw)
@@ -403,13 +511,15 @@ def disk_topology() -> dict[str, dict]:
             if container_internal:
                 record["system"] = True
             for vol in volumes:
-                if not _isa(vol, dict):
+                vol = _plain_map(vol)
+                if vol is None:
                     continue
                 mounts = [_ident(vol.get("MountPoint"))]
                 # A sealed system volume is mounted as a snapshot, so its own
                 # MountPoint is empty and `/` only appears under MountedSnapshots.
-                for snap in vol.get("MountedSnapshots") if _isa(vol.get("MountedSnapshots"), list) else []:
-                    if _isa(snap, dict):
+                for snap in _row_list(vol.get("MountedSnapshots")):
+                    snap = _plain_map(snap)
+                    if snap is not None:
                         mounts.append(_ident(snap.get("SnapshotMountPoint")))
                 for mount in [m for m in mounts if m]:
                     record["volumes"].append({
@@ -431,10 +541,12 @@ def disk_topology() -> dict[str, dict]:
 
 def _parse_members(raw) -> list[dict]:
     members = []
-    if not _isa(raw, list):
-        return members
-    for entry in raw:
-        if not _isa(entry, dict):
+    # _row_list + _plain_map (the disk_topology rule): a lying-``__class__``
+    # member table or row passed the old gates and blew the walk or the
+    # bound ``.get`` behind them — raw on the mutation path via _resolve_set.
+    for entry in _row_list(raw):
+        entry = _plain_map(entry)
+        if entry is None:
             continue
         status = _ident(entry.get("MemberStatus") or entry.get("AppleRAIDMemberStatus") or "")
         size_bytes, size_gb = _size_fields(entry.get("Size"))
@@ -451,16 +563,18 @@ def _parse_members(raw) -> list[dict]:
 
 
 def list_sets() -> list[dict]:
-    data = _plist([DISKUTIL, "appleRAID", "list", "-plist"], timeout=15)
+    # _plain_map / _row_list (the disk_topology rule): a lying-``__class__``
+    # impostor as the plist document, the set table or a set row passed the
+    # old ``_isa`` gates and blew the bound reads behind them — a raw 500 on
+    # POST /api/raid/* through _resolve_set, outside the _listing guard.
+    data = _plain_map(_plist([DISKUTIL, "appleRAID", "list", "-plist"], timeout=15)) or {}
     sets = []
-    raw_sets = data.get("AppleRAIDSets")
-    if not _isa(raw_sets, list):
-        raw_sets = []
-    for entry in raw_sets:
-        # _isa: a ``__class__``-bomb set row used to detonate this gate on
-        # the mutation path (_resolve_set walks list_sets outside the
-        # _listing guard) and 500 POST /api/raid/* raw.
-        if not _isa(entry, dict):
+    for entry in _row_list(data.get("AppleRAIDSets")):
+        # _plain_map: a ``__class__``-bomb (or dict-liar) set row used to
+        # detonate this gate — or the ``.get`` reads below it — on the
+        # mutation path and 500 POST /api/raid/* raw.
+        entry = _plain_map(entry)
+        if entry is None:
             continue
         members = _parse_members(entry.get("AppleRAIDMembers") or entry.get("Members") or [])
         status = _ident(entry.get("Status") or entry.get("AppleRAIDSetStatus") or "")
@@ -498,13 +612,15 @@ def candidate_devices() -> list[dict]:
     be worse, because the operator would not learn why their disk is missing.
     """
     topology = disk_topology()
-    data = _plist([DISKUTIL, "list", "-plist", "physical"], timeout=12)
+    # Same _plain_map / _row_list laundering as disk_topology: this listing
+    # also feeds the mutation path (_check_devices re-verifies members here),
+    # where a lying-``__class__`` impostor used to raise raw.
+    data = _plain_map(_plist([DISKUTIL, "list", "-plist", "physical"], timeout=12)) or {}
 
-    raw_disks = data.get("AllDisksAndPartitions")
     disks = [
-        (_ident(disk.get("DeviceIdentifier")), disk)
-        for disk in (raw_disks if _isa(raw_disks, list) else [])
-        if _isa(disk, dict)
+        (_ident(plain.get("DeviceIdentifier")), plain)
+        for plain in (_plain_map(d) for d in _row_list(data.get("AllDisksAndPartitions")))
+        if plain is not None
     ]
     disks = [(device, disk) for device, disk in disks if _DEV_RE.fullmatch(device)]
 
@@ -519,6 +635,10 @@ def candidate_devices() -> list[dict]:
 
     out = []
     for (device, disk), info in zip(disks, infos):
+        # _plain_map: a dict-liar ``diskutil info`` answer from a patched
+        # provider passed the shape check inside _plist's replacement and
+        # blew the bound ``.get`` reads below.
+        info = _plain_map(info) or {}
         size_bytes, size_gb = _size_fields(info.get("TotalSize") or disk.get("Size"))
         record = topology.get(device) or {"volumes": [], "system": False}
         mounted = [

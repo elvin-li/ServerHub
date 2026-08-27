@@ -64,12 +64,19 @@ def _as_text(value) -> str:
         # ``bytes(value)`` copy consulted a subclass ``__bytes__``, so a
         # leftover bytes-subclass bomb in sh() output raised out of _plist
         # and 500'd GET /api/snapshots.  The base method reads the real
-        # buffer and no override can fire.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
-    elif value is None:
+        # buffer and no override can fire.  In a try (the modules9 rule): a
+        # *lying* ``__class__`` claiming bytes passes the gate but is no
+        # bytes underneath, and the descriptor's TypeError used to 500 the
+        # same routes — it falls through to the str() probe so a legible
+        # impostor still renders.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -110,8 +117,17 @@ def _jsonable(value, depth: int = 0):
     # bomb nested in a run_admin payload used to detonate the first gate it
     # failed and 500 the mutation routes; it now falls through to the final
     # text probe like any other unrecognized leftover.
-    if value is None or _isa(value, bool):
+    if value is None:
         return value
+    if _isa(value, bool):
+        # ``bool`` is final, so a value that answers the bool gate while
+        # its real type is not bool is a *lying* ``__class__`` impostor
+        # (the modules9 rule).  The old arm returned it raw and Starlette's
+        # ``allow_nan=False`` encoder 500'd the mutation routes; only a
+        # real bool renders, the impostor drops like a lying int.
+        if type(value) is bool:
+            return value
+        return None
     if _isa(value, int):
         if type(value) is not int:
             try:
@@ -147,8 +163,14 @@ def _jsonable(value, depth: int = 0):
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a bytes-subclass whose bound ``.decode``
         # raises used to 500 the mutation routes out of _admin_result.
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
+        # In a try (the modules9 rule): a *lying* ``__class__`` claiming
+        # bytes made the descriptor raise outside any try — the impostor
+        # drops like a lying int instead of 500ing the mutation.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            return None
     if _isa(value, dict):
         try:
             items = list(value.items())
@@ -361,33 +383,55 @@ def list_snapshots(mount: str = "/") -> list[dict]:
     purgeable flag).  Its output is unprivileged, unlike much of ``tmutil``.
     """
     data = _plist([DISKUTIL, "apfs", "listSnapshots", "-plist", mount])
-    raw = (data or {}).get("Snapshots") if _isa(data, dict) else []
+    # Every read below in a try (the modules9 rule): ``_plist`` builds plain
+    # shapes, but this module does not own the provider (tests and tooling
+    # patch it), and a *lying* ``__class__`` impostor passes each ``_isa``
+    # gate and then blows the read behind it — a dict-liar plist blew the
+    # bound ``.get``, a list-liar Snapshots table blew the loop header, and
+    # a dict-liar row blew its own field reads, each a raw 500 on
+    # GET /api/snapshots through fan_out where every other junk shape
+    # already drops silently.
+    raw = None
+    if _isa(data, dict):
+        try:
+            raw = dict.get(data, "Snapshots")
+        except Exception:
+            raw = None
     if not _isa(raw, list):
         raw = []
+    try:
+        rows = list(list.__iter__(raw))
+    except Exception:
+        rows = []
     items: list[dict] = []
-    for entry in raw:
+    for entry in rows:
         # _isa: a ``__class__``-property bomb row in a poisoned plist used
         # to detonate this gate and 500 GET /api/snapshots through fan_out,
         # where every other junk row already drops silently.
         if not _isa(entry, dict):
             continue
-        name = _as_text(entry.get("SnapshotName") or "")
-        token = _snapshot_date(name)
-        system = name.startswith(_SYSTEM_SNAPSHOT_PREFIXES)
-        items.append({
-            "mount": _as_text(mount),
-            "name": name,
-            "uuid": _as_text(entry.get("SnapshotUUID") or ""),
-            "xid": _xid(entry.get("SnapshotXID")),
-            "date_token": token,
-            "date": _human_date(token),
-            "purgeable": bool(entry.get("Purgeable")),
-            "limits_shrink": bool(entry.get("LimitingContainerShrink")),
-            "kind": "system" if system else ("timemachine" if token else "other"),
-            # An OS-update snapshot is macOS rollback state, not operator
-            # backup state.  Deleting one is legal but rarely intended.
-            "deletable": bool(token) and not system,
-        })
+        try:
+            name = _as_text(dict.get(entry, "SnapshotName") or "")
+            token = _snapshot_date(name)
+            system = name.startswith(_SYSTEM_SNAPSHOT_PREFIXES)
+            items.append({
+                "mount": _as_text(mount),
+                "name": name,
+                "uuid": _as_text(dict.get(entry, "SnapshotUUID") or ""),
+                "xid": _xid(dict.get(entry, "SnapshotXID")),
+                "date_token": token,
+                "date": _human_date(token),
+                "purgeable": _truthy(dict.get(entry, "Purgeable")),
+                "limits_shrink": _truthy(dict.get(entry, "LimitingContainerShrink")),
+                "kind": "system" if system else ("timemachine" if token else "other"),
+                # An OS-update snapshot is macOS rollback state, not operator
+                # backup state.  Deleting one is legal but rarely intended.
+                "deletable": bool(token) and not system,
+            })
+        except Exception:
+            # A dict-liar row rejects the unbound read; it drops alone and
+            # its sibling rows survive.
+            continue
     items.sort(key=lambda x: x["date_token"], reverse=True)
     return items
 
@@ -420,16 +464,43 @@ def time_machine_overview() -> dict:
         [_tm_destinations, _tm_status, _tm_latest_backup],
         max_workers=3,
     )
-    dest = dest or {}
-    status = status or {}
+    # A plain-dict copy of both plist answers (the nas_common._plain_result
+    # rule): ``_plist`` builds plain shapes, but this module does not own
+    # the providers (tests and tooling patch them), and a *lying*
+    # ``__class__`` impostor claiming dict passed the old bare gates and
+    # blew the bound ``.get`` reads below — a raw 500 on GET /api/snapshots
+    # through fan_out.  ``dict()`` copies through the C-level storage; a
+    # shape whose copy itself raises is junk and reads as "no answer".
+    def _plain(mapping):
+        if type(mapping) is dict:
+            return mapping
+        if not _isa(mapping, dict):
+            return None
+        try:
+            return dict(mapping)
+        except Exception:
+            return None
+
+    dest = _plain(dest) or {}
+    status = _plain(status) or {}
     destinations = []
     raw_dest = dest.get("Destinations")
     if not _isa(raw_dest, list):
         raw_dest = []
-    for entry in raw_dest:
+    try:
+        # Unbound base walk in a try (the modules9 rule): a list-liar
+        # destination table passed the gate and the loop header 500'd
+        # GET /api/snapshots; the real rows of a genuine subclass still walk.
+        dest_rows = list(list.__iter__(raw_dest))
+    except Exception:
+        dest_rows = []
+    for entry in dest_rows:
         # _isa, same as the list_snapshots walk: a ``__class__``-bomb
         # destination row must drop alone, never 500 GET /api/snapshots.
-        if not _isa(entry, dict):
+        # The plain-dict copy also strips a dict-liar row whose bound
+        # reads would otherwise raise.
+        entry = _plain(entry)
+        if entry is None:
             continue
         try:
             mount_point = str(entry.get("MountPoint") or "")
@@ -458,8 +529,8 @@ def time_machine_overview() -> dict:
         })
 
     running = bool(status.get("Running"))
-    progress = status.get("Progress") if _isa(status.get("Progress"), dict) else {}
-    percent = progress.get("Percent") if _isa(progress, dict) else None
+    progress = _plain(status.get("Progress")) or {}
+    percent = progress.get("Percent")
     percent_val = None
     if percent is not None:
         try:

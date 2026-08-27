@@ -114,12 +114,19 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the modules5 / nas_common rule): a leftover
         # bytes-subclass whose bound ``.decode`` raises used to 500
-        # GET /api/storage/usage out of _spotlight_query.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
-    elif value is None:
+        # GET /api/storage/usage out of _spotlight_query.  In a try (the
+        # modules9 rule): a *lying* ``__class__`` claiming bytes passes the
+        # gate but is no bytes underneath, and the descriptor's TypeError
+        # rode the same paths — it falls through to the str() probe so a
+        # legible impostor still renders.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -1023,13 +1030,26 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         listing = []
     known = {"/"}
     base = list if _isa(listing, list) else tuple
-    for v in base.__iter__(listing):
+    try:
+        # The unbound walk in a try (the modules9 rule): a *lying*
+        # ``__class__`` claiming list/tuple passed the gate above and the
+        # descriptor's TypeError raised raw — a 500 on
+        # POST /api/storage/spotlight ahead of the coded ``bad_volume``.
+        status_rows = list(base.__iter__(listing))
+    except Exception:
+        status_rows = []
+    for v in status_rows:
         # _isa on both reads: a ``__class__``-bomb status row (or volume
         # field) used to detonate the gates themselves ahead of the coded
-        # ``bad_volume`` refusal.
+        # ``bad_volume`` refusal.  The ``dict.get`` in a try: a dict-liar
+        # row passes the gate and the descriptor rejects it — the row
+        # drops alone, "/" and its siblings stay toggleable.
         if not _isa(v, dict):
             continue
-        vol = dict.get(v, "volume")
+        try:
+            vol = dict.get(v, "volume")
+        except Exception:
+            continue
         if _isa(vol, str):
             known.add(_as_text(vol))
     if target not in known:
