@@ -142,8 +142,16 @@ class OverviewGetBombRowTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         body = resp.json()
         _starlette(body)
-        self.assertEqual(len(body["volumes"]), 1)
-        self.assertEqual(body["volumes"][0]["mount"], "/Volumes/Data")
+        # The original leak was a bare 500; the first fix dropped the bombed
+        # row alone.  storage9 routed _volume_row's reads through the unbound
+        # ``_mapping_get`` (the ups_svc rule), so a subclass that only
+        # poisoned its ``.get`` method now keeps its sane C-level data — the
+        # stronger degrade: both rows render, nothing raises.
+        self.assertEqual(len(body["volumes"]), 2)
+        self.assertEqual(
+            [v["mount"] for v in body["volumes"]],
+            ["/Volumes/Data", "/Volumes/Data"],
+        )
 
     def test_getbomb_smart_row_stays_renderable_on_light(self):
         """The disk loop reads rows through ``_jsonable`` (items(), never

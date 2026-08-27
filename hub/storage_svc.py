@@ -37,21 +37,88 @@ SKIP_PREFIXES = (
 SKIP_FS = {"devfs", "autofs", "map"}
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves — planted as the
+    ``list_volumes`` / ``smart_devices`` return it blew ``storage_overview``'s
+    list gates (a raw 500 on GET /api/storage?light), planted as a row value
+    or mapping key it detonated the final ``_jsonable`` pass and nulled the
+    whole volume table.  A real subclass still matches through the C-level
+    type check; only a value that cannot answer what it is takes the
+    non-matching branch (the storage_pool/vms_svc/cloudflared rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping (or mapping *key*) cannot 500.
+
+    The ups_svc/storage_pool rule: ``isinstance(x, dict)`` passes an odd
+    subclass whose ``get`` raises, and even the unbound ``dict.get`` still
+    runs the *stored keys'* own ``__eq__`` during the hash probe — a
+    leftover str-subclass key whose hash shadows the real key used to cost
+    the whole volume row.  Only the shadowed field degrades to its default.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate the bare
+    ``rc == 0`` / ``rc in (0, 4)`` probes — one bombed rc raised out of
+    ``smart_devices`` and wiped every disk row from GET /api/storage
+    (the system/health9 rule).  ``-255`` is no honest exit status, so a
+    bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    base = bytes if _isa(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        # A lying ``__class__`` property that merely *claims* bytes reaches
+        # here as a non-bytes object, so the unbound descriptor TypeErrors —
+        # it used to raise out of ``_jsonable`` and null the volume table.
+        # bytes(value) gives its ``__bytes__`` one guarded chance before the
+        # field drops to empty.
+        try:
+            return bytes(value).decode("utf-8", "replace")
+        except Exception:
+            return ""
 
 
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a df mount / diskutil name
     used to 500 GET /api/storage under Starlette's UTF-8 encode.
     """
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         value = _decode_bytes(value)
     elif value is None:
         return ""
-    elif isinstance(value, float):
+    elif _isa(value, float):
         try:
             # Base coercion first (the modules5 rule): a float-subclass
             # ``__eq__`` bomb used to blow the NaN/inf probes below.
@@ -61,7 +128,7 @@ def _as_text(value) -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return ""
         value = str(value)
-    elif isinstance(value, (list, tuple, dict, set, frozenset, bool)):
+    elif _isa(value, (list, tuple, dict, set, frozenset, bool)):
         return ""
     else:
         try:
@@ -101,6 +168,14 @@ def list_volumes() -> list:
     # `df` timeout silently degraded this to "one volume, /" instead of reporting a
     # failure.  The shared read checks rc and does not cache a failed table.
     for line in df_lines()[1:]:
+        if not _isa(line, str):
+            # A poisoned table row that is not text (a ``__class__``-property
+            # bomb, leftover bytes) used to AttributeError ``line.split()``
+            # and raise out of list_volumes — the whole volume table emptied
+            # for one junk line while its healthy siblings sat readable.
+            line = _as_text(line)
+            if not line:
+                continue
         parts = line.split()
         if len(parts) < 6:
             continue
@@ -216,9 +291,22 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, int):
+    if value is None:
+        return None
+    # _isa throughout: a leftover whose ``__class__`` is a raising property
+    # blew the *first* isinstance probe below, raised out of the final
+    # ``_jsonable`` pass in ``storage_overview`` and nulled the whole
+    # volume table on GET /api/storage?light before any branch ran.
+    if _isa(value, bool):
+        if type(value) is bool:
+            return value
+        # Only a lying ``__class__`` property lands here (bool is final).
+        # It used to ride through as-is and 500 Starlette's encoder.
+        try:
+            return bool(value)
+        except Exception:
+            return None
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 rule): a
@@ -236,7 +324,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -247,51 +335,73 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a leftover subclass ``.decode`` bomb used to
         # raise past the old bound call and null the containing table.
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         # Unbound base view (the modules5 rule the shares6/nas sweeps
         # applied to every sibling ``_jsonable``): a dict subclass whose
         # ``items()`` raises used to collapse to None here; ``dict.items``
         # reads the real C-level storage, so the salvageable keys survive.
-        out = {}
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # The view call itself is guarded: a lying ``__class__`` property
+        # claiming dict is not one, so the unbound descriptor TypeError'd
+        # out of the old bare call and nulled the whole volume table —
+        # such a leftover falls through to the text salvage instead.
+        try:
+            rows = list(dict.items(value))
+        except Exception:
+            rows = None
+        if rows is not None:
+            out = {}
+            for k, v in rows:
+                if _isa(k, (bytes, bytearray)):
+                    k = _decode_bytes(k)
+                elif not _isa(k, str):
+                    # A key whose ``__class__`` raises used to detonate the
+                    # bare bytes gate above and null the containing table.
+                    try:
+                        k = str(k)
+                    except Exception:
+                        continue
                 try:
-                    k = str(k)
+                    out[_as_text(k)] = _jsonable(v, depth + 1)
                 except Exception:
+                    # Residual raise out of one entry: only that entry
+                    # drops; the sibling keys keep their sane data.
                     continue
-            out[_as_text(k)] = _jsonable(v, depth + 1)
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+            return out
+    if _isa(value, (list, tuple, set, frozenset)):
         # Unbound base iteration (the ``dict.items`` rule at sequence rank):
         # a sequence subclass whose ``__iter__`` raises used to null the
         # whole field here, while the real elements sit readable in the
         # C-level storage.
-        if isinstance(value, list):
+        if _isa(value, list):
             base = list
-        elif isinstance(value, tuple):
+        elif _isa(value, tuple):
             base = tuple
-        elif isinstance(value, set):
+        elif _isa(value, set):
             base = set
         else:
             base = frozenset
         try:
             items = list(base.__iter__(value))
         except Exception:
-            return None
-        try:
-            return [_jsonable(v, depth + 1) for v in items]
-        except Exception:
-            # Residual raise out of the recursion: only this field drops,
-            # never the volume table or the route.
-            return None
+            items = None
+        if items is not None:
+            out_seq = []
+            for v in items:
+                try:
+                    out_seq.append(_jsonable(v, depth + 1))
+                except Exception:
+                    # Residual raise out of one element: pre-fix one bombed
+                    # volume row nulled the *whole* ``volumes`` list to
+                    # ``null``; now only the element degrades and the
+                    # healthy sibling rows survive.
+                    out_seq.append(None)
+            return out_seq
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -315,7 +425,7 @@ def _shared_pool(group: list) -> bool:
     """APFS (and similar) volumes on same container report the same total capacity."""
     if len(group) <= 1:
         return False
-    totals = [_json_gb(v.get("total_gb")) for v in group if isinstance(v, dict)]
+    totals = [_json_gb(_mapping_get(v, "total_gb")) for v in group if _isa(v, dict)]
     if len(totals) <= 1:
         return False
     max_t = max(totals)
@@ -334,7 +444,7 @@ def _json_gb(raw, ndigits: int = 1) -> float:
     through ``_volume_row``'s str() probe untouched, then raised here out
     of ``aggregate_capacity`` — a bare 500 on GET /api/storage?light.
     """
-    if isinstance(raw, int) and not isinstance(raw, bool) and type(raw) is not int:
+    if _isa(raw, int) and not _isa(raw, bool) and type(raw) is not int:
         try:
             # Base coercion first so the bombed subclass keeps its number.
             raw = int.__index__(raw)
@@ -350,16 +460,16 @@ def _json_gb(raw, ndigits: int = 1) -> float:
 
 
 def _json_int(raw, default: int = 0) -> int:
-    if isinstance(raw, bool) or raw is None:
+    if _isa(raw, bool) or raw is None:
         return default
-    if isinstance(raw, int) and type(raw) is not int:
+    if _isa(raw, int) and type(raw) is not int:
         try:
             # Base coercion first so a bombed subclass keeps its number.
             raw = int.__index__(raw)
         except Exception:
             return default
     try:
-        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         # ``except Exception`` for the same reason as _json_gb: a subclass
         # ``__int__``/``__eq__`` bomb is not one of the three usual
@@ -380,18 +490,18 @@ def _volume_row(raw) -> dict | None:
     """JSON-safe volume. Leftover incomplete dicts / inf / ``\\ud800`` used
     to KeyError or 500 GET /api/storage after non-dict rows were skipped.
     """
-    if not isinstance(raw, dict):
+    if not _isa(raw, dict):
         return None
-    mount = _as_text(raw.get("mount"))
+    mount = _as_text(_mapping_get(raw, "mount"))
     if not mount:
         return None
     row = dict(raw)
     row["mount"] = mount
-    row["kind"] = _as_text(row.get("kind")) or "other"
-    disk_id = row.get("disk_id")
-    if disk_id is None or isinstance(disk_id, bool):
+    row["kind"] = _as_text(_mapping_get(row, "kind")) or "other"
+    disk_id = _mapping_get(row, "disk_id")
+    if disk_id is None or _isa(disk_id, bool):
         row["disk_id"] = None
-    elif isinstance(disk_id, float) and (
+    elif _isa(disk_id, float) and (
         disk_id != disk_id or disk_id in (float("inf"), float("-inf"))
     ):
         row["disk_id"] = None
@@ -404,10 +514,10 @@ def _volume_row(raw) -> dict | None:
         # drops to None like its inf float sibling.
         row["disk_id"] = _as_text(disk_id) or None
     for key in ("total_gb", "used_gb", "avail_gb"):
-        val = row.get(key)
-        if isinstance(val, bool) or val is None:
+        val = _mapping_get(row, key)
+        if _isa(val, bool) or val is None:
             row[key] = 0.0
-        elif isinstance(val, int):
+        elif _isa(val, int):
             if type(val) is not int:
                 try:
                     # Base coercion (the modules5 rule): an int subclass
@@ -425,17 +535,17 @@ def _volume_row(raw) -> dict | None:
                 # A >4300-digit leftover int rode through the int fast path
                 # and ValueError'd Starlette's encoder on GET /api/storage.
                 row[key] = 0.0
-        elif isinstance(val, float):
+        elif _isa(val, float):
             if type(val) is not float:
                 row[key] = _json_gb(val)
             elif val != val or val in (float("inf"), float("-inf")):
                 row[key] = 0.0
         else:
             row[key] = _json_gb(val)
-    row["pct"] = _json_int(row.get("pct"))
+    row["pct"] = _json_int(_mapping_get(row, "pct"))
     for key in ("filesystem", "device"):
         if key in row:
-            row[key] = _as_text(row.get(key))
+            row[key] = _as_text(_mapping_get(row, key))
     return row
 
 
@@ -448,21 +558,21 @@ def aggregate_capacity(vols: list, kinds: set | None = None) -> dict:
     """
     selected = [
         v for v in vols
-        if isinstance(v, dict) and (kinds is None or v.get("kind") in kinds)
+        if _isa(v, dict) and (kinds is None or _mapping_get(v, "kind") in kinds)
     ]
     groups: dict[str, list] = {}
     for v in selected:
-        raw_id = v.get("disk_id")
-        if isinstance(raw_id, bool) or raw_id is None:
+        raw_id = _mapping_get(v, "disk_id")
+        if _isa(raw_id, bool) or raw_id is None:
             raw_id = None
-        elif isinstance(raw_id, float) and (
+        elif _isa(raw_id, float) and (
             raw_id != raw_id or raw_id in (float("inf"), float("-inf"))
         ):
             raw_id = None
         else:
             raw_id = _as_text(raw_id) or None
         key = raw_id or (
-            f"fs:{_as_text(v.get('filesystem'))}:{_as_text(v.get('mount'))}"
+            f"fs:{_as_text(_mapping_get(v, 'filesystem'))}:{_as_text(_mapping_get(v, 'mount'))}"
         )
         groups.setdefault(key, []).append(v)
 
@@ -470,38 +580,39 @@ def aggregate_capacity(vols: list, kinds: set | None = None) -> dict:
     counted_mounts = []
     for key, group in groups.items():
         if _shared_pool(group):
-            t = max(_json_gb(x.get("total_gb")) for x in group)
-            u = max(_json_gb(x.get("used_gb")) for x in group)
-            a = max(_json_gb(x.get("avail_gb")) for x in group)
+            t = max(_json_gb(_mapping_get(x, "total_gb")) for x in group)
+            u = max(_json_gb(_mapping_get(x, "used_gb")) for x in group)
+            a = max(_json_gb(_mapping_get(x, "avail_gb")) for x in group)
             # prefer Data volume as representative for used (more accurate app data)
             data_vol = next(
-                (x for x in group if x.get("mount") == "/System/Volumes/Data"), None
+                (x for x in group
+                 if _mapping_get(x, "mount") == "/System/Volumes/Data"), None
             )
             if data_vol:
-                u = _json_gb(data_vol.get("used_gb"))
-                a = _json_gb(data_vol.get("avail_gb"))
+                u = _json_gb(_mapping_get(data_vol, "used_gb"))
+                a = _json_gb(_mapping_get(data_vol, "avail_gb"))
             total += t
             used += u
             free += a
             counted_mounts.append({
-                "disk_id": key if not str(key).startswith("fs:") else group[0].get("disk_id"),
+                "disk_id": key if not str(key).startswith("fs:") else _mapping_get(group[0], "disk_id"),
                 "mode": "shared_pool",
-                "mounts": [_as_text(x.get("mount")) for x in group],
+                "mounts": [_as_text(_mapping_get(x, "mount")) for x in group],
                 "total_gb": _json_gb(t),
                 "used_gb": _json_gb(u),
                 "avail_gb": _json_gb(a),
             })
         else:
-            t = sum(_json_gb(x.get("total_gb")) for x in group)
-            u = sum(_json_gb(x.get("used_gb")) for x in group)
-            a = sum(_json_gb(x.get("avail_gb")) for x in group)
+            t = sum(_json_gb(_mapping_get(x, "total_gb")) for x in group)
+            u = sum(_json_gb(_mapping_get(x, "used_gb")) for x in group)
+            a = sum(_json_gb(_mapping_get(x, "avail_gb")) for x in group)
             total += t
             used += u
             free += a
             counted_mounts.append({
-                "disk_id": key if not str(key).startswith("fs:") else group[0].get("disk_id"),
+                "disk_id": key if not str(key).startswith("fs:") else _mapping_get(group[0], "disk_id"),
                 "mode": "sum_partitions",
-                "mounts": [_as_text(x.get("mount")) for x in group],
+                "mounts": [_as_text(_mapping_get(x, "mount")) for x in group],
                 "total_gb": _json_gb(t),
                 "used_gb": _json_gb(u),
                 "avail_gb": _json_gb(a),
@@ -570,7 +681,10 @@ def _probe_disk(d: str) -> dict:
 def _probe_disk_uncached(dev: str, info: dict) -> dict:
     rc, iout, _ = sh(["/usr/sbin/diskutil", "info", dev], timeout=8)
     iout = _as_text(iout)
-    if rc == 0:
+    # _rc_int on every probe: an rc-subclass ``__eq__`` bomb from a poisoned
+    # runner used to raise out of here — _probe_disk degraded the whole disk
+    # to an exception-text row where the honest failure branch was available.
+    if _rc_int(rc) == 0:
         for line in iout.splitlines():
             if "Device / Media Name:" in line or "Media Name:" in line:
                 info["name"] = _as_text(line.split(":", 1)[1].strip())
@@ -603,9 +717,10 @@ def _probe_disk_uncached(dev: str, info: dict) -> dict:
     rc, sout, serr = sh([SMARTCTL, "-a", dev], timeout=10)
     sout, serr = _as_text(sout), _as_text(serr)
     msg_lower = f"{sout}\n{serr}".lower()
-    if rc not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
+    if _rc_int(rc) not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
         rc, sout, serr = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
-    if rc in (0, 4) and sout:
+        sout, serr = _as_text(sout), _as_text(serr)
+    if _rc_int(rc) in (0, 4) and sout:
         sm = {}
         attrs = []  # all raw SMART attributes for detail view
         in_smart_section = False
@@ -748,7 +863,10 @@ def smart_devices() -> list:
     rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
     out = _as_text(out)
     disk_ids = []
-    if rc == 0:
+    # _rc_int, not a bare compare: an rc-subclass ``__eq__`` bomb from a
+    # poisoned runner used to raise out of smart_devices and wipe every
+    # disk row from GET /api/storage while the volumes sat healthy.
+    if _rc_int(rc) == 0:
         for m in re.finditer(r"/dev/(disk\d+)\s", out):
             d = m.group(1)
             if d not in disk_ids:
@@ -785,13 +903,16 @@ def storage_overview() -> dict:
         vols = f_vols.result()
     except Exception:
         vols = []
-    if not isinstance(vols, list):
+    # _isa, not bare isinstance: a listing *return* wearing a raising
+    # ``__class__`` property detonated this gate itself — a raw 500 on
+    # GET /api/storage?light one line past the catch built for it.
+    if not _isa(vols, list):
         vols = []
     try:
         disks = f_disks.result()
     except Exception:
         disks = []
-    if not isinstance(disks, list):
+    if not _isa(disks, list):
         disks = []
     # Leftover non-dict rows TypeError'd ``v["kind"]``; leftover incomplete
     # dicts then KeyError'd ``total_gb`` / leaked inf / ``\\ud800`` into

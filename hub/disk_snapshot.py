@@ -51,13 +51,50 @@ _DISK_RE = re.compile(r"/dev/(disk\d+)")
 _WHOLE_RE = re.compile(r"(disk\d+)")
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover token whose ``__class__`` is a *raising property*
+    detonated the sequence gate at the head of both scrubs below — and a
+    raise out of ``_disk_token`` does not drop one identifier, it collapses
+    the whole plist arm of ``root_whole_disks`` (the set the panel refuses
+    to spin down or eject), the exact narrowing storage8 sealed for the
+    ``__bool__``/``__getitem__`` bomb class.  A real subclass still matches
+    through the C-level type check (the storage_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` / ``run_bytes`` (tests and tooling patch
+    them), and an rc-subclass whose ``__eq__`` raises used to detonate the
+    bare ``rc == 0`` probes — one bombed rc raised out of ``df_lines`` into
+    all three consumer modules at once and emptied the volume table where a
+    failed read is the honest degrade (the system/health9 rule).
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _as_text(value) -> str:
     """diskutil / df leftovers arrive as bytes / int / inf, not str.
 
     A leftover ``\\ud800`` in a FUSE volume name used to 500 GET /api/storage
     under Starlette's UTF-8 encode of ``df`` mount fields.
     """
-    if isinstance(value, (list, tuple)):
+    if _isa(value, (list, tuple)):
         # Guarded unwrap, matching disk_manage_svc._text / disk_power_svc._text:
         # a sequence *subclass* whose ``__bool__`` / ``__getitem__`` raises (the
         # storage4/pool4 iteration-bomb class) used to raise straight out of this
@@ -67,13 +104,23 @@ def _as_text(value) -> str:
             value = value[0] if value else ""
         except Exception:
             return ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes TypeErrors the
+            # base copy itself; the token degrades like any unreadable one.
+            return ""
+    elif _isa(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return ""
-    elif value in (None, False, True, "") or isinstance(value, (dict, set, frozenset)):
+    elif value is None or value is False or value is True \
+            or _isa(value, (dict, set, frozenset)):
+        # Identity tests, not ``value in (None, False, True, "")``: the old
+        # containment probe reflected into a leftover's own ``__eq__`` and
+        # raised out of the scrub.  An empty string needs no special case —
+        # the unbound encode below answers "" for it anyway.
         return ""
-    elif not isinstance(value, str):
+    elif not _isa(value, str):
         try:
             value = str(value)
         except RecursionError:
@@ -105,14 +152,17 @@ def _disk_token(value) -> str:
     raises now degrades to "" like every other unreadable token, so the
     surviving ``APFSPhysicalStores`` disks still contribute.
     """
-    if isinstance(value, (list, tuple)):
+    if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
         except Exception:
             return ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    if not isinstance(value, str):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    if not _isa(value, str):
         return ""
     # Unbound base encode: same self-``__str__`` encode-bomb class as
     # ``_as_text`` above — the token must scrub, never raise.
@@ -144,7 +194,7 @@ def _forget_if_empty(cached, value):
 @cached_snapshot(_TTL)
 def _df_table() -> tuple[str, ...]:
     rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
-    return tuple(_as_text(out).splitlines()) if rc == 0 else ()
+    return tuple(_as_text(out).splitlines()) if _rc_int(rc) == 0 else ()
 
 
 def df_lines(force: bool = False) -> tuple[str, ...]:
@@ -189,18 +239,21 @@ def _physical_whole_disks() -> tuple[str, ...]:
         )
     except Exception:
         rc, stdout = -1, b""
-    if rc == 0 and stdout:
+    if _rc_int(rc) == 0:
+        # Truthiness and parse inside the guard: a poisoned runner's stdout
+        # ``__bool__`` bomb sat outside the old try and raised out of the
+        # shared read into all three consumer modules at once.
         try:
-            parsed = plistlib.loads(stdout)
-            if isinstance(parsed, dict):
-                wholes = parsed.get("WholeDisks")
-                if not isinstance(wholes, list):
+            parsed = plistlib.loads(stdout) if stdout else None
+            if _isa(parsed, dict):
+                wholes = dict.get(parsed, "WholeDisks")
+                if not _isa(wholes, list):
                     wholes = []
                 return tuple(t for x in wholes if (t := _disk_token(x)))
         except Exception:
             pass
     rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return ()
     ids: list[str] = []
     for match in re.finditer(r"/dev/(disk\d+)\s", _as_text(out)):
