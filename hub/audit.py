@@ -647,10 +647,22 @@ def _capped_json_int(text):
 
 def recent(limit: int = 100) -> list[dict]:
     """Tail of the audit trail, newest last."""
-    try:
-        n = max(1, min(int(limit), 1000))
-    except (TypeError, ValueError, OverflowError):
+    # _isa + except-Exception, the terminal_svc.recent_audit clamp verbatim:
+    # the route validates its own ``limit``, but this reader does not own its
+    # callers, and ``int()`` of a leftover runs the object's own ``__int__``/
+    # ``__index__`` — a subclass bomb there raises RuntimeError, which the old
+    # (TypeError, ValueError, OverflowError) shortlist let straight out of the
+    # one reader whose job is answering "who did this" no matter what.  A
+    # bool (or a bool-liar, which _isa fails closed on) reads as the default
+    # rather than as 1-row/0-row nonsense.
+    if _isa(limit, bool) or limit is None:
         n = 100
+    else:
+        try:
+            n = int(limit)
+        except Exception:
+            n = 100
+    n = max(1, min(n, 1000))
     try:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/audit/auth.
         if not AUDIT_PATH.exists():
