@@ -147,23 +147,29 @@ def _rc_int(rc) -> int:
     the ``-1`` spawn-failure sentinel, so junk can never be misread as
     success or as a vanished CLI.
     """
-    # Identity, not ``isinstance(rc, bool)``: ``bool`` is final, so a value
-    # that answers the bool gate without *being* one is a lying-``__class__``
-    # impostor, and the old ``int(rc)`` arm dispatched into its own
-    # ``__int__`` — a bool-liar answering ``0`` forged a *success* exit
-    # status for a spawn that never ran (the vms10 bool-liar rule: junk is
-    # never consent to claim success).  Only the two real singletons render.
+    # Identity, not ``isinstance(rc, bool)``, for the real singletons:
+    # ``bool`` is final, so a value that answers the bool gate without
+    # *being* True or False is a lying-``__class__`` impostor, and the old
+    # ``int(rc)`` arm dispatched into its own ``__int__`` — a bool-liar
+    # answering ``0`` forged a *success* exit status for a spawn that never
+    # succeeded (the vms10 bool-liar rule: junk is never consent to claim
+    # success).
     if rc is True:
         return 1
     if rc is False:
         return 0
     try:
-        if not isinstance(rc, int):
+        if isinstance(rc, bool):
+            # Passed the final-type gate without being either singleton:
+            # a lying impostor, junk by definition.
             return -255
         # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
         # cannot fire, and a lying-``__class__`` impostor TypeErrors here
         # instead of passing the gate (the modules5 unbound convention).
-        value = int.__index__(rc)
+        # ``int(rc)`` for everything else keeps the shares10 contract: a
+        # stringy "0" from an odd stub parses (the str->int path is
+        # parse-capped, so a 4300+-digit string is ValueError -> junk).
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
         if type(value) is not int:
             return -255
         # Digit-cap probe: past CPython's int->str cap the status cannot be
