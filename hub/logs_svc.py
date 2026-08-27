@@ -253,11 +253,30 @@ def _entries() -> list[tuple[Path, dict]]:
                 )
             except Exception:
                 continue
+        if isinstance(raw_path, str):
+            # Exact-str launder (the json6 ``str.__str__`` convention, the
+            # same one ``_config_text`` gives the id/name fields): a str
+            # *subclass* left the poisoned ``__str__`` in play for the bound
+            # ``str(raw_path)`` below, and one whose ``__str__`` *raised*
+            # anything outside the narrow catch (a plain ``KeyError`` /
+            # ``LookupError`` / ``StopIteration`` leftover, not the
+            # OSError/ValueError/TypeError/RuntimeError it listed) used to
+            # 500 GET /api/logs and GET /api/logs/{id} together.  The unbound
+            # base ``__str__`` reads the carried path text underneath the
+            # override, so the source keeps listing and tailing its real file.
+            try:
+                raw_path = str.__str__(raw_path)
+            except Exception:
+                continue
         try:
             p = Path(os.path.expanduser(str(raw_path)))
-        except (OSError, ValueError, TypeError, RuntimeError):
+        except Exception:
             # RuntimeError: leftover HOME unset on a ``~/…`` log path.
             # ValueError: an over-cap int path is the digit-cap ``str()``.
+            # Broad, like ``_stat_size`` / ``_config_text``: a non-str
+            # ``path`` leftover whose own ``str()`` bombs (a poisoned
+            # ``__str__`` on an arbitrary object) drops the one entry rather
+            # than the whole page.
             continue
         if not _log_path_allowed(p):
             continue
