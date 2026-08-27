@@ -423,7 +423,15 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isa(value, bool):
+    # ``type(value) is bool``, not ``_isa(value, bool)``: bool cannot be
+    # subclassed, so anything else that answers the bool gate is a *liar*
+    # whose ``__class__`` property returns ``bool``.  Passed through raw, the
+    # impostor escaped every launder below and TypeError'd Starlette's
+    # encoder — a raw 500 on POST /api/terminal/run after the command had
+    # already executed.  The liar falls through to the int gate (bool is an
+    # int to ``isinstance``) where the unbound ``int.__index__`` copy
+    # refuses it and it degrades to None like every other impostor.
+    if value is None or type(value) is bool:
         return value
     if _isa(value, int):
         if type(value) is not int:
@@ -508,6 +516,56 @@ def _response(result: dict) -> dict:
     """JSON-safe run payload. Leftover ``cwd: \\ud800`` used to 500 the encoder."""
     cleaned = _jsonable(result)
     return cleaned if isinstance(cleaned, dict) else result
+
+
+#: Every field ``run_host``/``run_container`` reads or mutates on a run
+#: receipt.  ``-255`` is the same no-honest-exit-status junk sentinel
+#: ``_rc_int`` answers, so an unreadable receipt reads as one failed
+#: command, never a crash.
+_RECEIPT_DEFAULTS = {
+    "ok": False,
+    "rc": -255,
+    "stdout": "",
+    "stderr": "",
+    "truncated": False,
+    "duration_ms": 0,
+}
+
+
+def _receipt_map(result) -> dict:
+    """Plain-dict copy of a ``_run`` receipt with every transport field present.
+
+    ``run_host``/``run_container`` do not own the receipt (tests and tooling
+    patch ``_run``), and the callers used to index and *mutate* it bare:
+
+    * a dict-*subclass* receipt whose ``.get``/``__getitem__``/``__setitem__``
+      raises detonated ``result["stdout"]`` / ``result["target"] = ...``;
+    * a receipt missing a field KeyError'd the same reads;
+    * a leftover str-subclass *key* whose hash shadows ``rc``/``stderr`` and
+      whose ``__eq__`` raises detonated the probe lookups themselves —
+
+    each a raw 500 on POST /api/terminal/run *after* the command had already
+    executed.  The unbound ``dict.items`` view bypasses subclass overrides; a
+    lying ``__class__`` (claims dict, is not) TypeErrors it and the whole
+    receipt degrades to the failed-command stub.  Each insert is guarded on
+    its own: a hostile key that collides with a seeded field runs its *own*
+    ``__eq__`` inside the probe, and only that key's entry drops.
+    """
+    out = dict(_RECEIPT_DEFAULTS)
+    if _isa(result, dict):
+        try:
+            items = list(dict.items(result))
+        except Exception:
+            items = []
+        for key, val in items:
+            try:
+                out[key] = val
+            except Exception:
+                # Unhashable key, or a hash-shadowing key whose __eq__
+                # raised against the seeded exact-str field: the seeded
+                # default stays and only this entry degrades.
+                continue
+    return out
 
 
 def _clip_audit_text(text: str) -> str:
@@ -716,20 +774,30 @@ def _run(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
 
 
 def _clamp_timeout(timeout: int | None) -> int:
-    if isinstance(timeout, bool) or timeout is None:
+    # _isa: a leftover timeout whose ``__class__`` is a raising property used
+    # to detonate the bare bool gate itself before the int() launder ran.
+    if _isa(timeout, bool) or timeout is None:
         value = DEFAULT_TIMEOUT
     else:
         try:
+            # Bare except-Exception, not the usual numeric trio: int() of a
+            # leftover int *subclass* runs the subclass's own ``__int__``,
+            # and a bomb there raises an arbitrary type.  On success int()
+            # always answers an exact int, so the clamp below is safe.
             value = int(timeout)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             value = DEFAULT_TIMEOUT
     return max(1, min(value, MAX_TIMEOUT))
 
 
 def _check_command(command: str) -> str:
-    if not isinstance(command, str):
+    # _isa + _config_text: a leftover command whose ``__class__`` is a
+    # raising property used to detonate the bare isinstance, and a str
+    # subclass ``.strip()`` bomb raised one line later.  An unreadable
+    # command degrades to the coded 400, never a 500.
+    if not _isa(command, str):
         raise api_error("terminal.empty_command")
-    cmd = command.strip()
+    cmd = _config_text(command).strip()
     if not cmd:
         raise api_error("terminal.empty_command")
     if "\x00" in cmd:
@@ -769,8 +837,17 @@ def run_host(
     shell = _config_text(_cfg_value(tc, "shell")) or _default_shell()
     start_cwd = _resolve_cwd(cwd)
 
-    result = _run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
-    result["stdout"], end_cwd = _split_cwd(result["stdout"], start_cwd)
+    # _receipt_map: run_host does not own ``_run``'s receipt (tests and
+    # tooling patch it), and a dict-subclass receipt whose item hooks raise,
+    # a receipt missing a field, or a hash-shadowing key used to detonate
+    # the bare ``result[...]`` reads and writes below — a raw 500 after the
+    # command had already executed.  _config_text on stdout: a non-str (or
+    # a str subclass whose ``rfind``/``endswith`` raises) used to blow
+    # ``_split_cwd`` the same way.
+    result = _receipt_map(_run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd))
+    result["stdout"], end_cwd = _split_cwd(
+        _config_text(_mapping_get(result, "stdout", "")), start_cwd
+    )
     _audit({
         "ts": _now(),
         "target": "host",
@@ -780,8 +857,8 @@ def run_host(
         "cwd": start_cwd,
         "shell": shell,
         "command": cmd,
-        "rc": result["rc"],
-        "duration_ms": result["duration_ms"],
+        "rc": _mapping_get(result, "rc", -255),
+        "duration_ms": _mapping_get(result, "duration_ms", 0),
     })
     result["target"] = "host"
     # Echoed back so the client can carry it into the next command, making `cd`
@@ -827,9 +904,12 @@ def _docker_vanished(result: dict) -> bool:
     """
     # _rc_int: an rc-subclass ``__ne__`` bomb in a patched receipt used to
     # detonate the bare comparison (the run_container rc probe rule).
-    if _rc_int(result.get("rc")) != 127:
+    # _mapping_get, not the bound ``.get``: a dict-subclass receipt whose
+    # ``.get`` raises, or a hash-shadowing stored key whose ``__eq__``
+    # raises, used to detonate the probe read itself the same way.
+    if _rc_int(_mapping_get(result, "rc")) != 127:
         return False
-    if _config_text(result.get("stderr")).strip() != f"not found: {DOCKER}":
+    if _config_text(_mapping_get(result, "stderr")).strip() != f"not found: {DOCKER}":
         return False
     try:
         return not Path(DOCKER).exists()
@@ -856,9 +936,14 @@ def run_container(
     *cwd* is the directory inside the container, carried between commands the
     same way the host shell does it.
     """
-    if not isinstance(container, str):
+    # _isa + _config_text on every caller-supplied string: a leftover whose
+    # ``__class__`` is a raising property used to detonate the bare
+    # isinstance gates, and a str-subclass ``.strip()``/``__bool__`` bomb
+    # raised out of the launder one line later.  Unreadable values degrade
+    # to the coded 400s, never a 500.
+    if not _isa(container, str):
         raise api_error("terminal.no_container")
-    name = (container or "").strip()
+    name = _config_text(container).strip()
     if not name:
         raise api_error("terminal.no_container")
     name = cli_args.require_positional(name, label="container name")
@@ -866,16 +951,21 @@ def run_container(
     secs = _clamp_timeout(timeout)
     # ``container`` and ``target`` already tolerate leftover non-str values;
     # a non-str shell used to AttributeError on .strip() here.
-    sh = (shell if isinstance(shell, str) else "").strip() or "/bin/sh"
+    sh = _config_text(shell if _isa(shell, str) else "").strip() or "/bin/sh"
     # A container path cannot be validated from the host, so pass it through and
     # let the shell fall back to its own default if the directory is gone.
-    start_cwd = str(cwd or "").strip()
+    start_cwd = _config_text(cwd).strip()
     wrapped = _wrap_with_cwd(cmd)
     if start_cwd:
         wrapped = f"cd {_sh_quote(start_cwd)} 2>/dev/null || true\n{wrapped}"
 
-    result = _run([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs)
-    result["stdout"], end_cwd = _split_cwd(result["stdout"], start_cwd)
+    # _receipt_map: the same launder run_host applies — a dict-subclass
+    # receipt, a missing field or a hash-shadowing key used to detonate the
+    # bare ``result[...]`` reads/writes after the command already executed.
+    result = _receipt_map(_run([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs))
+    result["stdout"], end_cwd = _split_cwd(
+        _config_text(_mapping_get(result, "stdout", "")), start_cwd
+    )
     _audit({
         "ts": _now(),
         "target": "container",
@@ -884,19 +974,22 @@ def run_container(
         "cwd": start_cwd,
         "shell": sh,
         "command": cmd,
-        "rc": result["rc"],
-        "duration_ms": result["duration_ms"],
+        "rc": _mapping_get(result, "rc", -255),
+        "duration_ms": _mapping_get(result, "duration_ms", 0),
     })
     # _rc_int / _config_text on the probe inputs: run_container does not own
     # ``_run``'s receipt (tests and tooling patch it), and an rc-subclass
     # ``__ne__`` bomb or a stdout/stderr subclass whose ``__bool__``/``__str__``
     # raises used to detonate the bare comparison / or-truthiness f-string —
-    # a raw 500 after the command had already executed.
+    # a raw 500 after the command had already executed.  _mapping_get on the
+    # reads: a stateful hostile key that survived the launder still cannot
+    # 500 the probe lookups themselves.
     if (
-        _rc_int(result.get("rc")) != 0
+        _rc_int(_mapping_get(result, "rc")) != 0
         and (
             looks_engine_down(
-                f"{_config_text(result.get('stderr'))}\n{_config_text(result.get('stdout'))}"
+                f"{_config_text(_mapping_get(result, 'stderr'))}\n"
+                f"{_config_text(_mapping_get(result, 'stdout'))}"
             )
             or _docker_vanished(result)
         )
@@ -927,9 +1020,11 @@ def execute(
     who: str = "",
     cwd: str = "",
 ) -> dict:
-    if not isinstance(target, str):
+    # _isa + _config_text: the same class-property / subclass-method bomb
+    # guard every other caller-supplied string above gets.
+    if not _isa(target, str):
         raise api_error("terminal.bad_target", target="")
-    tgt = (target or "host").strip().lower()
+    tgt = (_config_text(target) or "host").strip().lower()
     if tgt == "host":
         return run_host(command, timeout=timeout, who=who, cwd=cwd)
     if tgt == "container":
@@ -958,12 +1053,15 @@ def _capped_json_int(text):
 
 def recent_audit(limit: int = 50) -> list[dict]:
     """Tail of the audit log, newest last.  Used by the Terminal history pane."""
-    if isinstance(limit, bool) or limit is None:
+    # _isa + except-Exception: the _clamp_timeout rule — a class-property
+    # bomb detonated the bare bool gate, and int() of a leftover int
+    # subclass runs the subclass's own bombing ``__int__``.
+    if _isa(limit, bool) or limit is None:
         n = 50
     else:
         try:
             n = int(limit)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             n = 50
     n = max(1, min(n, 500))
     try:
