@@ -580,9 +580,22 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
 
 
 def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    The unbound base reads the operand's C-level buffer, so a *real* bytes /
+    bytearray subclass whose ``.decode`` is a bomb decodes safely.  A *lying*
+    ``__class__`` that answers ``bytes`` / ``bytearray`` without the matching
+    storage is admitted by ``_isinst`` (that is not an error, the bookmarks8
+    rule) but then has no buffer for the unbound base to read, so
+    ``bytes.decode(value)`` raises ``TypeError`` — pre-fix that rode the
+    ``_jsonable`` bytes branch out to a 500 on GET /api/bookmarks.  Fall back
+    to ``""`` so the row still renders and its siblings survive.
+    """
     base = bytes if _isinst(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except Exception:
+        return ""
 
 
 def _utf8_text(value) -> str:
@@ -617,8 +630,16 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or _isinst(value, bool):
+    if value is None:
         return value
+    if _isinst(value, bool):
+        # ``bool`` is final — it cannot be subclassed — so an ``_isinst(...,
+        # bool)`` True on a value whose real type is *not* ``bool`` is a lying
+        # ``__class__`` impostor (bookmarks8), not a real bool.  Returned as-is
+        # it leaked straight into Starlette's ``allow_nan=False`` encoder,
+        # which cannot serialise the impostor and 500'd GET /api/bookmarks.
+        # A real bool passes through; the impostor is dropped like a lying int.
+        return value if type(value) is bool else None
     if _isinst(value, int):
         if type(value) is not int:
             try:
