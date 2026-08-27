@@ -281,6 +281,52 @@ def _cmp_text(value) -> str:
     return _utf8_text(value)
 
 
+def _cfg_get(key: str):
+    """One config read, or None — a leftover config bomb cannot 500 through.
+
+    ``cfg().get("quick_links")`` / ``…("overrides")`` used to run bare at
+    four call sites, three of them on the request thread, so three whole
+    families of leftover 500'd GET /api/bookmarks before a single link was
+    even looked at:
+
+    * a ``cfg`` that raises, or answers a non-mapping (None after a torn
+      reload) — the ``.get`` AttributeError'd;
+    * a dict-*subclass* config whose ``.get`` is a bomb (the usage5 row
+      class riding the whole mapping instead of one row) — bypassed here
+      by the unbound ``dict.get``, which reads the C-level storage;
+    * a hash-shadowing key: a str-subclass key whose ``__hash__`` matches
+      ``"quick_links"`` / ``"overrides"`` but whose ``__eq__`` raises.
+      One subclass key degrades the whole dict to the generic lookup, so
+      even the *exact-str probe key*'s ``.get`` asks the stored bomb's
+      ``__eq__`` first and raised out of a plain ``dict``.
+
+    The shadow case falls back to an item scan so one bomb key costs only
+    itself: a shadowed ``overrides`` must not take ``quick_links`` with it.
+    """
+    try:
+        m = cfg()
+    except Exception:
+        return None
+    if not _isinst(m, dict):
+        return None
+    try:
+        return dict.get(m, key)
+    except Exception:
+        pass
+    try:
+        pairs = list(dict.items(m))
+    except Exception:
+        return None
+    for pair in pairs:
+        try:
+            k, v = pair
+            if type(k) is str and k == key:
+                return v
+        except Exception:
+            continue
+    return None
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -401,8 +447,9 @@ def _backend_index() -> dict:
     # overrides: map sid + url → best-effort (may fill gaps for launchd etc.)
     # _plain_dict, not a bare isinstance: a dict-subclass overrides mapping
     # whose ``items()`` raised used to discard the entire index built above,
-    # so every stopped VM's bookmark probed red instead of gray.
-    raw_ov = _plain_dict(cfg().get("overrides")) or {}
+    # so every stopped VM's bookmark probed red instead of gray.  _cfg_get:
+    # a raising / non-mapping / bomb-keyed config used to do the same.
+    raw_ov = _plain_dict(_cfg_get("overrides")) or {}
     for sid, raw in raw_ov.items():
         try:
             ov = resolve_value(raw)
@@ -474,7 +521,10 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
     # match override sid by identical url.  _plain_dict: a dict-subclass
     # overrides mapping whose ``items()`` raised used to 500 the list route
     # out of this loop (unlike _backend_index, nothing absorbs a raise here).
-    raw_ov = _plain_dict(cfg().get("overrides")) or {}
+    # _cfg_get, not a bare ``cfg().get``: a raising / non-mapping config, a
+    # config-wide ``.get`` bomb subclass, and a hash-shadowing ``overrides``
+    # key all raised here too — per link, on the request thread.
+    raw_ov = _plain_dict(_cfg_get("overrides")) or {}
     for sid, raw in raw_ov.items():
         try:
             ov = resolve_value(raw)
@@ -748,7 +798,11 @@ def list_bookmarks() -> dict:
     # first; the link resolution is then this thread's own work rather than a wait.
     f_idx = _pool.submit(_backend_index)
 
-    raw_links = cfg().get("quick_links")
+    # _cfg_get: the very first read of the request.  A cfg() that raises,
+    # answers None (torn reload), carries a subclass ``.get`` bomb, or holds
+    # a hash-shadowing ``quick_links`` key used to 500 the route right here,
+    # before a single link was looked at.
+    raw_links = _cfg_get("quick_links")
     try:
         # Materialised once, on its own: a list-subclass ``__iter__`` bomb
         # used to raise out of ``list(raw_links)`` here and then raise a
@@ -769,9 +823,26 @@ def list_bookmarks() -> dict:
     # to ride into every loop below and 500 the route.  Non-dict junk rows
     # were already skipped everywhere; dropping them here changes nothing.
     links = [row for row in (_plain_dict(l) for l in links) if row is not None]
+    # Launder real-str urls up front: resolve_value normally answers exact
+    # strs, but its all-or-nothing fallback keeps the whole list raw when a
+    # sibling row bombs, so a raw-kept str-subclass ``__bool__`` /
+    # ``__len__`` bomb url used to 500 the dedupe loop's bare ``not u`` and,
+    # even short of that, to vanish its row at the ``_truthy`` probe gate —
+    # though the underlying url text was fine.  The unbound ``str.encode``
+    # reads the C-level storage, so only a value with *real* str storage is
+    # rewritten; a lying ``__class__`` impostor raises here and keeps its
+    # existing drop/error path.
+    for row in links:
+        u = row.get("url")
+        if _isinst(u, str) and type(u) is not str:
+            try:
+                row["url"] = str.encode(u, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                pass
     # _plain_dict, not a bare isinstance: an overrides mapping whose
-    # ``items()`` raised used to 500 the merge loop below.
-    overrides = _plain_dict(cfg().get("overrides")) or {}
+    # ``items()`` raised used to 500 the merge loop below.  _cfg_get for
+    # the same three config-level bombs as the quick_links read above.
+    overrides = _plain_dict(_cfg_get("overrides")) or {}
     # also from overrides urls
     for sid, raw in overrides.items():
         try:
@@ -865,11 +936,20 @@ def list_bookmarks() -> dict:
         if not _isinst(link, dict):
             continue
         u = link.get("url")
-        if not _isinst(u, str) or not u:
+        if not _isinst(u, str):
             continue
-        # Exact-str copy before the set: a raw-kept str subclass whose
-        # ``__hash__`` raises (or is None — the classic unhashable-membership
-        # leftover) used to 500 the route out of ``u in seen`` / ``seen.add``.
+        # Exact-str copy *before any truthiness*: the old ``… or not u``
+        # asked the raw value for ``bool()`` first, so a raw-kept str
+        # subclass ``__bool__`` / ``__len__`` bomb (resolve_value's
+        # all-or-nothing fallback keeps the whole list raw when a sibling
+        # row bombs) and a lying ``__class__`` str impostor with a bomb
+        # ``__bool__`` — admitted by ``_isinst``, never laundered because
+        # it is not a real str — both 500'd the route from this dedupe,
+        # after every probe had already succeeded.  ``_utf8_text`` answers
+        # an exact str, so ``not u`` / ``u in seen`` / ``seen.add`` below
+        # cannot ask the leftover anything.  The same copy already guarded
+        # the hash side (a raw-kept ``__hash__`` bomb / ``__hash__ = None``
+        # url used to 500 the membership check).
         u = _utf8_text(u)
         if not u or u in seen:
             continue
