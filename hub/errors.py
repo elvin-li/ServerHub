@@ -807,6 +807,44 @@ def jsonable_error_detail(value):
     return _jsonable_param(value)
 
 
+def _clean_code(code) -> str:
+    """Launder *code* to an exact, UTF-8-renderable str before it is used.
+
+    The code a caller hands ``error_payload`` used to reach the ``CODES``
+    lookup and the response body *raw*, so a leftover riding the code slot
+    500'd the error path four different ways:
+
+    * a str subclass whose ``__hash__`` raises blew ``CODES.get`` itself;
+    * a str subclass that hash-shadows a real code's slot and raises from
+      ``__eq__`` blew the same lookup during the collision probe (the dict
+      compares the *stored* exact key against the query, and the reflected
+      comparison dispatches into the subclass first);
+    * a lying-``__class__`` impostor claiming str skipped the str() coercion
+      and blew the unbound ``str.encode(message, ...)`` outside any try;
+    * a non-str object (or an exact str carrying a lone surrogate) rode into
+      ``detail["code"]`` untouched and 500'd Starlette's own render —
+      ``TypeError: not JSON serializable`` / ``UnicodeEncodeError``.
+
+    A genuine str subclass keeps its text (a hash-bomb wrapper around a real
+    code still answers that code's status), an impostor degrades through
+    ``str()``, and an unrenderable leftover drops to a stable placeholder —
+    the unknown-code 500 contract, but as valid JSON instead of a crash.
+    """
+    if _isinst(code, str):
+        try:
+            # Unbound str.encode: launders a genuine subclass to an exact str
+            # (dropping its __hash__/__eq__/encode overrides with it) and
+            # rejects a lying-``__class__`` impostor with TypeError.
+            return str.encode(code, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            pass  # not really a str — degrade through str() below
+    try:
+        text = str(code)
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return "error.unrenderable"
+
+
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
     """(http status, response body) for *code* — the shape the SPA parses.
 
@@ -814,6 +852,9 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     it), so it needs the body directly.  Sharing this builder keeps middleware
     rejections translatable instead of falling back to hardcoded prose.
     """
+    # Launder first: CODES keys are exact strs, so once the code is one too
+    # the lookup below cannot dispatch into a leftover __hash__/__eq__.
+    code = _clean_code(code)
     status, template = CODES.get(code, (500, code))
     try:
         message = template.format(**params) if params else template
@@ -879,11 +920,54 @@ def exc_detail(exc, cap: int = 200) -> str:
     # _nginx_pair().  Unwrap it: a bare code is what errText() translates, and
     # a params-bearing error keeps the already-formatted English message
     # because errText() would only surface its unfilled {placeholders}.
-    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
-        detail = exc.detail
-        picked = detail.get("message") if detail.get("params") else detail.get("code")
-        if isinstance(picked, str) and picked:
-            return str.encode(picked, "utf-8", "replace").decode("utf-8")[: max(0, cap)]
+    try:
+        # One read, inside a try: a leftover HTTPException subclass whose
+        # ``detail`` is a *raising property* used to blow the unwrap itself
+        # (and ``isinstance`` reads a raising ``__class__`` — the json8 rule).
+        detail = exc.detail if _isinst(exc, HTTPException) else None
+    except Exception:
+        detail = None
+    if _isinst(detail, dict):
+        # Unbound dict.get, each lookup in its own try: a detail dict
+        # *subclass* whose bound ``.get`` is overridden to raise, and a stored
+        # key that hash-shadows "params"/"message"/"code" with a raising
+        # ``__eq__`` (the dict compares the *stored* key against the query)
+        # each used to raise straight out of the coded-error path.  Per-field
+        # guards keep the healthy siblings answering instead of dropping the
+        # whole unwrap to the repr tail.
+        try:
+            params = dict.get(detail, "params")
+        except Exception:
+            params = None
+        try:
+            has_params = bool(params)
+        except Exception:
+            # A params value whose ``__bool__`` bombs is still params-bearing
+            # — keep the already-formatted message like any coded error whose
+            # params filled its {placeholders}.
+            has_params = True
+        try:
+            picked = dict.get(detail, "message" if has_params else "code")
+        except Exception:
+            picked = None
+        if picked is None and has_params:
+            # The message slot is missing or hash-shadowed by a bomb key —
+            # a bare code still beats the dict-repr tail below.
+            try:
+                picked = dict.get(detail, "code")
+            except Exception:
+                picked = None
+        if _isinst(picked, str):
+            try:
+                text = str.encode(picked, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                # A lying-``__class__`` impostor claiming str rejects the
+                # unbound encode — fall through to the guarded str(exc) tail.
+                text = ""
+            # Truthiness on the laundered *exact* str: ``and picked`` used to
+            # dispatch into a str-subclass ``__bool__`` bomb.
+            if text:
+                return text[: max(0, cap)]
     try:
         text = str(exc)
     except Exception:
