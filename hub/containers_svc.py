@@ -57,6 +57,58 @@ def _job_epoch() -> int:
         return 0
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover stack/job value whose
+    ``__class__`` is a raising property blew straight through the bare type
+    gates in this module's config-stack reader and job renderers — a stack
+    row's ``id`` / ``name`` / ``path`` / ``compose_file`` / ``containers`` and
+    a job row's ``stack_id`` / ``action`` / ``code`` — before any launderer
+    could run: raw 500s on GET /api/stacks, GET/PUT /api/compose/{id},
+    POST /api/compose/{id}/validate, POST /api/stacks/{id}/run and
+    GET /api/stacks/jobs/{id} (the files12/jobs/modules8 rule).  A raising
+    ``__class__`` is treated as "none of these types" — fail closed to the
+    scrub/drop branch; a *lying* ``__class__`` still reports its claim and the
+    unbound base coercion downstream drops it, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
+def _job_scalar(value):
+    """A job-row scalar (``rc`` / ``started`` / ``finished``) scrubbed for JSON.
+
+    These fields are echoed to clients through ``_jsonable``, whose entry
+    ``isinstance(value, bool)`` reads a leftover value's ``__class__`` on the
+    real-type miss — so a poisoned scalar whose ``__class__`` is a raising
+    property 500'd GET /api/stacks (via ``job_public``) and
+    GET /api/stacks/jobs/{id}.  Laundering each field on its own degrades the
+    one bomb to ``None`` (the field drops) while its sibling fields survive.
+    """
+    try:
+        return _jsonable(value)
+    except Exception:
+        return None
+
+
+def _log_text(value) -> str:
+    """One job-log line as JSON-safe text; a ``__class__`` bomb drops to ''.
+
+    ``_as_text``'s entry ``isinstance(value, (bytes, bytearray))`` reads the
+    operand's ``__class__`` on the real-type miss, so a leftover log line whose
+    ``__class__`` is a raising property 500'd the log join on
+    GET /api/stacks/jobs/{id}.
+    """
+    try:
+        return _as_text(value)
+    except Exception:
+        return ""
+
+
 def _plain_job(value) -> dict | None:
     """A ``_cjobs`` / config-stack row as a plain ``dict``, or None.
 
@@ -134,7 +186,10 @@ def _plain_text(value) -> str | None:
     """
     if type(value) is str:
         return value
-    if isinstance(value, str):
+    # _isinst: a leftover row field whose ``__class__`` is a raising property
+    # used to 500 the job scans out of this bare gate (the real-type fast
+    # check above misses, so CPython consults ``__class__``).
+    if _isinst(value, str):
         try:
             return str.__str__(value)
         except Exception:
@@ -433,9 +488,12 @@ def _field_text(value, fallback: str = "") -> str:
     ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
     used to leak into GET /api/containers and /api/stacks.
     """
-    if value is None or isinstance(value, bool):
+    # _isinst, not a bare gate: a leftover field value whose ``__class__`` is
+    # a raising property makes CPython consult it on the real-type miss and
+    # 500'd GET /api/stacks / GET /api/compose/{id} straight out of here.
+    if value is None or _isinst(value, bool):
         return fallback
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a leftover float-subclass
@@ -448,7 +506,7 @@ def _field_text(value, fallback: str = "") -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: an int-subclass ``__str__``
@@ -467,14 +525,14 @@ def _field_text(value, fallback: str = "") -> str:
             # raise here and 500 GET /api/stacks, GET /api/containers and
             # GET /api/compose/{id}.
             return fallback
-    if isinstance(value, str):
+    if _isinst(value, str):
         text = value
-    elif isinstance(value, (bytes, bytearray)):
+    elif _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a leftover bytes-subclass ``.decode`` bomb in
         # a stack/override field used to 500 GET /api/stacks here.
         base = bytes if isinstance(value, bytes) else bytearray
         text = base.decode(value, "utf-8", "replace")
-    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+    elif _isinst(value, (dict, list, tuple, set, frozenset)):
         return fallback
     else:
         try:
@@ -485,8 +543,14 @@ def _field_text(value, fallback: str = "") -> str:
     # ``__str__`` returns self keeps the subclass (and the str branch above
     # never converted at all), so a bound ``.encode`` / ``__len__`` bomb in
     # a leftover stack id/name used to detonate on the two lines below and
-    # 500 GET /api/stacks (the docker6 _plain_text convention).
-    text = str.__str__(text)
+    # 500 GET /api/stacks (the docker6 _plain_text convention).  The try
+    # also seals a *lying* ``__class__`` (a non-str object whose property
+    # answers ``str``): the ``_isinst`` gate above then reports str and
+    # ``str.__str__`` rejects the non-str self — degrade to the fallback.
+    try:
+        text = str.__str__(text)
+    except Exception:
+        return fallback
     if not text:
         return fallback
     return text.encode("utf-8", "replace").decode("utf-8")
@@ -499,7 +563,9 @@ def _optional_text(value) -> str | None:
 
 def _str_list(raw) -> list[str]:
     """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500."""
-    if not isinstance(raw, list):
+    # _isinst: a leftover ``containers`` value whose ``__class__`` is a raising
+    # property used to 500 GET /api/stacks straight out of this gate.
+    if not _isinst(raw, list):
         return []
     try:
         # list() through the C storage: a leftover list-subclass whose
@@ -509,7 +575,7 @@ def _str_list(raw) -> list[str]:
         return []
     out = []
     for n in rows:
-        if not isinstance(n, str):
+        if not _isinst(n, str):
             continue
         # _field_text, not a raw ``not n`` truthiness probe: a str-subclass
         # item whose ``__len__`` raised used to 500 the same routes.
@@ -1674,19 +1740,22 @@ def _stack_paths() -> list[dict]:
         if s is None:
             continue
         path = s.get("path")
-        if isinstance(path, str):
+        # _isinst: a ``path`` value whose ``__class__`` is a raising property
+        # used to 500 GET /api/stacks / GET /api/compose/{id} straight out of
+        # this bare gate (which sits before the try below).
+        if _isinst(path, str):
             # Exact-str copy: a str-subclass path whose ``__len__`` raised
             # used to detonate the truthiness probe below.
             path = str.__str__(path)
-        if isinstance(path, str) and path:
+        if _isinst(path, str) and path:
             try:
                 p = Path(path)
                 # No bare ``or`` over the raw value: a leftover
                 # ``__bool__``-bomb ``compose_file`` used to 500 here.
                 compose_name = s.get("compose_file")
-                if isinstance(compose_name, str):
+                if _isinst(compose_name, str):
                     compose_name = str.__str__(compose_name)
-                if not isinstance(compose_name, str) or not compose_name:
+                if not _isinst(compose_name, str) or not compose_name:
                     compose_name = "docker-compose.yml"
                 compose = p / compose_name
             except (OSError, ValueError, TypeError):
@@ -1937,7 +2006,10 @@ def _job_field(value) -> str | None:
     keep such values out of new jobs; this funnel keeps a dict poisoned any
     other way from taking the listing routes down with it.
     """
-    return _as_text(value) if isinstance(value, str) else None
+    # _isinst: a ``stack_id`` / ``action`` / ``code`` whose ``__class__`` is a
+    # raising property used to 500 GET /api/stacks and GET /api/stacks/jobs/{id}
+    # straight out of this bare gate.
+    return _as_text(value) if _isinst(value, str) else None
 
 
 def _job_log_lines(raw) -> list:
@@ -1991,13 +2063,15 @@ def stack_job_log(job_id: str) -> dict:
         return {"running": False, "rc": None, "log": "(not started yet)",
                 "job_id": _as_text(job_id)}
     payload = {
-        # _truthy / _jsonable: a __bool__-bomb ``running``, an over-cap-digit
+        # _truthy / _job_scalar: a __bool__-bomb ``running``, an over-cap-digit
         # ``rc`` and a lone-surrogate ``started`` in a poisoned row all used
         # to 500 Starlette's encoder; the log join already scrubbed items but
-        # the scalar fields were echoed raw.
-        "running": _truthy(j.get("running")), "rc": j.get("rc"),
-        "started": j.get("started"), "finished": j.get("finished"),
-        "log": "\n".join(_as_text(x) for x in _job_log_lines(j.get("log")))
+        # the scalar fields were echoed raw.  _job_scalar also seals the
+        # ``__class__``-property bomb that blew ``_jsonable``'s own entry gate.
+        "running": _truthy(j.get("running")), "rc": _job_scalar(j.get("rc")),
+        "started": _job_scalar(j.get("started")),
+        "finished": _job_scalar(j.get("finished")),
+        "log": "\n".join(_log_text(x) for x in _job_log_lines(j.get("log")))
                or "(waiting for output…)",
         "job_id": _as_text(job_id),
         "stack_id": _job_field(j.get("stack_id")),
@@ -2006,7 +2080,7 @@ def stack_job_log(job_id: str) -> dict:
         # SPA can translate instead of rendering raw daemon stderr
         "code": _job_field(j.get("code"))}
     cleaned = _jsonable(payload)
-    return cleaned if isinstance(cleaned, dict) else missing
+    return cleaned if _isinst(cleaned, dict) else missing
 
 
 def latest_stack_jobs() -> list:
@@ -2032,8 +2106,9 @@ def job_public(jid, j):
     payload = {"job_id": _as_text(jid),
                "stack_id": _job_field(j.get("stack_id")),
                "action": _job_field(j.get("action")),
-               "running": _truthy(j.get("running")), "rc": j.get("rc"),
-               "finished": j.get("finished"),
+               "running": _truthy(j.get("running")),
+               "rc": _job_scalar(j.get("rc")),
+               "finished": _job_scalar(j.get("finished")),
                "code": _job_field(j.get("code"))}
     cleaned = _jsonable(payload)
-    return cleaned if isinstance(cleaned, dict) else {"job_id": _as_text(jid)}
+    return cleaned if _isinst(cleaned, dict) else {"job_id": _as_text(jid)}
