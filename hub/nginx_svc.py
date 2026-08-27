@@ -25,9 +25,28 @@ CONF_D = NGINX_ROOT / "conf.d"
 LABEL = "local.system-nginx"
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew every unguarded ``isinstance`` gate below — at
+    site-row rank, nested value and mapping-key rank inside ``_jsonable``,
+    at the whole-``sites``-return rank in ``overview()``, and through
+    ``_as_text`` on the ``sh`` out/err seam — and 500'd GET /api/nginx and
+    POST /api/nginx/test|reload.  A lying ``__class__`` (answers ``int``)
+    is *not* an error and still reports its claim here; the numeric arms'
+    unbound base coercion then drops it, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isinst(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
@@ -40,7 +59,7 @@ def _as_text(value) -> str:
     GET /api/nginx, and a str subclass whose ``__str__`` returns *itself*
     kept the bound ``encode`` bomb live through the final scrub line.
     """
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         value = _decode_bytes(value)
     elif value is None:
         return ""
@@ -108,9 +127,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 unbound
@@ -128,7 +147,7 @@ def _jsonable(value, depth: int = 0):
         except ValueError:
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a float subclass whose
@@ -140,14 +159,14 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: ``bytes(value)`` re-enters a subclass
         # ``__bytes__`` bomb before the copy, and a bound ``.decode`` bomb
         # was live for bytearray shapes — both used to 500 GET /api/nginx.
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises used
         # to wipe its whole row (pre-fix the raise escaped overview()'s
@@ -155,9 +174,9 @@ def _jsonable(value, depth: int = 0):
         # down with it); the base view cannot raise and the real entries
         # survive.
         for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
+            if _isinst(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            elif not _isinst(k, str):
                 try:
                     k = str(k)
                 except Exception:
@@ -165,9 +184,9 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb used
                 # to drop the whole field — the real elements survive now.
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
@@ -191,9 +210,9 @@ def _pid_text(value) -> str | None:
     * digit runs past pid_t (signed 32-bit) are no real process — the same
       bound cloudflared_svc applies before ``os.kill``.
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return None
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion first (the modules5 unbound convention): an
@@ -251,7 +270,10 @@ def overview() -> dict:
         sites = nginx_sites()
     except Exception:
         sites = []
-    if not isinstance(sites, list):
+    # _isinst, not a bare isinstance: a sites *return* whose ``__class__``
+    # is a raising property blew this gate outside the try above and 500'd
+    # GET /api/nginx before a single row was read.
+    if not _isinst(sites, list):
         sites = []
     # Field-level scrub of rows overview() does not own (see _jsonable):
     # surrogate keys/values and already-int over-cap numbers used to 500 the
@@ -270,10 +292,13 @@ def overview() -> dict:
         rows = []
     sites = []
     for row in rows:
-        if not isinstance(row, dict):
+        # _isinst at row rank: a leftover row whose ``__class__`` is a
+        # raising property used to blow this gate out of the loop and 500
+        # the route, taking every sane sibling site down with it.
+        if not _isinst(row, dict):
             continue
         scrubbed = _jsonable(row)
-        if isinstance(scrubbed, dict):
+        if _isinst(scrubbed, dict):
             sites.append(scrubbed)
     # The shared listing (hub/launchd_cache.py) rather than this module's own
     # `launchctl list`: the health page calls this *and* two other readers of the
