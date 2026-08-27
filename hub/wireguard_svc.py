@@ -315,6 +315,23 @@ def _truthy(value) -> bool:
         return False
 
 
+def _plain_mapping_get(mapping, key):
+    """Unbound ``dict.get`` behind the liar-proof shape gate, or None.
+
+    The read side of every ``dict.get(x, k) if isinstance(x, dict)`` seam:
+    ``_isa`` absorbs a raising-``__class__`` property, and the ``try``
+    absorbs a *lying*-``__class__`` impostor (the brew10/json9 shape —
+    ``isinstance`` answers dict, the real object is a plain object) that
+    passes the gate and makes the descriptor itself raise TypeError.
+    """
+    if not _isa(mapping, dict):
+        return None
+    try:
+        return dict.get(mapping, key)
+    except Exception:
+        return None
+
+
 def _nonfinite(value) -> bool:
     # _isa: a raising-``__class__``-property leftover detonated the bare gate.
     if not _isa(value, float):
@@ -342,7 +359,15 @@ def _plain_int(value):
     throughout: a raising-``__class__``-property leftover detonated the bare
     ``isinstance`` checks themselves.
     """
-    if _isa(value, bool):
+    # Identity, not _isa: bool cannot be subclassed, so a real bool is only
+    # ever the two singletons.  A *lying*-``__class__`` impostor (the
+    # brew10/json9 shape — ``isinstance`` answers bool, the real object is a
+    # plain object) passed the old ``_isa(value, bool)`` gate and detonated
+    # the bare ``int(value)`` with TypeError — a raw 500 on GET
+    # /api/wireguard and GET /api/wireguard/settings for a stored
+    # ``listen_port`` this function exists to range-check.  The liar now
+    # falls through to the guarded int branch and degrades to None.
+    if value is True or value is False:
         return int(value)
     if _isa(value, int):
         try:
@@ -489,7 +514,18 @@ def settings() -> dict:
     # _isa, not bare isinstance: a patched section whose ``__class__`` is a
     # raising property detonated the shape gate itself — a raw 500 on GET
     # /api/wireguard and GET /api/wireguard/settings before any value ran.
-    items = dict.items(stored) if _isa(stored, dict) else ()
+    # The unbound ``dict.items`` runs inside a ``try``: a *lying*-``__class__``
+    # impostor (the brew10/json9 shape — ``isinstance`` answers dict, the
+    # real object is a plain object) passed the ``_isa`` gate and made the
+    # descriptor itself raise TypeError — the same raw 500 on both reads the
+    # gate exists to stop.  A liar section reads as empty and every key
+    # keeps its default.
+    items = ()
+    if _isa(stored, dict):
+        try:
+            items = dict.items(stored)
+        except Exception:
+            items = ()
     for key, value in items:
         # Per-item try (the mapping-key lesson): ``key not in merged`` and
         # ``DEFAULTS[key]`` both run the stored *key*'s own hash/__eq__ —
@@ -510,11 +546,15 @@ def settings() -> dict:
             # ``.decode`` — either bomb was a raw 500 out of every settings read.
             expected = DEFAULTS[key]
             if isinstance(expected, bool):
-                # bool cannot be subclassed, so a surviving value is exact.
-                # False is a real stored value for wstunnel_enabled; keep it.
-                # _isa on the *stored* value: a raising-__class__ leftover
-                # detonated the bare gate itself.
-                if _isa(value, bool):
+                # Identity, not _isa: bool cannot be subclassed, so a real
+                # stored flag is only ever the two singletons (False is a
+                # real value for wstunnel_enabled; keep it).  The old
+                # ``_isa(value, bool)`` gate let a lying-``__class__``
+                # impostor ride into ``merged`` as itself, and Starlette's
+                # ``json.dumps`` refused the object — a raw 500 on GET
+                # /api/wireguard/settings for a value the gate exists to
+                # keep out.  A liar now keeps the default.
+                if value is True or value is False:
                     merged[key] = value
                 continue
             if isinstance(expected, str):
@@ -565,10 +605,23 @@ def save_settings(patch: dict) -> dict:
     # ``.get`` raised straight out of the bare method calls here and 500'd
     # PUT /api/wireguard/settings — plus POST /api/wireguard/remediate for
     # the wstunnel targets, whose uninstall/stabilize paths save settings.
+    #
+    # _isa gates plus a ``try`` around each unbound call (the brew10/json9
+    # liar rule): a root whose ``__class__`` is a raising property
+    # detonated the bare ``isinstance`` itself, and a *lying*-``__class__``
+    # impostor passed the gate and made ``dict.get`` / ``dict(...)`` raise
+    # TypeError — the same raw 500 on PUT /api/wireguard/settings this
+    # shape-degrade exists to stop.  A liar reads as an empty section; the
+    # validated patch below still persists.
     data = cfg()
-    raw = dict.get(data, "settings") if isinstance(data, dict) else None
-    stored = dict.get(raw, "wireguard") if isinstance(raw, dict) else None
-    current = dict(stored) if isinstance(stored, dict) else {}
+    raw = _plain_mapping_get(data, "settings")
+    stored = _plain_mapping_get(raw, "wireguard")
+    current = {}
+    if _isa(stored, dict):
+        try:
+            current = dict(stored)
+        except Exception:
+            current = {}
     for key, value in (patch or {}).items():
         if key not in DEFAULTS:
             continue
@@ -716,7 +769,13 @@ def _cli_missing(rc, err) -> bool:
     before claiming the 503; a wg that is still on disk keeps the original
     ``keygen_failed`` mapping.
     """
-    if rc != -1 or _as_text(err).strip() != "not found":
+    # _ping_rc before the comparison (the health9 rc rule): an rc-subclass
+    # whose ``__ne__`` raises used to detonate the bare ``rc != -1`` — a raw
+    # 500 out of every keygen failure path instead of the coded error.  A
+    # bombed honest ``-1`` is salvaged through ``int.__index__`` and still
+    # reads as the sentinel; a bomb that cannot answer reads as "not the
+    # sentinel" and keeps the original ``keygen_failed`` shape.
+    if _ping_rc(rc) != -1 or _as_text(err).strip() != "not found":
         return False
     return not _path_exists(WG)
 
@@ -767,7 +826,12 @@ def generate_keypair() -> tuple[str, str]:
     """A fresh (private, public) Curve25519 pair from ``wg genkey`` / ``wg pubkey``."""
     rc, private, err = sh([WG, "genkey"], timeout=8)
     private = _as_text(private).strip()
-    if rc != 0 or not _KEY_RE.match(private):
+    # _ping_rc (the health9 rc rule): this spawn does not own ``sh`` — tests
+    # and tooling patch it — and an rc-subclass whose ``__eq__``/``__ne__``
+    # raises used to detonate the bare ``rc != 0`` — a raw 500 on POST
+    # /api/wireguard/peers, /peers/batch and /peers/psk before any coded
+    # error could answer.  ``int.__index__`` salvages a bombed honest 0.
+    if _ping_rc(rc) != 0 or not _KEY_RE.match(private):
         if _cli_missing(rc, err):
             raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
@@ -787,7 +851,8 @@ def generate_keypair() -> tuple[str, str]:
 def generate_psk() -> str:
     rc, psk, err = sh([WG, "genpsk"], timeout=8)
     psk = _as_text(psk).strip()
-    if rc != 0 or not _KEY_RE.match(psk):
+    # _ping_rc: same rc-``__eq__`` bomb launder as :func:`generate_keypair`.
+    if _ping_rc(rc) != 0 or not _KEY_RE.match(psk):
         if _cli_missing(rc, err):
             raise WireGuardError("wg.not_installed")
         raise WireGuardError("wg.keygen_failed")
@@ -840,8 +905,20 @@ def _conf_interface(parsed) -> dict:
     _isa gates: a parsed conf (or block) whose ``__class__`` is a raising
     property used to detonate the bare ``isinstance`` here — a raw 500 on
     GET /api/wireguard out of the very launder that exists to absorb junk.
+
+    The unbound ``dict.get`` runs inside a ``try``: a *lying*-``__class__``
+    impostor (the brew10/json9 shape — ``isinstance`` answers dict, the
+    real object is a plain object) passed the ``_isa`` gate and made the
+    descriptor itself raise TypeError — a raw 500 on GET /api/wireguard,
+    /readiness and /next-ip out of a patched ``read_conf``.  A liar parsed
+    conf reads as an empty skeleton, exactly like any other junk shape.
     """
-    block = dict.get(parsed, "interface") if _isa(parsed, dict) else None
+    block = None
+    if _isa(parsed, dict):
+        try:
+            block = dict.get(parsed, "interface")
+        except Exception:
+            block = None
     if not _isa(block, dict):
         return {}
     try:
@@ -863,17 +940,29 @@ def _plain_rows(value) -> list[dict]:
     _isa on every gate (the health9 rule): a listing or row whose
     ``__class__`` is a raising property used to detonate the bare
     ``isinstance`` checks themselves — the same raw 500 they exist to stop.
+
+    Both unbound ``__iter__`` descriptors run inside a ``try`` and fall
+    through to the generic ``iter()`` probe (the health10 ``_ping_targets``
+    rule): a *lying*-``__class__`` impostor — ``isinstance`` answers tuple,
+    the real object is a plain object — passed the ``_isa`` gate and made
+    the bare ``tuple.__iter__`` raise TypeError, a raw 500 on GET
+    /api/wireguard/next-ip and GET /api/wireguard/export for a peers value
+    every other junk shape already degrades to an empty listing.
     """
+    if value is None:
+        return []
+    rows = None
     if _isa(value, list):
         try:
             rows = list.__iter__(value)
         except Exception:
-            return []
+            rows = None
     elif _isa(value, tuple):
-        rows = tuple.__iter__(value)
-    elif value is None:
-        return []
-    else:
+        try:
+            rows = tuple.__iter__(value)
+        except Exception:
+            rows = None
+    if rows is None:
         try:
             rows = iter(value)
         except Exception:
@@ -895,7 +984,14 @@ def _plain_rows(value) -> list[dict]:
 
 def _conf_peers(parsed) -> list[dict]:
     """The parsed ``[Peer]`` blocks as exact dicts; see :func:`_conf_interface`."""
-    peers = dict.get(parsed, "peers") if _isa(parsed, dict) else None
+    peers = None
+    if _isa(parsed, dict):
+        try:
+            # In a try for the same lying-``__class__`` impostor
+            # :func:`_conf_interface` absorbs: the descriptor itself raises.
+            peers = dict.get(parsed, "peers")
+        except Exception:
+            peers = None
     return _plain_rows(peers)
 
 
@@ -2149,7 +2245,11 @@ def apply_live() -> dict:
         return {"ok": False, "error": "stage_unwritable"}
 
     rc, _, err = sh(["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
-    if rc == 0:
+    # _ping_rc (the health9 rc rule): an rc-subclass ``__eq__`` bomb from a
+    # patched/odd sh used to detonate the bare ``rc == 0`` — a raw 500 on
+    # POST /api/wireguard/sync and on every peer mutation's apply step after
+    # the change was already persisted.  A bombed honest 0 is salvaged.
+    if _ping_rc(rc) == 0:
         return {"ok": True, "applied": True, "device": device}
     result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
     if result.get("ok"):
@@ -2243,9 +2343,15 @@ def interface_action(action: str) -> dict:
     # sent operators looking in the wrong place entirely.
     for command in commands:
         rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
-        if rc == 0:
+        # _ping_rc on both exit probes (the health9 rc rule): an rc-subclass
+        # ``__eq__`` bomb used to detonate the bare ``rc == 0`` — a raw 500
+        # on POST /api/wireguard/interface.  ``_as_text`` before
+        # ``sudo_refused``: the marker scan runs string methods on the
+        # stderr it is handed, and a leftover str-subclass bomb must cost
+        # only this probe, never the route.
+        if _ping_rc(rc) == 0:
             continue
-        if sudo_refused(err):
+        if sudo_refused(_as_text(err)):
             return run_admin_sequence(commands, timeout=_WG_QUICK_TIMEOUT + 60)
         combined = (_as_text(err) + "\n" + _as_text(out)).strip()
         # A zombie claim can appear between the check above and this call (or the
@@ -2257,7 +2363,7 @@ def interface_action(action: str) -> dict:
                 return {"ok": True, "action": verb, "already_running": True}
             sh(["/usr/bin/sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20)
             rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
-            if rc == 0:
+            if _ping_rc(rc) == 0:
                 continue
             combined = (_as_text(err) + "\n" + _as_text(out)).strip()
         return {
@@ -2474,6 +2580,18 @@ def _ping_targets() -> list[tuple[dict, str]]:
     targets: list[tuple[dict, str]] = []
     for record in rows:
         if not _isa(record, dict):
+            continue
+        # Exact-dict launder in a try: a *lying*-``__class__`` impostor row
+        # (the brew10/json9 shape — ``isinstance`` answers dict, the real
+        # object is a plain object) passed the ``_isa`` gate and made the
+        # unbound ``dict.get`` descriptor below raise TypeError — a raw 500
+        # on POST /api/wireguard/ping for a row every other junk shape
+        # already drops alone.  ``dict(record)`` copies a real (sub)dict
+        # through the C-level storage and refuses the liar; downstream
+        # (:func:`ping_peers`'s result build) then reads exact dicts only.
+        try:
+            record = dict(record)
+        except Exception:
             continue
         # Unbound ``dict.get`` (the smart_test_svc._schedule_cfg rule): a
         # dict-subclass row whose ``.get`` raises must drop alone.
