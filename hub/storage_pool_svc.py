@@ -70,6 +70,46 @@ _refresh_lock = threading.Lock()
 _generation = 0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare gates themselves — planted as the cfg root, the
+    ``settings`` map, the ``storage_pool`` block, the ``members`` list, a
+    member value, the ``name`` / ``policy`` scalars (through ``_text``'s
+    first rank gate), a ``list_volumes`` row, or the listing return — and
+    500'd all four pool routes at once, one line ahead of the laundering
+    built to absorb junk shapes (the system/status/usage_svc rule).  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _mapping_get(mapping, key):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which this reader's unbound
+    ``dict.get`` calls never got: the unbound builtin bypasses a subclass
+    ``.get`` override, but the hash probe still runs the *stored keys'*
+    own ``__eq__`` — a leftover str-subclass key whose hash shadows
+    ``"settings"`` / ``"storage_pool"`` / ``"members"`` / ``"name"`` /
+    ``"policy"`` and whose ``__eq__`` raises used to detonate the bare
+    ``dict.get`` and 500 all four pool routes at once.  Only the shadowed
+    field degrades to its default; the siblings keep their sane data.
+    """
+    if not _isa(mapping, dict):
+        return None
+    try:
+        return dict.get(mapping, key)
+    except Exception:
+        return None
+
+
 def _pool_config() -> dict:
     """Pool definitions from services.yaml, or an empty default.
 
@@ -95,18 +135,21 @@ def _pool_config() -> dict:
         data = cfg()
     except Exception:
         data = {}
-    settings = dict.get(data, "settings") if isinstance(data, dict) else None
-    raw = dict.get(settings, "storage_pool") if isinstance(settings, dict) else None
-    if not isinstance(raw, dict):
+    # _mapping_get, not bare ``dict.get``-under-isinstance: a ``__class__``
+    # property bomb detonated each rank gate, and a hash-shadowing key bomb
+    # detonated each unbound ``dict.get``'s probe (see the helpers above).
+    settings = _mapping_get(data, "settings")
+    raw = _mapping_get(settings, "storage_pool")
+    if not _isa(raw, dict):
         raw = {}
-    members_raw = dict.get(raw, "members")
+    members_raw = _mapping_get(raw, "members")
     members = []
-    if isinstance(members_raw, list):
+    if _isa(members_raw, list):
         for m in list.__iter__(members_raw):
             text = _text(m).strip()
             if text:
                 members.append(text)
-    policy = _text(dict.get(raw, "policy")) or DEFAULT_POLICY
+    policy = _text(_mapping_get(raw, "policy")) or DEFAULT_POLICY
     if policy not in PLACEMENT_POLICIES:
         policy = DEFAULT_POLICY
     try:
@@ -115,13 +158,13 @@ def _pool_config() -> dict:
         # ``__float__``, and the ``or 0`` runs its ``__bool__`` — a leftover
         # subclass bomb in either used to raise past the tuple and 500 the
         # same four routes.
-        min_free = float(dict.get(raw, "min_free_gb") or 0)
+        min_free = float(_mapping_get(raw, "min_free_gb") or 0)
     except Exception:
         min_free = 0.0
     if min_free != min_free or min_free in (float("inf"), float("-inf")):
         min_free = 0.0
     return {
-        "name": _text(dict.get(raw, "name")) or "pool",
+        "name": _text(_mapping_get(raw, "name")) or "pool",
         "members": members,
         "policy": policy,
         "min_free_gb": min_free,
@@ -157,22 +200,27 @@ def _text(raw) -> str:
     ``bytes.decode`` / ``list.__getitem__`` read the real content underneath
     the override, so the real text still renders and only the truly
     unrenderable degrades to "".
+
+    ``_isa`` on every rank gate, not bare ``isinstance``: a leftover whose
+    ``__class__`` is a *raising property* detonated the very first gate here
+    — as a member value, the ``name``, or the ``policy`` — and 500'd all
+    four pool routes ahead of every scrub below (the system/status rule).
     """
-    if isinstance(raw, (list, tuple)):
+    if _isa(raw, (list, tuple)):
         base = list if isinstance(raw, list) else tuple
         try:
             raw = base.__getitem__(raw, 0) if base.__len__(raw) else ""
         except Exception:
             return ""
-    if isinstance(raw, (bytes, bytearray)):
+    if _isa(raw, (bytes, bytearray)):
         base = bytes if isinstance(raw, bytes) else bytearray
         try:
             return base.decode(raw, "utf-8", "replace")
         except Exception:
             return ""
-    if isinstance(raw, bool):
+    if _isa(raw, bool):
         return ""
-    if isinstance(raw, int):
+    if _isa(raw, int):
         try:
             # int.__index__ launders a subclass to an exact int ahead of the
             # digit-cap probe; str() of that exact int cannot reflect back
@@ -180,15 +228,15 @@ def _text(raw) -> str:
             return str(int.__index__(raw))
         except Exception:
             return ""
-    if isinstance(raw, float):
+    if _isa(raw, float):
         # Every exact float already read as "" (nan/inf via the explicit
         # probe, finite via the no-isoformat fall-through); stating it as
         # one branch removes the ``!=`` / ``in`` equality probes a subclass
         # ``__eq__`` bomb used to detonate.
         return ""
-    if raw is None or isinstance(raw, (dict, set, frozenset)):
+    if raw is None or _isa(raw, (dict, set, frozenset)):
         return ""
-    if not isinstance(raw, str):
+    if not _isa(raw, str):
         try:
             iso = getattr(raw, "isoformat", None)
         except Exception:
@@ -262,7 +310,9 @@ def _candidates() -> list[dict]:
         # clear *after* its config write had already landed.  Same honest
         # degrade as the iteration bomb: no candidates, members read missing.
         volumes = []
-    if not isinstance(volumes, list):
+    # _isa, not bare isinstance: a listing return whose ``__class__`` is a
+    # raising property detonated this gate one line past the call guard.
+    if not _isa(volumes, list):
         volumes = []
     try:
         volumes = list(volumes)
@@ -277,7 +327,10 @@ def _candidates() -> list[dict]:
         # refusals instead of a bare 500.
         volumes = []
     for vol in volumes:
-        if not isinstance(vol, dict):
+        # _isa: one row whose ``__class__`` is a raising property used to
+        # detonate this per-row gate and 500 all four pool routes, where
+        # every other junk row already drops silently.
+        if not _isa(vol, dict):
             continue
         try:
             # Per-row guard, same class as the iteration bomb above: a dict
@@ -484,10 +537,12 @@ def _validate(mounts: list[str], policy: str) -> tuple[list[str], list[dict]]:
     # in-process, and a leftover list-subclass ``__bool__``/``__iter__`` bomb
     # used to blow the old ``(mounts or [])`` raw out of GET-adjacent
     # POST /api/storage/pool/plan and /save for those callers, where junk
-    # mounts already earn their coded refusals.
-    if isinstance(mounts, list):
+    # mounts already earn their coded refusals.  _isa for the same
+    # in-process callers: a mounts value whose ``__class__`` is a raising
+    # property detonated the bare gate itself.
+    if _isa(mounts, list):
         rows = list.__iter__(mounts)
-    elif isinstance(mounts, tuple):
+    elif _isa(mounts, tuple):
         rows = tuple.__iter__(mounts)
     else:
         rows = iter(())
