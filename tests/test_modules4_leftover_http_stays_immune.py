@@ -149,10 +149,12 @@ class ModulesRouteDataclassPoisonTests(_RegistrySandbox):
             "dc", [r.get("id") for r in body["by_category"].get("other", [])]
         )
 
-    def test_recursive_dataclass_loses_only_its_own_row(self):
+    def test_recursive_dataclass_is_salvaged_field_level(self):
         """``asdict`` of a self-referential field is RecursionError — an
-        Exception subclass, so the except in ``_module_row`` drops that row
-        alone and the appended sane sibling survives."""
+        Exception subclass caught in ``_module_row``.  The modules11 salvage
+        arm now pulls each declared field individually, so the row survives
+        with the loop truncated by ``_jsonable``'s depth cap instead of
+        vanishing whole; the appended sane sibling survives as before."""
         loop: list = []
         loop.append(loop)
         sane = len(modules.list_modules())
@@ -165,9 +167,12 @@ class ModulesRouteDataclassPoisonTests(_RegistrySandbox):
         })
         body = self._get_modules()
         ids = [r.get("id") for r in body["modules"]]
-        self.assertNotIn("rec", ids)
+        self.assertIn("rec", ids)
         self.assertIn("sane", ids)
-        self.assertEqual(len(ids), sane + 1)
+        self.assertEqual(len(ids), sane + 2)
+        row = next(r for r in body["modules"] if r.get("id") == "rec")
+        self.assertEqual(row["name"], "r")
+        self.assertIsInstance(row["apis"], list)
 
 
 class ModulesRouteEntryDropTests(_RegistrySandbox):
