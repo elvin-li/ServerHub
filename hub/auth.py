@@ -47,6 +47,26 @@ _LOGIN_WINDOW = 300.0
 _LOGIN_SWEEP_AT = 512
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    The ``hub.jobs._isinst`` rule, which these auth readers never got:
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew every bare ``isinstance`` gate in this module —
+    at cfg root, ``settings``, ``settings.auth``, the ``accounts`` list, a
+    row, a row's ``resources`` and the ``session_epochs`` mapping/value
+    ranks — straight out of GET /api/auth/status, POST /api/auth/login,
+    every session-cookie check (``verify_session`` → ``accounts()``) and
+    the ``require_auth`` local-client path at once.  Fails closed to
+    False: a value that cannot even answer what it is, is junk.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -78,7 +98,7 @@ def _mapping_get(mapping, key):
     ``dict.get`` reads the real storage underneath the override, so a
     subclass that only poisoned its method keeps its sane data.
     """
-    if not isinstance(mapping, dict):
+    if not _isinst(mapping, dict):
         return None
     try:
         return mapping.get(key)
@@ -96,7 +116,7 @@ def _mapping_items(mapping) -> list:
     modules5 unbound convention), so a poisoned ``session_epochs`` mapping
     keeps its real logout counters instead of 500ing every login.
     """
-    if not isinstance(mapping, dict):
+    if not _isinst(mapping, dict):
         return []
     try:
         return list(mapping.items())
@@ -119,19 +139,46 @@ def _auth_cfg() -> dict:
 
     Bound ``.get`` on the config root / settings block used to detonate a
     leftover dict-subclass ``.get`` bomb (see :func:`_mapping_get`), and the
-    block itself is copied through ``dict(...)`` — the C-level storage, same
-    as ``config.settings_section`` — so every downstream ``a.get(...)`` and
-    ``or`` truth test in this module reads plain data.  Nested values
-    (``session_epochs``, ``accounts`` rows) keep their own guards.
+    block itself is rebuilt through unbound ``dict.items`` — the C-level
+    storage, same as ``config.settings_section`` — so every downstream
+    ``a.get(...)`` and ``or`` truth test in this module reads plain data.
+    Nested values (``session_epochs``, ``accounts`` rows) keep their own
+    guards.
+
+    The ``cfg()`` call is guarded (the ``config.settings_section`` /
+    ``jobs.maintenance_tasks`` union rule): a snapshot provider that raises
+    used to escape this helper and 500 GET /api/auth/status, login and every
+    cookie check while the guarded settings readers answered 200 over the
+    very same failure.
+
+    Keys are laundered to *exact* str: ``dict(auth)`` copied an exact-dict
+    source through the C level, which preserved a leftover str-*subclass*
+    key whose ``__eq__``/``__hash__`` raises — every later ``a.get("…")``
+    probe that landed on its hash slot then detonated the comparison from
+    inside a plain dict, 500ing login/status/cookie checks with no method
+    override left to bypass.  ``str.__str__`` reads the real text under the
+    override; non-str keys are junk for this block's string-keyed readers
+    and are dropped (``session_epochs``' own int keys live one level down,
+    untouched).
     """
-    settings = _mapping_get(cfg(), "settings")
-    auth = _mapping_get(settings, "auth")
-    if not isinstance(auth, dict):
-        return {}
     try:
-        return dict(auth)
+        root = cfg()
     except Exception:
         return {}
+    settings = _mapping_get(root, "settings")
+    auth = _mapping_get(settings, "auth")
+    if not _isinst(auth, dict):
+        return {}
+    out: dict[str, object] = {}
+    for k, v in _mapping_items(auth):
+        if type(k) is str:
+            out[k] = v
+        elif _isinst(k, str):
+            try:
+                out[str.__str__(k)] = v
+            except Exception:
+                continue
+    return out
 
 
 def _epoch_key(key) -> str:
@@ -158,7 +205,9 @@ def _epoch_count(raw) -> int:
     cap reads as 1, not 0: the account has logged out at least once, so
     pre-logout tokens (whose version omits the epoch) must stay revoked.
     """
-    if raw is None or isinstance(raw, bool):
+    # _isinst: a ``__class__``-property bomb as one epoch value used to
+    # detonate this bare isinstance and 500 every login and cookie check.
+    if raw is None or _isinst(raw, bool):
         return 0
     try:
         value = int(raw)
@@ -185,7 +234,7 @@ def _clean_epochs(raw) -> dict:
     spellings exist the *larger* counter wins, so neither copy can quietly
     un-revoke sessions the other had already revoked.
     """
-    if not isinstance(raw, dict):
+    if not _isinst(raw, dict):
         return {}
     out: dict[str, int] = {}
     for k, v in _mapping_items(raw):
@@ -279,14 +328,17 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
 
 
 def _account_rows(auth_cfg: dict) -> list[dict]:
+    # _isinst at list and row rank: a ``__class__``-property bomb planted as
+    # the accounts value (or one row) used to raise out of the bare
+    # isinstance gates and 500 the account writers.
     rows = _mapping_get(auth_cfg, "accounts")
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         return []
     out: list[dict] = []
     # Unbound iteration + a guarded dict() copy: a list-subclass __iter__
     # bomb, or a row whose own keys()/__iter__ raises, costs itself only.
     for e in _iter_list(rows):
-        if not isinstance(e, dict):
+        if not _isinst(e, dict):
             continue
         try:
             out.append(dict(e))
@@ -426,14 +478,15 @@ def accounts() -> dict[str, dict]:
         }
 
     rows = a.get("accounts")
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         rows = []
-    # _iter_list / _mapping_get / _pick: a list-subclass ``__iter__`` bomb as
-    # the accounts list, a dict-subclass ``.get`` bomb as one row, and a
-    # ``__bool__`` bomb in any field each used to 500 every login instead of
-    # costing (at most) the one poisoned row.
+    # _iter_list / _mapping_get / _pick / _isinst: a list-subclass
+    # ``__iter__`` bomb as the accounts list, a dict-subclass ``.get`` bomb
+    # as one row, a ``__bool__`` bomb in any field and a ``__class__``-
+    # property bomb at list/row/resources rank each used to 500 every login
+    # instead of costing (at most) the one poisoned row.
     for raw in _iter_list(rows):
-        if not isinstance(raw, dict):
+        if not _isinst(raw, dict):
             continue
         name = _cfg_text(_pick(_mapping_get(raw, "username"), "")).strip()
         if not name or ":" in name or not _utf8_ok(name):
@@ -445,7 +498,7 @@ def accounts() -> dict[str, dict]:
         resources = [
             _cfg_text(r) for r in _iter_list(raw_res)
             if _cfg_text(r).strip() and _utf8_ok(_cfg_text(r))
-        ] if isinstance(raw_res, list) else []
+        ] if _isinst(raw_res, list) else []
         # An explicit entry wins over the legacy pair for the same name, so
         # promoting the admin into the accounts list is a safe migration.
         out[name] = {
@@ -515,7 +568,7 @@ def _auth_is_claimed(auth_cfg: dict) -> bool:
     used to 500 the unauthenticated GET /api/auth/status.  A junk bomb
     value reads as "no credential", same as any other unusable leftover.
     """
-    if not isinstance(auth_cfg, dict):
+    if not _isinst(auth_cfg, dict):
         return False
     if _truthy(_mapping_get(auth_cfg, "password_hash")):
         return True
@@ -1378,8 +1431,10 @@ def _session_epoch(username: str) -> int:
     used to 500 the f-string in ``account_session_version`` on every login
     and pending-TOTP token.
     """
+    # _isinst: a ``__class__``-property bomb planted as the whole
+    # session_epochs mapping used to raise out of the bare isinstance here.
     epochs = _auth_cfg().get("session_epochs")
-    if not isinstance(epochs, dict):
+    if not _isinst(epochs, dict):
         return 0
     target = str(username)
     # _mapping_items, not epochs.items(): a dict-subclass ``items()`` bomb
