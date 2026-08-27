@@ -58,7 +58,15 @@ def _as_text(value) -> str:
     under Starlette's UTF-8 encode of ``df`` mount fields.
     """
     if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
+        # Guarded unwrap, matching disk_manage_svc._text / disk_power_svc._text:
+        # a sequence *subclass* whose ``__bool__`` / ``__getitem__`` raises (the
+        # storage4/pool4 iteration-bomb class) used to raise straight out of this
+        # scrub — the one surface in the disk-read family whose list-unwrap was
+        # still bare after storage7 sealed its encode tail.
+        try:
+            value = value[0] if value else ""
+        except Exception:
+            return ""
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
     elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
@@ -88,9 +96,20 @@ def _disk_token(value) -> str:
     a healthy diskutil plist.  Leftover ``bytes`` used to stringify as
     ``b'disk0'`` (so the boot disk dropped out of the safety union);
     array-shaped leftovers used to ``re.match`` / ``set.add`` 500.
+
+    The token must scrub, never raise: it feeds ``root_whole_disks`` — the set
+    the panel refuses to spin down or eject — so a raise here does not merely
+    drop one identifier, it collapses the whole plist arm of that safety union
+    (``from_plist`` returns an empty set), silently narrowing boot-disk
+    protection.  A sequence *subclass* whose ``__bool__`` / ``__getitem__``
+    raises now degrades to "" like every other unreadable token, so the
+    surviving ``APFSPhysicalStores`` disks still contribute.
     """
     if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
+        try:
+            value = value[0] if value else ""
+        except Exception:
+            return ""
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", "replace")
     if not isinstance(value, str):
