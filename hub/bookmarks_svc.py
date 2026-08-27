@@ -246,6 +246,23 @@ def _plain_dict(value) -> dict | None:
         return None
 
 
+def _cmp_text(value) -> str:
+    """*value* as an exact str for ``==`` / ``in`` decisions, else ``""``.
+
+    State / status / kind compares used to run raw: a str-subclass
+    ``__eq__`` bomb on a backend row's ``state`` 500'd the probe-decision
+    loop (``b_state == "stopped"``) and ``_compose_result``'s tuple
+    membership — the subclass side of ``==`` is asked first even when the
+    bomb sits opposite an exact str.  A non-str bomb (``resolve_value``
+    passes those through raw) blew the same compares from the reflected
+    side.  Non-strs answer ``""``: they never matched a state literal
+    before either, and ``""`` is not in any of the tuples compared here.
+    """
+    if not isinstance(value, str):
+        return ""
+    return _utf8_text(value)
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -318,8 +335,17 @@ def _backend_index() -> dict:
         lambda collect: collect(), [utm_vms, orb_machines, containers], max_workers=3
     )
 
-    try:
-        for v in vm_rows + orb_rows:
+    # Per-row absorption, not one try spanning the loop: a single bomb row
+    # (a dict-subclass ``.get`` bomb, or a ``__bool__`` bomb riding the
+    # ``or "down"`` fallback) used to abort the whole loop and silently
+    # wipe every sibling's entry — so all their stopped bookmarks probed
+    # red instead of gray.  ``_plain_dict`` copies through C-level storage
+    # first, so the row's own methods never run.
+    for v in vm_rows + orb_rows:
+        v = _plain_dict(v)
+        if v is None:
+            continue
+        try:
             info = {
                 "state": v.get("state") or "down",
                 "status": v.get("status"),
@@ -333,11 +359,14 @@ def _backend_index() -> dict:
             put(v.get("orb_name"), info)
             put(v.get("name"), info)
             put_url(v.get("url"), info)
-    except Exception:
-        pass
+        except Exception:
+            continue
 
-    try:
-        for c in container_rows:
+    for c in container_rows:
+        c = _plain_dict(c)
+        if c is None:
+            continue
+        try:
             info = {
                 "state": c.get("state") or "down",
                 "status": c.get("detail") or c.get("status"),
@@ -348,8 +377,8 @@ def _backend_index() -> dict:
             put(c.get("id"), info)
             put(c.get("name"), info)
             put_url(c.get("url"), info)
-    except Exception:
-        pass
+        except Exception:
+            continue
 
     # overrides: map sid + url → best-effort (may fill gaps for launchd etc.)
     # _plain_dict, not a bare isinstance: a dict-subclass overrides mapping
@@ -367,8 +396,13 @@ def _backend_index() -> dict:
         key = _key_text(sid)
         if not key or key in idx:
             continue
-        # only mark intentionally hidden/disabled as stopped if flag set
-        if ov.get("expected") == "stopped" or ov.get("disabled") is True:
+        # only mark intentionally hidden/disabled as stopped if flag set.
+        # _cmp_text: resolve_value launders str values but passes other
+        # types through raw, so a non-str ``expected:`` __eq__ bomb used
+        # to raise out of this compare and wipe the whole index built
+        # above (absorbed at f_idx.result()) — every stopped VM's
+        # bookmark probed red instead of gray.
+        if _cmp_text(ov.get("expected")) == "stopped" or ov.get("disabled") is True:
             # _truthy: a __bool__-bomb name used to raise out of the ``or``
             # and cost the whole index the same way as the items() bomb.
             name = ov.get("name")
@@ -453,12 +487,15 @@ def _compose_result(link: dict, probe: dict | None, backend: dict | None) -> dic
         "id": lid if _truthy(lid) else service,
         "service": service if _truthy(service) else lid,
     }
-    b_state = (backend or {}).get("state")
+    # _cmp_text throughout: these compares used to run raw, so an __eq__
+    # bomb riding a backend row's state / status / kind 500'd the list
+    # route from here — the tuple membership asks the subclass first.
+    b_state = _cmp_text((backend or {}).get("state"))
     # intentional stop / suspended (treat suspended as stopped-ish warn gray? user said 主动停止=灰)
-    if b_state in ("stopped", "down") and (backend or {}).get("kind") == "vm":
+    if b_state in ("stopped", "down") and _cmp_text((backend or {}).get("kind")) == "vm":
         # VM: "stopped" = intentional; legacy "down" from old code treated as stopped for VMs
         # after our fix VMs use "stopped"; keep both
-        if b_state == "stopped" or (backend or {}).get("status") in (
+        if b_state == "stopped" or _cmp_text((backend or {}).get("status")) in (
             "stopped", "stop", "exited", "created", "shutdown"
         ):
             return {
@@ -711,16 +748,20 @@ def list_bookmarks() -> dict:
             name = ov.get("name")
             if not _truthy(name):
                 name = sid
-            # Laundered compare: the raw side of ``==`` is a link url that
-            # survived resolve_value's all-or-nothing fallback, and a str
-            # *subclass* ``__eq__`` bomb there is called first even when it
-            # sits on the right (subclass reflected-first rule) — pre-fix a
-            # 500 out of this dedupe.  ``_utf8_text`` answers an exact str.
+            # Laundered compare on *both* sides: the left is a link url
+            # that survived resolve_value's all-or-nothing fallback, and a
+            # str *subclass* ``__eq__`` bomb there is called first even on
+            # the right (subclass reflected-first rule).  The right is the
+            # override url — resolve_value launders strs, but passes other
+            # types through raw, so a non-str ``url:`` __eq__ bomb used to
+            # 500 this dedupe from the reflected side.  A non-str url can
+            # never equal a str link url, so it skips the scan entirely.
             ov_url = ov["url"]
-            if not any(
+            ov_cmp = _utf8_text(ov_url) if isinstance(ov_url, str) else None
+            if ov_cmp is None or not any(
                 isinstance(l, dict)
                 and isinstance(l.get("url"), str)
-                and _utf8_text(l.get("url")) == ov_url
+                and _utf8_text(l.get("url")) == ov_cmp
                 for l in links
             ):
                 links.append({
@@ -748,17 +789,15 @@ def list_bookmarks() -> dict:
         if not isinstance(link, dict) or not _truthy(link.get("url")):
             continue
         backend = _resolve_backend(link, idx)
-        b_state = (backend or {}).get("state")
-        try:
-            # Guarded: a __bool__-bomb status value on a backend row used to
-            # raise out of the ``or`` here after the index had already been
-            # built — a 500 at decision time, not collection time.
-            vm_status = str((backend or {}).get("status") or "").lower()
-        except Exception:
-            vm_status = ""
+        # _cmp_text on state / status / kind: a __bool__-bomb status used
+        # to raise out of a bare ``str(… or "")`` here, and an __eq__-bomb
+        # state / kind then 500'd the compares below the same way — at
+        # decision time, after the index had already been built.
+        b_state = _cmp_text((backend or {}).get("state"))
+        vm_status = _cmp_text((backend or {}).get("status")).lower()
         if b_state == "stopped" or (
             backend
-            and backend.get("kind") == "vm"
+            and _cmp_text(backend.get("kind")) == "vm"
             and vm_status in (
                 "stopped", "stop", "exited", "created", "shutdown"
             )
