@@ -571,13 +571,31 @@ def _read_capped_bytes(path: Path, cap: int) -> bytes:
     return data
 
 
+#: Process-local values for token paths that cannot be persisted (read-only
+#: data/, a leftover file squatting the directory).  Same rationale as the
+#: ``_secret_cache`` fallback: the value handed out by one call must be the
+#: value a later call in this process compares against, or the disclosed
+#: setup token could never complete a claim.
+_token_fallbacks: dict[str, str] = {}
+
+
 def _persistent_token(path: Path) -> str:
-    """Read or atomically create a mode-0600 random bearer token."""
+    """Read or atomically create a mode-0600 random bearer token.
+
+    Every branch degrades instead of raising: this helper sits behind
+    GET /api/auth/setup-token, POST /api/auth/setup and — through the
+    menu-bar local-client check inside ``require_auth`` — every protected
+    route a direct-loopback client calls with that header.  A read-only
+    ``data/`` directory (PermissionError out of the exclusive create) or a
+    leftover regular *file* squatting ``data/`` itself (FileExistsError out
+    of ``mkdir``) used to raise raw OSError out of all of them — a 500 on
+    the first-run claim, exactly like the shapes ``_secret()`` one screen
+    down already degrades.  When the token cannot be persisted, a
+    process-local value is minted and cached per path so the flow still
+    answers; it simply does not survive a restart.
+    """
     try:
         value = read_text_capped(path, _TOKEN_CAP, encoding="utf-8").strip()
-        if value:
-            path.chmod(0o600)
-            return value
     except FileNotFoundError:
         pass
     except (OSError, UnicodeDecodeError):
@@ -585,7 +603,27 @@ def _persistent_token(path: Path) -> str:
             path.unlink()
         except OSError:
             _drop_leftover_nonfile(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        if value:
+            try:
+                path.chmod(0o600)
+            except OSError:
+                # A read-only filesystem cannot change the mode, but the
+                # token itself read fine — discarding it here would strand
+                # the claim on a value the operator can still see on disk.
+                pass
+            return value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A leftover regular file squatting data/ raises FileExistsError
+        # (an OSError) out of mkdir even with exist_ok=True.
+        pass
+    # Reuse the process-local value for this path before minting another:
+    # a second call must agree with what the first one already handed out.
+    cached = _token_fallbacks.get(str(path))
+    if cached:
+        return cached
     value = secrets.token_urlsafe(32)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -596,7 +634,16 @@ def _persistent_token(path: Path) -> str:
         try:
             return read_text_capped(path, _TOKEN_CAP, encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
+            # Unreadable leftover that also refuses to unlink (read-only
+            # parent): remember the minted value so the next call answers
+            # the same token instead of a fresh mismatch.
+            _token_fallbacks[str(path)] = value
             return value
+    except OSError:
+        # Read-only data/ or a non-directory parent: the token cannot be
+        # persisted at all.  Answer with the process-local value.
+        _token_fallbacks[str(path)] = value
+        return value
 
 
 #: Loopback source addresses. A request from here originates on the machine
@@ -832,11 +879,25 @@ def setup_token_required(request: Request | None = None) -> bool:
 
 
 def consume_setup_token() -> None:
-    """Remove the bootstrap secret after credentials are established."""
+    """Remove the bootstrap secret after credentials are established.
+
+    Runs *after* :func:`set_password` has already committed the credential,
+    so a raise here is the worst possible shape: the panel is claimed, the
+    administrator exists, and POST /api/auth/setup answers 500 without ever
+    setting the session cookie — the operator sees a failed claim on an
+    installation that is no longer claimable.  A read-only ``data/`` makes
+    ``unlink`` raise PermissionError, and a leftover directory occupying the
+    path raises IsADirectoryError/EPERM; both are OSError.  The token is a
+    one-time value whose window has closed either way (``setup_required()``
+    is now False, so :func:`complete_setup` refuses every later claim), so
+    failing to delete it must not cost the response.
+    """
     try:
         SETUP_TOKEN_FILE.unlink()
     except FileNotFoundError:
         pass
+    except OSError:
+        _drop_leftover_nonfile(SETUP_TOKEN_FILE)
 
 
 def complete_setup(
