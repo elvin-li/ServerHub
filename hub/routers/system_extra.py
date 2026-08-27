@@ -276,7 +276,9 @@ class NetDnsBody(BaseModel):
 
 @router.get("/api/system/network/services")
 def network_services():
-    return {"services": network_svc.network_services()}
+    # The listing wrapper, not the raw read: a vanished networksetup used
+    # to answer 200 {"services": []} here — see network_services_listing.
+    return {"services": network_svc.network_services_listing()}
 
 
 @router.post("/api/system/network/services/{service_name}/dhcp")

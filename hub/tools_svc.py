@@ -49,14 +49,35 @@ def shutdown_executor() -> None:
     _pool.shutdown()
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so an ``sh``-stub leftover whose
+    ``__class__`` is a raising property blew straight through the bare
+    bytes gate below before the scrub could run — a raw 500 on
+    POST /api/tools/net/ping and every other ``_sh`` consumer (the
+    bookmarks8/modules8 rule).
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 Tools JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a subclass ``.decode`` bomb riding a
-        # cross-module row (a disk power_state, say) used to raise here
-        # and 500 GET /api/tools/hardware.
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+    if _isinst(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a subclass ``.decode`` bomb riding a
+            # cross-module row (a disk power_state, say) used to raise here
+            # and 500 GET /api/tools/hardware.  The try is for a *lying*
+            # ``__class__`` (claims bytes, is not): the unbound call
+            # TypeErrors and junk answers "" like any unreadable leftover.
+            base = bytes if _isinst(value, bytes) else bytearray
+            value = base.decode(value, "utf-8", "replace")
+        except Exception:
+            return ""
     elif value is None:
         return ""
     else:
@@ -80,10 +101,37 @@ def _as_text(value) -> str:
         return ""
 
 
+def _as_rc(value) -> int:
+    """Exact int exit status from a possibly-poisoned ``rc``.
+
+    The network_svc ``_as_rc`` rule: a real spawn always answers an exact
+    int, but ``sh`` is stubbed in-process and an rc *subclass* whose
+    ``__eq__`` bombs detonated the very first ``rc == 0`` /
+    ``_spawn_sentinel`` compare — a raw 500 on POST /api/tools/net/ping.
+    Junk degrades to ``-255``: nonzero (a poisoned rc is not consent to
+    claim success) and never ``-1`` (the vanished-spawn sentinel must stay
+    unforgeable).
+    """
+    if type(value) is not int:
+        try:
+            value = int(value)
+        except Exception:
+            return -255
+        if type(value) is not int:
+            return -255
+    try:
+        str(value)
+    except ValueError:
+        # Over-cap exact int (a YAML hex leftover skips CPython's digit
+        # cap): it blows any ``rc={rc}`` message render the same way.
+        return -255
+    return value
+
+
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
     rc, out, err = sh(cmd, timeout=timeout, **kwargs)
-    return rc, _as_text(out), _as_text(err)
+    return _as_rc(rc), _as_text(out), _as_text(err)
 
 
 def _docker(*args, **kwargs):
@@ -127,7 +175,11 @@ _PROC_TTL = 5.0
 
 def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
     # JSON ``1e309`` is inf; ``int(inf)`` OverflowError.  Bool is an int.
-    if isinstance(raw, bool) or raw is None:
+    # ``raw is True/False``, not ``isinstance(raw, bool)``, and ``_isinst``
+    # below: a ``__class__``-property bomb raised out of the bare gates
+    # before the try could catch anything — the same in-process
+    # POST /api/tools/net/ping 500 the base coercions were added for.
+    if raw is True or raw is False or raw is None:
         value = default
     else:
         try:
@@ -136,9 +188,9 @@ def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
             # services are also called in-process, and an int-subclass
             # ``__int__`` bomb raised RuntimeError past the old arithmetic
             # trio — a raw 500 on POST /api/tools/net/ping for those callers.
-            if isinstance(raw, int):
+            if _isinst(raw, int):
                 raw = int.__index__(raw)
-            elif isinstance(raw, float):
+            elif _isinst(raw, float):
                 raw = float.__float__(raw)
             value = int(raw)
         except Exception:
@@ -1407,14 +1459,24 @@ def net_ping(host: str, count: int = 3) -> dict:
 
 
 def net_dns_lookup(name: str) -> dict:
-    if not isinstance(name, str) or not name.strip():
+    # _isinst + unbound strip in a try: a __class__-bomb name from an
+    # in-process caller raised out of the bare gate, and a lying
+    # ``__class__`` (claims str, is not) TypeErrors the base call — both
+    # earn the coded refusal every other junk name gets.
+    if not _isinst(name, str):
+        return soft_fail("tools.empty_name")
+    try:
+        stripped = str.strip(name)
+    except Exception:
+        return soft_fail("tools.empty_name")
+    if not stripped:
         return soft_fail("tools.empty_name")
     # `dig -f /etc/passwd` treats the file as a query list, and this endpoint
     # returns command output -- an arbitrary-file-read primitive from one
     # unanchored blocklist.  Require an alphanumeric first character instead.
     if not cli_args.is_safe_hostname(name):
         return soft_fail("tools.bad_host")
-    name = name.strip()
+    name = stripped
     results = []
     try:
         infos = socket.getaddrinfo(name, None)

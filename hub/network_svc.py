@@ -63,16 +63,42 @@ DSCACHEUTIL = "/usr/bin/dscacheutil"
 DIG = "/usr/bin/dig"
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a stored value whose ``__class__`` is a
+    raising property blew straight through every bare type-gate here —
+    ``_truthy``'s bool gate, ``_as_text``'s bytes gate, ``_alias_settings``'
+    str/list ladder — before any of the earlier hardening could run: raw
+    500s on GET /api/system/network/alias/auto, GET/POST failover and
+    POST alias/auto/run (the bookmarks8/modules8 rule).  A *lying*
+    ``__class__`` (real type X, claims str/bytes/list) still reports its
+    claim here; each caller's unbound base call then degrades it in its own
+    try instead of TypeErroring out of the route.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isinst(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/system/network cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    if _isinst(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound base decode; junk answers "" like every other
+            # unreadable leftover instead of 500ing the caller.
+            return ""
     if value is None:
         return ""
     try:
@@ -101,8 +127,13 @@ def _truthy(value) -> bool:
     GET /api/system/network/alias/auto and GET/POST failover.  Fails closed
     to False — a bomb flag is junk, not consent to rebind interfaces or to
     toggle the Wi-Fi radio.
+
+    Identity, not ``isinstance(value, bool)``: a ``__class__`` bomb raised
+    out of the old gate, and a *lying* ``__class__`` (claims bool, is not)
+    passed it and rode a non-bool into the response JSON — both raw 500s on
+    the same routes.  ``bool`` cannot be subclassed, so identity is exact.
     """
-    if isinstance(value, bool):
+    if value is True or value is False:
         return value
     try:
         return bool(value)
@@ -118,10 +149,36 @@ def _pick(value, fallback):
         return fallback
 
 
+def _as_rc(value) -> int:
+    """Exact int exit status from a possibly-poisoned ``rc``.
+
+    A real spawn always answers an exact int, but ``sh`` is stubbed
+    in-process and an rc *subclass* whose ``__eq__`` bombs detonated the
+    very first ``rc == 0`` / ``_spawn_sentinel`` compare — raw 500s on
+    every route below (dhcp/manual/dns/enabled, dns-lookup, wifi…).  An
+    over-cap exact int (YAML hex leftovers skip CPython's digit cap) blew
+    the ``f"exit {rc}"`` message renders the same way.  Junk degrades to
+    ``-255``: nonzero (a poisoned rc is not consent to claim success) and
+    never ``-1`` (the vanished-spawn sentinel must stay unforgeable).
+    """
+    if type(value) is not int:
+        try:
+            value = int(value)
+        except Exception:
+            return -255
+        if type(value) is not int:
+            return -255
+    try:
+        str(value)
+    except ValueError:
+        return -255
+    return value
+
+
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
     rc, out, err = sh(cmd, timeout=timeout, **kwargs)
-    return rc, _as_text(out), _as_text(err)
+    return _as_rc(rc), _as_text(out), _as_text(err)
 
 
 def _hex_netmask_to_dotted(mask: str) -> str:
@@ -395,6 +452,26 @@ def network_services(force: bool = False) -> list:
                 _services_cache.update(t=time.time(), v=services)
                 _services_refresh_serial += 1
         return list(services)
+
+
+def network_services_listing(force: bool = False) -> list:
+    """The GET /api/system/network/services read, vanished-tool honest.
+
+    A vanished ``networksetup`` empties the listing (``sh`` answers its
+    spawn sentinel and the parser returns ``[]``), so the route answered
+    200 ``{"services": []}`` — which reads like a Mac with no network
+    services, a configuration that does not exist.  Same rule as the
+    mutation siblings (``set_service_order`` / ``switch_profile``): the
+    disk is probed on the empty-listing failure path only, so a readable
+    listing never pays the stat, and a present-but-empty answer keeps the
+    honest 200.  Only this route uses the wrapper — the overview collector
+    keeps its own ``services_error`` seam and internal callers keep the
+    plain listing.
+    """
+    services = network_services(force)
+    if not services and _networksetup_missing():
+        raise api_error("network.networksetup_missing")
+    return services
 
 
 def service_info(service: str) -> dict:
@@ -937,14 +1014,27 @@ def _alias_settings() -> dict:
     # existed to turn None into [], which the isinstance ladder already does
     # — and it ran a list-subclass ``__bool__`` bomb whose real elements the
     # unbound iteration below can still read.
+    #
+    # ``_isinst`` + the trys around the unbound base calls: a ``__class__``
+    # bomb raised out of the bare isinstance ladder, and a lying
+    # ``__class__`` (claims str/list, is neither) TypeErrored ``str.split``
+    # / ``list.__iter__`` — raw 500s on GET /api/system/network/alias/auto,
+    # PUT/POST alias/auto and the autobind loop's settings read.
     ips = s.get("ips")
-    if isinstance(ips, str):
-        ips = str.split(str.replace(ips, ",", " "))
-    elif not isinstance(ips, list):
+    if _isinst(ips, str):
+        try:
+            ips = str.split(str.replace(ips, ",", " "))
+        except Exception:
+            ips = []
+    elif not _isinst(ips, list):
         ips = []
+    try:
+        rows = list.__iter__(ips)
+    except Exception:
+        rows = iter(())
     # sanitize
     clean = []
-    for ip in list.__iter__(ips):
+    for ip in rows:
         # `_as_text` is the str() probe: a YAML hex/octal int past CPython's
         # 4300-digit cap raises ValueError from bare ``str(ip)`` and used to
         # 500 GET /api/system/network/alias/auto (and silently skip every
@@ -1565,7 +1655,10 @@ def update_alias_auto_config(
 
     cur = dict(settings_section("ip_aliases"))
     if auto_bind is not None:
-        cur["auto_bind"] = bool(auto_bind)
+        # _truthy, not bare bool(): the route hands over a Pydantic-exact
+        # bool, but in-process callers stored ``__bool__`` bombs here and
+        # the bare truth test raised out of the write path.
+        cur["auto_bind"] = _truthy(auto_bind)
     if ips is not None:
         # Same str() probe as `_alias_settings`: a caller-supplied over-cap
         # int must not ValueError the write path's bare ``str(x)``.
@@ -1706,12 +1799,23 @@ def _valid_ip(ip: str) -> bool:
     str-subclass ``strip``/``split`` bomb from an in-process caller used to
     raise straight out of this validator (the octet probes below already run
     on the exact strs ``str.split`` returns).
+
+    ``_isinst`` + the try around the unbound calls: a ``__class__`` bomb
+    raised out of the old bare gates, and a lying ``__class__`` (claims
+    str/bytes, is neither) TypeErrored the unbound base calls — junk is
+    simply not a valid IP.
     """
-    if isinstance(ip, (bytes, bytearray)):
-        ip = _decode_bytes(ip)
-    elif not isinstance(ip, str):
+    if _isinst(ip, (bytes, bytearray)):
+        try:
+            ip = _decode_bytes(ip)
+        except Exception:
+            return False
+    elif not _isinst(ip, str):
         return False
-    parts = str.split(str.strip(ip), ".")
+    try:
+        parts = str.split(str.strip(ip), ".")
+    except Exception:
+        return False
     if len(parts) != 4:
         return False
     for p in parts:

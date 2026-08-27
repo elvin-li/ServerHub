@@ -85,15 +85,23 @@ def _normalise(value: object) -> str | None:
     caller using the predicate and then passing the original string would still
     put the newline in the argv.
     """
-    if not isinstance(value, str):
+    try:
+        if not isinstance(value, str):
+            return None
+        # Unbound ``str.strip`` (the modules6 encode-bomb rule at strip rank): a
+        # str *subclass* whose bound ``.strip`` raises passed the isinstance gate
+        # above and blew this guard itself — every route that asks "is this
+        # argv-safe?" raised out of the very predicate that exists to refuse the
+        # value.  The base method also answers an exact str, so the walk below
+        # never runs the subclass's own iteration either.
+        text = str.strip(value, " \t")
+    except Exception:
+        # A ``__class__``-property bomb raises out of ``isinstance`` itself
+        # (CPython reads the operand's ``__class__`` when the real-type fast
+        # check misses), and a *lying* ``__class__`` (claims str, is not)
+        # TypeErrors the unbound base strip.  Either way the value cannot be
+        # argv — the refusal every other junk value earns here.
         return None
-    # Unbound ``str.strip`` (the modules6 encode-bomb rule at strip rank): a
-    # str *subclass* whose bound ``.strip`` raises passed the isinstance gate
-    # above and blew this guard itself — every route that asks "is this
-    # argv-safe?" raised out of the very predicate that exists to refuse the
-    # value.  The base method also answers an exact str, so the walk below
-    # never runs the subclass's own iteration either.
-    text = str.strip(value, " \t")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         return None
     return text
