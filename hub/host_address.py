@@ -350,19 +350,6 @@ def host_ip() -> str:
     return detect_lan_ip()
 
 
-def _plain_mapping_items(value):
-    """``dict.items`` through the C-level storage, or ``()`` for junk.
-
-    Unbound view so a dict-subclass ``items``/``__iter__`` bomb cannot fire;
-    the try is for a lying-``__class__`` impostor (claims dict, is not),
-    whose unbound call TypeErrors.
-    """
-    try:
-        return dict.items(value)
-    except Exception:
-        return ()
-
-
 def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
     host = host_ip()
     values = {"host": host, "host_ip": host, "localhost": "localhost"}
@@ -370,23 +357,22 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         from hub.config import cfg
 
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
-        if not _isa(address_book, dict):
+        if not isinstance(address_book, dict):
             address_book = {}
-        # Unbound items + per-entry scrub: one bomb entry (a ``__class__``-
-        # property value, a subclass ``items`` override) used to raise into
-        # the blanket except below and silently drop every sane sibling
-        # from the address book.
+        # _as_text absorbs a per-entry ``__class__``-property bomb now, so
+        # one junk entry renders as junk text instead of raising into the
+        # blanket except and silently dropping every sane sibling.
         values.update({
             _as_text(key): _as_text(value)
-            for key, value in _plain_mapping_items(address_book)
+            for key, value in address_book.items()
             if value is not None
         })
     except Exception:
         pass
-    if _isa(extra, dict):
+    if isinstance(extra, dict):
         values.update({
             _as_text(key): _as_text(value)
-            for key, value in _plain_mapping_items(extra)
+            for key, value in extra.items()
             if value is not None
         })
     return values
@@ -394,16 +380,12 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
 
 def resolve_template(value: str | None, extra: dict[str, Any] | None = None) -> str | None:
     """Expand host and named address-book variables."""
-    # _isa: a ``__class__``-property bomb used to detonate this gate itself.
-    if value is None or not _isa(value, str):
+    if value is None or not isinstance(value, str):
         return value
-    # Scrub to an exact str first: a str-subclass ``__contains__`` /
-    # ``__str__`` bomb must not raise out of the probe or the regex sub.
-    text = _as_text(value)
-    if "{" not in text:
-        return text
+    if "{" not in value:
+        return _as_text(value)
     variables = template_variables(extra)
-    return _as_text(_VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), text))
+    return _as_text(_VAR_RE.sub(lambda match: variables.get(match.group(1), match.group(0)), value))
 
 
 def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: int = 0) -> Any:
@@ -412,35 +394,26 @@ def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: in
     Depth-capped: leftover deeply-nested YAML used to RecursionError
     compose/catalog/bookmark payloads that walk this walker.
 
-    ``_isa`` on every rank gate and unbound base iteration: a leftover
-    whose ``__class__`` is a raising property (nested anywhere in
-    ``quick_links`` / a catalog row) used to detonate the bare isinstance
-    gates and raise out of this walker — ``_status_quick_links``'s blanket
-    except then wiped every sane link from GET /api/status.
+    Deliberately raise-on-junk: every caller (containers overrides,
+    bookmarks quick_links, ``_status_quick_links``) wraps this walk in a
+    try and treats a raise as "the value is junk" — the bookmarks5 /
+    docker9 pins depend on a subclass ``items()`` / ``__iter__`` /
+    ``__class__`` bomb raising here rather than being laundered through.
     """
     if _depth > 16:
-        if _isa(value, (dict, list, tuple)):
+        if isinstance(value, (dict, list, tuple)):
             return None
-        return resolve_template(value, extra) if _isa(value, str) else value
-    if _isa(value, str):
+        return resolve_template(value, extra) if isinstance(value, str) else value
+    if isinstance(value, str):
         return resolve_template(value, extra)
-    if _isa(value, list):
-        try:
-            items = list.__iter__(value)
-        except Exception:
-            # Lying-``__class__`` impostor (claims list, is not): junk.
-            return None
-        return [resolve_value(item, extra, _depth=_depth + 1) for item in items]
-    if _isa(value, tuple):
-        try:
-            items = tuple.__iter__(value)
-        except Exception:
-            return None
-        return tuple(resolve_value(item, extra, _depth=_depth + 1) for item in items)
-    if _isa(value, dict):
+    if isinstance(value, list):
+        return [resolve_value(item, extra, _depth=_depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return tuple(resolve_value(item, extra, _depth=_depth + 1) for item in value)
+    if isinstance(value, dict):
         return {
             _as_text(key): resolve_value(item, extra, _depth=_depth + 1)
-            for key, item in _plain_mapping_items(value)
+            for key, item in value.items()
         }
     return value
 

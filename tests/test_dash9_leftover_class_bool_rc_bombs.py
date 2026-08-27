@@ -200,16 +200,17 @@ class HostIdentityClassBombTests(_DetectCacheSandbox):
 
 
 class HostAddressSanitizerContractTests(unittest.TestCase):
-    """The walker/template contracts underneath the routes."""
+    """The walker/template contracts underneath the routes.
 
-    def test_resolve_value_no_longer_raises_a_nested_class_bomb(self):
-        out = host_address.resolve_value({"u": "x", "junk": _ClassBomb()})
-        self.assertEqual(out["u"], "x")
+    ``resolve_value`` stays raise-on-junk on purpose: containers overrides,
+    bookmarks quick_links and ``_status_quick_links`` all wrap the walk in
+    a try and treat a raise as "the value is junk" (the bookmarks5 /
+    docker9 pins) — dash9 must not launder those bombs through.
+    """
 
-    def test_resolve_value_drops_a_lying_list_impostor(self):
-        out = host_address.resolve_value({"links": _LyingList(), "u": "x"})
-        self.assertIsNone(out["links"])
-        self.assertEqual(out["u"], "x")
+    def test_resolve_value_still_raises_a_nested_class_bomb(self):
+        with self.assertRaises(RuntimeError):
+            host_address.resolve_value({"u": "x", "junk": _ClassBomb()})
 
     def test_template_variables_keeps_siblings_past_a_bomb_entry(self):
         with mock.patch.object(
@@ -468,6 +469,20 @@ class StaysImmuneTests(_StatusCacheSandbox):
             resp = self.client.get("/api/system/sensors")
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         _starlette(resp.json())
+
+    def test_nested_quick_link_bomb_is_contained_by_the_route(self):
+        """A bomb nested *inside* a quick_links row raises out of
+        resolve_value (by contract) and the route's catch keeps a 200."""
+        with mock.patch.object(
+            status_mod, "cfg",
+            lambda: {"settings": {"adaptive": False},
+                     "quick_links": [
+                         {"name": _ClassBomb(), "url": "http://a.lan"}]},
+        ):
+            status_mod.invalidate_status()
+            resp = self.client.get("/api/status?force=true")
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        self.assertEqual(resp.json()["links"], [])
 
     def test_torn_ipv6_url_stays_unsplit_not_raised(self):
         """``urlsplit`` ValueErrors a torn IPv6 netloc; the existing catch
