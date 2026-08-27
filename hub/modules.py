@@ -170,15 +170,32 @@ MODULES: list[ModuleInfo] = [
 ]
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a value whose ``__class__`` is a raising
+    property blew every ``isinstance`` gate below — at value, nested,
+    mapping-key and whole-row rank — straight out of the unguarded handler.
+    A lying ``__class__`` (answers ``int``) is *not* an error and still
+    reports its claim here; the numeric arms' unbound base coercion then
+    drops it, exactly as before.
+    """
+    try:
+        return isinstance(value, types)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
+    base = bytes if _isinst(value, bytes) else bytearray
     return base.decode(value, "utf-8", "replace")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -208,9 +225,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isinst(value, bool):
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -225,7 +242,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -236,28 +253,28 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises
         # or yields non-pairs used to 500 GET /api/modules, nested and
         # (since the ``dict(m)`` pre-copy fell) at row rank too.
         for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
+            if _isinst(k, (bytes, bytearray)):
                 k = _decode_bytes(k)
-            elif not isinstance(k, str):
+            elif not _isinst(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot 500 and the real elements still survive.
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
@@ -282,12 +299,12 @@ def _jsonable(value, depth: int = 0):
 
 def _module_row(m) -> dict | None:
     """Serialize one registry entry. Junk rows used to 500 GET /api/modules."""
-    if isinstance(m, ModuleInfo):
+    if _isinst(m, ModuleInfo):
         try:
             row = asdict(m)
         except Exception:
             return None
-    elif isinstance(m, dict):
+    elif _isinst(m, dict):
         # No pre-copy: ``dict(m)`` on a subclass that overrides
         # ``__iter__`` abandons CPython's fast storage copy for the
         # generic mapping path, running the subclass's ``keys()`` and
