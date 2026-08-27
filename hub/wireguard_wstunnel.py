@@ -77,16 +77,32 @@ def _as_text(value) -> str:
     status/settings/readiness payload it rides in.  :func:`_isa` gates: a
     value whose ``__class__`` is a raising property used to detonate the
     launder itself.
+
+    The unbound base calls run inside a ``try`` (the wireguard_svc._as_text
+    / health10 shape): a *lying*-``__class__`` impostor — the brew10/json9
+    class, where ``isinstance`` answers bytes / str but the real object is
+    a plain object — passed the ``_isa`` gates and made the unbound
+    ``bytes.decode`` / ``str.encode`` descriptor itself raise TypeError, a
+    raw 500 on GET /api/wireguard and GET /api/wireguard/settings for a
+    wstunnel snapshot value this launder exists to absorb.  A liar falls
+    through to the generic guarded ``str()`` probe like any other leftover.
     """
+    text = None
     if _isa(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
+        try:
+            text = bytes.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isa(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
+        try:
+            text = bytearray.decode(value, "utf-8", "replace")
+        except Exception:
+            text = None
     elif _isa(value, str):
         text = value
     elif value is None:
         return ""
-    else:
+    if text is None:
         try:
             text = str(value)
         except RecursionError:
@@ -96,7 +112,19 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # A str-liar rode the ``_isa(value, str)`` branch as *text* itself,
+        # and unbound ``str.encode`` cannot apply to it — one last guarded
+        # ``str()`` renders its honest ``__str__`` instead of 500ing.
+        try:
+            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except Exception:
+            try:
+                return type(value).__name__
+            except Exception:
+                return ""
 
 
 def _path_is_file(path) -> bool:
@@ -440,7 +468,17 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     generated command that names a dest the running process will refuse is
     worse than a slightly-unstable LAN address that still works today.
     """
-    cfg = dict(settings) if _isa(settings, dict) else {}
+    # ``dict(settings)`` in a try: a *lying*-``__class__`` impostor
+    # (``isinstance`` answers dict, the real object is a plain object)
+    # passed the ``_isa`` gate and the bare copy raised TypeError — this
+    # function does not own its caller's snapshot, and a liar must read as
+    # an empty section like every other junk shape.
+    cfg = {}
+    if _isa(settings, dict):
+        try:
+            cfg = dict(settings)
+        except Exception:
+            cfg = {}
     # Laundered snapshot (the settings_section rule): this read does not own
     # its provider — tests and tooling patch ``live`` — and a snapshot that
     # is a dict *subclass* with a bombing ``.get`` used to raise out of the
@@ -460,17 +498,21 @@ def status(settings: dict | None = None) -> dict[str, Any]:
             found = {}
     else:
         found = {}
-    try:
-        listen_port = int(cfg.get("listen_port") or 0)
-    except (TypeError, ValueError, OverflowError):
-        listen_port = 0
+    # _int_or_zero, not a bare ``int(... or 0)``: the ``or`` blank probe ran
+    # a leftover value's own ``__bool__``, and a raising one blew past the
+    # old arithmetic-trio except — the launder below degrades every bomb to
+    # 0 and already absorbs the over-cap int->str case.
+    listen_port = _int_or_zero(cfg.get("listen_port"))
     if not (0 <= listen_port <= 65535):
         # A YAML hex/octal int skips CPython's str->int digit cap, so an
         # over-cap ``listen_port`` reached ``local_port`` here and ValueError'd
         # ``json.dumps`` on GET /api/wireguard and the Network overview.
         listen_port = 0
-    desired_listen = _as_text(cfg.get("wstunnel_listen") or DEFAULT_LISTEN)
-    desired_restrict = _as_text(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
+    # Launder-then-or (the wg9 ``found.get`` rule, on the *stored* side):
+    # ``cfg.get(...) or default`` ran a leftover value's own ``__bool__``
+    # before the launder could absorb it.
+    desired_listen = _as_text(cfg.get("wstunnel_listen")) or DEFAULT_LISTEN
+    desired_restrict = _as_text(cfg.get("wstunnel_restrict_to")) or default_restrict_to(
         listen_port
     )
     # _as_text straight on the stored value, no ``or ""`` first: the old
@@ -484,8 +526,8 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     # Export dest must match the process that will accept it.
     restrict_to = live_restrict if running and live_restrict else desired_restrict
     listen = live_listen if running and live_listen else desired_listen
-    stored_public = _as_text(cfg.get("wstunnel_public") or "")
-    public = stored_public or public_url(listen, str(cfg.get("endpoint") or ""))
+    stored_public = _as_text(cfg.get("wstunnel_public"))
+    public = stored_public or public_url(listen, _as_text(cfg.get("endpoint")))
     _scheme, _host, port = listen_parts(listen)
     if not listen_port:
         listen_port = int(port) if str(port).isdigit() else 0
@@ -577,6 +619,14 @@ def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     # _isa: a snapshot whose ``__class__`` is a raising property detonated
     # the bare shape gate itself.
     if not _isa(snapshot, dict):
+        return None
+    # Exact-dict launder in a try: a *lying*-``__class__`` impostor passed
+    # the ``_isa`` gate and made the unbound ``dict.get`` descriptors below
+    # raise TypeError into the Network ports tab.  ``dict(...)`` copies a
+    # real (sub)dict through the C-level storage and refuses the liar.
+    try:
+        snapshot = dict(snapshot)
+    except Exception:
         return None
     # Unbound ``dict.get`` + laundered values: a dict-subclass snapshot with
     # a bombing ``.get``, a listen value whose str-subclass methods raise
