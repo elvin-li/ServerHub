@@ -429,7 +429,20 @@ def maintenance_tasks():
         data = cfg()
     except Exception:
         data = None
-    raw = dict.get(data, "maintenance") if _isinst(data, dict) else None
+    if _isinst(data, dict):
+        try:
+            raw = dict.get(data, "maintenance")
+        except Exception:
+            # The unbound builtin is a descriptor bound to the real dict
+            # layout: a liar whose ``__class__`` merely *answers* dict (the
+            # modules9 impostor class — real type is no dict at all) passes
+            # _isinst above and then TypeErrors right here, which used to
+            # 500 GET /api/maintenance AND POST /api/maintenance/{tid}/run
+            # from outside every net.  A raise means "not really a dict":
+            # the impostor root degrades to the empty listing.
+            raw = None
+    else:
+        raw = None
     if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
@@ -474,7 +487,20 @@ def _jobs_row(tid: str):
         return _jobs.get(tid)
     except Exception:
         for k, v in list(_jobs.items()):
-            if _isinst(k, str) and str.__eq__(k, tid) is True:
+            if not _isinst(k, str):
+                continue
+            try:
+                same = str.__eq__(k, tid)
+            except Exception:
+                # A liar whose ``__class__`` *answers* str (the modules9
+                # impostor class — real type is no str at all) passes the
+                # _isinst gate above, and the unbound descriptor then
+                # refuses it with TypeError — out of the rescue scan
+                # itself, which used to 500 the list and log routes the
+                # scan exists to save.  A raise means "not really a str":
+                # the impostor key is junk and cannot be the probed tid.
+                continue
+            if same is True:
                 return v
         return None
 
