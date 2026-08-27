@@ -31,9 +31,13 @@ def shutdown_executor() -> None:
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode (the tools_svc._as_text rule): the old
+        # ``bytes(value)`` copy dispatched into a subclass's own
+        # ``__bytes__``, so a leftover ``__bytes__`` bomb raised out of the
+        # sanitizer just like the decode() bomb it was guarding against.
+        # The base read survives both and salvages the real bytes.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     try:
         text = str(value)
     except RecursionError:
@@ -55,9 +59,11 @@ def _as_text(value) -> str:
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+        # bomb (and the bound ``.decode`` was the subclass's own) — either
+        # one raised out of the sanitizer.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     if isinstance(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
@@ -159,9 +165,11 @@ def _json_bool(value, default: bool = True) -> bool:
 def _json_atom(value):
     """Drop leftover inf/bytes/dates/sets/``\\ud800`` so Starlette cannot 500."""
     if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+        # bomb (and the bound ``.decode`` was the subclass's own) — either
+        # one raised out of the sanitizer.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, float):
@@ -176,7 +184,13 @@ def _json_atom(value):
         return value
     if isinstance(value, (dict, list, tuple, set, frozenset)):
         return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # A raising ``isoformat`` property used to blow the probe itself
+        # (the _plist_jsonable rule from host7): getattr's default only
+        # swallows AttributeError, so the bomb 500'd every _json_atom rider.
+        iso = None
     if callable(iso):
         try:
             stamped = iso()
@@ -238,9 +252,11 @@ def _json_tree(value, depth: int = 0):
             return None
         return value
     if isinstance(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.
-        return bytes(value).decode("utf-8", "replace")
+        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+        # bomb (and the bound ``.decode`` was the subclass's own) — either
+        # one raised out of the sanitizer.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, dict):
@@ -254,7 +270,10 @@ def _json_tree(value, depth: int = 0):
             return None
         for k, v in items:
             if isinstance(k, (bytes, bytearray)):
-                k = bytes(k).decode("utf-8", "replace")
+                # Unbound base decode, matching the value arm: a key-rank
+                # ``__bytes__`` bomb used to raise out of the walk.
+                kbase = bytes if isinstance(k, bytes) else bytearray
+                k = kbase.decode(k, "utf-8", "replace")
             else:
                 try:
                     k = str(k)
@@ -270,7 +289,14 @@ def _json_tree(value, depth: int = 0):
             # than raising out of the encode; the structure survives.
             return None
         return [_json_tree(v, depth + 1) for v in seq]
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except Exception:
+        # A raising ``isoformat`` property used to blow the probe itself
+        # (the _plist_jsonable rule from host7): getattr's default only
+        # swallows AttributeError, so the bomb 500'd GET /api/scheduler,
+        # GET /api/system/scheduler and every other _json_tree rider.
+        iso = None
     if callable(iso):
         try:
             return _json_tree(iso(), depth + 1)
@@ -677,7 +703,12 @@ def get_thresholds() -> dict:
         # >4300-digit int key ValueError'd the encoder's key stringify —
         # both 500'd GET /api/settings/thresholds.
         if isinstance(k, (bytes, bytearray)):
-            k = bytes(k).decode("utf-8", "replace")
+            # Unbound base decode (the _json_tree key-arm rule): the old
+            # ``bytes(k)`` copy ran a subclass ``__bytes__`` bomb and 500'd
+            # GET /api/settings/thresholds and /other.
+            k = (bytes if isinstance(k, bytes) else bytearray).decode(
+                k, "utf-8", "replace",
+            )
         elif not isinstance(k, str):
             try:
                 k = str(k)
