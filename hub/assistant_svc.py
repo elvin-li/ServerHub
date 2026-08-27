@@ -109,6 +109,23 @@ def _safe_int(raw, default: int = 0) -> int:
     return value
 
 
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor.
+
+    ``str.__str__`` is a descriptor bound to the real str layout: any real
+    str (or subclass — even one riding a ``__str__``/``encode`` bomb) answers
+    its character data without dispatching the override, while a *lying*
+    ``__class__`` that only claims ``str`` rejects the operand.  The old
+    dispatching ``str()`` rendered that impostor's ``repr`` — a raw memory
+    address — into catalog paths, titles and the model cell of the response.
+    The encode-replace pass scrubs lone surrogates the same way as before.
+    """
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return None
+
+
 def _decode_bytes(value):
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
 
@@ -120,12 +137,18 @@ def _decode_bytes(value):
     router's own error fallback calls again with the same poisoned row: a
     raw 500 on POST /api/assistant/ask.  A raise means "not really bytes";
     the impostor drops like a lying ``int``/``float`` does.
+
+    One salvage before the drop: a *cross-liar* whose ``__class__`` claims
+    ``bytes`` over **real str storage** used to wipe its cell to empty even
+    though the text was sitting right there — the unbound ``str.__str__``
+    read recovers it without dispatching anything the leftover poisoned.
     """
     base = bytes if _isa(value, bytes) else bytearray
     try:
         return base.decode(value, "utf-8", "replace")
     except Exception:
-        return None
+        pass
+    return _str_text(value)
 
 
 def _utf8_text(value) -> str:
@@ -134,6 +157,12 @@ def _utf8_text(value) -> str:
         # ``or ""``: a lying-``__class__`` impostor decodes to None — drop
         # the cell to empty, never its repr and never a raise.
         return _decode_bytes(value) or ""
+    if _isa(value, str):
+        # Unbound base read, not the dispatching ``str()``: real str storage
+        # keeps its text even when the subclass ``__str__`` raises, and a
+        # lying ``__class__`` claiming str drops to "" instead of leaking
+        # its ``repr`` (a memory address) into the response body.
+        return _str_text(value) or ""
     try:
         text = str(value)
     except RecursionError:
@@ -314,7 +343,11 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if _isa(value, str):
-        return _utf8_text(value)
+        # ``_str_text``, not ``_utf8_text``: a lying ``__class__`` claiming
+        # str used to render its ``repr`` — a raw memory address — into the
+        # response.  ``None`` drops the impostor like its int/float siblings;
+        # real str storage (any subclass) keeps its scrubbed text.
+        return _str_text(value)
     if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     if _isa(value, dict):
@@ -322,9 +355,12 @@ def _jsonable(value, depth: int = 0):
         # wipe the whole snapshot to the minimal brief.  The descriptor is
         # bound to the real dict layout, so a lying ``__class__`` claiming
         # ``dict`` blew the call itself outside every try — drop the
-        # impostor like a lying int.
+        # impostor like a lying int.  Materialized (``list(...)``), because
+        # a nested cell whose ``__str__``/property mutates this mapping
+        # mid-walk used to RuntimeError the live view iteration below —
+        # outside this try — and degrade the whole turn to the minimal brief.
         try:
-            items = dict.items(value)
+            items = list(dict.items(value))
         except Exception:
             return None
         out = {}
@@ -353,8 +389,11 @@ def _jsonable(value, depth: int = 0):
                 # cannot raise and the real elements still survive.  A
                 # lying ``__class__`` claiming this base rejects the
                 # descriptor — drop the impostor, never the response.
+                # Materialized inside the try: a set element whose property
+                # mutates the set mid-walk used to RuntimeError the lazy
+                # comprehension below, outside every catch.
                 try:
-                    rows = base.__iter__(value)
+                    rows = list(base.__iter__(value))
                 except Exception:
                     return None
                 return [_jsonable(v, depth + 1) for v in rows]
@@ -441,6 +480,31 @@ _PANEL_WORDS = tuple(
     if w is not None and (text := _utf8_text(w))
 ) if isinstance(_panel_word, list) else ()
 PANELS: tuple[dict[str, Any], ...] = tuple(_load_list("assistant_panels.json"))
+
+
+def _panel_rows() -> list:
+    """Real rows of the module catalog; a poisoned container answers ``[]``.
+
+    Every walk used to iterate ``PANELS`` bare.  ``suggest_panels`` runs one
+    of those walks *inside the router's own error fallback*, so a leftover
+    container whose ``__iter__`` raises, a lying ``__class__`` impostor that
+    rejects the unbound descriptor, or plain non-sequence junk (``None``, an
+    int) re-raised there with nothing above to catch it — a raw 500 on
+    POST /api/assistant/ask for every action at once.  The unbound base
+    iteration keeps the real rows of a subclass whose bound ``__iter__`` is
+    the bomb; junk shapes fail closed to an empty catalog, which every
+    caller's existing no-rows branch already handles.
+    """
+    rows = PANELS
+    for base in (tuple, list):
+        if _isa(rows, base):
+            try:
+                return list(base.__iter__(rows))
+            except Exception:
+                return []
+    return []
+
+
 _BLURBS: dict[str, dict[str, str]] = {
     str(key): value
     for key, value in _load_object("assistant_blurbs.json").items()
@@ -501,8 +565,10 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
     hit = None
     # _dget + the _utf8_text coercion, not bound ``.get`` and a raw ``==``:
     # a dict-subclass ``get`` bomb or a str-subclass ``__eq__`` bomb on one
-    # row used to kill the page turn for *every* row at once.
-    for panel in PANELS:
+    # row used to kill the page turn for *every* row at once.  _panel_rows,
+    # not bare PANELS: a poisoned container degrades to no rows, never a raise.
+    rows = _panel_rows()
+    for panel in rows:
         if not _isa(panel, dict):
             continue
         pth = _dget(panel, "path")
@@ -510,13 +576,15 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
             hit = panel
             break
     if hit is None:
-        for panel in PANELS:
+        for panel in rows:
             if not _isa(panel, dict):
                 continue
             pth = _dget(panel, "path")
             if _isa(pth, str):
                 text = _utf8_text(pth)
-                if text != "/" and raw.startswith(text + "/"):
+                # ``text and``: a lying-``__class__`` path coerces to "" now,
+                # and "".startswith probe would claim *every* page turn.
+                if text and text != "/" and raw.startswith(text + "/"):
                     hit = panel
                     break
     if hit is None:
@@ -537,7 +605,9 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
 def catalog(locale: str | None = None) -> list[dict]:
     loc = normalize_locale(locale)
     out = []
-    for panel in PANELS:
+    # _panel_rows, not bare PANELS: a poisoned container answers an empty
+    # catalog instead of raising out of the walk.
+    for panel in _panel_rows():
         if not _isa(panel, dict):
             continue
         # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used
@@ -550,7 +620,11 @@ def catalog(locale: str | None = None) -> list[dict]:
         # lying-``__class__`` aliases cell passed the gate, rejected the
         # unbound descriptor and wiped the whole catalog to [].
         aliases = _list_rows(_dget(panel, "aliases"))
-        if not pid or not _isa(path, str):
+        # The coerced text, not the raw gate alone: a lying-``__class__``
+        # path claiming str coerces to "" now — a palette row the SPA cannot
+        # open drops, and its ``repr`` never leaks a memory address.
+        path_text = _utf8_text(path) if _isa(path, str) else ""
+        if not pid or not path_text:
             continue
         out.append({
             "id": pid,
@@ -558,7 +632,7 @@ def catalog(locale: str | None = None) -> list[dict]:
             # ``__str__`` answers itself carried its bound ``encode`` bomb
             # through the route's try into the final _jsonable and 500'd
             # GET /api/assistant/catalog.
-            "path": _utf8_text(path),
+            "path": path_text,
             "title": _title(panel, loc),
             # ``a is not None``: the parse_int hook maps an over-cap number
             # literal to None; a "None" alias must not start matching queries.
@@ -622,22 +696,26 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
     if not needle:
         return []
     scored: list[tuple[int, dict]] = []
-    for panel in PANELS:
+    # _panel_rows, not bare PANELS: a poisoned container answers no hits.
+    for panel in _panel_rows():
         if not _isa(panel, dict):
             continue
         # _panel_id, not an isinstance(pid, str) gate: a find used to skip a
         # numeric-id row even when the query hit its alias dead-on.
         pid, pth = _panel_id(_dget(panel, "id")), _dget(panel, "path")
-        if not pid or not _isa(pth, str):
+        # The coerced text: a lying-``__class__`` path claiming str coerces
+        # to "" now — drop the junk row, never leak its ``repr``.
+        path_text = _utf8_text(pth) if _isa(pth, str) else ""
+        if not pid or not path_text:
             continue
         score = _score_panel(panel, needle, loc)
         if score <= 0:
             continue
         scored.append((score, {
             "id": pid,
-            # _utf8_text: the dedupe set below hashes this value, and a
+            # The coerced text: the dedupe set below hashes this value, and a
             # str-subclass ``__hash__`` bomb must not raise out of the find.
-            "path": _utf8_text(pth),
+            "path": path_text,
             "title": _title(panel, loc),
             "score": score,
         }))
@@ -811,10 +889,14 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
     # the whole turn from right here.  _isa, not bare isinstance: a row (or
     # its id) whose ``__class__`` is a raising property blew the gate itself
     # on both passes of the turn — a raw 500 from inside the router's own
-    # error fallback.
+    # error fallback.  _panel_rows, not bare PANELS: this walk runs *inside
+    # the router's own error fallback*, so a poisoned container — an
+    # ``__iter__`` bomb, a lying-``__class__`` impostor, plain junk — used
+    # to re-raise here with nothing above to catch it: a raw 500 on
+    # POST /api/assistant/ask for every action at once.
     by_id = {
         pid: panel
-        for panel in PANELS
+        for panel in _panel_rows()
         if _isa(panel, dict) and (pid := _panel_id(_dget(panel, "id")))
     }
     out: list[dict] = []
@@ -827,9 +909,11 @@ def suggest_panels(snapshot: dict, locale: str) -> list[dict]:
         if panel is None or not _isa(path, str):
             continue
         # _utf8_text before the dedupe set: a str-subclass ``__hash__`` bomb
-        # used to raise out of this membership probe on both passes.
+        # used to raise out of this membership probe on both passes.  ``not
+        # text``: a lying-``__class__`` path coerces to "" now — drop the
+        # junk row, never leak its ``repr``.
         text = _utf8_text(path)
-        if text in seen:
+        if not text or text in seen:
             continue
         seen.add(text)
         out.append({"id": panel_id, "path": text, "title": _title(panel, loc)})
@@ -919,10 +1003,11 @@ def _system_prompt(snapshot: dict, locale: str) -> str:
     # _dget + _utf8_text, not bound ``.get`` and a raw subscript: a
     # dict-subclass ``get`` bomb on one catalog row used to raise into
     # _run_llm's blanket except — one poisoned row wiped the model's answer
-    # for every turn.  Junk drops the row, never the prompt.
+    # for every turn.  Junk drops the row, never the prompt.  _panel_rows,
+    # not bare PANELS: a poisoned container drops the page list, not the turn.
     pages = ", ".join(
         f"{_title(p, loc)} {_utf8_text(pth)}"
-        for p in PANELS
+        for p in _panel_rows()
         if _isa(p, dict) and _isa(pth := _dget(p, "path"), str)
     )
     try:
@@ -995,13 +1080,15 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
     if not text:
         return {}
     picked = _dget(result, "model")
-    # str gate: a non-text model cell (a ``__class__`` bomb, a numeric id)
-    # would only be nulled by the final _jsonable — keep the model this
-    # call actually picked instead.
+    # The coerced text, not the raw gated value: a lying-``__class__`` model
+    # cell claiming str used to pass the gate raw and render its ``repr`` —
+    # a memory address — in the response.  Junk coerces to "" and falls back
+    # to the model this call actually picked.
+    picked_text = _utf8_text(picked) if _isa(picked, str) else ""
     return {
         "text": text,
         "thinking": _reply_text(_dget(result, "thinking")),
-        "model": picked if _isa(picked, str) and _truthy(picked) else model,
+        "model": picked_text or model,
         "duration_s": _jsonable(_dget(result, "duration_s")),
     }
 
