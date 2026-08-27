@@ -72,6 +72,84 @@ def _isinstance(value, types) -> bool:
         return False
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot detonate.
+
+    The ups_svc/vms_svc/health11 rule, which this module's bare
+    ``_cache["v"]`` / ``_cache["t"]`` subscripts never got: even a
+    plain-dict lookup still runs the *stored keys'* own ``__eq__`` during
+    the hash probe, so a leftover str-subclass key whose hash shadows
+    ``v``/``t`` and whose ``__eq__`` raises used to raise straight out of
+    :func:`_fresh` / :func:`_stale_memory` — the raise escaped
+    :func:`brew_services` into ``brew_svc.list_services``' broad except and
+    silently wiped every brew row from GET /api/brew/services (and out of
+    :func:`invalidate_brew_services` it 500'd POST
+    /api/brew/services/{name}/action outright).  Only the shadowed field
+    degrades to its default; siblings keep their sane data.
+    """
+    if not _isinstance(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _cache_store(**fields) -> None:
+    """Write cache slots through a hostile *key* already in the table.
+
+    A hash-shadowing junk key raises out of the C-level insert compare
+    (never out of a plain ``t``/``v`` overwrite), so ``_cache.update`` and
+    ``_cache["t"] = 0.0`` used to raise out of :func:`_publish` /
+    :func:`invalidate_brew_services` after the snapshot work had already
+    succeeded.  ``clear()`` never compares keys, so evicting the poison and
+    rewriting always lands (the health11 rule).  Callers hold ``_lock``.
+    """
+    try:
+        _cache.update(**fields)
+    except Exception:
+        try:
+            _cache.clear()
+            _cache.update(**fields)
+        except Exception:
+            pass
+
+
+def _sh_answer(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The docker11/health11 answer-shape rule: this module does not own
+    ``sh`` (tests and tooling patch it), and the bare ``rc, out, _ = sh(…)``
+    unpack in :func:`_load` dispatched into the answer's *own* iteration — a
+    tuple/list subclass whose ``__iter__`` raises, or a lying-``__class__``
+    impostor over no real sequence storage.  Only ``TypeError`` /
+    ``ValueError`` were caught, so a ``RuntimeError`` bomb raised out of
+    ``_load`` and discarded the last-good snapshot: every brew row vanished
+    from GET /api/brew/services where the keep-last-good tail should have
+    answered.  Unbound base reads keep an honest answer inside a subclass
+    wrapper intact; junk degrades to ``(None, None, None)``, which
+    :func:`_plain_rc` reads as failure — never ``0``, and never the ``-1``
+    vanished-spawn sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinstance(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (None, None, None)
+    elif _isinstance(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (None, None, None)
+    else:
+        return (None, None, None)
+    if len(items) != 3:
+        return (None, None, None)
+    return items
+
+
 def _as_text(value) -> str:
     # Unbound through the base types, like brew_svc._as_text: a leftover
     # bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
@@ -376,23 +454,37 @@ def invalidate_brew_services() -> None:
     global _disk_ok, _generation
     with _lock:
         _generation += 1
-        _cache["t"] = 0.0
-        _cache["v"] = None
+        # _cache_store, not the bare ``_cache["t"] = 0.0`` assignments: a
+        # leftover hash-shadowing str-subclass key planted in the module
+        # cache raised out of the C-level insert compare and 500'd POST
+        # /api/brew/services/{name}/action *after* the start/stop had
+        # already run — this call sits outside its spawn try.
+        _cache_store(t=0.0, v=None)
         _disk_ok = False
 
 
 def _fresh() -> list[dict] | None:
     with _lock:
-        raw = _cache["v"]
-        if raw is not None and time.time() - _cache["t"] < _TTL:
-            # Copy: callers annotate the dicts they get back.
-            return _copy_items(raw)
+        # _mapping_get, not the bare subscripts: a hash-shadowing junk key
+        # in the module cache used to raise here and wipe every brew row
+        # (the raise escaped into list_services' broad except).  An
+        # unreadable slot reads as "no snapshot" and re-loads instead.
+        raw = _mapping_get(_cache, "v")
+        stamp = _mapping_get(_cache, "t", 0.0)
+        if raw is not None and _isinstance(stamp, (int, float)):
+            try:
+                fresh = time.time() - float(stamp) < _TTL
+            except Exception:
+                fresh = False
+            if fresh:
+                # Copy: callers annotate the dicts they get back.
+                return _copy_items(raw)
     return None
 
 
 def _stale_memory() -> list[dict] | None:
     with _lock:
-        raw = _cache["v"]
+        raw = _mapping_get(_cache, "v")
         if raw is None:
             return None
         return _copy_items(raw)
@@ -471,7 +563,10 @@ def _publish(items: list[dict], *, write_disk: bool, gen: int | None = None) -> 
             # A start/stop invalidated while this load ran; publishing would
             # put the pre-action snapshot back and give it a fresh TTL.
             return items
-        _cache.update(t=time.time(), v=items)
+        # Guarded write: a hash-shadowing junk key raised out of this
+        # insert compare at the very end of a successful load, discarding
+        # rows the spawn had already produced.
+        _cache_store(t=time.time(), v=items)
         _disk_ok = True
     if write_disk:
         _write_disk(items)
@@ -567,10 +662,29 @@ def _brew_busy() -> bool:
                         text = out.read(_PGREP_CAP)
                     except OSError:
                         text = b""
-        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
-            # Leftover ``\\ud800`` pattern UnicodeEncodeError is ValueError, not OSError.
+        except Exception:
+            # Leftover ``\\ud800`` pattern UnicodeEncodeError is ValueError,
+            # not OSError.  Broad, not the old
+            # (OSError/TimeoutExpired/ValueError/TypeError) tuple: this
+            # module does not own ``subprocess.run`` (tests and tooling
+            # patch it), and a leftover raising anything else out of the
+            # spawn — a ``RuntimeError`` from the answer's own attribute
+            # access, say — used to raise out of ``_brew_busy`` and 500
+            # POST /api/tools/updates/brew, whose only lock probe this is.
+            # An unreadable probe reads as "not busy", the same answer a
+            # missing /usr/bin/pgrep already gives.
             continue
-        if proc.returncode == 0 and bool(text.strip()):
+        # _plain_rc, not the bare ``proc.returncode == 0`` compare: the
+        # answer object is not ours either, so an rc *subclass* whose
+        # ``__eq__`` raises (or a returncode attribute that raises at all)
+        # detonated this probe *outside* the spawn try above — a raw 500 on
+        # POST /api/tools/updates/brew.  Junk reads as "not busy" so the
+        # panel still tries the command and reports brew's own answer.
+        try:
+            rc = _plain_rc(proc.returncode)
+        except Exception:
+            continue
+        if rc == 0 and bool(text.strip()):
             return True
     return False
 
@@ -586,14 +700,20 @@ def _load() -> list[dict]:
         # after invalidate + a still-held Homebrew lock.
         return []
     try:
-        rc, out, _ = sh(
+        answer = sh(
             [BREW, "services", "list", "--json"], timeout=20, env=_brew_env(),
         )
-    except (TypeError, ValueError):
+    except Exception:
         # A malformed spawn result (wrong-arity/non-iterable stub tuple)
         # used to raise out of the unpack and wipe the last-good snapshot;
         # it must degrade to the keep-last-good tail like any other failure.
-        rc, out = None, None
+        answer = None
+    # _sh_answer, not a bare unpack in a two-exception try: a tuple-subclass
+    # ``__iter__`` bomb raises RuntimeError, which escaped the old
+    # (TypeError, ValueError) tuple and discarded the last-good snapshot —
+    # every brew row vanished from GET /api/brew/services.  The unbound
+    # read also keeps an *honest* answer riding inside such a wrapper.
+    rc, out, _err = _sh_answer(answer)
     if _plain_rc(rc) == 0:
         items = _services_from_output(out)
         if items is not None:
@@ -654,7 +774,7 @@ def brew_services(force: bool = False) -> list[dict]:
         disk = _read_disk()
         if disk is not None:
             with _lock:
-                _cache.update(t=0.0, v=disk)
+                _cache_store(t=0.0, v=disk)
             _kick_refresh()
             return [dict(x) for x in disk]
 

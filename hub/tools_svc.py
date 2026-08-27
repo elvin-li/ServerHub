@@ -65,6 +65,48 @@ def _isinst(value, types) -> bool:
         return False
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The ups_svc/vms_svc/health11 rule, which the updates snapshot's bare
+    ``_updates_cache["v"]`` subscript and ``hit.get("brew")`` probe never
+    got: even a plain-dict lookup still runs the *stored keys'* own
+    ``__eq__`` during the hash probe, so a leftover str-subclass key whose
+    hash shadows ``v``/``t``/``brew`` (raising ``__eq__``) used to raise
+    straight out of :func:`_updates_fresh` — a raw 500 on GET
+    /api/tools/updates, the Homebrew update card included — and out of
+    :func:`_brew_outdated`'s busy/cooldown fallback, silently dropping the
+    previous brew answer.  Only the shadowed field degrades.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _updates_cache_store(**fields) -> None:
+    """Write the updates-cache slots through a hostile *key* in the table.
+
+    A hash-shadowing junk key raises out of the C-level insert compare
+    (never out of a plain ``t``/``v`` overwrite), so the final
+    ``_updates_cache.update`` used to 500 GET /api/tools/updates at the very
+    end of a successful probe — after ``brew outdated`` and
+    ``softwareupdate`` had already been paid for.  ``clear()`` never
+    compares keys, so evicting the poison and rewriting always lands (the
+    health11 rule).
+    """
+    try:
+        _updates_cache.update(**fields)
+    except Exception:
+        try:
+            _updates_cache.clear()
+            _updates_cache.update(**fields)
+        except Exception:
+            pass
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 Tools JSON."""
     if _isinst(value, (bytes, bytearray)):
@@ -934,9 +976,23 @@ def _hardware_profile_uncached() -> dict:
 # ─── Updates ─────────────────────────────────────────────────────────────────
 
 def _updates_fresh() -> dict | None:
-    v = _updates_cache["v"]
-    if v is not None and time.time() - _updates_cache["t"] < _UPDATES_TTL:
-        return v
+    # _mapping_get, not the bare subscripts: a leftover hash-shadowing
+    # str-subclass key planted in the module cache detonated the C-level
+    # lookup itself and 500'd every GET /api/tools/updates.  An unreadable
+    # slot reads as expired and re-probes like any other cache poisoning.
+    v = _mapping_get(_updates_cache, "v")
+    if v is None:
+        return None
+    stamp = _mapping_get(_updates_cache, "t", 0.0)
+    if not _isinst(stamp, (int, float)):
+        return None
+    try:
+        if time.time() - float(stamp) < _UPDATES_TTL:
+            return v
+    except Exception:
+        # A leftover ``.inf`` / over-cap stamp cannot be compared; treat the
+        # entry as expired rather than serving it forever.
+        return None
     return None
 
 
@@ -1037,11 +1093,19 @@ def _brew_outdated() -> dict:
     if not present:
         return {"ok": False, "outdated": [], "count": 0, "raw": ""}
     now = time.time()
-    busy = _brew_busy()
+    # Guarded: ``_brew_busy`` is brew_cache's, not ours, and an unreadable
+    # lock probe must not cost the whole updates snapshot its brew card.
+    try:
+        busy = _brew_busy()
+    except Exception:
+        busy = False
     if busy or now < _brew_retry_at:
         hit = _updates_fresh()
-        previous = hit.get("brew") if isinstance(hit, dict) else None
-        if isinstance(previous, dict):
+        # _mapping_get, not bound ``hit.get``: a hash-shadowing ``brew`` key
+        # in the cached snapshot raised out of this reader and the card lost
+        # its previous answer to the pool's generic fallback.
+        previous = _mapping_get(hit, "brew")
+        if _isinst(previous, dict):
             return previous
         return {"ok": False, "outdated": [], "count": 0, "raw": "busy" if busy else "timeout"}
     try:
@@ -1372,7 +1436,16 @@ def apply_brew_upgrade(*, confirm: bool = False) -> dict:
     """Upgrade outdated Homebrew formulae as a maintenance job."""
     if not confirm:
         raise api_error("tools.confirm_required")
-    if _brew_busy():
+    # Guarded: this route's only lock probe belongs to brew_cache, and an
+    # unreadable pgrep answer used to raise straight out of the handler —
+    # a raw 500 on POST /api/tools/updates/brew.  Treating it as "not busy"
+    # lets brew's own flock arbitrate, which is what the panel wants
+    # anyway; a truly held lock still surfaces as brew's own message.
+    try:
+        busy = _brew_busy()
+    except Exception:
+        busy = False
+    if busy:
         raise api_error("tools.brew_busy")
     brew = BREW
     try:
@@ -1421,7 +1494,7 @@ def _check_updates_uncached(*, force: bool = False) -> dict:
         "hint": "GitHub is the panel itself · Homebrew / macOS are check-only",
         "cached_ttl": _UPDATES_TTL,
     }
-    _updates_cache.update(t=time.time(), v=result)
+    _updates_cache_store(t=time.time(), v=result)
     return result
 
 

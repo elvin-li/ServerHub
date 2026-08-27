@@ -32,6 +32,92 @@ def _isinstance(value, types) -> bool:
         return False
 
 
+def _mapping_get(mapping, key, default=None):
+    """Row field read that a hostile mapping *key* cannot cost the row.
+
+    The ups_svc/vms_svc/health11 rule this module's unbound ``dict.get``
+    calls never got: the unbound builtin bypasses a subclass ``.get``
+    override, but the C-level lookup still runs the *stored keys'* own
+    ``__eq__`` whenever the probe's hash lands on their slot.  A leftover
+    str-subclass key whose hash shadows ``user``/``file``/``exit_code``
+    (raising ``__eq__``) therefore raised inside the per-row try and
+    dropped that whole service from GET /api/brew/services — one poisoned
+    field cost the row its name, status and actions.  Only the shadowed
+    field degrades to its default now.
+    """
+    if not _isinstance(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _sh_answer(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The docker11/health11 answer-shape rule: this module does not own
+    ``sh`` (tests and tooling patch it), so the bare ``rc, out, err =
+    sh(…)`` unpack in :func:`list_services` dispatched into the answer's
+    *own* iteration — a tuple/list subclass whose ``__iter__`` raises, or a
+    lying-``__class__`` impostor over no real sequence storage.  The
+    surrounding ``except`` swallowed that raise into "no rows", so an
+    honest listing riding inside a subclass wrapper was thrown away.
+    Unbound base reads keep it; junk degrades to ``(None, None, None)``,
+    which :func:`_plain_rc` reads as failure — never ``0``, and never the
+    ``-1`` vanished-spawn sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinstance(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (None, None, None)
+    elif _isinstance(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (None, None, None)
+    else:
+        return (None, None, None)
+    if len(items) != 3:
+        return (None, None, None)
+    return items
+
+
+def _spawn_pair(value) -> tuple:
+    """Exact ``(rc, message)`` storage from a possibly-poisoned ``run_capped``.
+
+    Same answer-shape class as :func:`_sh_answer`, one slot narrower.  The
+    bare ``rc, msg = run_capped(…)`` unpack ran inside the spawn try, so a
+    subclass ``__iter__`` bomb — or any wrong-arity/non-iterable leftover —
+    was reported to the SPA as a *failed action* carrying a raw Python
+    unpack message ("cannot unpack non-iterable Liar object"), even when
+    the honest answer inside the wrapper said exit 0.  Unbound base reads
+    recover that answer; junk degrades to ``(None, None)``, which renders
+    as ``exit unknown`` and can never forge the ``-1`` sentinel that maps a
+    vanished Homebrew to the coded 503.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinstance(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (None, None)
+    elif _isinstance(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (None, None)
+    else:
+        return (None, None)
+    if len(items) != 2:
+        return (None, None)
+    return items
+
+
 def _as_text(value) -> str:
     # Unbound through the base types: a leftover bytes-subclass whose bound
     # ``.decode`` raises (or a str-subclass whose ``.encode`` does) used to
@@ -291,13 +377,16 @@ def list_services() -> list:
                 # loop-wide try that one row wiped every sibling into the
                 # text fallback.  It now costs only itself.
                 try:
-                    # Unbound dict reads, the brew_cache._json_safe
-                    # convention: a dict-subclass row whose ``get`` raises
-                    # used to cost every sibling row instead of nothing.
-                    name = _as_text(dict.get(s, "name")).strip()
+                    # _mapping_get, not bare unbound ``dict.get``: the
+                    # unbound read already dodged a dict-subclass ``get``
+                    # override, but the hash probe still ran the *stored
+                    # keys'* ``__eq__`` — a leftover key shadowing
+                    # ``user``/``file``/``exit_code`` raised inside this
+                    # per-row try and cost the whole service its row.
+                    name = _as_text(_mapping_get(s, "name")).strip()
                     if not name or name in _HIDE_BREW:
                         continue
-                    status = _as_text(dict.get(s, "status")).lower()
+                    status = _as_text(_mapping_get(s, "status")).lower()
 
                     # started|stopped|error|none
                     state = "ok" if status in ("started", "running") else (
@@ -308,9 +397,9 @@ def list_services() -> list:
                         "name": name,
                         "status": status or "unknown",
                         "state": state,
-                        "user": _json_safe(dict.get(s, "user")),
-                        "file": _json_safe(dict.get(s, "file")),
-                        "exit_code": _json_safe(dict.get(s, "exit_code")),
+                        "user": _json_safe(_mapping_get(s, "user")),
+                        "file": _json_safe(_mapping_get(s, "file")),
+                        "exit_code": _json_safe(_mapping_get(s, "exit_code")),
                         "actions": ["restart", "stop"] if state == "ok" else ["start"],
                     })
                 except Exception:
@@ -320,9 +409,14 @@ def list_services() -> list:
             items = []
     # fallback text parse
     try:
-        rc, out, err = sh([BREW, "services", "list"], timeout=20)
+        answer = sh([BREW, "services", "list"], timeout=20)
     except Exception:
         return items
+    # _sh_answer, not a bare unpack: the answer object is not ours (tests
+    # and tooling patch ``sh``), and a tuple-subclass ``__iter__`` bomb
+    # around an honest listing used to raise into the except above and
+    # throw those rows away.  Junk reads as a failed spawn below.
+    rc, out, _err = _sh_answer(answer)
     # This tail runs outside the try above, so a leftover numeric-subclass rc
     # whose ``__ne__`` raises used to 500 GET /api/brew/services from the
     # fallback path; _plain_rc's unbound base calls dodge the override and a
@@ -373,7 +467,7 @@ def service_action(name: str, action: str) -> dict:
     if not _brew_present():
         raise api_error("brew.not_found")
     try:
-        rc, msg = run_capped(
+        answer = run_capped(
             [BREW, "services", action, name],
             timeout=120, env=_brew_env(), cap=2000,
         )
@@ -381,6 +475,11 @@ def service_action(name: str, action: str) -> dict:
         # Leftover ``\ud800`` in a raised message used to 500 the action
         # JSON the same way a leftover brew-list name 500'd the list.
         return {"ok": False, "message": _as_text(e)}
+    # _spawn_pair, not a bare ``rc, msg = …`` unpack inside the try above:
+    # a subclass ``__iter__`` bomb (or any wrong-arity leftover) reported a
+    # raw Python unpack message as the action's failure text, discarding an
+    # honest exit status riding inside the wrapper.
+    rc, msg = _spawn_pair(answer)
     rc = _plain_rc(rc)
     if rc == -1 and _as_text(msg).strip() == "not found":
         # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
@@ -401,8 +500,21 @@ def service_action(name: str, action: str) -> dict:
     # start/stop and shows the service back in its old state until the TTL
     # lapses.  Drop it here, next to invalidate_status(), so the refresh
     # that follows the action is truthful.
-    invalidate_brew_services()
-    invalidate_status()
+    #
+    # Guarded: neither cache belongs to this module, both calls sit outside
+    # the spawn try, and a leftover hash-shadowing str-subclass key planted
+    # in either module cache raised out of the C-level insert compare —
+    # a raw 500 on POST /api/brew/services/{name}/action *after* the
+    # start/stop had already run.  A cache that refuses to be dropped costs
+    # the SPA one stale refresh window, never the action's answer.
+    try:
+        invalidate_brew_services()
+    except Exception:
+        pass
+    try:
+        invalidate_status()
+    except Exception:
+        pass
     # run_capped is str; a bytes leftover from a stub (or a future
     # binary-capped helper) used to TypeError Starlette's encoder.
     text = _as_text(msg).strip()
