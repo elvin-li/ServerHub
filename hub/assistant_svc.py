@@ -145,6 +145,22 @@ def _dget(mapping, key):
             return None
 
 
+def _reply_text(value) -> str:
+    """A chat-result cell as text; falsy junk stays the old empty drop.
+
+    Coerce-first: a str-subclass ``__bool__`` bomb as the model's reply used
+    to raise out of the bare ``or`` truthiness *outside* _run_llm's try —
+    the whole turn then fell to the router's rebuilt fallback, losing the
+    answer this call already had.  The exact-str coercion keeps its real
+    text; non-text junk (0, False, []) keeps the old falsy-drop semantics.
+    """
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, (str, bytes, bytearray)):
+        return _utf8_text(value)
+    return _utf8_text(value) if _truthy(value) else ""
+
+
 def _exact_number(raw):
     """Exact ``int``/``float`` or ``None`` — a numeric-subclass comparison
     bomb (``__ge__``/``__eq__``) cannot ride a threshold check."""
@@ -615,23 +631,38 @@ def build_snapshot() -> dict:
     try:
         from hub import ollama_svc
         ollama = ollama_svc.status()
-        snap["ollama"] = {
-            "reachable": bool(ollama.get("reachable")),
-            "resident": [m.get("name") for m in (ollama.get("resident") or [])[:2] if m.get("name")],
-        }
     except Exception:
-        pass
+        ollama = None
+    if isinstance(ollama, dict):
+        # _dget / _truthy / list.__iter__, not bound ``.get`` and bare
+        # truthiness: a dict-subclass ``get`` bomb on the status wrapper (or
+        # on one resident row) used to fall into the old blanket except and
+        # drop the whole ollama section even though the sane rows were right
+        # underneath — the ups/ollama settings rule.
+        raw_resident = _dget(ollama, "resident")
+        rows = [
+            row for row in list.__iter__(raw_resident)
+        ][:2] if isinstance(raw_resident, list) else []
+        snap["ollama"] = {
+            "reachable": _truthy(_dget(ollama, "reachable")),
+            "resident": [
+                name for row in rows
+                if isinstance(row, dict) and _truthy(name := _dget(row, "name"))
+            ],
+        }
     try:
         from hub.ups_svc import ups_snapshot
         ups = ups_snapshot()
-        if ups.get("present"):
-            snap["ups"] = {
-                "source": ups.get("source"),
-                "percent": ups.get("percent"),
-                "charging": ups.get("charging"),
-            }
     except Exception:
-        pass
+        ups = None
+    # Same rule: a ``get`` bomb on the ups wrapper used to drop the whole
+    # ups block, so the brief lost a real on-battery state.
+    if isinstance(ups, dict) and _truthy(_dget(ups, "present")):
+        snap["ups"] = {
+            "source": _dget(ups, "source"),
+            "percent": _dget(ups, "percent"),
+            "charging": _dget(ups, "charging"),
+        }
     return _jsonable(snap)
 
 
@@ -748,16 +779,24 @@ def _pick_model() -> str | None:
     from hub import ollama_svc
 
     snap = ollama_svc.status()
-    if not isinstance(snap, dict) or not snap.get("reachable"):
+    # _dget / _truthy / list.__iter__, not bound ``.get`` and bare
+    # truthiness: a dict-subclass ``get`` bomb on the status wrapper used to
+    # raise into _run_llm's blanket except and silently skip the model the
+    # sane data underneath still named — every turn fell to the template
+    # brief while the daemon was up.
+    if not isinstance(snap, dict) or not _truthy(_dget(snap, "reachable")):
         return None
     for key in ("resident", "models"):
-        rows = snap.get(key)
-        for row in rows if isinstance(rows, list) else []:
+        rows = _dget(snap, key)
+        for row in list.__iter__(rows) if isinstance(rows, list) else []:
             if not isinstance(row, dict):
                 continue
-            name = str(row.get("name") or "").strip()
-            if name:
-                return name
+            name = _dget(row, "name")
+            # _utf8_text, not bare str(): an over-cap already-int name used
+            # to ValueError here and skip the sane sibling rows too.
+            text = _utf8_text(name if name is not None else "").strip()
+            if text:
+                return text
     return None
 
 
@@ -767,10 +806,14 @@ def _lang_name(locale: str) -> str:
 
 def _system_prompt(snapshot: dict, locale: str) -> str:
     loc = normalize_locale(locale)
+    # _dget + _utf8_text, not bound ``.get`` and a raw subscript: a
+    # dict-subclass ``get`` bomb on one catalog row used to raise into
+    # _run_llm's blanket except — one poisoned row wiped the model's answer
+    # for every turn.  Junk drops the row, never the prompt.
     pages = ", ".join(
-        f"{_title(p, loc)} {p['path']}"
+        f"{_title(p, loc)} {_utf8_text(pth)}"
         for p in PANELS
-        if isinstance(p, dict) and isinstance(p.get("path"), str)
+        if isinstance(p, dict) and isinstance(pth := _dget(p, "path"), str)
     )
     try:
         snap_json = json.dumps(
@@ -828,18 +871,22 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         return {}
     if not isinstance(result, dict):
         return {}
-    # _utf8_text, not bare str(): bytes content used to answer its Python
-    # repr (``b'...'``), and an over-cap already-int used to ValueError
-    # *outside* the try above — the whole turn then fell to the router's
-    # rebuilt fallback, losing the page context this call already had.
-    text = _utf8_text(result.get("content") or "").strip() or _utf8_text(result.get("thinking") or "").strip()
+    # _dget + _reply_text, not bound ``.get`` and a bare ``or``: everything
+    # below runs *outside* the try above, so a dict-subclass ``get`` bomb on
+    # the chat result (or a content ``__bool__`` bomb) used to raise out of
+    # here and drop the whole turn to the router's rebuilt fallback, losing
+    # the answer this call already had.  _reply_text keeps the earlier fixes
+    # too: bytes content decodes instead of answering its repr, and an
+    # over-cap already-int drops the cell, never the turn.
+    text = _reply_text(_dget(result, "content")).strip() or _reply_text(_dget(result, "thinking")).strip()
     if not text:
         return {}
+    picked = _dget(result, "model")
     return {
         "text": text,
-        "thinking": _utf8_text(result.get("thinking") or ""),
-        "model": result.get("model") or model,
-        "duration_s": _jsonable(result.get("duration_s")),
+        "thinking": _reply_text(_dget(result, "thinking")),
+        "model": picked if _truthy(picked) else model,
+        "duration_s": _jsonable(_dget(result, "duration_s")),
     }
 
 
