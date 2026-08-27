@@ -212,6 +212,58 @@ def _decode_bytes(value) -> str:
     return base.decode(value, "utf-8", "replace")
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a dict-subclass ``.get`` bomb cannot detonate.
+
+    The ``hub.notify_channels._mapping_get`` rule, which the check feeders'
+    seams never got: ``ups_svc.ups_status()``, ``metrics.latest_sample()``,
+    ``system_settings_svc.get_thresholds()`` and
+    ``storage_svc.smart_devices()`` hand back whatever an in-process caller
+    last cached, and ``isinstance(x, dict)`` passes a subclass whose bound
+    ``get`` raises.  One such wrapper used to raise out of its whole check —
+    check_once's containment turned that into a *silently dead pass* (every
+    disk unwatched, the UPS countdown unannounced) rather than a 500, which
+    is the worst failure mode an alerting system has.  ``dict.get`` reads
+    the real C-level storage underneath the override, so the sane data a
+    poisoned wrapper carries still feeds the sweep.
+    """
+    if not isinstance(mapping, dict):
+        return default
+    try:
+        return mapping.get(key, default)
+    except Exception:
+        try:
+            return dict.get(mapping, key, default)
+        except Exception:
+            return default
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs``/``hub.notify_channels`` rule: the truth tests hidden in
+    ``bool(n.get("enabled"))`` / ``th.get("enabled", True)`` /
+    ``st.get("settings") or {}`` used to detonate a junk stored value whose
+    ``__bool__`` raises — out of :func:`emit_alert` into its callers (the
+    UPS shutdown policy had already latched ENGAGED and never reached its
+    stop sequence; the scheduler's guard swallowed the alert its failure
+    streak had earned), and out of every ``_check_*`` pass into check_once's
+    containment.  Fails closed to False — a bomb flag is junk, not consent
+    to notify (or to sweep with it).
+    """
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot blow."""
+    return value if _truthy(value) else fallback
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if isinstance(value, (bytes, bytearray)):
@@ -462,18 +514,28 @@ def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
         "id": alert_id,
         # Same shape as the sweep-loop alerts above: the Alerts page renders
         # a.name and a.event, and records missing them drew blank cells.
-        "name": title or alert_id,
+        # _pick, not ``or``: a leftover title wearing a ``__bool__`` bomb
+        # used to raise before the alert was even recorded.
+        "name": _pick(title, alert_id),
         "event": event,
         "message": message,
     }
     _append_alert(alert)
     n = notify_settings()
+    # _truthy/_mapping_get, not bool()/bare ``.get``: a ``__bool__`` bomb
+    # flag (or a dict-subclass ``.get`` bomb section) used to raise out of
+    # this public entry into its callers — the UPS shutdown policy had
+    # already latched ENGAGED and never reached its stop sequence, and the
+    # scheduler's containment swallowed the alert its failure streak had
+    # earned.  The journal row above always lands; junk flags fail closed.
     if level == "down":
-        wanted = bool(n.get("enabled"))
+        wanted = _truthy(_mapping_get(n, "enabled"))
     elif event == "resolved":
-        wanted = bool(n.get("enabled")) and n.get("notify_resolve", True)
+        wanted = _truthy(_mapping_get(n, "enabled")) and _truthy(
+            _mapping_get(n, "notify_resolve", True))
     else:
-        wanted = bool(n.get("enabled")) and n.get("include_warn", True)
+        wanted = _truthy(_mapping_get(n, "enabled")) and _truthy(
+            _mapping_get(n, "include_warn", True))
     if wanted:
         try:
             send_ha_notify(title, message, level=level, event=event if event != "problem" else None)
@@ -491,7 +553,12 @@ def _resource_thresholds() -> dict:
 def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
     """OMV/TrueNAS-style CPU/mem/disk threshold alerts with cooldown."""
     th = _resource_thresholds()
-    if not th.get("enabled", True):
+    # _truthy/_mapping_get, not bare ``.get``/truth tests: a leftover
+    # thresholds wrapper that is a dict subclass with a bombing ``get`` —
+    # or an ``enabled`` flag whose ``__bool__`` raises — used to raise out
+    # of this pass into check_once's containment, silently losing every
+    # resource alert for the sweep.
+    if not _truthy(_mapping_get(th, "enabled", True)):
         return []
     emitted = []
     try:
@@ -505,18 +572,21 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         latest = None
     if not isinstance(latest, dict):
         return []
-    cpu_val = latest.get("cpu_used_pct")
+    # _mapping_get: the cached sample is whatever the metrics thread last
+    # stored, and a dict-subclass ``.get`` bomb wrapper used to kill the
+    # pass while its real readings sat intact in the C-level storage.
+    cpu_val = _mapping_get(latest, "cpu_used_pct")
     if cpu_val is None:
-        cpu_val = latest.get("load_pct")
+        cpu_val = _mapping_get(latest, "load_pct")
     checks = [
-        ("cpu", cpu_val, th.get("cpu_pct", 90), "CPU"),
-        ("mem", latest.get("mem_used_pct"), th.get("mem_pct", 90), "Memory"),
-        ("disk", latest.get("disk_pct"), th.get("disk_pct", 90), "Disk"),
+        ("cpu", cpu_val, _mapping_get(th, "cpu_pct", 90), "CPU"),
+        ("mem", _mapping_get(latest, "mem_used_pct"), _mapping_get(th, "mem_pct", 90), "Memory"),
+        ("disk", _mapping_get(latest, "disk_pct"), _mapping_get(th, "disk_pct", 90), "Disk"),
     ]
-    try:
-        cooldown = int(th.get("cooldown_sec") or 1800)
-    except (TypeError, ValueError, OverflowError):
-        cooldown = 1800
+    # _as_epoch/_pick, not ``int(... or 1800)``: an int-subclass cooldown
+    # whose ``__str__``/``__index__`` raises a non-ValueError — or a
+    # ``__bool__`` bomb under the ``or`` — escaped the old enumerated net.
+    cooldown = _as_epoch(_pick(_mapping_get(th, "cooldown_sec"), 1800), 1800)
     last_fire = prev.get("_resource_last") or {}
     if not isinstance(last_fire, dict):
         last_fire = {}
@@ -532,9 +602,13 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         try:
             val_f = float(val)
             limit_f = float(limit)
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             # Leftover ``cpu_used_pct: 10**10000`` OverflowError'd the sweep
             # (``int too large to convert to float`` is not ValueError).
+            # Exception, not the enumerated trio: ``float()`` dispatches into
+            # a subclass value's own ``__float__``, and a bomb there raised
+            # RuntimeError past the old net — dropping every check after the
+            # poisoned one from the pass.
             continue
         if (
             val_f != val_f or limit_f != limit_f
@@ -574,7 +648,10 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             _append_alert(alert)
             emitted.append(alert)
             new_last[rid] = now
-            if n.get("enabled") and n.get("include_warn", True):
+            # _truthy: a ``__bool__`` bomb notify flag must read as junk
+            # (no send), never abort the rest of the resource pass.
+            if _truthy(_mapping_get(n, "enabled")) and _truthy(
+                    _mapping_get(n, "include_warn", True)):
                 send_ha_notify("ServerHub resource alert", alert["message"], level="warn")
         elif old == "warn" and recovered:
             alert = {
@@ -590,7 +667,8 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
             }
             _append_alert(alert)
             emitted.append(alert)
-            if n.get("enabled") and n.get("notify_resolve", True):
+            if _truthy(_mapping_get(n, "enabled")) and _truthy(
+                    _mapping_get(n, "notify_resolve", True)):
                 send_ha_notify("ServerHub resource recovered", alert["message"],
                                level="ok", event="resolved")
     new_state["_resource_last"] = new_last
@@ -773,6 +851,19 @@ def _smart_num(raw) -> float | None:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
+        if isinstance(raw, int) and type(raw) is not int:
+            try:
+                # Base coercion first: an int-subclass ``__float__``/``__index__``
+                # bomb riding a cached smart row used to raise out of float()
+                # and silently abort the whole SMART pass.
+                raw = int.__index__(raw)
+            except Exception:
+                return None
+        elif isinstance(raw, float) and type(raw) is not float:
+            try:
+                raw = float.__float__(raw)
+            except Exception:
+                return None
         try:
             val = float(raw)
         except OverflowError:
@@ -783,7 +874,9 @@ def _smart_num(raw) -> float | None:
         if val != val or val in (float("inf"), float("-inf")):
             return None
         return val
-    s = str(raw).strip()
+    # _utf8_text, not bare str(): a subclass ``__str__`` bomb (or an over-cap
+    # int hiding behind one) used to raise here and kill the SMART pass.
+    s = _utf8_text(raw).strip()
     if not s:
         return None
     low = s.lower()
@@ -818,16 +911,23 @@ def _smart_key(dev: dict) -> str:
     both.  Model+capacity is the fallback for disks whose serial smartctl did not
     print, and the enumeration id is the last resort so a key always exists.
     """
-    smart = dev.get("smart") or {}
+    # _mapping_get/_pick, not bare ``.get``/``or``: a dev row (or its smart
+    # dict) that is a dict subclass with a bombing ``get`` — or a field whose
+    # ``__bool__`` raises under the ``or`` — used to abort the SMART pass.
+    smart = _pick(_mapping_get(dev, "smart"), {})
+    if not isinstance(smart, dict):
+        smart = {}
     # _utf8_text, not bare str(): a leftover over-cap plist/YAML-hex int
     # serial/model/size (uncapped ``int(x, 16)`` load) made str() raise the
     # digit-cap ValueError and silently aborted the whole SMART pass — every
     # disk went unwatched.  Unrenderable fields coerce to "" and the next
     # fallback identity is used instead.
-    serial = _utf8_text(smart.get("serial") or "").strip()
-    model = _utf8_text(smart.get("model") or dev.get("name") or "").strip()
-    size_text = _utf8_text(dev.get("size_bytes") or "").strip()
-    disk_id = _utf8_text(dev.get("id") or "disk").strip() or "disk"
+    serial = _utf8_text(_pick(_mapping_get(smart, "serial"), "")).strip()
+    model = _utf8_text(
+        _pick(_mapping_get(smart, "model"), _pick(_mapping_get(dev, "name"), ""))
+    ).strip()
+    size_text = _utf8_text(_pick(_mapping_get(dev, "size_bytes"), "")).strip()
+    disk_id = _utf8_text(_pick(_mapping_get(dev, "id"), "disk")).strip() or "disk"
     if serial:
         raw = serial
     elif model and size_text:
@@ -858,7 +958,9 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # threshold, which is a different thing from our own soft warn level below.
     # _utf8_text: a leftover over-cap int verdict must not raise str()'s
     # digit-cap ValueError out of the pass (it coerces to "" — unknown).
-    health = _utf8_text(smart.get("health") or "").strip()
+    # _mapping_get/_pick: a smart dict wearing a ``.get`` bomb, or a verdict
+    # wearing a ``__bool__`` bomb, used to abort the pass the same way.
+    health = _utf8_text(_pick(_mapping_get(smart, "health"), "")).strip()
     if health and health.upper().rstrip("!") not in ("PASSED", "OK"):
         down.append(_smart_reason("health", v=health))
 
@@ -869,7 +971,7 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # is one the drive tried to read, could not, and has not remapped yet -- the data
     # in it is unreadable *now*.
     for field in ("media_errors", "pending"):
-        val = _smart_num(smart.get(field))
+        val = _smart_num(_mapping_get(smart, field))
         if val is not None and val > 0:
             down.append(_smart_reason(field, v=val))
 
@@ -885,12 +987,19 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # operator who is shown one of those stops reading disk alerts -- which is worse
     # than having none.  So "raw count is non-zero" is a warn below, and *crossing
     # the vendor's own threshold* is what counts as fatal.
-    attrs = smart.get("attrs") if isinstance(smart.get("attrs"), list) else []
-    for attr in attrs:
-        if not isinstance(attr, dict) or str(attr.get("type") or "") != "Pre-fail":
+    attrs = _mapping_get(smart, "attrs")
+    if not isinstance(attrs, list):
+        attrs = []
+    # Unbound base iteration: a list-subclass ``__iter__`` bomb attrs table
+    # cannot abort the pass, and its real rows still walk.
+    for attr in list.__iter__(attrs):
+        # _utf8_text, not bare str(): a subclass ``__str__`` bomb type — and
+        # the exact-str copy keeps a subclass ``__eq__`` bomb off the compare.
+        if not isinstance(attr, dict) or _utf8_text(
+                _pick(_mapping_get(attr, "type"), "")) != "Pre-fail":
             continue
-        value = _smart_num(attr.get("value"))
-        thresh = _smart_num(attr.get("thresh"))
+        value = _smart_num(_mapping_get(attr, "value"))
+        thresh = _smart_num(_mapping_get(attr, "thresh"))
         # A threshold of 0 means the vendor declared no failure point for this
         # attribute, so there is nothing to be below.
         if value is None or thresh is None or thresh <= 0:
@@ -900,7 +1009,10 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
             # digit-cap ValueError out of str() and abort the SMART pass.
             down.append(_smart_reason(
                 "prefail",
-                name=_utf8_text(attr.get("name") or attr.get("id") or "?") or "?",
+                name=_utf8_text(
+                    _pick(_mapping_get(attr, "name"),
+                          _pick(_mapping_get(attr, "id"), "?"))
+                ) or "?",
                 v=value, lim=thresh,
             ))
 
@@ -908,13 +1020,13 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # drive has already moved the data and, on an SSD with a large over-provisioning
     # pool, a few dozen is unremarkable.  What matters is growth, and the pre-fail
     # check above is what fires when the vendor decides the margin is gone.
-    realloc = _smart_num(smart.get("reallocated"))
+    realloc = _smart_num(_mapping_get(smart, "reallocated"))
     if realloc is not None and realloc > 0:
         warn.append(_smart_reason("reallocated", v=realloc))
 
     # NVMe critical warning bitmap: any bit set means the controller is reporting a
     # fault (spare exhausted, degraded reliability, read-only mode, over temperature).
-    crit_raw = _utf8_text(smart.get("critical_warning") or "").strip()
+    crit_raw = _utf8_text(_pick(_mapping_get(smart, "critical_warning"), "")).strip()
     crit = _smart_num(crit_raw)
     if crit is not None and crit > 0:
         down.append(_smart_reason("critical_warning", v=crit_raw))
@@ -929,8 +1041,8 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
         ("wear", "wear", "smart_wear_pct", True),
         ("spare", "available_spare", "smart_spare_pct", False),
     ):
-        val = _smart_num(smart.get(source))
-        lim = _smart_num(th.get(limit_key))
+        val = _smart_num(_mapping_get(smart, source))
+        lim = _smart_num(_mapping_get(th, limit_key))
         if val is None or lim is None:
             continue
         if (val >= lim) if hotter_is_worse else (val <= lim):
@@ -956,18 +1068,19 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     # system_settings_svc.DEFAULT_THRESHOLDS.  The usage alerts and the
     # disk-is-dying alerts have very different signal-to-noise, so they get
     # separate switches.
-    if not th.get("smart_enabled", True):
+    # _truthy/_mapping_get: a thresholds wrapper wearing a ``.get`` bomb, or
+    # a flag wearing a ``__bool__`` bomb, used to kill the whole SMART pass.
+    if not _truthy(_mapping_get(th, "smart_enabled", True)):
         return []
     try:
         from hub import storage_svc
         devices = storage_svc.smart_devices()
     except Exception:
         return []
+    if not isinstance(devices, list):
+        devices = []
 
-    try:
-        cooldown = int(th.get("cooldown_sec") or 1800)
-    except (TypeError, ValueError, OverflowError):
-        cooldown = 1800
+    cooldown = _as_epoch(_pick(_mapping_get(th, "cooldown_sec"), 1800), 1800)
     last_fire = prev.get("_smart_last")
     if not isinstance(last_fire, dict):
         last_fire = {}
@@ -979,11 +1092,16 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     n = notify_settings()
     emitted: list = []
 
-    for dev in devices or []:
+    # Unbound base iteration: a list-subclass ``__iter__``/``__bool__`` bomb
+    # snapshot cannot kill the pass, and its real rows still walk.
+    for dev in list.__iter__(devices):
         if not isinstance(dev, dict):
             continue
-        smart = dev.get("smart")
-        if not smart or not isinstance(smart, dict) or dev.get("error"):
+        smart = _mapping_get(dev, "smart")
+        # dict.__len__ / _truthy: a smart dict whose ``__bool__`` raises, or
+        # an ``error`` flag wearing one, used to abort the pass mid-loop.
+        if (not isinstance(smart, dict) or not dict.__len__(smart)
+                or _truthy(_mapping_get(dev, "error"))):
             # Unknown, not broken.  macOS gives userspace no ATA/SCSI passthrough
             # over USB or Thunderbolt bridges, so smartctl answers "not supported by
             # device" for a perfectly healthy external disk.  Skip it entirely and
@@ -1012,9 +1130,11 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
         # model/device made bare str() raise the digit-cap ValueError and
         # silently killed the whole SMART pass (see _smart_key).
         model = _utf8_text(
-            smart.get("model") or dev.get("name") or dev.get("id") or key
+            _pick(_mapping_get(smart, "model"),
+                  _pick(_mapping_get(dev, "name"),
+                        _pick(_mapping_get(dev, "id"), key)))
         ).strip() or key
-        device = _utf8_text(dev.get("device") or "").strip()
+        device = _utf8_text(_pick(_mapping_get(dev, "device"), "")).strip()
         # /dev/diskN is useless as an identity (see _smart_key) but is exactly what
         # an operator needs to find the disk right now, so it belongs in the prose.
         label = f"{model} {device}".strip()
@@ -1078,7 +1198,9 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
                 # "also push the warn-level chatter" and ships false on real
                 # installs; a disk that is failing is not chatter, so `down` follows
                 # `enabled` only, exactly like the service down alerts above.
-                if n.get("enabled") and (level == "down" or n.get("include_warn")):
+                if _truthy(_mapping_get(n, "enabled")) and (
+                        level == "down"
+                        or _truthy(_mapping_get(n, "include_warn"))):
                     send_ha_notify(title, message, level=level)
         elif old in ("down", "warn"):
             title, template = _SMART_ALERT_TEXT["ok"]
@@ -1099,7 +1221,8 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
             # not accumulate an entry per disk ever seen.
             new_last.pop(key, None)
             new_details.pop(key, None)
-            if n.get("enabled") and n.get("notify_resolve", True):
+            if _truthy(_mapping_get(n, "enabled")) and _truthy(
+                    _mapping_get(n, "notify_resolve", True)):
                 send_ha_notify(title, alert["message"], level="ok", event="resolved")
 
     new_state["_smart_last"] = new_last
@@ -1130,24 +1253,40 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
         st = ups_svc.ups_status()
     except Exception:
         return []
-    if not st.get("present"):
+    # _mapping_get/_truthy/_pick, not bare ``.get``/``or``/bool(): the 30s
+    # snapshot is whatever an in-process caller last cached, and a
+    # dict-subclass ``.get`` bomb wrapper — or a ``present``/``on_battery``
+    # flag wearing a ``__bool__`` bomb — used to raise out of this pass into
+    # check_once's containment: the power-loss countdown went unannounced
+    # while the real readings sat intact in the C-level storage.
+    if not isinstance(st, dict) or not _truthy(_mapping_get(st, "present")):
         return []
-    settings = st.get("settings") or {}
-    if not settings.get("alerts_enabled", True):
+    settings = _pick(_mapping_get(st, "settings"), {})
+    if not isinstance(settings, dict):
+        settings = {}
+    if not _truthy(_mapping_get(settings, "alerts_enabled", True)):
         return []
 
     emitted: list = []
     n = notify_settings()
     # _utf8_text: a leftover over-cap int name made bare str() raise the
     # digit-cap ValueError and silently disabled every UPS alert.
-    name = _utf8_text(st.get("name") or "UPS") or "UPS"
-    pct = st.get("battery_percent")
+    name = _utf8_text(_pick(_mapping_get(st, "name"), "UPS")) or "UPS"
+    pct = _mapping_get(st, "battery_percent")
     try:
         pct_f = None if pct is None or isinstance(pct, bool) else float(pct)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Exception, not the enumerated trio: ``float()`` dispatches into a
+        # subclass value's own ``__float__``, and a bomb there escaped the
+        # old net and killed the pass.
         pct_f = None
-    pct_text = f"{pct}%" if pct_f is not None else "unknown charge"
-    on_battery = bool(st.get("on_battery"))
+    if pct_f is not None:
+        # _utf8_text, not a bare f-string: a pct wearing a ``__str__`` bomb
+        # used to blow the detail render after float() had already succeeded.
+        pct_text = (_utf8_text(pct).strip() or f"{pct_f:g}") + "%"
+    else:
+        pct_text = "unknown charge"
+    on_battery = _truthy(_mapping_get(st, "on_battery"))
 
     key = "ups:power"
     level = "down" if on_battery else "ok"
@@ -1167,7 +1306,7 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
         }
         _append_alert(alert)
         emitted.append(alert)
-        if n.get("enabled"):
+        if _truthy(_mapping_get(n, "enabled")):
             send_ha_notify("ServerHub UPS alert", alert["message"], level="down")
     elif level == "ok" and old == "down":
         alert = {
@@ -1183,13 +1322,16 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
         }
         _append_alert(alert)
         emitted.append(alert)
-        if n.get("enabled") and n.get("notify_resolve", True):
+        if _truthy(_mapping_get(n, "enabled")) and _truthy(
+                _mapping_get(n, "notify_resolve", True)):
             send_ha_notify("ServerHub UPS recovered", alert["message"],
                            level="ok", event="resolved")
 
     try:
-        floor = float(settings.get("low_battery_pct") or 20)
-    except (TypeError, ValueError, OverflowError):
+        floor = float(_pick(_mapping_get(settings, "low_battery_pct"), 20))
+    except Exception:
+        # Exception, not the enumerated trio: a subclass ``__float__`` bomb
+        # floor escaped the old net and killed the pass.
         floor = 20.0
     low = on_battery and pct_f is not None and pct_f <= floor
     key2 = "ups:battery"
@@ -1211,7 +1353,7 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
         }
         _append_alert(alert)
         emitted.append(alert)
-        if n.get("enabled"):
+        if _truthy(_mapping_get(n, "enabled")):
             send_ha_notify("ServerHub UPS alert", alert["message"], level="down")
     return emitted
 
@@ -1240,7 +1382,9 @@ def _service_transition_alerts(
         _append_alert(alert)
         emitted.append(alert)
         n = notify_settings()
-        if n.get("enabled") and notify_ok:
+        # _truthy/_mapping_get: a ``__bool__`` bomb enabled flag used to
+        # raise here and drop every service transition after this one.
+        if _truthy(_mapping_get(n, "enabled")) and notify_ok:
             extra = {"event": "resolved"} if alert["event"] == "resolved" else {}
             send_ha_notify(
                 notify_title, alert["message"], level=alert["level"], **extra,
@@ -1286,7 +1430,10 @@ def _service_transition_alerts(
             _fire(
                 alert,
                 notify_title="ServerHub alert",
-                notify_ok=(state == "down" or notify_settings().get("include_warn")),
+                # _truthy/_mapping_get: a bomb include_warn value used to
+                # detonate the ``or`` / the ``and`` truth test in _fire.
+                notify_ok=(state == "down" or _truthy(
+                    _mapping_get(notify_settings(), "include_warn"))),
             )
         elif old in ("down", "warn") and state == "ok":
             if pending.pop(sid, None):
@@ -1305,7 +1452,8 @@ def _service_transition_alerts(
             _fire(
                 alert,
                 notify_title="ServerHub recovered",
-                notify_ok=notify_settings().get("notify_resolve", True),
+                notify_ok=_truthy(
+                    _mapping_get(notify_settings(), "notify_resolve", True)),
             )
         else:
             pending.pop(sid, None)
