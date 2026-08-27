@@ -576,6 +576,25 @@ def record(event: str, /, **fields: Any) -> dict:
     return entry
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole line, so one absurd number in a single
+    row (a hand-edited ``attempts``, a restored backup) used to make
+    :func:`recent` skip the entire row — silently hiding a sign-in or a
+    privileged mutation from the one trail that exists to answer "who did
+    this and when".  record() itself never writes such a number
+    (``_jsonable`` drops it before disk), so any occurrence is a leftover
+    from another writer; loading it as None keeps the rest of the row, the
+    same drop terminal_svc.recent_audit applies to the command trail.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def recent(limit: int = 100) -> list[dict]:
     """Tail of the audit trail, newest last."""
     try:
@@ -600,7 +619,7 @@ def recent(limit: int = 100) -> list[dict]:
     out: list[dict] = []
     for raw in lines:
         try:
-            parsed = safe_json_loads(raw)
+            parsed = safe_json_loads(raw, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):

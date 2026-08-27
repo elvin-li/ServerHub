@@ -167,15 +167,21 @@ class AuthAuditTrailPinTests(unittest.TestCase):
         self.path.unlink(missing_ok=True)
         self.dir.rmdir()
 
-    def test_huge_digit_line_is_skipped_not_a_500(self):
+    def test_huge_digit_line_costs_its_field_not_a_500(self):
+        # Since the audit7 sweep the poisoned ``ts`` nulls via the capped
+        # parse_int hook and the row keeps its event, instead of the whole
+        # line silently vanishing from the trail.
         entries = audit.recent()
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["event"], "auth.login.ok")
+        self.assertEqual(
+            [e["event"] for e in entries], ["poison", "auth.login.ok"]
+        )
+        self.assertIsNone(entries[0]["ts"])
         _starlette([audit.redact(e) for e in entries])
 
     def test_huge_limit_falls_back_to_one_hundred(self):
         entries = audit.recent(limit=_HUGE_DIGITS)
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[-1]["event"], "auth.login.ok")
         _starlette(entries)
 
 
