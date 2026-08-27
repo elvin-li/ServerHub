@@ -53,9 +53,33 @@ class RaidError(ValueError):
         self.params = params
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``!=`` probe; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / shares_svc ``_rc_int`` rule), and ``_plist`` compared the
+    *rc* slot raw: an rc-subclass whose ``__ne__`` raises detonated
+    ``rc != 0`` — a raw 500 on every POST /api/raid/* mutation through
+    ``list_sets`` / ``disk_topology`` / ``candidate_devices`` (the read
+    page catches it in ``_listing``, the mutation resolvers do not).
+    ``int.__index__`` reads the real value underneath a subclass override;
+    a *lying* ``__class__`` impostor TypeErrors on the unbound read and
+    drops with the junk.  ``-255`` is no honest exit status, so a bomb
+    keeps the empty-plist branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def _plist(argv: list[str], *, timeout: int = 15) -> dict:
     rc, out, _ = sh(argv, timeout=timeout)
-    if rc != 0 or not out:
+    if _rc_int(rc) != 0 or not out:
         return {}
     if _isa(out, (bytes, bytearray)):
         out = bytes(out).decode("utf-8", "replace")

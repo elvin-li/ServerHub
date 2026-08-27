@@ -129,6 +129,34 @@ def _truthy(value) -> bool:
         return False
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / shares_svc ``_rc_int`` rule), and the three listing probes
+    compared the *rc* slot raw: an rc-subclass whose ``__eq__`` / ``__ne__``
+    raises detonated ``rc != 0`` in ``_active_exports`` and ``rc == 0`` in
+    ``check_exports`` / ``statistics`` — a raw 500 on GET /api/nfs (both
+    run unguarded under ``overview``) and GET /api/nfs/stats, where every
+    other junk shape already degrades.  ``int.__index__`` reads the real
+    value underneath a subclass override; a *lying* ``__class__`` impostor
+    (claims int over no real int storage) TypeErrors on the unbound read
+    and drops with the junk.  ``-255`` is no honest exit status and is
+    distinct from the ``-1`` spawn-failure sentinel, so junk can never be
+    misread as success.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def _admin_result(result) -> dict:
     """A privileged-helper result as a plain dict with a real bool ``ok``.
 
@@ -495,7 +523,7 @@ def _active_exports() -> list[dict]:
     up, and the page must not block for that long.
     """
     rc, out, _ = sh([SHOWMOUNT, "-e", "localhost"], timeout=4)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return []
     rows = []
     for line in _as_text(out).splitlines()[1:]:
@@ -510,7 +538,7 @@ def check_exports() -> dict:
     """Validate the live ``/etc/exports`` without changing anything."""
     rc, out, err = sh([NFSD, "checkexports"], timeout=10)
     text = _as_text(out or err).strip()
-    return {"ok": rc == 0, "detail": text[:600]}
+    return {"ok": _rc_int(rc) == 0, "detail": text[:600]}
 
 
 def _entry_rows(raw) -> list:
@@ -652,4 +680,4 @@ def server_action(action: str) -> dict:
 def statistics() -> dict:
     """Server-side NFS counters, useful when a client reports slow mounts."""
     rc, out, _ = sh([NFSSTAT, "-s"], timeout=6)
-    return {"ok": rc == 0, "text": _as_text(out)[:4000]}
+    return {"ok": _rc_int(rc) == 0, "text": _as_text(out)[:4000]}

@@ -105,6 +105,32 @@ def _truthy(value) -> bool:
         return False
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / shares_svc ``_rc_int`` rule), and both ``_plist`` and
+    ``_tm_latest_backup`` compared the *rc* slot raw.  An rc-subclass whose
+    ``__ne__`` raises detonated ``_plist``'s ``rc != 0`` — and ``__eq__``
+    detonated ``_tm_latest_backup``'s ``rc == 0`` — a raw 500 on
+    GET /api/snapshots: ``list_snapshots`` calls ``_plist`` outside any try
+    under ``overview``'s fan-out, and ``_tm_latest_backup`` runs directly in
+    ``time_machine_overview``'s fan-out, which re-raises a probe's error.
+    ``int.__index__`` reads the real value underneath a subclass override;
+    a *lying* ``__class__`` impostor TypeErrors on the unbound read and
+    drops with the junk.  ``-255`` is no honest exit status, so a bomb keeps
+    the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
 
@@ -279,7 +305,7 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
     """
     rc, out, _ = sh(argv, timeout=timeout)
     out = _as_text(out)
-    if rc != 0 or not out:
+    if _rc_int(rc) != 0 or not out:
         return None
     start = out.find("<?xml")
     if start < 0:
@@ -446,7 +472,7 @@ def _tm_status() -> dict | None:
 
 def _tm_latest_backup() -> str:
     rc, latest, _ = sh([TMUTIL, "latestbackup"], timeout=12)
-    return _as_text(latest).strip() if rc == 0 else ""
+    return _as_text(latest).strip() if _rc_int(rc) == 0 else ""
 
 
 def time_machine_overview() -> dict:
@@ -652,7 +678,7 @@ def create_snapshot() -> dict:
     rc, out, err = sh([TMUTIL, "localsnapshot"], timeout=120)
     invalidate()
     message = (_as_text(out) or _as_text(err)).strip()
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return _admin_result({"ok": False, "error": "failed", "message": message[-400:]})
     return _admin_result({
         "ok": True,
