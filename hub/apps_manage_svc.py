@@ -555,7 +555,14 @@ def _docker_detail(source_id: str) -> dict:
     compose = Path(path) / "docker-compose.yml"
     if not _exists(compose):
         compose = Path(path) / "compose.yml"
-    containers = _container_rows(containers_svc.list_containers(with_stats=False))
+    try:
+        containers = _container_rows(containers_svc.list_containers(with_stats=False))
+    except Exception:
+        # list_containers itself can raise (a hostile cached row KeyErrors
+        # its own aggregation, or the engine backend is unreachable); that
+        # must cost the containers section of the detail page, never the
+        # route — _docker_stacks already absorbs this same call.
+        containers = []
     related = []
     for c in containers:
         if not isinstance(c, dict):
@@ -716,7 +723,12 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
         return out
     # fallback: logs of matching containers
     from hub import containers_svc
-    containers = _container_rows(containers_svc.list_containers(with_stats=False))
+    try:
+        containers = _container_rows(containers_svc.list_containers(with_stats=False))
+    except Exception:
+        # Same guard as _docker_detail: a raising list_containers used to
+        # 500 GET /api/apps/managed/logs instead of answering "no logs".
+        containers = []
     matching = []
     for c in containers:
         if not isinstance(c, dict):
@@ -925,12 +937,16 @@ def _native_detail(source_id: str) -> dict:
     # _clean_rows: a subclass ``.get``/``__eq__`` bomb row, or a value
     # ``__bool__`` bomb behind ``listed.get("running")`` below, used to 500
     # GET /api/apps/managed/detail for every native app while the listing
-    # itself rendered fine.
+    # itself rendered fine.  The try: a *raising* listing (brew backend
+    # torn mid-probe) must fall back to the static catalog entry, never
+    # 500 the route — _native_apps reaches this same call through
+    # _collect's fallback.
+    try:
+        listed_rows = _clean_rows(native_catalog.list_native_apps(force=True))
+    except Exception:
+        listed_rows = []
     listed = next(
-        (
-            a for a in _clean_rows(native_catalog.list_native_apps(force=True))
-            if a.get("id") == source_id
-        ),
+        (a for a in listed_rows if a.get("id") == source_id),
         {},
     )
     pkg = app.get("package")
@@ -1035,7 +1051,14 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         return {"ok": False, "log": "unknown app"}
     if source_id == "native-cloudflared":
         from hub import cloudflared_svc
-        return cloudflared_svc.logs(lines=lines)
+        try:
+            return cloudflared_svc.logs(lines=lines)
+        except Exception as e:
+            # A raising backend used to 500 the logs modal; exc_detail, not
+            # bare str(e): a leftover ``\ud800`` / RecursionError in the
+            # message must cost the message, never the modal (the _vm_logs
+            # convention).
+            return {"ok": False, "log": exc_detail(e)}
     pkg = app.get("package")
     chunks = []
     home = user_home()
@@ -1192,7 +1215,16 @@ def _launchd_detail(label: str) -> dict:
     # Laundered like every other cross-module payload merged into a detail
     # page: a subclass ``.get`` bomb or ``__bool__`` bomb value in the
     # uninstall preview must cost its field, never the whole detail route.
-    preview = _jsonable(services_uninstall_svc.preview(label))
+    # The try covers a preview that raises *raw* the same way (a torn
+    # reader mid-request); preview's own coded answers stay coded — apps5
+    # pins the FIFO-plist detail as services.uninstall_unknown, not a 200
+    # with blank preview fields.
+    try:
+        preview = _jsonable(services_uninstall_svc.preview(label))
+    except HTTPException:
+        raise
+    except Exception:
+        preview = None
     if not isinstance(preview, dict):
         preview = {}
     return {
@@ -1313,9 +1345,16 @@ def _vm_actions(v: dict) -> list[str]:
 
 def _vm_detail(source_id: str) -> dict:
     from hub import vms_svc
+    try:
+        vm_rows = _vm_rows(vms_svc.list_all_vms())
+    except Exception:
+        # A raising list_all_vms (utmctl torn mid-listing) used to 500 the
+        # detail route; with no rows the lookup below answers the same
+        # coded 404 an unusable payload already does.
+        vm_rows = []
     v = next(
         (
-            x for x in _vm_rows(vms_svc.list_all_vms())
+            x for x in vm_rows
             if (x.get("id") or x.get("uuid") or x.get("name")) == source_id
         ),
         None,
@@ -1457,7 +1496,11 @@ def inventory(force: bool = False) -> dict:
         "items": all_items,
         "counts": counts,
         "host_ip": host,
-        "engine_up": engine,
+        # _truthy: a non-bool leftover from the engine probe used to be
+        # stringified into the payload as an object repr; the flag's
+        # contract is a bool, and a value that cannot even answer
+        # __bool__ reads as down (the tools7 convention).
+        "engine_up": engine if isinstance(engine, bool) else _truthy(engine),
     }
     return _safe_payload(v)
 
@@ -1510,7 +1553,18 @@ def logs(app_id: str, lines: int = 120) -> dict:
 
 
 def action(app_id: str, action_name: str, **kwargs) -> dict:
-    """start|stop|restart|update|uninstall|suspend|autostart_on|autostart_off"""
+    """start|stop|restart|update|uninstall|suspend|autostart_on|autostart_off
+
+    The result is laundered like detail() and logs(): most branches hand
+    back another module's payload verbatim (autostart toggles, vm_action,
+    uninstall previews), and a lone surrogate, a >4300-digit int or raw
+    bytes in one of those used to 500 Starlette's encoder *after* the
+    action had already run.
+    """
+    return _safe_payload(_action(app_id, action_name, **kwargs))
+
+
+def _action(app_id: str, action_name: str, **kwargs) -> dict:
     action_name = (action_name or "").strip().lower()
     kind, _, source_id = app_id.partition(":")
     if not source_id:
@@ -1533,10 +1587,15 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             from hub import containers_svc
             # _container_rows: the raw ``.get("containers") or []`` on a
             # dict-subclass payload (or hostile rows) used to 500
-            # POST /api/apps/managed/action before any toggle ran.
-            containers = _container_rows(
-                containers_svc.list_containers(with_stats=False)
-            )
+            # POST /api/apps/managed/action before any toggle ran.  The
+            # try: a *raising* list_containers falls through to the
+            # single-container toggle below, same as an empty listing.
+            try:
+                containers = _container_rows(
+                    containers_svc.list_containers(with_stats=False)
+                )
+            except Exception:
+                containers = []
             related = []
             for c in containers:
                 cid = str(c.get("id") or "")
@@ -1632,7 +1691,16 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
             )
         if action_name in ("start", "stop", "restart", "run"):
             from hub import actions
-            rc, out, err = actions.run_action(source_id, action_name)
+            try:
+                rc, out, err = actions.run_action(source_id, action_name)
+            except HTTPException:
+                # actions.unknown_target and friends: the coded answer the
+                # SPA translates.
+                raise
+            except Exception as e:
+                # A torn registry row / raising backend used to 500 the
+                # action instead of reporting the failure.
+                return {"ok": False, "message": _as_text(e)}
             return {
                 "ok": rc == 0,
                 "message": _as_text(out or err).strip() or action_name,
