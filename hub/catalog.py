@@ -227,6 +227,31 @@ def _isinst(value, types) -> bool:
         return False
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``run_capped`` (tests and tooling patch it —
+    the docker_cli / native_catalog ``_rc_int`` rule).  Install and
+    uninstall compare the *rc* slot inside broad try blocks, so a leftover
+    rc-subclass ``__eq__`` bomb never 500'd — but it *lied*: on install the
+    bomb detonated the ``rc != 0`` probe and rolled back a compose stack
+    that had just come up cleanly, and on uninstall it detonated
+    ``rc == 0`` and misfiled a clean ``down`` as a failure.  ``-255`` is no
+    honest exit status and is distinct from the ``-1`` timeout / not-found
+    sentinel, so junk can never be misread as a vanished CLI or success.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def _exists(path: Path) -> bool:
     try:
         return path.exists()
@@ -249,9 +274,16 @@ def _plain_str_list(raw) -> list[str]:
             items = list(raw)
         except Exception:
             return []
-    elif raw in (None, "", False):
-        return []
     else:
+        try:
+            # ``raw in (None, "", False)`` runs the scalar's own ``__eq__``:
+            # a leftover whose ``__eq__`` raises used to detonate this
+            # emptiness probe itself instead of degrading through
+            # _plain_str like every other junk scalar.
+            if raw in (None, "", False):
+                return []
+        except Exception:
+            pass
         items = [raw]
     out: list[str] = []
     for item in items:
@@ -1464,6 +1496,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             env=env,
             cap=4000,
         )
+        # _rc_int: a leftover rc bomb used to detonate ``rc != 0`` inside
+        # the broad try below and roll back a stack that had just come up
+        # cleanly; junk reads -255, never the -1 vanished-CLI sentinel.
+        rc = _rc_int(rc)
         msg = (_plain_str(msg) or f"exit {rc}").strip()
         if rc != 0:
             # A docker CLI that vanished between the _exists() gate above and
@@ -1622,6 +1658,10 @@ def uninstall_template(
         rc, text = run_capped(
             args, cwd=str(dest_dir), timeout=300, env=env, cap=4000,
         )
+        # _rc_int: a leftover rc bomb (or a >4300-digit rc ValueError-ing
+        # the f-string) used to misfile a clean ``down`` as a failure
+        # through the except arm below; junk reads -255, honestly failed.
+        rc = _rc_int(rc)
         logs.append((_plain_str(text) or f"down exit {rc}").strip())
         down_ok = rc == 0
     except Exception as e:

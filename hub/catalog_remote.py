@@ -244,8 +244,27 @@ def validate_source_url(url: str) -> str:
 def source_url() -> str:
     from hub.config import settings_section
 
-    section = settings_section("catalog_remote")
-    url = section.get("url")
+    # Guarded like config.settings_section guards cfg() itself: a leftover
+    # snapshot provider that raises must read as "no source configured",
+    # not 500 GET /api/catalog/remote and every POST /api/catalog/remote/check.
+    try:
+        section = settings_section("catalog_remote")
+    except Exception:
+        return ""
+    # Fail-closed _isinst gate + unbound dict.get in a try (the
+    # config.settings_section convention): the bare bound ``section.get``
+    # used to be four raw 500s on the same routes — a leftover dict
+    # *subclass* whose ``.get`` bombs, a section that is not a mapping at
+    # all (``catalog_remote: []`` by hand, so ``.get`` is AttributeError),
+    # a raising ``__class__`` property detonating any bare isinstance gate,
+    # and a *hash-shadowing* key (same hash as "url", raising ``__eq__``)
+    # detonating the compare inside the C-level lookup itself.
+    if not _isinst(section, dict):
+        return ""
+    try:
+        url = dict.get(section, "url")
+    except Exception:
+        return ""
     if type(url) is not str:
         # _as_text, not bare str(): YAML hex/octal int spellings dodge the
         # decimal digit-cap loader, so a hand-edited ``url: 0xfff…`` arrives
