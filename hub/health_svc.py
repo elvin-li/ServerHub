@@ -25,6 +25,44 @@ _PLIST_CAP = 256 * 1024
 _refresh_lock = threading.Lock()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: planted in the cache snapshot it 500'd
+    ``_fresh_snapshot`` / ``_jsonable`` on every GET /api/health/checks,
+    and returned as a check row from the Immich/Ollama probe modules it
+    500'd ``_as_checks`` / ``_row_flags`` after every probe had already
+    answered.  A real subclass still matches through the C-level type
+    check; only a value that cannot answer what it is takes the
+    non-matching branch (the smart_test_svc._isa rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate ``rc in (0, 4)``
+    inside ``_smart_checks`` — ``_safe`` swallowed the raise and the SMART
+    row silently vanished from GET /api/health/checks.  ``-255`` is no
+    honest smartctl exit, so a bomb keeps the empty-row fallback.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -33,7 +71,9 @@ def _decode_bytes(value) -> str:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    # _isa: a ``__class__``-property bomb planted in the cache snapshot used
+    # to detonate this very gate on every TTL hit.
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         text = str(value)
@@ -53,7 +93,8 @@ def _utf8_text(value) -> str:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
+    # _isa — same ``__class__``-property-bomb note as _utf8_text.
+    if _isa(value, (bytes, bytearray)):
         value = _decode_bytes(value)
     elif value is None:
         return ""
@@ -81,9 +122,14 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa at every rank (the smart_test_svc._jsonable rule): a
+    # ``__class__``-property bomb nested in the cache snapshot or in a raw
+    # Immich/Ollama check row used to detonate the first gate it failed and
+    # 500 GET /api/health/checks; it now falls through to the final text
+    # probe like any other leftover.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules._jsonable rule):
@@ -100,7 +146,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -111,11 +157,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         try:
             # Unpacking inside the same try: a subclass ``items()`` that
             # *answers* but yields non-pairs used to raise out of the loop
@@ -132,19 +178,21 @@ def _jsonable(value, depth: int = 0):
             return None
         out = {}
         for k, v in items:
-            if isinstance(k, (bytes, bytearray)):
-                try:
+            try:
+                # Per-pair guard (the smart_test_svc._jsonable rule): a
+                # ``__class__``-bomb key used to detonate its own gate —
+                # outside the old per-conversion trys — and 500 GET
+                # /api/health/checks; the torn pair drops alone, its
+                # sibling keys survive.
+                if _isa(k, (bytes, bytearray)):
                     k = _decode_bytes(k)
-                except Exception:
-                    continue
-            elif not isinstance(k, str):
-                try:
+                elif not _isa(k, str):
                     k = str(k)
-                except Exception:
-                    continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+                out[_utf8_text(k)] = _jsonable(v, depth + 1)
+            except Exception:
+                continue
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
         except Exception:
@@ -349,7 +397,8 @@ def _brew_snapshot() -> list:
         rows = brew_services_list() or []
     except Exception:
         return []
-    return rows if isinstance(rows, list) else []
+    # _isa: a ``__class__``-property-bomb listing detonated the bare gate.
+    return rows if _isa(rows, list) else []
 
 
 def _smart_checks() -> list[dict]:
@@ -366,7 +415,9 @@ def _smart_checks() -> list[dict]:
     # does not own the provider (nginx_svc guards the same class with
     # ``_sh_message``): bytes stdout from a patched/odd sh TypeError'd
     # ``"PASSED" in out.upper()`` and _safe swallowed the raise — the SMART
-    # row silently vanished instead of rendering.
+    # row silently vanished instead of rendering.  _rc_int: an rc-subclass
+    # ``__eq__`` bomb detonated ``rc in (0, 4)`` into the same silent wipe.
+    rc = _rc_int(rc)
     out = _as_text(out)
     if rc in (0, 4) and out:
         ok = "PASSED" in out.upper() or "OK" in out.upper()
@@ -595,7 +646,10 @@ def _serve_cached(hit: dict) -> dict:
 
 def _fresh_snapshot() -> dict | None:
     hit = _cache["v"]
-    if not isinstance(hit, dict):
+    # _isa: a ``__class__``-property bomb planted as the whole cached
+    # snapshot used to detonate this gate on every GET /api/health/checks —
+    # a 500 where every other cache poisoning already re-collects.
+    if not _isa(hit, dict):
         return None
     try:
         # A leftover over-cap int (or garbage) planted in _cache["t"] made
@@ -712,7 +766,10 @@ def _collect_checks() -> dict:
     )
 
     def _as_checks(rows):
-        if not isinstance(rows, list):
+        # _isa: a probe answering a ``__class__``-property bomb as its rows
+        # object detonated this gate after the fan-out — a raw 500 where
+        # every other junk answer already drops to no rows.
+        if not _isa(rows, list):
             return []
         try:
             # Materialize: ``isinstance`` passes for a list *subclass*, and
@@ -890,7 +947,9 @@ def _collect_checks() -> dict:
         collection 500'd at summary time.  ``_as_text`` on level: an
         unrenderable over-cap int must compare as "", not raise.
         """
-        if not isinstance(c, dict):
+        # _isa: a ``__class__``-property-bomb check row detonated this gate
+        # at summary time — a raw 500 after every probe had already answered.
+        if not _isa(c, dict):
             return None
         try:
             return bool(c.get("ok")), _as_text(c.get("level"))
