@@ -40,17 +40,65 @@ _DETECT_TTL = 30.0
 _detect_generation = 0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gates themselves: planted in the LAN-detection cache it
+    blew ``_as_text``'s bytes gate one step ahead of every scrub and 500'd
+    ``host_ip()``'s one unguarded consumer, GET /api/system/host (the
+    docker_cli / nas8 rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` in ``_default_route_fields`` — straight out of
+    ``host_ip()`` and 500ing GET /api/system/host (the health9 rule).
+    ``-255`` is no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: a bytes-subclass ``decode`` bomb planted in the
-        # detection cache must not raise out of this scrub (the modules5
-        # convention its sibling sanitizers already use).
-        base = bytes if isinstance(value, bytes) else bytearray
-        value = base.decode(value, "utf-8", "replace")
+    # _isa, not a bare isinstance: a ``__class__``-property bomb planted in
+    # the detection cache used to detonate this gate itself.
+    decoded = None
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a bytes-subclass ``decode`` bomb planted
+            # in the detection cache must not raise out of this scrub (the
+            # modules5 convention its sibling sanitizers already use).  The
+            # try is for a *lying* ``__class__`` (claims bytes, is not): the
+            # unbound call TypeErrors and the impostor renders like any
+            # other junk object below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
-    else:
+    elif type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
@@ -60,14 +108,16 @@ def _as_text(value) -> str:
                 return ""
         except Exception:
             return ""
-    if not isinstance(value, str):
-        return ""
     # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
     # skips CPython's exact-str copy above and used to carry its bound
     # ``encode`` bomb into this scrub — a leftover planted in the LAN-address
     # detection cache then raised straight out of ``host_ip()`` and 500'd its
     # one unguarded consumer, GET /api/system/host (the status.py convention).
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        # Only a lying-``__class__`` str impostor lands here: junk.
+        return ""
 
 
 def configured_host() -> str:
@@ -120,7 +170,9 @@ def _default_route_fields() -> tuple[tuple[str, str], ...]:
     change, a service reorder or an alias edit is reflected immediately.
     """
     rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    if rc != 0:
+    # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
+    # to detonate this bare probe and 500 every host_ip() consumer.
+    if _rc_int(rc) != 0:
         return ()
     fields: list[tuple[str, str]] = []
     # int / None / bytes payloads used to AttributeError on splitlines and
@@ -171,7 +223,8 @@ def default_interface(*, force: bool = False) -> str:
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
     rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
-    return _as_text(output).strip() if rc == 0 else ""
+    # _rc_int: same rc-``__eq__`` bomb class as _default_route_fields.
+    return _as_text(output).strip() if _rc_int(rc) == 0 else ""
 
 
 def interface_address(interface: str, *, force: bool = False) -> str:
@@ -211,7 +264,15 @@ def _cached_detection(now: float) -> str:
             age = now - float(_detect_cache["t"])
         except (TypeError, ValueError, OverflowError):
             return ""
-        if value and age < _DETECT_TTL:
+        # Guarded truthiness: the cache normally only ever holds the exact
+        # str ``_detect_lan_ip_uncached`` writes, but a leftover whose
+        # ``__bool__`` raises used to detonate this probe and 500 every
+        # host_ip() consumer.  A bomb reads as a miss and re-detects.
+        try:
+            live = bool(value)
+        except Exception:
+            return ""
+        if live and age < _DETECT_TTL:
             return _as_text(value)
     return ""
 
@@ -298,6 +359,9 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
         if not isinstance(address_book, dict):
             address_book = {}
+        # _as_text absorbs a per-entry ``__class__``-property bomb now, so
+        # one junk entry renders as junk text instead of raising into the
+        # blanket except and silently dropping every sane sibling.
         values.update({
             _as_text(key): _as_text(value)
             for key, value in address_book.items()
@@ -329,6 +393,12 @@ def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: in
 
     Depth-capped: leftover deeply-nested YAML used to RecursionError
     compose/catalog/bookmark payloads that walk this walker.
+
+    Deliberately raise-on-junk: every caller (containers overrides,
+    bookmarks quick_links, ``_status_quick_links``) wraps this walk in a
+    try and treats a raise as "the value is junk" — the bookmarks5 /
+    docker9 pins depend on a subclass ``items()`` / ``__iter__`` /
+    ``__class__`` bomb raising here rather than being laundered through.
     """
     if _depth > 16:
         if isinstance(value, (dict, list, tuple)):
@@ -352,7 +422,9 @@ def normalize_local_url(value: str | None) -> str:
     """Store local URLs with {host} so DHCP/interface changes do not stale them."""
     if value is None:
         return ""
-    if not isinstance(value, str):
+    # _isa + the scrub's strip: a ``__class__``-property bomb or a
+    # str-subclass ``strip`` override must not raise out of a URL write.
+    if type(value) is not str:
         raw = _as_text(value).strip()
     else:
         raw = value.strip()

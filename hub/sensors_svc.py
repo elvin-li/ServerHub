@@ -14,6 +14,23 @@ from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh, strftime_now
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    planted in the sensors / top caches detonated ``_jsonable``'s rank
+    gates one step ahead of every scrub and 500'd GET /api/system/sensors
+    (the docker_cli / nas8 rule).  A real subclass still matches through
+    the C-level type check; only a value that cannot answer what it is
+    takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -21,8 +38,14 @@ def _decode_bytes(value) -> str:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
     if value is None:
         return ""
     try:
@@ -44,8 +67,12 @@ def _as_text(value) -> str:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # Same _isa + lying-``__class__`` decode guard as _as_text.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -94,9 +121,14 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* isinstance below — as a value,
+    # a mapping key or the whole planted cache — and 500
+    # GET /api/system/sensors on the cache hit, the light peek and the
+    # cold collect's final sweep.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -111,7 +143,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -122,30 +154,50 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises or
         # yields non-pairs cannot 500 and the real entries still survive.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = dict.items(value)
+        except Exception:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot drop the real elements.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot drop the real elements.  The try is for a
+                # lying-``__class__`` impostor, which TypeErrors here.
+                try:
+                    items = base.__iter__(value)
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -360,10 +412,13 @@ def _cpu_and_mem_from_top_cached() -> dict:
         # cache used to pass ``or {}`` truthiness / ``.get()`` bombs straight
         # into _collect_sensors_uncached and 500 GET /api/system/sensors;
         # a leftover non-dict fell through to AttributeError the same way.
-        # A poisoned hit re-collects instead.
+        # A poisoned hit re-collects instead.  _isa, not bare isinstance: a
+        # ``__class__``-property bomb planted as the whole hit used to
+        # detonate the gate itself and silently wipe the top leg (PhysMem,
+        # load, process counts) for a full TTL.
         if type(hit) is dict:
             return hit
-        if isinstance(hit, dict):
+        if _isa(hit, dict):
             try:
                 return dict(hit)
             except Exception:

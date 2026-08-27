@@ -49,6 +49,24 @@ _adaptive_cache = {"t": 0.0, "compose": None, "nginx": None}
 _ADAPTIVE_TTL = 60.0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gates themselves: planted as (or nested in) the cached
+    snapshot it blew ``_stamp_locale`` / ``_jsonable`` on every cache-hit
+    GET /api/status; planted as a cfg root or a ``quick_links`` value it
+    blew the cold build (the docker_cli / nas8 rule).  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if isinstance(value, bytes) else bytearray
@@ -64,12 +82,14 @@ def _cfg_value(key, default=None):
     GET /api/status *and* POST /api/alerts/check, which calls
     ``full_status`` before any of its per-check try/excepts exist.
     ``dict.get`` reads the C-level storage underneath the override.
+    ``_isa`` on the root gate: a cfg root whose ``__class__`` is a raising
+    property used to detonate the bare isinstance the same way.
     """
     try:
         data = cfg()
     except Exception:
         return default
-    if not isinstance(data, dict):
+    if not _isa(data, dict):
         return default
     try:
         return dict.get(data, key, default)
@@ -79,8 +99,14 @@ def _cfg_value(key, default=None):
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -111,7 +137,7 @@ def _name_text(raw) -> str:
     jobs._task_id rule: a renderable value coerces, an over-cap leftover
     drops only itself, bool never becomes ``"True"``.
     """
-    if raw is None or isinstance(raw, bool):
+    if raw is None or _isa(raw, bool):
         return ""
     return _utf8_text(raw)
 
@@ -135,9 +161,13 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property — planted as (or nested in) the cached snapshot, a collector
+    # row or a config value — used to detonate the *first* isinstance below
+    # and 500 GET /api/status and GET /api/services.
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -152,7 +182,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -163,30 +193,50 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except Exception:
+            return None
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict subclass whose ``items()`` raises or
-        # yields non-pairs used to 500 the status/services routes.
-        for k, v in dict.items(value):
-            if isinstance(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-            elif not isinstance(k, str):
+        # yields non-pairs used to 500 the status/services routes.  The
+        # try is for a lying-``__class__`` dict impostor, which TypeErrors
+        # the unbound view itself.
+        try:
+            entries = dict.items(value)
+        except Exception:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except Exception:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
                 except Exception:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot 500 and the real elements still survive.
-                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+                # cannot 500 and the real elements still survive.  The try
+                # is for a lying-``__class__`` impostor, which TypeErrors.
+                try:
+                    items = base.__iter__(value)
+                except Exception:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except Exception:
@@ -207,11 +257,12 @@ def _jsonable(value, depth: int = 0):
 
 
 def _status_quick_links() -> list:
-    try:
-        raw = cfg().get("quick_links")
-    except Exception:
-        return []
-    if not isinstance(raw, list):
+    # _cfg_value, not a bare ``cfg().get``: only the read itself sat in the
+    # try, so a ``quick_links`` value whose ``__class__`` is a raising
+    # property detonated the isinstance gate below and 500'd a cold
+    # GET /api/status.
+    raw = _cfg_value("quick_links")
+    if not _isa(raw, list):
         return []
     # YAML anchors can make a cyclic mapping. resolve_value is depth-capped
     # so this no longer RecursionError's; still absorb any leftover raise.
@@ -219,7 +270,7 @@ def _status_quick_links() -> list:
         links = resolve_value(raw)
     except Exception:
         return []
-    return links if isinstance(links, list) else []
+    return links if _isa(links, list) else []
 
 
 #: Separate from `_refresh_lock`: the adaptive scans and the status build are
@@ -338,14 +389,25 @@ def _future_result(fut, fallback):
 
 
 def _rows(value) -> list:
-    return value if isinstance(value, list) else []
+    # _isa: a collector answering a ``__class__``-property bomb used to
+    # detonate this gate and 500 a cold GET /api/status.
+    return value if _isa(value, list) else []
 
 
 def _container_pair(value):
     """``discover_containers`` is ``(items, engine_up)``; a bare list used to unpack-500."""
-    if isinstance(value, (tuple, list)) and len(value) == 2:
-        items, up = value
-        return _rows(items), bool(up)
+    try:
+        if _isa(value, (tuple, list)) and len(value) == 2:
+            items, up = value
+            # Guarded truthiness: an ``up`` flag whose ``__bool__`` raises
+            # is junk and reads as engine-down, not as a 500.
+            try:
+                up = bool(up)
+            except Exception:
+                up = False
+            return _rows(items), up
+    except Exception:
+        pass
     return [], False
 
 
@@ -359,7 +421,7 @@ def _remember_port(ports: set, value) -> None:
 
 def _build_status() -> dict:
     raw_settings = _cfg_value("settings")
-    if isinstance(raw_settings, dict):
+    if _isa(raw_settings, dict):
         # Plain-dict copy (C-level storage): a leftover ``settings`` map that
         # is a dict subclass whose ``.get`` raises passed the isinstance gate
         # and 500'd the very first read of a cold build.
@@ -370,6 +432,13 @@ def _build_status() -> dict:
     else:
         raw_settings = {}
     adaptive_on = raw_settings.get("adaptive", True)
+    # Guarded truthiness: a leftover ``adaptive`` value whose ``__bool__``
+    # raises must not 500 the cold build; junk reads as "off" (the
+    # jobs._truthy fail-closed rule).
+    try:
+        adaptive_on = bool(adaptive_on)
+    except Exception:
+        adaptive_on = False
     f_l = _pool.submit(discover_launchd)
     f_d = _pool.submit(discover_containers)
     f_v = _pool.submit(discover_vms)
@@ -446,9 +515,15 @@ def _build_status() -> dict:
     # Names via the str() probe.  ``_as_config`` leaves this list unfiltered
     # (it is not a list of mappings); a nested dict used to TypeError on
     # ``g in groups``, and the old ``isinstance(g, str)`` gate silently lost
-    # a numeric YAML group name's configured position.
-    if isinstance(raw_order, list):
-        order = [name for name in (_name_text(g) for g in raw_order) if name]
+    # a numeric YAML group name's configured position.  _isa + unbound
+    # iteration: a ``__class__``-property bomb (or a lying-``__class__``
+    # list impostor) as the order value must not 500 the cold build.
+    if _isa(raw_order, list):
+        try:
+            raw_names = list.__iter__(raw_order)
+        except Exception:
+            raw_names = ()
+        order = [name for name in (_name_text(g) for g in raw_names) if name]
     else:
         order = []
     # ensure adaptive groups appear near end unless ordered
@@ -533,9 +608,11 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
     Host metrics, global quick links, and adaptive discovery metadata are
     administrator data and are deliberately omitted from member responses.
     """
-    if not isinstance(status, dict):
+    # _isa on the two entry gates: a ``__class__``-property bomb passed as
+    # the snapshot or the resource list must not 500 the member route.
+    if not _isa(status, dict):
         status = {}
-    if not isinstance(resources, (list, tuple, set, frozenset)):
+    if not _isa(resources, (list, tuple, set, frozenset)):
         resources = []
     # _name_text, not bare str(): an over-cap hex-YAML resource id raised the
     # digit-cap ValueError here and 500'd the member GET /api/status; a
@@ -647,7 +724,10 @@ def _stamp_locale(status: dict) -> dict:
     Re-sanitizes so a leftover ``\\ud800`` planted in the peek cache cannot
     500 the encoder on a cache hit.
     """
-    if not isinstance(status, dict):
+    # _isa: a leftover planted as the whole cached snapshot whose
+    # ``__class__`` is a raising property used to detonate this gate itself
+    # and 500 every cache-hit GET /api/status before any scrub ran.
+    if not _isa(status, dict):
         return _jsonable(status)
     if type(status) is not dict:
         # Plain-dict copy first (C-level storage): a leftover cached snapshot
