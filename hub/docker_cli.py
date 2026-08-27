@@ -215,9 +215,51 @@ def _jsonable(value, depth: int = 0):
         return None
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / hub.host_address._rc_int rule), and :func:`docker` laundered
+    only the two text streams of the tuple.  A leftover riding the *rc*
+    slot went out raw to every consumer:
+
+    * an int-subclass whose ``__eq__``/``__ne__`` raises detonated the bare
+      ``rc == -1`` probe inside :func:`engine_up` and 500'd essentially
+      every docker route (GET /api/containers, /api/stacks, /api/images,
+      /api/volumes, /api/networks and the action/exec/prune mutations);
+    * a lying-``__class__`` impostor (claims bool/int/str, is none of
+      them) and a raising ``__class__`` property rode
+      ``exec_in_container``'s raw ``"rc": rc`` echo into the response
+      encoder — the bool/int liar is unserializable and the class bomb
+      detonates the encoder's own isinstance rank gates — a raw 500 on
+      POST /api/containers/{name}/exec;
+    * a >4300-digit int passed every gate untouched and then ValueError'd
+      ``str()`` past CPython's digit cap — ``container_action``'s
+      ``f"exit {rc}"`` 500'd POST /api/containers/{name}/action, and the
+      encoder 500'd the exec echo the same way.
+
+    ``-255`` is no honest exit status and is distinct from the ``-1``
+    timeout / not-found sentinel, so junk can never be misread as a
+    timeout, a vanished CLI, or success.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
+        # cannot fire, and a lying-``__class__`` impostor TypeErrors here
+        # instead of passing the gate (the modules5 unbound convention).
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except Exception:
+        return -255
+
+
 def docker(*args, timeout=30) -> tuple[int, str, str]:
     rc, out, err = sh([DOCKER, *args], timeout=timeout)
-    return rc, _as_text(out), _as_text(err)
+    return _rc_int(rc), _as_text(out), _as_text(err)
 
 
 #: What the docker CLI / compose plugin print when the daemon is unreachable.
