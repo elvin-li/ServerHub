@@ -147,19 +147,68 @@ def _rc_int(rc) -> int:
     the ``-1`` spawn-failure sentinel, so junk can never be misread as
     success or as a vanished CLI.
     """
+    # Identity, not ``isinstance(rc, bool)``: ``bool`` is final, so a value
+    # that answers the bool gate without *being* one is a lying-``__class__``
+    # impostor, and the old ``int(rc)`` arm dispatched into its own
+    # ``__int__`` — a bool-liar answering ``0`` forged a *success* exit
+    # status for a spawn that never ran (the vms10 bool-liar rule: junk is
+    # never consent to claim success).  Only the two real singletons render.
+    if rc is True:
+        return 1
+    if rc is False:
+        return 0
     try:
-        if isinstance(rc, bool):
-            return int(rc)
+        if not isinstance(rc, int):
+            return -255
         # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
         # cannot fire, and a lying-``__class__`` impostor TypeErrors here
         # instead of passing the gate (the modules5 unbound convention).
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc)
+        if type(value) is not int:
+            return -255
         # Digit-cap probe: past CPython's int->str cap the status cannot be
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
     except Exception:
         return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and every call site unpacked the
+    answer raw: ``rc, output, error = sh(...)`` dispatched into the answer's
+    own iteration, so a tuple-subclass whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple/list over no real sequence
+    storage, a wrong-arity tuple, a bare ``None`` — raised straight out of
+    ``read_acl``, ``local_users`` (both dscl reads) and
+    ``_run_unprivileged``: raw 500s on GET and PUT /api/shares/acl past
+    every coded refusal (the vms10/network10 sequence-unwrap class).  The
+    unbound base reads see the real C-level storage, so an honest answer in
+    a subclass wrapper survives untouched — the ``-1`` vanished-spawn
+    sentinel included — while junk degrades to ``(-255, "", "")``: nonzero
+    (a poisoned answer is not consent to claim success) and never the
+    ``-1`` sentinel (an unusable answer cannot forge the vanished-CLI 503).
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _str_keyed(plain: dict) -> dict:
@@ -324,7 +373,9 @@ def _validated_dir(path: str) -> Path:
 def read_acl(path: str) -> dict:
     """ACL and ownership of *path* (validated absolute directory)."""
     resolved = _validated_dir(path)
-    rc, output, error = sh([LS, "-lde", str(resolved)], timeout=8)
+    # _sh3: a leftover subclass/impostor answer used to blow this unpack
+    # itself — a raw 500 on GET and PUT /api/shares/acl before any gate ran.
+    rc, output, error = _sh3(sh([LS, "-lde", str(resolved)], timeout=8))
     # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
     # to detonate this gate — a raw 500 on GET and PUT /api/shares/acl in
     # place of the coded read failure.  Junk rc reads as failure, and the
@@ -362,7 +413,9 @@ def local_users() -> list[dict]:
     (``_spotlight`` …) start with an underscore and real people start at
     uid 500 on macOS, so both filters together keep exactly the human set.
     """
-    rc, output, _ = sh([DSCL, ".", "-list", "/Users", "UniqueID"], timeout=8)
+    # _sh3: the same unwrap seal — a poisoned dscl answer used to raise out
+    # of this unpack and 500 GET /api/shares/acl through the picker half.
+    rc, output, _ = _sh3(sh([DSCL, ".", "-list", "/Users", "UniqueID"], timeout=8))
     # _rc_int: an rc-``__ne__`` bomb used to raise out of this gate and 500
     # GET /api/shares/acl — the route reads the picker outside any try.
     if _rc_int(rc) != 0:
@@ -381,9 +434,11 @@ def local_users() -> list[dict]:
             continue
         username = parts[0]
         real_name = ""
-        rc_name, name_out, _ = sh(
+        # _sh3: one poisoned per-user RealName answer used to blow the unpack
+        # and cost the whole picker as a raw 500.
+        rc_name, name_out, _ = _sh3(sh(
             [DSCL, ".", "-read", f"/Users/{username}", "RealName"], timeout=5
-        )
+        ))
         # _rc_int: the same rc-``__eq__`` bomb class, per picked user — one
         # poisoned RealName read used to cost the whole picker as a raw 500.
         if _rc_int(rc_name) == 0:
@@ -461,7 +516,10 @@ def _run_unprivileged(commands: list[list[str]]) -> dict:
         # ``capture_output=True`` used to keep chmod chatter in RAM for the
         # full timeout.  ``sh`` streams to a tempfile and already maps
         # timeout/OSError to rc=-1 instead of raising into the Shares page.
-        rc, out, err = sh(command, timeout=15)
+        # _sh3: a poisoned chmod answer used to blow this unpack itself — a
+        # raw 500 on PUT /api/shares/acl on the owner-run path, one line
+        # ahead of the failure funnel.
+        rc, out, err = _sh3(sh(command, timeout=15))
         # _rc_int: an rc-``__ne__`` bomb used to blow this probe one line
         # ahead of the funnel that classifies the failure — a raw 500 on
         # PUT /api/shares/acl on the owner-run path.
