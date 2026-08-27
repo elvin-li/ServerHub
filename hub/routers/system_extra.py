@@ -31,10 +31,68 @@ def _audit_host_change(event: str, request: Request | None, **fields) -> None:
     )
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property* — an
+    ``sh`` output from a patched/odd ``sh`` — used to detonate ``_as_text``'s
+    bytes gate itself and 500 GET /api/system/host (the dash9 host_address
+    rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This router does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc == 0`` / ``rc != 0`` probes in ``_host_snapshot`` / ``_mem_gb``
+    / ``_ncpu_int`` — a raw 500 on GET /api/system/host (the health9 /
+    dash9 host_address rule).  ``-255`` is no honest exit status, so a bomb
+    keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; ``.isdigit`` / JSON need text."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+    decoded = None
+    # _isa, not a bare isinstance: a ``__class__``-property bomb in sh
+    # output used to detonate this gate one step ahead of the scrub.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode (the host_address._as_text rule): the old
+            # bound ``value.decode`` dispatched into a bytes-subclass's own
+            # override, so a leftover decode bomb raised out of the scrub
+            # and 500'd GET /api/system/host.  The try is for a *lying*
+            # ``__class__`` (claims bytes, is not): the unbound call
+            # TypeErrors and the impostor renders like any junk object below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            decoded = base.decode(value, "utf-8", "replace")
+        except Exception:
+            decoded = None
+    if decoded is not None:
+        value = decoded
     elif value is None:
         return ""
     else:
@@ -48,7 +106,10 @@ def _as_text(value) -> str:
         except Exception:
             return ""
     try:
-        return value.encode("utf-8", "replace").decode("utf-8")
+        # Unbound str.encode: ``str()`` of a subclass whose ``__str__``
+        # answers *self* keeps the subclass, so a bound ``encode`` bomb
+        # used to ride this line to a raw 500.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     except Exception:
         return ""
 
@@ -168,7 +229,9 @@ def _iface_addresses(route_iface: str) -> list[dict]:
 def _mem_gb(rc, memsize):
     """``hw.memsize`` as GiB, or None.  A 400-digit leftover OverflowError'd ``/``."""
     try:
-        if rc != 0 or not memsize.isdigit():
+        # _rc_int: an rc-subclass ``__ne__`` bomb raised RuntimeError past
+        # the typed catch below and 500'd GET /api/system/host.
+        if _rc_int(rc) != 0 or not memsize.isdigit():
             return None
         gb = round(int(memsize) / 2**30, 1)
     except (TypeError, ValueError, OverflowError, AttributeError):
@@ -186,7 +249,8 @@ def _ncpu_int(rc, ncpu):
     GET /api/system/host — one line below the already-guarded ``_mem_gb``.
     """
     try:
-        if rc != 0 or not ncpu.isdigit():
+        # _rc_int: same rc-``__ne__`` bomb class as _mem_gb.
+        if _rc_int(rc) != 0 or not ncpu.isdigit():
             return None
         return int(ncpu)
     except (TypeError, ValueError, OverflowError, AttributeError):
@@ -226,21 +290,27 @@ def _host_snapshot() -> dict:
     rc4, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
     hostname, model = _as_text(hostname), _as_text(model)
     ncpu, memsize = _as_text(ncpu), _as_text(memsize)
+    # _truthy, not a bare ``bool``: a leftover ``__bool__`` bomb planted in
+    # the engine cache used to detonate the eagerly-evaluated fallback (it
+    # ran even when the probe future succeeded) and 500 GET /api/system/host.
     if f_engine is not None:
-        orbstack = _result(f_engine, bool(peek_engine()))
+        engine = _result(f_engine, None)
+        orbstack = _truthy(engine if engine is not None else peek_engine())
     else:
-        orbstack = bool(peek_engine())
+        orbstack = _truthy(peek_engine())
     ifaces = _result(f_ifaces, []) or []
 
     # Was called twice (once as `lan`, once inline); it is the same value both
     # times and both fields are documented to carry it.
     ip = host_ip()
+    # _rc_int on the hostname/model probes: an rc-subclass ``__eq__`` bomb
+    # from a patched/odd ``sh`` used to detonate these bare reads.
     return {
-        "hostname": hostname if rc == 0 else _as_text(platform.node()),
+        "hostname": hostname if _rc_int(rc) == 0 else _as_text(platform.node()),
         "platform": _as_text(platform.platform()),
         "arch": _as_text(platform.machine()),
         "python": _as_text(platform.python_version()),
-        "cpu": model if rc3 == 0 else "",
+        "cpu": model if _rc_int(rc3) == 0 else "",
         "ncpu": _ncpu_int(rc4, ncpu),
         "mem_total_gb": _mem_gb(rc_m, memsize),
         "host_ip": ip,

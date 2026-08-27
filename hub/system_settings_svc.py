@@ -28,16 +28,40 @@ def shutdown_executor() -> None:
     _pool.shutdown()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the sanitizer gates themselves — one step ahead of every
+    scrub in this module (the dash9 host_address / nas8 rule).  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode (the tools_svc._as_text rule): the old
-        # ``bytes(value)`` copy dispatched into a subclass's own
-        # ``__bytes__``, so a leftover ``__bytes__`` bomb raised out of the
-        # sanitizer just like the decode() bomb it was guarding against.
-        # The base read survives both and salvages the real bytes.
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
+    # _isa, not a bare isinstance: a ``__class__``-property bomb riding a
+    # timer row used to detonate this gate itself and 500 the scheduler trio.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode (the tools_svc._as_text rule): the old
+            # ``bytes(value)`` copy dispatched into a subclass's own
+            # ``__bytes__``, so a leftover ``__bytes__`` bomb raised out of
+            # the sanitizer just like the decode() bomb it was guarding
+            # against.  The base read survives both and salvages the real
+            # bytes.  The try is for a *lying* ``__class__`` (claims bytes,
+            # is not): the unbound call TypeErrors and the impostor renders
+            # like any other junk object below instead of 500ing.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
     try:
         text = str(value)
     except RecursionError:
@@ -56,15 +80,21 @@ def _utf8_text(value) -> str:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, str):
+    # _isa on every rank gate: a ``__class__``-property bomb used to
+    # detonate the first bare isinstance and raise out of the scrub itself.
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
-        # bomb (and the bound ``.decode`` was the subclass's own) — either
-        # one raised out of the sanitizer.
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    if isinstance(value, float):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.  The try is for a lying
+            # ``__class__`` impostor, which renders as junk text below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            pass
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -74,7 +104,7 @@ def _as_text(value) -> str:
         if value != value or value in (float("inf"), float("-inf")):
             return ""
         return _utf8_text(value)
-    if value is None or isinstance(value, (dict, list, tuple, set, bool)):
+    if value is None or _isa(value, (dict, list, tuple, set, bool)):
         return ""
     try:
         return _utf8_text(value)
@@ -164,15 +194,22 @@ def _json_bool(value, default: bool = True) -> bool:
 
 def _json_atom(value):
     """Drop leftover inf/bytes/dates/sets/``\\ud800`` so Starlette cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
-        # bomb (and the bound ``.decode`` was the subclass's own) — either
-        # one raised out of the sanitizer.
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    if isinstance(value, str):
+    # _isa on every rank gate (the dash9 rule): a ``__class__``-property
+    # bomb used to detonate the first bare isinstance and 500 every rider.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -182,7 +219,7 @@ def _json_atom(value):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, (dict, list, tuple, set, frozenset)):
+    if _isa(value, (dict, list, tuple, set, frozenset)):
         return None
     try:
         iso = getattr(value, "isoformat", None)
@@ -199,7 +236,7 @@ def _json_atom(value):
         if stamped is value:
             return None
         return _json_atom(stamped)
-    if isinstance(value, int) and not isinstance(value, bool):
+    if _isa(value, int) and not _isa(value, bool):
         try:
             # Base coercion first: an int subclass ``__index__``/``__str__``
             # bomb used to raise past the ValueError-only digit-cap catch.
@@ -210,7 +247,7 @@ def _json_atom(value):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
     try:
         return _utf8_text(value)
@@ -228,9 +265,9 @@ def _json_tree(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
             # Base coercion first: an int subclass ``__index__``/``__str__``
             # bomb used to raise past the ValueError-only digit-cap catch.
@@ -241,7 +278,7 @@ def _json_tree(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
@@ -251,15 +288,20 @@ def _json_tree(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
-        # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
-        # bomb (and the bound ``.decode`` was the subclass's own) — either
-        # one raised out of the sanitizer.
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    if isinstance(value, str):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         try:
             items = list(value.items())
@@ -268,12 +310,26 @@ def _json_tree(value, depth: int = 0):
             # settings bundle — drop the node like an unrenderable scalar;
             # healthy siblings around it are untouched.
             return None
-        for k, v in items:
-            if isinstance(k, (bytes, bytearray)):
-                # Unbound base decode, matching the value arm: a key-rank
-                # ``__bytes__`` bomb used to raise out of the walk.
-                kbase = bytes if isinstance(k, bytes) else bytearray
-                k = kbase.decode(k, "utf-8", "replace")
+        for pair in items:
+            try:
+                k, v = pair
+            except Exception:
+                # A subclass items() answering torn pairs (three-tuples, a
+                # bombing pair iterator) used to ValueError out of the walk
+                # itself; the torn entry drops and its siblings survive.
+                continue
+            # _isa on the key rank too: a ``__class__``-property bomb as a
+            # mapping key used to detonate this gate and 500 the walk.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    # Unbound base decode, matching the value arm: a key-rank
+                    # ``__bytes__`` bomb used to raise out of the walk.
+                    kbase = bytes if isinstance(k, bytes) else bytearray
+                    k = kbase.decode(k, "utf-8", "replace")
+                except Exception:
+                    # A lying-``__class__`` key cannot be rendered: the
+                    # entry drops, its siblings stay.
+                    continue
             else:
                 try:
                     k = str(k)
@@ -281,7 +337,7 @@ def _json_tree(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _json_tree(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
         except Exception:
