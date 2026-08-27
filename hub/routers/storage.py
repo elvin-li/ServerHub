@@ -22,11 +22,31 @@ def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
     )
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so an overview *return* wearing a raising property detonated
+    the route's own non-dict gate — a raw 500 on GET /api/storage one line
+    past the catch built to degrade exactly this (the storage_svc._isa
+    rule).  A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # bytes() base copy first: a subclass ``.decode`` bomb cannot fire.
-        value = bytes(value).decode("utf-8", "replace")
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes TypeErrors the
+            # base copy; the leftover falls to the str() salvage below.
+            return ""
     elif value is None:
         return ""
     else:
@@ -86,17 +106,29 @@ def storage(light: bool = False):
         data = f_overview.result()
     except Exception as e:
         data = {"volumes": [], "disks": [], "error": _as_text(e)}
-    if not isinstance(data, dict):
+    # _isa, not bare isinstance: an overview return whose ``__class__`` is a
+    # raising property used to detonate this gate itself — a raw 500 where
+    # the degraded body is the contract.
+    if not _isa(data, dict):
         data = {"volumes": [], "disks": [], "error": _as_text(data)}
     try:
         data["power_disks"] = _rendered(f_power.result())
     except Exception as e:
         data["power_disks"] = []
         data["power_error"] = _as_text(e)
+    # Shape gates behind the sanitizer: ``_rendered`` no longer raises on a
+    # junk listing return, it salvages it as text — which honoured the old
+    # except arm's job but broke the section's list/dict contract.  The
+    # degrade stays the same one the except arms answer.
+    if not _isa(data.get("power_disks"), list):
+        data["power_disks"] = []
+        data.setdefault("power_error", "power listing returned a non-list")
     try:
         data["managed"] = _rendered(f_managed.result())
     except Exception as e:
         data["managed"] = {"volumes": [], "error": _as_text(e)}
+    if not _isa(data.get("managed"), dict):
+        data["managed"] = {"volumes": [], "error": "manage overview returned a non-dict"}
     return data
 
 
@@ -107,11 +139,17 @@ def storage_disks():
     # the service's own guards) used to answer a bare 500 here while
     # GET /api/storage already reported it as ``power_error``.
     try:
-        return {"disks": _rendered(disk_power_svc.list_power_disks())}
+        disks = _rendered(disk_power_svc.list_power_disks())
     except HTTPException:
         raise
     except Exception as e:
         return {"disks": [], "error": _as_text(e)}
+    if not _isa(disks, list):
+        # The sanitizer salvages a junk listing return as text rather than
+        # raising; keep this section's list contract with the same degrade
+        # the except arm answers.
+        return {"disks": [], "error": "power listing returned a non-list"}
+    return {"disks": disks}
 
 
 @router.get("/api/storage/manage")
@@ -121,11 +159,15 @@ def storage_manage():
     # the disks route above: the section route must not be weaker than the
     # page that embeds it.
     try:
-        return _rendered(disk_manage_svc.overview())
+        managed = _rendered(disk_manage_svc.overview())
     except HTTPException:
         raise
     except Exception as e:
         return {"volumes": [], "count": 0, "error": _as_text(e)}
+    if not _isa(managed, dict):
+        return {"volumes": [], "count": 0,
+                "error": "manage overview returned a non-dict"}
+    return managed
 
 
 class DiskPowerBody(BaseModel):
