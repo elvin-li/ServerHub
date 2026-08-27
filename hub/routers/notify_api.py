@@ -200,11 +200,24 @@ def create_channel(body: ChannelBody, request: Request):
     )
     try:
         _require_secrets(cid, body.type)
+        # save_channel sits inside the same cleanup net: a services.yaml
+        # that turned unreadable refuses this write with the coded 503
+        # (config.mutate -> _read_disk_for_mutate), and the mandatory
+        # secret just written for the never-created channel used to stay
+        # behind in notify-credentials.json — an orphaned live credential
+        # no channel row references, invisible to the list and unreachable
+        # by DELETE.  The half-completed *delete* mirror of this is exactly
+        # what the pre-write wipe above exists for.
+        notify_channels.save_channel(record)
     except Exception:
         # Don't leave orphaned secrets for a channel that was never created.
-        notify_channels.drop_channel_secrets(cid)
+        # The drop itself is best-effort: masking the coded 503 with a raise
+        # out of the cleanup would trade an orphan for a 500.
+        try:
+            notify_channels.drop_channel_secrets(cid)
+        except Exception:
+            pass
         raise
-    notify_channels.save_channel(record)
     audit.record(audit.NOTIFY_CHANNEL_CREATED,
                  username=request_username(request),
                  client=request_client_id(request), **_audit_fields(record))
