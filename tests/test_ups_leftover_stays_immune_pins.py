@@ -20,10 +20,11 @@ drops, the state machine):
   ``str(level)`` render could raise.
 * **A poisoned state file never 500s GET /api/ups.**  A >4300-digit int
   literal makes ``json.loads`` raise ValueError — and *not* JSONDecodeError,
-  which is the exact trap ``_load_state``'s ``except`` must keep covering;
-  ``Infinity`` / ``NaN`` literals parse fine and must be dropped from the
-  body (Starlette renders with ``allow_nan=False``); junk field shapes
-  (int reason, non-dict steps rows) are filtered, not fatal.
+  which is the exact trap ``_load_state``'s ``except`` must keep covering
+  (its parse_int hook now loads the one huge number as None so the phase
+  and siblings survive); ``Infinity`` / ``NaN`` literals parse fine and
+  must be dropped from the body (Starlette renders with ``allow_nan=False``);
+  junk field shapes (int reason, non-dict steps rows) are filtered, not fatal.
 * **Numeric / over-cap YAML stack ids in the plan catalog.**  The script
   side is already pinned; the *stack* side flows through
   ``containers_svc._stack_paths``'s str() probe: ``id: 42`` renders as
@@ -277,15 +278,19 @@ class PoisonedStateFileTests(UpsPolicyStateBase):
             json.loads(text)
         self.assertNotIsInstance(ctx.exception, json.JSONDecodeError)
 
-    def test_over_cap_int_literal_state_degrades_to_idle(self):
+    def test_over_cap_int_literal_drops_alone_keeping_the_phase(self):
         self.state_file.write_text(
             '{"phase": "engaged", "engaged_at": ' + "9" * 5000 + "}",
         )
         resp = self._get_ups()
         self.assertEqual(resp.status_code, 200, resp.text)
         _starlette(resp.json())
-        # The document is unreadable as a whole; the honest degrade is idle.
-        self.assertEqual(resp.json()["shutdown_state"]["phase"], "idle")
+        # The parse_int hook loads the one unrenderable number as None, so
+        # the latched phase survives the leftover instead of the whole
+        # document degrading to idle (which forgot an in-flight outage).
+        state = resp.json()["shutdown_state"]
+        self.assertEqual(state["phase"], "engaged")
+        self.assertIsNone(state["engaged_at"])
 
     def test_infinity_and_nan_literals_are_dropped_from_the_body(self):
         # json.loads accepts these extensions; Starlette's allow_nan=False

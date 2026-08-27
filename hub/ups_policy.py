@@ -323,6 +323,31 @@ def _row_get(row, key):
             return None
 
 
+def _seam_eq(value, expected) -> bool:
+    """Guarded ``==`` against a raw seam value.
+
+    ``value == "ok"`` dispatches to the value's own ``__eq__`` first, so one
+    subclass eq-bomb ``status`` in a stack row from the ``_list_stacks`` seam
+    used to raise out of ``build_plan``/``_catalog``'s ``running`` probe and
+    500 GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with
+    every sane sibling row — and the same raise escaped ``_engage``'s plan
+    build during a real outage.  An unreadable status reads as not-running,
+    the conservative direction (never stop, never restore-start it).
+    """
+    try:
+        return bool(value == expected)
+    except Exception:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool()`` that a raw seam value's ``__bool__`` bomb cannot raise out of."""
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _service_states() -> dict[str, str]:
     """service id -> state ("ok"/"warn"/"down"/...), from the shared status."""
     from hub.status import full_status
@@ -409,11 +434,32 @@ def _spawn(target) -> bool:
 
 # ── persisted state ───────────────────────────────────────────────────────────
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one leftover huge number in the
+    state file (a hand-edited ``engaged_at``, a stray counter) used to make
+    :func:`_load_state` read the entire policy state as ``{}`` — mid-outage
+    the latched ``engaged`` phase and every recorded stop marker silently
+    read as idle, so the restore pass never ran, and the next ``_mutate``
+    persisted that wipe for real.  The one unrenderable number drops alone
+    (``_jsonable`` could never render it anyway) and the siblings survive.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     try:
         if not STATE_FILE.exists():
             return {}
-        data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        data = safe_json_loads(
+            read_text_capped(STATE_FILE, _STATE_CAP),
+            parse_int=_capped_json_int,
+        )
         if isinstance(data, dict):
             return data
     except (OSError, ValueError, TypeError, RecursionError):
@@ -484,21 +530,26 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
     fails its condition — the policy never fires on the unknown.  With
     ``require_both`` an unreadable estimate therefore *blocks* the trigger
     until pmset produces one; that is the conservative reading of "both".
+
+    Status reads go through ``_row_get`` + ``_truthy``: a dict-subclass
+    ``.get``/``__bool__`` bomb from the ``_ups_status`` seam used to 500
+    the plan/drill routes out of this evaluation — and to raise out of
+    ``sweep()`` into check_once's containment, silently killing the tick.
     """
-    if not status.get("on_battery"):
+    if not _truthy(_row_get(status, "on_battery")):
         return False, ""
     pct_floor = policy.get("trigger_pct")
     min_floor = policy.get("trigger_remaining_min")
     checks: list[tuple[bool, str]] = []
     if pct_floor is not None:
-        pct = status.get("battery_percent")
+        pct = _row_get(status, "battery_percent")
         try:
             hit = pct is not None and float(pct) <= float(pct_floor)
         except (TypeError, ValueError, OverflowError):
             hit = False
         checks.append((hit, f"battery {pct}% ≤ {pct_floor}%" if hit else ""))
     if min_floor is not None:
-        remain = status.get("time_remaining_min")
+        remain = _row_get(status, "time_remaining_min")
         try:
             hit = remain is not None and float(remain) <= float(min_floor)
         except (TypeError, ValueError, OverflowError):
@@ -565,7 +616,10 @@ def build_plan(policy: dict | None = None) -> list[dict]:
             # Same probe for the label: an over-cap int name falls back to
             # the id instead of 500ing the whole plan.
             "name": _cfg_text(_row_get(stack, "name")) or sid,
-            "running": stack is not None and _row_get(stack, "status") == "ok",
+            # _seam_eq: a subclass eq-bomb status used to 500 the plan out
+            # of this bare ``== "ok"`` compare.
+            "running": stack is not None
+            and _seam_eq(_row_get(stack, "status"), "ok"),
             "known": stack is not None,
         })
     # Separate namespace: steps are addressed by (kind, id), so a service id
@@ -607,6 +661,14 @@ def _cfg_text(value) -> str:
     ``__str__`` bomb escaped the digit-cap ``except ValueError`` and 500'd
     GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill out of the
     script/stack pickers; the unbound base coercion renders its real value.
+
+    The result is always an *exact* ``str``: ``str(x)`` returns whatever a
+    subclass ``__str__`` hands back, so a str subclass whose ``__str__``
+    returns *itself* rode out of the old base copy still carrying its dunder
+    bombs — its ``__hash__``/``__eq__`` then blew up ``build_plan``'s dedupe
+    set, its by-id index and the service-state compare, 500ing the plan and
+    drill routes with every sane sibling row.  The unbound ``str.__str__``
+    base copy strips the subclass while keeping its rendered text.
     """
     if isinstance(value, bool) or value is None:
         return ""
@@ -617,17 +679,16 @@ def _cfg_text(value) -> str:
             return str(int.__index__(value))
         except Exception:
             return ""
-    if isinstance(value, str):
-        if type(value) is str:
-            return value
-        try:
-            # Base copy: a str subclass carrying a __str__/__format__ bomb
-            # must not ride into f-string renders downstream.
-            return str(value)
-        except Exception:
-            return ""
+    if isinstance(value, str) and type(value) is str:
+        return value
     try:
-        return str(value)
+        text = str(value)
+    except Exception:
+        return ""
+    if type(text) is str:
+        return text
+    try:
+        return str.__str__(text)
     except Exception:
         return ""
 
@@ -690,7 +751,9 @@ def _catalog() -> dict:
         stack_rows.append({
             "id": sid,
             "name": _cfg_text(_row_get(s, "name")) or sid,
-            "running": _row_get(s, "status") == "ok",
+            # _seam_eq: a subclass eq-bomb status used to 500 the whole
+            # picker catalog out of this bare ``== "ok"`` compare.
+            "running": _seam_eq(_row_get(s, "status"), "ok"),
         })
     return {
         "stacks": stack_rows,
@@ -710,15 +773,19 @@ def drill() -> dict:
         status = _ups_status()
     except Exception:
         status = {"present": False}
-    would, reason = (_condition(status, policy) if status.get("present") else (False, ""))
+    # _row_get + _truthy on every status read: a dict-subclass ``.get`` or
+    # ``__bool__`` bomb from the _ups_status seam used to 500 both
+    # GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill.
+    present = isinstance(status, dict) and _truthy(_row_get(status, "present"))
+    would, reason = (_condition(status, policy) if present else (False, ""))
     return _jsonable({
         "enabled": bool(policy.get("enabled")),
         "would_trigger_now": bool(policy.get("enabled")) and would,
         "reason": reason,
-        "sensor_present": bool(status.get("present")),
-        "on_battery": bool(status.get("on_battery")),
-        "battery_percent": status.get("battery_percent"),
-        "time_remaining_min": status.get("time_remaining_min"),
+        "sensor_present": present,
+        "on_battery": _truthy(_row_get(status, "on_battery")),
+        "battery_percent": _row_get(status, "battery_percent"),
+        "time_remaining_min": _row_get(status, "time_remaining_min"),
         "steps": build_plan(policy),
         "catalog": _catalog(),
         "settings": policy,
@@ -751,7 +818,10 @@ def _sweep_locked(now: int) -> list[dict]:
     # Sensor unreadable (pmset failed / empty output → present False): never
     # trigger on the unknown, and never *reset* on it either — leaving an
     # outage latched until AC power is positively seen is the safe direction.
-    if not status or not status.get("present"):
+    # _row_get + _truthy: a dict-subclass ``.get``/``__bool__`` bomb from the
+    # seam used to raise out of sweep() into check_once's containment and
+    # silently kill every UPS tick.
+    if not isinstance(status, dict) or not _truthy(_row_get(status, "present")):
         return []
 
     if phase == PHASE_IDLE:
@@ -763,7 +833,7 @@ def _sweep_locked(now: int) -> list[dict]:
         return [_engage(now, reason, policy)]
 
     # engaged / restoring: latched until AC is seen, however the charge moves.
-    if status.get("on_ac"):
+    if _truthy(_row_get(status, "on_ac")):
         if not _worker_busy(st):
             _mutate(lambda s: s.update(phase=PHASE_RESTORING))
             _spawn(_run_restore_sequence)
