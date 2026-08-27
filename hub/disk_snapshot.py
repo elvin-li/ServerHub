@@ -120,7 +120,12 @@ def _as_text(value) -> str:
         # raised out of the scrub.  An empty string needs no special case —
         # the unbound encode below answers "" for it anyway.
         return ""
-    elif not _isa(value, str):
+    elif type(value) is not str:
+        # Exact-type gate, not ``not _isa(value, str)``: a *lying*
+        # ``__class__`` claiming str passed the isinstance probe untouched
+        # and the unbound ``str.encode`` below TypeError'd on the foreign
+        # layout — a raise out of the shared df/diskutil scrub itself.  A
+        # real str subclass base-copies through str() and keeps its text.
         try:
             value = str(value)
         except RecursionError:
@@ -218,6 +223,15 @@ def root_devices() -> frozenset[str]:
     """
     found: set[str] = set()
     for line in df_lines()[1:]:
+        if type(line) is not str:
+            # Exact-type gate (the storage_svc.list_volumes rule): a
+            # *lying* ``__class__`` claiming str passes any isinstance
+            # probe and then AttributeErrors ``line.split()`` — one junk
+            # table line used to collapse this whole arm of the boot-disk
+            # safety union while the healthy ``/`` row sat readable.
+            line = _as_text(line)
+            if not line:
+                continue
         parts = line.split()
         if len(parts) < 6:
             continue
@@ -270,9 +284,13 @@ def _root_info() -> Mapping[str, Any]:
             timeout=_DISKUTIL_TIMEOUT,
             runner=subprocess.run,
         )
-        if rc == 0 and stdout:
+        # _rc_int (the _physical_whole_disks rule this sibling missed): an
+        # honest rc-bomb zero from a poisoned runner used to raise into the
+        # except arm and read as "no root info" — silently narrowing the
+        # plist arm of the boot-disk safety union.
+        if _rc_int(rc) == 0 and stdout:
             parsed = plistlib.loads(stdout)
-            if isinstance(parsed, dict):
+            if _isa(parsed, dict):
                 return MappingProxyType(parsed)
     except Exception:
         pass

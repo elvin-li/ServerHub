@@ -55,10 +55,56 @@ def _vanished_spawn(rc: int, out: str, err: str) -> bool:
     Callers must still confirm with :func:`_diskutil_on_disk`: with the
     binary on disk the raw failure is the truth and keeps its own message.
     """
-    if rc == 0:
+    # _rc_int, not a bare compare: callers hand over the raw ``sh`` answer,
+    # and an rc-subclass ``__eq__`` bomb used to detonate this very probe.
+    if _rc_int(rc) == 0:
         return False
     blob = f"{out}\n{err}".lower()
     return any(marker in blob for marker in _VANISH_MARKERS)
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so an ``sh`` stdout / plist field wearing a *raising property*
+    used to detonate ``_text``/``_req_text``/``_ident``'s own bare gates —
+    a raw 500 on POST /api/storage/manage/{id} one line before the scrub
+    built to absorb exactly this class of junk (the storage_svc rule).
+    A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` / ``run_bytes`` (tests and tooling
+    patch them), and an rc-*subclass* whose ``__eq__``/``__ne__`` raises
+    used to detonate the bare ``rc != 0`` probe inside ``disk_action``'s
+    ``run()`` and the ``"ok": rc == 0`` result build — a raw 500 on
+    POST /api/storage/manage/{id} where the degraded ``ok: false`` body is
+    the contract (the disk_power_svc rule).  ``-255`` is no honest exit
+    status and never ``sh``'s ``-1`` timeout sentinel; the digit-cap probe
+    keeps a >4300-digit already-int rc out of any later render.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            rc = int.__index__(rc)
+        else:
+            rc = int(rc)
+    except Exception:
+        return -255
+    try:
+        str(rc)
+    except ValueError:
+        return -255
+    return rc
 
 # Formats we allow for eraseVolume / eraseDisk
 FS_TYPES = {
@@ -77,7 +123,10 @@ def _plist(cmd: list[str], timeout: int = 30) -> dict | list | None:
         # Binary plist: UTF-8 ``sh()`` would corrupt it.  ``run_bytes``
         # streams to a tempfile and refuses a payload past the cap.
         rc, stdout, _ = run_bytes(cmd, timeout=timeout, runner=subprocess.run)
-        if rc != 0 or not stdout:
+        # _rc_int: an honest rc-bomb zero from a poisoned runner used to
+        # raise into the except arm and read as "no plist" — the whole
+        # manage listing emptied where the table was readable.
+        if _rc_int(rc) != 0 or not stdout:
             return None
         return plistlib.loads(stdout)
     except Exception:
@@ -248,7 +297,9 @@ def _plain_info(info) -> dict:
     """
     if type(info) is dict:
         return info
-    if isinstance(info, dict):
+    # _isa: a ``__class__``-property bomb in the info cache used to
+    # detonate this very gate on POST /api/storage/manage/{id}.
+    if _isa(info, dict):
         try:
             return dict(info)
         except Exception:
@@ -262,19 +313,26 @@ def _ident(value) -> str:
     ``DeviceIdentifier`` / ``ParentWholeDisk`` are strings in a healthy
     diskutil plist.  An array-shaped or non-string value used to TypeError
     ``re.match`` / ``set.add`` and 500 the manage listing.  Leftover
-    ``bytes`` used to stringify as ``b'disk4'`` and drop the node.  A
+    ``bytes`` used to stringify as     ``b'disk4'`` and drop the node.  A
     leftover ``\\ud800`` identifier used to 500 the same JSON encoder.
+
+    _isa gates (the storage9 rule): a ``__class__``-property bomb
+    identifier used to detonate the first bare isinstance below.
     """
-    if isinstance(value, (list, tuple)):
+    if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
         except Exception:
             # A sequence subclass whose ``__bool__``/``__getitem__``
             # raises: nothing usable to read.
             return ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    if not isinstance(value, str):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes: unreadable.
+            return ""
+    if not _isa(value, str):
         return ""
     try:
         value.encode("utf-8")
@@ -308,15 +366,24 @@ def _text(value) -> str:
     str-subclass ``encode`` bomb the final re-encode, and either one cost
     the whole node (with a single disk, the whole manage listing) where
     only its own field is unreadable.
+
+    _isa throughout (the storage9 rule this scrub missed): a
+    ``__class__``-property bomb riding the ``sh`` seam into ``run()``'s
+    log lines — or a plist field — used to detonate the *first* bare
+    isinstance gate below, a raw 500 on POST /api/storage/manage/{id}.
     """
-    if isinstance(value, (list, tuple)):
+    if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
         except Exception:
             return ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes: unreadable.
+            return ""
+    elif _isa(value, float):
         try:
             value = float.__float__(value)
         except Exception:
@@ -335,7 +402,7 @@ def _text(value) -> str:
         except Exception:
             # ``in`` reflects into the leftover's own ``__eq__``.
             return ""
-        if isinstance(value, (dict, set, frozenset)):
+        if _isa(value, (dict, set, frozenset)):
             return ""
         try:
             # str() also for str *subclasses*: it returns a base copy, so
@@ -372,14 +439,22 @@ def _req_text(raw) -> str:
     (``_label_ok``, the anchored ``DISK_RE``, the FS_TYPES lookup) refuse them
     with the same coded error junk text earns; ``errors.error_payload`` scrubs
     the refusal's own message and params before Starlette's UTF-8 encode.
+
+    _isa gates (the storage9 rule): a ``__class__``-property bomb argument
+    used to detonate the first bare isinstance below instead of earning
+    the coded refusal its junk siblings get.
     """
-    if raw is None or isinstance(raw, bool):
+    if raw is None or _isa(raw, bool):
         return ""
-    if isinstance(raw, (list, tuple, dict, set, frozenset)):
+    if _isa(raw, (list, tuple, dict, set, frozenset)):
         return ""
-    if isinstance(raw, (bytes, bytearray)):
-        return bytes(raw).decode("utf-8", "replace")
-    if not isinstance(raw, str):
+    if _isa(raw, (bytes, bytearray)):
+        try:
+            return bytes(raw).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes: unreadable.
+            return ""
+    if not _isa(raw, str):
         try:
             raw = str(raw)
         except Exception:
@@ -398,8 +473,13 @@ def _req_text(raw) -> str:
 
 
 def _opt_bool(value):
-    if isinstance(value, bool):
-        return value
+    # _isa: a ``__class__``-property bomb flag used to detonate this gate
+    # outside the try below and drop the node from the listing.
+    if _isa(value, bool):
+        # ``bool`` is final: only a real bool may pass through unchanged
+        # (a lying ``__class__`` impostor falls to the guarded coercion).
+        if type(value) is bool:
+            return value
     if value is None:
         return None
     try:
@@ -584,7 +664,9 @@ def list_managed_volumes() -> list[dict]:
         system_wholes.add(parent_whole)
     # Physical store of APFS container
     stores = root_details.get("APFSPhysicalStores") or []
-    if isinstance(stores, list):
+    # _isa: a ``__class__``-property bomb here used to raise out of the
+    # whole listing where only the stores hint is unreadable.
+    if _isa(stores, list):
         try:
             # Materialize under a guard: a list *subclass* passes the
             # isinstance gate with an ``__iter__`` that raises (the
@@ -594,7 +676,8 @@ def list_managed_volumes() -> list[dict]:
         except Exception:
             stores = []
         for s in stores:
-            if not isinstance(s, dict):
+            # _isa: a class-bomb store entry drops alone.
+            if not _isa(s, dict):
                 continue
             store = _ident(s.get("APFSPhysicalStore"))
             if not store:
@@ -606,11 +689,13 @@ def list_managed_volumes() -> list[dict]:
     system_wholes.add("disk0")
 
     raw_disks = pl.get("AllDisksAndPartitions")
-    if isinstance(raw_disks, list):
+    if _isa(raw_disks, list):
         try:
             # Same iteration-bomb class as the stores list above: the
-            # comprehension itself used to 500 the whole listing.
-            all_disks = [n for n in raw_disks if isinstance(n, dict)]
+            # comprehension itself used to 500 the whole listing.  _isa on
+            # each node: a class-bomb entry drops alone instead of costing
+            # every healthy sibling disk through the except arm.
+            all_disks = [n for n in raw_disks if _isa(n, dict)]
         except Exception:
             all_disks = []
     else:
@@ -618,17 +703,18 @@ def list_managed_volumes() -> list[dict]:
     out = []
 
     def walk(node: dict, whole: str | None = None):
-        if not isinstance(node, dict):
+        if not _isa(node, dict):
             return
         ident = _ident(node.get("DeviceIdentifier"))
         if not ident:
             return
         is_whole = WHOLE_RE.match(ident) is not None
         w = ident if is_whole else (whole or ident)
-        # partitions list
-        parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
-        apfs_vols = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
-        children = [c for c in (parts + apfs_vols) if isinstance(c, dict)]
+        # partitions list — _isa on the containers and each child: a
+        # class-bomb entry costs itself, not the node's healthy siblings.
+        parts = node.get("Partitions") if _isa(node.get("Partitions"), list) else []
+        apfs_vols = node.get("APFSVolumes") if _isa(node.get("APFSVolumes"), list) else []
+        children = [c for c in (parts + apfs_vols) if _isa(c, dict)]
         if children:
             for ch in children:
                 try:
@@ -741,7 +827,7 @@ def list_managed_volumes() -> list[dict]:
     # serial waits before this.  Collect the identifiers from the same tree the
     # walk descends so the two cannot disagree about which nodes are visited.
     def _identifiers(node: dict) -> list[str]:
-        if not isinstance(node, dict):
+        if not _isa(node, dict):
             return []
         try:
             ident = _ident(node.get("DeviceIdentifier"))
@@ -759,7 +845,8 @@ def list_managed_volumes() -> list[dict]:
         except Exception:
             return found
         for ch in parts + apfs:
-            if isinstance(ch, dict):
+            # _isa: a class-bomb child drops alone from the prefetch pass.
+            if _isa(ch, dict):
                 found.extend(_identifiers(ch))
         return found
 
@@ -855,6 +942,12 @@ def disk_action(
 
     def run(args: list[str], timeout: int = 120) -> tuple[int, str, str]:
         rc, out, err = sh(args, timeout=timeout)
+        # _rc_int before any probe: an rc-subclass ``__eq__``/``__ne__``
+        # bomb from a poisoned runner used to detonate the bare
+        # ``rc != 0`` below (and every caller's ``"ok": rc == 0`` result
+        # build) — a raw 500 on POST /api/storage/manage/{id} where the
+        # degraded ``ok: false`` body is the contract.
+        rc = _rc_int(rc)
         out, err = _text(out), _text(err)
         log.append(f"$ {' '.join(args)}\n{out}\n{err}".strip())
         # Every branch below reaches diskutil through here, and every one of them
@@ -936,8 +1029,15 @@ def disk_action(
         # into the error params, where errors._jsonable_param drops an
         # over-cap int and the message's ``{fs}`` placeholder stayed
         # unfilled.  None/"" keeps the ExFAT default; every other shape
-        # coerces and is judged by its string form.
-        fs_key = "ExFAT" if fs in (None, "") else _req_text(fs).strip()
+        # coerces and is judged by its string form.  Identity + exact-type
+        # gate, not ``fs in (None, "")``: the old containment probe
+        # reflected into a leftover fs value's own ``__eq__`` for
+        # in-process callers — junk still earns the coded refusal below
+        # rather than silently defaulting a destructive format.
+        if fs is None or (type(fs) is str and not fs):
+            fs_key = "ExFAT"
+        else:
+            fs_key = _req_text(fs).strip()
         fs_type = FS_TYPES.get(fs_key) or FS_TYPES.get(fs_key.upper())
         if not fs_type:
             raise api_error(

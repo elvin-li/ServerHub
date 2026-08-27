@@ -168,11 +168,16 @@ def list_volumes() -> list:
     # `df` timeout silently degraded this to "one volume, /" instead of reporting a
     # failure.  The shared read checks rc and does not cache a failed table.
     for line in df_lines()[1:]:
-        if not _isa(line, str):
+        if type(line) is not str:
             # A poisoned table row that is not text (a ``__class__``-property
             # bomb, leftover bytes) used to AttributeError ``line.split()``
             # and raise out of list_volumes — the whole volume table emptied
             # for one junk line while its healthy siblings sat readable.
+            # Exact-type gate, not ``_isa(line, str)``: a *lying*
+            # ``__class__`` claiming str passed the isinstance probe and
+            # still AttributeError'd ``line.split()`` one line later — the
+            # same whole-table wipe the gate was built to stop.  A real str
+            # subclass base-copies through ``_as_text`` and keeps parsing.
             line = _as_text(line)
             if not line:
                 continue

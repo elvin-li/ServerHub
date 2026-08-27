@@ -60,10 +60,59 @@ def _vanished_spawn(rc: int, out: str, err: str) -> bool:
     Callers must still confirm with :func:`_diskutil_on_disk`: with the
     binary on disk the raw failure is the truth and keeps its own message.
     """
-    if rc == 0:
+    # _rc_int, not a bare compare: callers hand over the raw ``sh`` answer,
+    # and an rc-subclass ``__eq__`` bomb used to detonate this very probe.
+    if _rc_int(rc) == 0:
         return False
     blob = f"{out}\n{err}".lower()
     return any(marker in blob for marker in _VANISH_MARKERS)
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so an ``sh`` stdout/stderr wearing a *raising property* used to
+    detonate ``_text``'s own list/bytes gates — a raw 500 on
+    POST /api/storage/disks/{id}/power one line before the scrub built to
+    absorb exactly this class of junk (the storage_svc/disk_snapshot rule).
+    A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except Exception:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=``/``in`` probes and the log
+    f-strings; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` / ``rc == 0`` probes on every sleep/eject/wake leg —
+    a raw 500 on POST /api/storage/disks/{id}/power where the degraded
+    ``ok: false`` body is the contract (the storage_svc/disk_snapshot
+    rule).  The digit-cap probe is this module's own addition: the sleep
+    and wake logs render ``rc=`` through an f-string, and a >4300-digit
+    already-int rc ValueError'd ``format()`` itself.  ``-255`` is no
+    honest exit status and never ``sh``'s ``-1`` timeout sentinel, so a
+    bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            rc = int.__index__(rc)
+        else:
+            rc = int(rc)
+    except Exception:
+        return -255
+    try:
+        str(rc)
+    except ValueError:
+        return -255
+    return rc
 
 
 def _text(value) -> str:
@@ -80,15 +129,25 @@ def _text(value) -> str:
     coercions: a float ``__eq__`` bomb used to blow the NaN probe and a
     str-subclass ``encode`` bomb the final re-encode — a bare 500 when the
     value rode an ``sh`` seam into the sleep/wake log lines.
+
+    _isa throughout (the storage9 rule this scrub missed): a
+    ``__class__``-property bomb riding the same ``sh`` seam used to
+    detonate the *first* bare isinstance gate below — a raw 500 on
+    POST /api/storage/disks/{id}/power before any salvage ran.
     """
-    if isinstance(value, (list, tuple)):
+    if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
         except Exception:
             return ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes TypeErrors the
+            # base copy itself; the field degrades like any unreadable one.
+            return ""
+    elif _isa(value, float):
         try:
             value = float.__float__(value)
         except Exception:
@@ -107,7 +166,7 @@ def _text(value) -> str:
         except Exception:
             # ``in`` reflects into the leftover's own ``__eq__``.
             return ""
-        if isinstance(value, (dict, set, frozenset)):
+        if _isa(value, (dict, set, frozenset)):
             return ""
         try:
             # str() also for str *subclasses*: it returns a base copy, so
@@ -141,13 +200,21 @@ def _req_text(raw) -> str:
     ``_text`` above, a container coerces to "" rather than unwrapping —
     ``["disk4"]`` must never read as a real disk id.  Lone surrogates are
     scrubbed so a refusal's own params cannot 500 the error body.
+
+    _isa gates (the storage9 rule): a ``__class__``-property bomb argument
+    used to detonate the first bare isinstance below instead of earning
+    the coded refusal its junk siblings get.
     """
-    if raw is None or isinstance(raw, bool):
+    if raw is None or _isa(raw, bool):
         return ""
-    if isinstance(raw, (list, tuple, dict, set, frozenset)):
+    if _isa(raw, (list, tuple, dict, set, frozenset)):
         return ""
-    if isinstance(raw, (bytes, bytearray)):
-        return bytes(raw).decode("utf-8", "replace")
+    if _isa(raw, (bytes, bytearray)):
+        try:
+            return bytes(raw).decode("utf-8", "replace")
+        except Exception:
+            # A lying ``__class__`` property claiming bytes: nothing usable.
+            return ""
     try:
         # str() also for str *subclasses* (base copy — a subclass ``encode``
         # bomb cannot fire below); for everything else it is the digit-cap
@@ -183,7 +250,10 @@ def _diskutil_info(node: str) -> dict:
             timeout=_DISKUTIL_TIMEOUT,
             runner=subprocess.run,
         )
-        if rc == 0 and stdout:
+        # _rc_int: an honest rc-bomb zero from a poisoned runner used to
+        # raise into the except arm and read as "no info" (disk_snapshot
+        # _root_info rule).
+        if _rc_int(rc) == 0 and stdout:
             parsed = plistlib.loads(stdout)
             return parsed if isinstance(parsed, dict) else {}
     except Exception:
@@ -221,6 +291,15 @@ def _volumes_on_disk(disk_id: str) -> list[dict]:
     """Mounted volumes belonging to this whole disk."""
     vols = []
     for line in _df_lines()[1:]:
+        if type(line) is not str:
+            # Exact-type gate, not isinstance: a *lying* ``__class__``
+            # claiming str passed the old assumption and AttributeError'd
+            # ``line.split()`` — one junk table line nulled every disk's
+            # volume list (each _describe_disk row degraded to None) while
+            # the healthy sibling lines sat readable.
+            line = _text(line)
+            if not line:
+                continue
         parts = line.split()
         if len(parts) < 6:
             continue
@@ -315,6 +394,10 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
         return "idle"
     # smartctl check power mode
     rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
+    # _rc_int: an rc-subclass ``__eq__`` bomb on this probe used to raise
+    # out of _describe_disk and cost the whole disk row, where an unknown
+    # power state degrades to "idle".
+    rc = _rc_int(rc)
     text = _text(out) + _text(err)
     if "STANDBY" in text.upper() or "Device is in STANDBY" in text:
         return "spun_down"
@@ -447,7 +530,9 @@ def _describe_disk(disk_id: str) -> dict | None:
         if ssd is None and not system and not internal:
             rc_s, out_s, _ = sh([SMARTCTL, "-a", node], timeout=8)
             out_s = _text(out_s)
-            if rc_s in (0, 4) and out_s:
+            # _rc_int: an rc-subclass bomb on the membership probe used to
+            # cost the whole disk row for one optional SSD hint.
+            if _rc_int(rc_s) in (0, 4) and out_s:
                 for sline in out_s.splitlines():
                     if "Rotation Rate" in sline and "Solid State" in sline:
                         ssd = True
@@ -602,11 +687,21 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
             except Exception:
                 continue
         try:
-            disks[row["id"]] = row
+            key = row["id"]
         except Exception:
             # KeyError/TypeError for shapeless ids — and any subclass
             # ``__getitem__``/``__hash__`` bomb beyond those two.
             continue
+        # Exact base-str key (the storage9 hash-shadowing rule, one probe
+        # later): a str-*subclass* id whose ``__eq__`` raises stores fine,
+        # but the ``disks.get(disk_id)`` probe below runs the *stored*
+        # key's own comparison during the hash walk — a raw 500 on
+        # POST /api/storage/disks/{id}/power for a listing row this
+        # request never asked about.
+        key = _req_text(key).strip()
+        if not key:
+            continue
+        disks[key] = row
     d = disks.get(disk_id)
     if d is None:
         # An *empty* listing is diskutil's own failure signature — a healthy
@@ -641,7 +736,13 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
 
     # 1) Always unmount first (safe, keeps device node for wake)
     rc, out, err = sh(["/usr/sbin/diskutil", "unmountDisk", "force", node], timeout=60)
-    out, err = _text(out), _text(err)
+    # _rc_int on every leg below: an rc-subclass ``__eq__``/``__ne__`` bomb
+    # from a poisoned runner used to detonate the bare ``rc != 0`` /
+    # ``rc == 0`` probes, and a >4300-digit already-int rc ValueError'd the
+    # ``rc={rc}`` f-string itself — each a raw 500 on
+    # POST /api/storage/disks/{id}/power where the degraded ``ok: false``
+    # body is the contract.
+    rc, out, err = _rc_int(rc), _text(out), _text(err)
     log.append(f"unmountDisk: rc={rc} {(out or err)[:200]}")
     # This module mutates the very mount state disk_manage_svc caches, so its
     # short-TTL `diskutil info` entries are stale the moment the command runs.
@@ -671,7 +772,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     #    注意：内置 SD 读卡器 eject 后设备节点会消失，无法软件唤醒，故 sleep 不做 eject
     if mode == "eject":
         rc2, out2, err2 = sh(["/usr/sbin/diskutil", "eject", node], timeout=60)
-        out2, err2 = _text(out2), _text(err2)
+        rc2, out2, err2 = _rc_int(rc2), _text(out2), _text(err2)
         log.append(f"eject: rc={rc2} {(out2 or err2)[:200]}")
         # Eject removes the device node entirely, which is a second state change
         # after the unmount above -- the earlier invalidation predates it.
@@ -697,7 +798,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,now", node],
         timeout=20,
     )
-    out3, err3 = _text(out3), _text(err3)
+    rc3, out3, err3 = _rc_int(rc3), _text(out3), _text(err3)
     log.append(f"smartctl standby: rc={rc3} {(out3 or err3)[:200]}")
     if rc3 == 0:
         return {
@@ -749,18 +850,20 @@ def wake_disk(disk_id: str) -> dict:
         ["/bin/dd", f"if={rdev}", "of=/dev/null", "bs=512", "count=1"],
         timeout=30,
     )
-    log.append(f"dd spin-up: rc={rc0} {(_text(err0) or _text(out0))[:120]}")
+    # _rc_int on every leg — the sleep_disk rc-bomb / over-cap f-string
+    # note applies to each wake step the same way.
+    log.append(f"dd spin-up: rc={_rc_int(rc0)} {(_text(err0) or _text(out0))[:120]}")
 
     # exit standby via smartctl if possible
     rc1, out1, err1 = sh(
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,off", node],
         timeout=15,
     )
-    log.append(f"smartctl standby off: rc={rc1} {(_text(out1) or _text(err1))[:120]}")
+    log.append(f"smartctl standby off: rc={_rc_int(rc1)} {(_text(out1) or _text(err1))[:120]}")
 
     time.sleep(0.5)
     rc2, out2, err2 = sh(["/usr/sbin/diskutil", "mountDisk", node], timeout=90)
-    out2, err2 = _text(out2), _text(err2)
+    rc2, out2, err2 = _rc_int(rc2), _text(out2), _text(err2)
     log.append(f"mountDisk: rc={rc2} {(out2 or err2)[:200]}")
     # Waking remounts the volumes, so every cached `diskutil info` entry for this
     # disk and its children now reports the wrong mount point.
