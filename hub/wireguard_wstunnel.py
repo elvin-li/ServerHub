@@ -397,7 +397,23 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     worse than a slightly-unstable LAN address that still works today.
     """
     cfg = dict(settings) if isinstance(settings, dict) else {}
-    found = live()
+    # Laundered snapshot (the settings_section rule): this read does not own
+    # its provider — tests and tooling patch ``live`` — and a snapshot that
+    # is a dict *subclass* with a bombing ``.get`` used to raise out of the
+    # bare method calls below, a raw 500 on GET /api/wireguard, GET
+    # /api/wireguard/settings and /readiness.  ``dict(...)`` copies through
+    # the C-level storage; the values stay laundered individually below.
+    try:
+        found = live()
+    except Exception:
+        found = None
+    if isinstance(found, dict):
+        try:
+            found = dict(found)
+        except Exception:
+            found = {}
+    else:
+        found = {}
     try:
         listen_port = int(cfg.get("listen_port") or 0)
     except (TypeError, ValueError, OverflowError):
@@ -473,9 +489,32 @@ def status(settings: dict | None = None) -> dict[str, Any]:
 
 
 def _int_or_zero(value) -> int:
+    """Exact bounded int, or 0.
+
+    Base coercions plus a ``str()`` probe: the old bare ``int(value or 0)``
+    reflected into a leftover's own ``__bool__``/``__int__`` (raising past
+    the arithmetic-trio except), and passed a >4300-digit already-int
+    straight through to Starlette's ``json.dumps``, whose int->str digit cap
+    ValueError'd GET /api/wireguard one layer later.
+    """
     try:
-        return int(value or 0)
-    except (TypeError, ValueError, OverflowError):
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            number = int.__index__(value)
+        elif isinstance(value, float):
+            probe = float.__float__(value)
+            if probe != probe or probe in (float("inf"), float("-inf")):
+                return 0
+            number = int(probe)
+        else:
+            text = _as_text(value).strip()
+            if not text:
+                return 0
+            number = int(text)
+        str(number)  # CPython's 4300-digit int->str cap; json.dumps enforces it
+        return number
+    except Exception:
         return 0
 
 
@@ -483,20 +522,26 @@ def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     """A ports-tab row for a root wstunnel that ``lsof`` without sudo misses."""
     if not isinstance(snapshot, dict):
         return None
-    port = snapshot.get("port")
+    # Unbound ``dict.get`` + laundered values: a dict-subclass snapshot with
+    # a bombing ``.get``, a listen value whose str-subclass methods raise
+    # under urlsplit, or an over-cap port used to raise out of this row
+    # builder into the Network ports tab.
+    port = _int_or_zero(dict.get(snapshot, "port"))
+    listen = _as_text(dict.get(snapshot, "listen"))
     if not port:
         try:
-            parsed = urlparse(str(snapshot.get("listen") or ""))
-            port = parsed.port
+            port = urlparse(listen).port or 0
         except ValueError:
+            # Torn IPv6 in the URL ("ws://[::1:8444") and out-of-range ports
+            # are both ValueError out of urlsplit/.port.
             return None
     if not port:
         return None
-    pid = _int_or_zero(snapshot.get("pid"))
+    pid = _int_or_zero(dict.get(snapshot, "pid"))
     return {
         "process": "wstunnel",
         "pid": pid or "",
         "user": "root",
-        "address": snapshot.get("listen") or f"*:{port}",
+        "address": listen or f"*:{port}",
         "port": str(port),
     }
