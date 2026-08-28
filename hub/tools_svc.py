@@ -987,11 +987,19 @@ def _updates_fresh() -> dict | None:
     if not _isinst(stamp, (int, float)):
         return None
     try:
-        if time.time() - float(stamp) < _UPDATES_TTL:
+        stamp = float(stamp)
+        # Finite check first: a leftover ``.inf`` stamp makes ``now - stamp``
+        # ``-inf``, which reads as *infinitely fresh* and freezes the
+        # Homebrew / macOS / GitHub cards for the life of the process.
+        # ``float()`` of an over-cap int OverflowErrors, and a non-numeric
+        # stamp TypeError'd the subtraction outright.
+        if (
+            stamp == stamp
+            and abs(stamp) != float("inf")
+            and time.time() - stamp < _UPDATES_TTL
+        ):
             return v
     except Exception:
-        # A leftover ``.inf`` / over-cap stamp cannot be compared; treat the
-        # entry as expired rather than serving it forever.
         return None
     return None
 

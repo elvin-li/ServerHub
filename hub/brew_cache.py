@@ -473,7 +473,16 @@ def _fresh() -> list[dict] | None:
         stamp = _mapping_get(_cache, "t", 0.0)
         if raw is not None and _isinstance(stamp, (int, float)):
             try:
-                fresh = time.time() - float(stamp) < _TTL
+                stamp = float(stamp)
+                # Finite check first: a leftover ``.inf`` stamp makes
+                # ``now - stamp`` ``-inf``, which reads as *infinitely
+                # fresh* and freezes the brew rows the panel shows for the
+                # life of the process.  ``float()`` of an over-cap int
+                # OverflowErrors, and a non-numeric stamp TypeError'd the
+                # subtraction outright.
+                fresh = stamp == stamp and abs(stamp) != float("inf") and (
+                    time.time() - stamp < _TTL
+                )
             except Exception:
                 fresh = False
             if fresh:
