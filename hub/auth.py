@@ -26,6 +26,16 @@ from hub.util import read_text_capped
 
 security = HTTPBasic(auto_error=False)
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one config read would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other — and these helpers back GET
+#: /api/auth/status, POST /api/auth/login, POST /api/auth/change-password
+#: and every session-cookie check at once, so a raise out of any one guard
+#: here is a raw HTTP 500 across the whole account surface by definition.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 COOKIE_NAME = "serverhub_session"
 MIN_PASSWORD_LENGTH = 10
 SESSION_TTL = 7 * 24 * 3600
@@ -60,10 +70,22 @@ def _isinst(value, types) -> bool:
     every session-cookie check (``verify_session`` → ``accounts()``) and
     the ``require_auth`` local-client path at once.  Fails closed to
     False: a value that cannot even answer what it is, is junk.
+
+    ``except BaseException``: the earlier guard stopped at ``Exception``,
+    so a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (the watchdog/timeout shape the modules12/logs12/json13
+    sweeps sealed on their own surfaces) sailed past this catch — and past
+    every sibling guard in this module, because each one stopped at
+    ``Exception`` too — planted at any config rank it 500'd GET
+    /api/auth/status, POST /api/auth/login, POST /api/auth/change-password
+    and every session-cookie check raw.  Only genuine control flow keeps
+    propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -77,7 +99,13 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__bool__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — one such leftover on
+        # the stored username slot 500'd the unauthenticated GET
+        # /api/auth/status and every login through ``_pick``.
         return False
 
 
@@ -102,10 +130,18 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``.get`` bomb raising a *BaseException* subclass used to sail
+        # past the ``except Exception`` here, one line ahead of the
+        # dict.get salvage below (the logs12/notify12 rule) — planted as
+        # the ``settings`` block it 500'd status/login/cookie checks raw.
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -120,10 +156,18 @@ def _mapping_items(mapping) -> list:
         return []
     try:
         return list(mapping.items())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # An ``items()`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — planted as the
+        # ``session_epochs`` mapping it 500'd every login and cookie
+        # check through ``account_session_version``.
         try:
             return list(dict.items(mapping))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
 
@@ -145,7 +189,11 @@ def _iter_list(value) -> list:
     """
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Same union rule as every sibling guard: a raise the unbound walk
+        # cannot answer fails closed to an empty list, whatever its base.
         return []
 
 
@@ -178,7 +226,13 @@ def _auth_cfg() -> dict:
     """
     try:
         root = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A snapshot provider raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 GET
+        # /api/auth/status, login and every cookie check while the guarded
+        # settings readers answered 200 over the very same failure.
         return {}
     settings = _mapping_get(root, "settings")
     auth = _mapping_get(settings, "auth")
@@ -191,7 +245,9 @@ def _auth_cfg() -> dict:
         elif _isinst(k, str):
             try:
                 out[str.__str__(k)] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -226,9 +282,14 @@ def _epoch_count(raw) -> int:
         return 0
     try:
         value = int(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # TypeError/ValueError/OverflowError for ordinary junk, plus a
         # leftover ``__int__`` / ``__index__`` bomb — junk counts as 0.
+        # An ``__int__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 every login and
+        # cookie check through ``_session_epoch``.
         return 0
     try:
         str(value)
@@ -379,7 +440,9 @@ def _account_rows(auth_cfg: dict) -> list[dict]:
             try:
                 if dict.__len__(e) == 0:
                     out.append({})
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             continue
         row: dict = {}
@@ -391,10 +454,13 @@ def _account_rows(auth_cfg: dict) -> list[dict]:
                     row[str.__str__(k)] = v
                 else:
                     row[k] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A lying ``__class__`` that answers str (the unbound copy
                 # TypeErrors) or a key whose re-hash bombs: that one field
-                # is unreadable either way — drop it, keep its siblings.
+                # is unreadable either way — drop it, keep its siblings,
+                # whatever base the raise rides on.
                 continue
         out.append(row)
     return out
@@ -446,7 +512,12 @@ def _cfg_text(raw) -> str:
         if type(text) is not str:
             text = str.__str__(text)
         return text
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the broad-but-Exception catch here — one such value on
+        # the stored hash slot 500'd status/login/cookie checks at once.
         return ""
 
 
@@ -461,7 +532,9 @@ def _utf8_ok(text: str) -> bool:
     try:
         str.encode(text, "utf-8")
         return True
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
