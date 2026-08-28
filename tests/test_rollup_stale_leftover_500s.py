@@ -51,6 +51,17 @@ class RollupStaleLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             stale_runtime._as_text(_Ki())
 
+    def test_rollup_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("rollup isoformat watchdog")
+
+        self.assertEqual(metrics_rollup._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()

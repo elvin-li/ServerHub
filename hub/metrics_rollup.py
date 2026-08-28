@@ -125,7 +125,9 @@ def _sample_ts(raw) -> int | None:
     if type(raw) not in (int, float):
         try:
             raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     # Same leftover as metrics.sample_ts: a 400-digit int is not inf, but
     # ``time.time() - since`` and ``float(n)`` OverflowError it.
@@ -161,7 +163,9 @@ def _finite_num(raw):
     if type(raw) not in (int, float):
         try:
             raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if raw != raw or raw in (float("inf"), float("-inf")):
         return None
@@ -256,7 +260,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -271,7 +277,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -287,14 +295,18 @@ def _jsonable(value, depth: int = 0):
             # cannot fire (same guard as sensors_svc._jsonable).
             try:
                 value = dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -307,7 +319,9 @@ def _jsonable(value, depth: int = 0):
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
@@ -316,11 +330,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/metrics?range=.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -338,7 +356,9 @@ def _open_journal_rb(path):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, "not a regular file", str(path))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         os.close(fd)
         raise
     return os.fdopen(fd, "rb")
@@ -489,7 +509,9 @@ def _aggregate_window(rows: list[dict], window_start: int) -> dict:
                 # GET /api/metrics?range= response died with it.
                 try:
                     key = str(key)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             if key in ("t", "n") or key.endswith("_max"):
                 continue
@@ -674,7 +696,9 @@ def maybe_rollup(now: float | None = None) -> dict:
         # leftover subclass dispatches into its own ``__float__`` bomb.
         try:
             now_f = float(now)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             now_f = time.time()
         if isinstance(now, bool) or now_f != now_f or now_f in (float("inf"), float("-inf")) or abs(now_f) > 1e18:
             now_f = time.time()
@@ -692,7 +716,9 @@ def maybe_rollup(now: float | None = None) -> dict:
             # metrics.py's own hourly gate.
             try:
                 metrics.flush_pending()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             try:
                 done["w5"] = _rollup_tier_locked(
@@ -817,7 +843,9 @@ def query_range(since: int, until: int, max_points: int = MAX_QUERY_POINTS) -> d
     since, until = since_i, until_i
     try:
         max_points = max(1, min(int(max_points), MAX_QUERY_POINTS))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception: ``int()`` of a leftover subclass dispatches into its
         # own ``__int__``/``__index__`` bomb, which is not a conversion error.
         max_points = MAX_QUERY_POINTS

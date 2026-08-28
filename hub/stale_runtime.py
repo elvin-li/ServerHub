@@ -122,7 +122,9 @@ try:
         ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
     ]
     _LIBC.proc_pidpath.restype = ctypes.c_int
-except Exception:  # pragma: no cover - libSystem is always there on macOS
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover - libSystem is always there on macOS
     _LIBC = None
 
 
@@ -183,7 +185,9 @@ def pid_exe_path(pid) -> str | None:
         return None
     try:
         n = int(pid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Total, not (TypeError, ValueError, OverflowError): a leftover pid
         # whose ``__int__``/``__index__`` raises RuntimeError escaped the
         # old tuple and rode scan() into the health fan-out, collapsing the
@@ -228,7 +232,9 @@ def _pid_exe_path_uncached(n: int) -> str | None:
         buf = ctypes.create_string_buffer(_PROC_PIDPATH_MAX)
         try:
             got = _LIBC.proc_pidpath(n, buf, _PROC_PIDPATH_MAX)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             got = 0
         if got > 0:
             path = buf.value.decode("utf-8", "replace")
@@ -260,7 +266,9 @@ def scan() -> list[dict]:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if not isinstance(pl, dict):
             continue
@@ -284,11 +292,15 @@ def scan() -> list[dict]:
             pid = listing.pid_for(label)
             if not pid or isinstance(pid, bool):
                 continue
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         try:
             exe = pid_exe_path(pid)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             exe = None
         if not exe:
             continue
@@ -303,7 +315,9 @@ def scan() -> list[dict]:
             # A leftover over-cap already-int pid passes int() untouched and
             # the digit-cap ValueError then lands in the JSON encoder.
             str(pid_n)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Total: a pid whose ``__int__`` raises RuntimeError must read
             # as unknown (0), not drop the row it warns about.
             pid_n = 0
@@ -393,15 +407,21 @@ def remediate(now: int | float | None = None) -> list:
                 title="ServerHub runtime",
                 message=message,
             ))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             log.exception("stale_runtime alert for %s", label)
     if kicked:
         try:
             invalidate_launchd()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         try:
             invalidate_exe_cache()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return emitted
