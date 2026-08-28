@@ -148,7 +148,9 @@ def pids_for_argv(arguments) -> list[int]:
     argv0 = args[0]
     try:
         rows = ps_pid_commands()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out: list[int] = []
     seen: set[int] = set()

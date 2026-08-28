@@ -73,6 +73,21 @@ class ConfigSysctlAlertsProcLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             alerts._isa(_Ki(), dict)
 
+    def test_alerts_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("alerts isoformat watchdog")
+
+        self.assertEqual(alerts._jsonable_alert(_IsoBomb()), "")
+
+    def test_alerts_truthy_swallows_a_bool_baseexception(self):
+        class _BoolBomb:
+            def __bool__(self):
+                raise LeftoverWatchdogTimeout("alerts bool watchdog")
+
+        self.assertFalse(alerts._truthy(_BoolBomb()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,9 @@ try:
             break
         except OSError:
             continue
-except Exception:  # pragma: no cover — non-macOS / sandbox
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover — non-macOS / sandbox
     _libc = None
 
 if _libc is not None:
@@ -39,7 +41,9 @@ if _libc is not None:
             ctypes.c_size_t,
         ]
         _libc.sysctlbyname.restype = ctypes.c_int
-    except Exception:  # pragma: no cover
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:  # pragma: no cover
         _libc = None
 
 
@@ -100,7 +104,9 @@ def sysctlbyname_int(name: str) -> int | None:
             value = struct.unpack("<Q", data)[0]
         else:
             value = struct.unpack("<I", data)[0]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if name == "hw.memsize" and value == 0:
         return None

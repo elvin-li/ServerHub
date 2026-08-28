@@ -171,7 +171,9 @@ def _alert_ts(raw) -> int | None:
                 # Base coercion to an exact int: an int-subclass leftover with
                 # a ``__str__``/``__eq__`` bomb must not ride into the payload.
                 raw = int.__index__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return raw
     if isinstance(raw, float):
@@ -180,7 +182,9 @@ def _alert_ts(raw) -> int | None:
                 # Base coercion to an exact float: a subclass ``__eq__`` bomb
                 # used to blow the NaN/inf probes below.
                 raw = float.__float__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if raw != raw or raw in (float("inf"), float("-inf")):
             return None
@@ -194,7 +198,9 @@ def _alert_ts(raw) -> int | None:
                 # Exact-str copy so a subclass ``strip``/``__eq__`` bomb
                 # never runs on the probes below.
                 raw = str.__str__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         text = raw.strip()
         if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
@@ -454,7 +460,9 @@ def _service_id(raw) -> str:
             # Exact-str copy: a str-subclass id whose ``__hash__``/``__eq__``
             # raises used to detonate the ``services[sid]`` dict insert.
             return str.__str__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if isinstance(raw, bool) or not isinstance(raw, int):
         return ""
@@ -463,7 +471,9 @@ def _service_id(raw) -> str:
             # Base coercion first: an int-subclass ``__str__`` bomb raising
             # anything but ValueError escaped the digit-cap catch below.
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         return str(raw)
@@ -521,14 +531,18 @@ def notify_settings() -> dict:
     # it is already a plain dict copy.
     try:
         raw = settings_section("notify")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
     try:
         from hub import notify_channels
         return notify_channels.effective_settings(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return raw
 
 
@@ -605,7 +619,9 @@ def emit_alert(*, kind: str, level: str, alert_id: str, message: str,
     if wanted:
         try:
             send_ha_notify(title, message, level=level, event=event if event != "problem" else None)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Notification failure must not propagate into the caller's thread.
             pass
     return alert
@@ -634,7 +650,9 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         if latest is None:
             hist = metrics.history(5)
             latest = hist[-1] if hist else None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         latest = None
     if not isinstance(latest, dict):
         return []
@@ -668,7 +686,9 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         try:
             val_f = float(val)
             limit_f = float(limit)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Leftover ``cpu_used_pct: 10**10000`` OverflowError'd the sweep
             # (``int too large to convert to float`` is not ValueError).
             # Exception, not the enumerated trio: ``float()`` dispatches into
@@ -799,7 +819,9 @@ def _format_alert(template: str, **kw) -> str:
     """
     try:
         return _utf8_text(template.format(**kw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception, not an enumerated tuple: ``str.format`` dispatches into
         # each value's own ``__format__``/``__str__``, and a subclass bomb
         # there raises whatever it likes (a RuntimeError escaped the old
@@ -809,7 +831,9 @@ def _format_alert(template: str, **kw) -> str:
         for key, val in kw.items():
             try:
                 token = "{" + _utf8_text(key)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             start = 0
             pieces: list[str] = []
@@ -845,7 +869,9 @@ def _as_epoch(raw, default: int = 0) -> int:
                 # Base coercion to an exact int: a subclass arithmetic/compare
                 # bomb must not ride into the cooldown math.
                 raw = int.__index__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return default
         return raw
     if isinstance(raw, float):
@@ -855,7 +881,9 @@ def _as_epoch(raw, default: int = 0) -> int:
                 # (a leftover patched ``time.time`` included) used to blow the
                 # NaN/inf probes below.
                 raw = float.__float__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return default
         if raw != raw or raw in (float("inf"), float("-inf")):
             return default
@@ -867,7 +895,9 @@ def _as_epoch(raw, default: int = 0) -> int:
         if type(raw) is not str:
             try:
                 raw = str.__str__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return default
         text = raw.strip()
         if not text:
@@ -923,12 +953,16 @@ def _smart_num(raw) -> float | None:
                 # bomb riding a cached smart row used to raise out of float()
                 # and silently abort the whole SMART pass.
                 raw = int.__index__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         elif isinstance(raw, float) and type(raw) is not float:
             try:
                 raw = float.__float__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             val = float(raw)
@@ -1141,7 +1175,9 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     try:
         from hub import storage_svc
         devices = storage_svc.smart_devices()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     if not isinstance(devices, list):
         devices = []
@@ -1317,7 +1353,9 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     try:
         from hub import ups_svc
         st = ups_svc.ups_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     # _mapping_get/_truthy/_pick, not bare ``.get``/``or``/bool(): the 30s
     # snapshot is whatever an in-process caller last cached, and a
@@ -1341,7 +1379,9 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     pct = _mapping_get(st, "battery_percent")
     try:
         pct_f = None if pct is None or isinstance(pct, bool) else float(pct)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception, not the enumerated trio: ``float()`` dispatches into a
         # subclass value's own ``__float__``, and a bomb there escaped the
         # old net and killed the pass.
@@ -1395,7 +1435,9 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
 
     try:
         floor = float(_pick(_mapping_get(settings, "low_battery_pct"), 20))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception, not the enumerated trio: a subclass ``__float__`` bomb
         # floor escaped the old net and killed the pass.
         floor = 20.0
@@ -1579,11 +1621,15 @@ def check_once(force_status: bool = False) -> list:
         new_state["_service_pending"] = dict(prev["_service_pending"])
     try:
         emitted.extend(_service_transition_alerts(prev, new_state, services, now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         emitted.extend(_check_resource_thresholds(prev, new_state, now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # Same containment as the resource check: this runs on the single alerter
     # thread, and one disk with a smartctl field we did not anticipate must not take
@@ -1591,11 +1637,15 @@ def check_once(force_status: bool = False) -> list:
     # worst possible failure mode for an alerting system.
     try:
         emitted.extend(_check_smart_health(prev, new_state, now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         emitted.extend(_check_ups(prev, new_state, now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # UPS safe-shutdown policy (hub/ups_policy.py): decides on the same
     # 30s-cached snapshot _check_ups just read, keeps its latch in its own
@@ -1606,7 +1656,9 @@ def check_once(force_status: bool = False) -> list:
     try:
         from hub import ups_policy
         emitted.extend(ups_policy.sweep(now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # Artifact freshness for daily launchd jobs — catches "loaded but never
     # firing", the failure class the service sweep above is blind to (see
@@ -1614,7 +1666,9 @@ def check_once(force_status: bool = False) -> list:
     try:
         from hub import freshness_svc
         emitted.extend(freshness_svc.check_freshness(prev, new_state, now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # Homebrew python upgrades leave KeepAlive PIDs running on a deleted
     # Cellar path; TCP still answers so the service sweep above stays green.
@@ -1623,7 +1677,9 @@ def check_once(force_status: bool = False) -> list:
     try:
         from hub import stale_runtime
         emitted.extend(stale_runtime.remediate(now))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # Only rewrite state file when map actually changed (huge SSD win)
     if new_state != prev:
@@ -1660,14 +1716,18 @@ def _loop(interval: int = 90):
         # next sweep would re-announce everything as if it had just changed.
         if not _load_state():
             _save_state(baseline)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     while not _stop.is_set():
         try:
             worker_health.beat("alert-engine")
             # Prefer cache; force at most occasionally via TTL
             check_once(force_status=False)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         _stop.wait(interval)
 

@@ -418,7 +418,9 @@ def settings_section(name: str) -> dict:
     # the guarded siblings) answered 200 over the very same failure.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     # _isa, not a bare isinstance: ``isinstance`` consults ``__class__``
     # when the exact-type check misses, so a snapshot root whose
@@ -435,7 +437,9 @@ def settings_section(name: str) -> dict:
     # 500 on GET /api/settings/other and /thresholds (the host10 rule).
     try:
         s = dict.get(data, "settings")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     # _isa on the stored values as well: a ``__class__``-property bomb
     # planted as the ``settings`` block (or the section itself) passes the
@@ -444,13 +448,17 @@ def settings_section(name: str) -> dict:
         return {}
     try:
         raw = dict.get(s, name)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if not _isa(raw, dict):
         return {}
     try:
         return dict(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -469,7 +477,9 @@ def _env_text(value) -> str:
         base = bytes if isinstance(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     elif value is None:
         return ""
@@ -479,13 +489,19 @@ def _env_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -515,7 +531,9 @@ def override(sid):
     # overrides per row.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     # _isa on every rank gate (the settings_section host12 rule): a
     # snapshot root — or a stored ``overrides``/per-sid value — whose
@@ -525,19 +543,25 @@ def override(sid):
         return {}
     try:
         ov = dict.get(data, "overrides")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if not _isa(ov, dict):
         return {}
     try:
         val = dict.get(ov, sid, {})
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if not _isa(val, dict):
         return {}
     try:
         return dict(val)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -756,7 +780,9 @@ def _dump(data: dict) -> str:
     except RecursionError:
         # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
         raise api_error("settings.save_failed")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A leftover YAML hex int past CPython's int->str digit cap loads fine
         # (``int(x, 16)`` is uncapped) but cannot be re-dumped.  The coded 503
         # alone left every settings save stuck for good: the auth sweep scrubs
@@ -789,7 +815,9 @@ def _dump(data: dict) -> str:
                 width=120,
                 default_flow_style=False,
             )
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # ValueError / RecursionError / YAMLError as before, plus any
             # bomb the laundering could not shape: the coded 503, never raw.
             raise api_error("settings.save_failed")
@@ -902,7 +930,9 @@ def _save_full_locked(data: dict) -> None:
     # the mtime changed, so the next honest cfg() re-reads the file anyway.
     try:
         reload_cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -987,7 +1017,9 @@ def panel_locale() -> str:
         data = cfg()
         settings = dict.get(data, "settings") if isinstance(data, dict) else None
         ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return DEFAULT_UI_LOCALE
     ui = ui if isinstance(ui, dict) else {}
     try:
@@ -1012,7 +1044,9 @@ def panel_locale() -> str:
         if type(raw) is not str:
             raw = str.__str__(raw)
         raw = raw.strip() or DEFAULT_UI_LOCALE
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return DEFAULT_UI_LOCALE
     if raw in UI_LOCALES:
         return raw
