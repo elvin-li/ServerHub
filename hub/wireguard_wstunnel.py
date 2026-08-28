@@ -245,7 +245,9 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
     target = path or PLIST_PATH
     try:
         data = plistlib.loads(read_bytes_capped(target, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An enumerated tuple is a losing game against plistlib's XML path
         # (the files_svc lesson): a torn or truncated LaunchDaemon plist
         # raises xml.parsers.expat.ExpatError, a junk <date> raises
@@ -474,7 +476,9 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     if _isa(settings, dict):
         try:
             cfg = dict(settings)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             cfg = {}
     # Laundered snapshot (the settings_section rule): this read does not own
     # its provider — tests and tooling patch ``live`` — and a snapshot that
@@ -486,12 +490,16 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     # detonate the shape gate itself.
     try:
         found = live()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         found = None
     if _isa(found, dict):
         try:
             found = dict(found)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             found = {}
     else:
         found = {}
@@ -607,7 +615,9 @@ def _int_or_zero(value) -> int:
             number = int(text)
         str(number)  # CPython's 4300-digit int->str cap; json.dumps enforces it
         return number
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
 
 
@@ -623,7 +633,9 @@ def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     # real (sub)dict through the C-level storage and refuses the liar.
     try:
         snapshot = dict(snapshot)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     # Unbound ``dict.get`` + laundered values: a dict-subclass snapshot with
     # a bombing ``.get``, a listen value whose str-subclass methods raise

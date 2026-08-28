@@ -72,6 +72,18 @@ class ContainersStorageWstunnelLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             wireguard_wstunnel._isa(_Ki(), dict)
 
+    def test_read_plist_swallows_load_baseexception(self):
+        def boom(*_a, **_k):
+            raise LeftoverWatchdogTimeout("plist watchdog")
+
+        from unittest import mock
+
+        with mock.patch.object(wireguard_wstunnel, "read_bytes_capped", boom):
+            self.assertEqual(
+                wireguard_wstunnel.read_plist(),
+                {"listen": "", "restrict_to": ""},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
