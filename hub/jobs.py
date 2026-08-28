@@ -70,14 +70,18 @@ def _isinst(value, types) -> bool:
 
 
 def _real(value, types) -> bool:
-    """True when the *real* storage is this type.
+    """True when the *real* storage layout is this type.
 
     ``type(value)`` reads the C-level type slot, which a lying ``__class__``
     property cannot swap, so this is the probe for the recover-the-real-
-    storage fall-throughs below (the bookmarks14/modules14/files16 rule):
-    after a claimed arm's unbound descriptor rejects the operand, only the
-    arm the *real* layout matches may pick the value up — the lie must not
-    steer the walk a second time.  Fail-closed like ``_isinst``.
+    storage fall-throughs below (the modules14/assistant14/bookmarks14
+    rule): ``isinstance`` consults ``value.__class__`` only after the
+    real-MRO check misses, so a lying claim steered a leftover into the arm
+    of its claim, the unbound descriptor there refused the real layout, and
+    the old early return threw honest renderable storage away at the wrong
+    rank.  After a claimed arm rejects the operand, only the arm the *real*
+    layout matches may pick the value up — the lie must not steer the walk
+    a second time.  Fail-closed like ``_isinst``.
     """
     try:
         return issubclass(type(value), types)
@@ -234,9 +238,6 @@ def run_watchdog(argv, *, timeout, log, env=None, cwd=None):
         # it) raising a BaseException subclass used to sail past the old
         # ``except Exception`` and kill the job/scheduler thread with the
         # row parked "running" — the run was never journalled.
-        # _error_text, not a bare _utf8_text: a bomb carrying a junk arg
-        # rendered its default object.__repr__ — a raw heap address — into
-        # the log tail the log route serves verbatim.
         log.append(f"!! error: {_error_text(e)}")
         return -1
 
@@ -319,21 +320,19 @@ def _truthy(value) -> bool:
         return False
 
 
-#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
-#: bound-method variants) — a raw heap address, never job or task data.
-_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
-
-
-def _str_text(value) -> str | None:
+def _str_text(value):
     """Exact text of *really-str* storage, or ``None`` for an impostor.
 
     ``str.__str__`` is a descriptor bound to the real str layout: any real
-    str (or subclass — even one riding a ``__str__`` / ``encode`` bomb)
+    str (or subclass — even one riding a ``__str__``/``encode`` bomb)
     answers its character data without dispatching the override, while a
     *lying* ``__class__`` that only claims str rejects the operand.  The
-    old dispatching ``str()`` rendered that impostor's ``repr`` — a raw
-    heap address — into GET /api/maintenance (the bookmarks14/assistant12
-    rule).  The encode-replace pass scrubs lone surrogates as before.
+    old dispatching path handed such an impostor to the encode scrub and
+    wiped honest non-str storage — a genuine int id claiming str — to
+    ``""`` at the wrong rank; ``None`` here lets the caller fall through to
+    the arm the real storage matches.  The encode-replace pass scrubs lone
+    surrogates exactly as before, and only genuine control flow keeps
+    propagating.
     """
     try:
         return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
@@ -341,6 +340,26 @@ def _str_text(value) -> str | None:
         raise
     except BaseException:
         return None
+
+
+def _decode_or_none(value):
+    """Both bases, real layout first-come — or ``None`` for a total liar.
+
+    The maint14 seam ``_decode_bytes``'s plain-``""`` contract cannot
+    express (the notify13 ``_decode_bytes_or_none`` convention): ``None``
+    distinguishes "real type is neither base" from a decode that
+    legitimately answered ``""``, so the callers below fall through to the
+    arm the *real* storage matches — a genuine str name claiming bytes
+    keeps its text — instead of wiping honest data at the wrong rank.
+    """
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
 
 
 def _decode_bytes(value) -> str:
@@ -351,54 +370,59 @@ def _decode_bytes(value) -> str:
     ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
     ``bytes.decode``, refused by the descriptor, and its perfectly decodable
     content degraded to ``""`` — a task name vanished from the listing and a
-    log line went blank at the wrong rank.
-
-    jobs14 extends the same rule one arm further (the bookmarks14 shape):
-    genuine *str* storage lying ``bytes`` / ``bytearray`` used to drop to
-    ``""`` here even though its text was right there — it now recovers
-    through ``_str_text``'s unbound read.  A total liar (real type is none
-    of the three) still degrades to ``""``, which used to ride out of
+    log line went blank at the wrong rank.  A total liar (real type is
+    neither base) still degrades to ``""``, which used to ride out of
     _jsonable's bytes arm and 500 GET /api/maintenance.
     """
-    for base in (bytes, bytearray):
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            continue
-    return _str_text(value) or ""
+    decoded = _decode_or_none(value)
+    return "" if decoded is None else decoded
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never Maintenance data.
+#: Applied to the *coercion* arms only: real str storage is data (a job's
+#: own log line quoting a Python repr serves verbatim).
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
 
-    The scrub itself goes through the *unbound* base method
-    (``str.encode``, the audit._utf8_text convention): ``str()`` may hand
-    back a subclass instance (it only checks the type, it does not copy)
-    when ``__str__`` returns ``self``, so a leftover str-subclass whose
-    ``encode`` raised used to blow this scrub from outside every net and
-    500 GET /api/maintenance and the log route.  The unbound call also
-    guarantees an *exact* ``str`` return, so callers' own ``.strip()`` /
-    ``.replace()`` / truth tests cannot hit a subclass override either.
+    The scrub itself goes through the *unbound* base methods
+    (``str.__str__`` / ``str.encode``, the audit._utf8_text convention):
+    ``str()`` may hand back a subclass instance (it only checks the type,
+    it does not copy) when ``__str__`` returns ``self``, so a leftover
+    str-subclass whose ``encode`` raised used to blow this scrub from
+    outside every net and 500 GET /api/maintenance and the log route.  The
+    unbound calls also guarantee an *exact* ``str`` return, so callers' own
+    ``.strip()`` / ``.replace()`` / truth tests cannot hit a subclass
+    override either.
+
+    maint14: a *lying* ``__class__`` claim no longer wipes honest storage
+    at the wrong rank — a rejected bytes/str claim falls through to the arm
+    the real layout matches (a genuine str claiming bytes keeps its text, a
+    genuine int claiming str coerces to its number).  And the free-text arm
+    no longer runs the dispatching ``str()`` on a type that never overrode
+    ``__str__``/``__repr__``: the answer there is the default
+    ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap address —
+    which a junk ``rc`` / ``desc`` / ``started`` cell used to carry
+    verbatim into the JSON body of the list and log routes.  The slot probe
+    reads the real ``type(value)`` (a flickering ``__class__`` property
+    cannot swap it) and the address belt drops a rendered heap address the
+    probe cannot see (a custom ``__repr__`` embedding one).
     """
     if _isinst(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+        # A lying-bytes claim: real str storage recovers on the arm below;
+        # everything else falls to the coercion arm's own probes.
     if _isinst(value, str):
-        # Unbound base read, not the dispatching ``str()``: real str storage
-        # keeps its text even when the subclass ``__str__`` raises, and a
-        # lying ``__class__`` claiming str drops to "" instead of leaking
-        # its ``repr`` (a heap address) into the response body.
-        return _str_text(value) or ""
-    # Only a type that renders *itself* may coerce.  This free-text arm ran
-    # ``str()`` on any leftover shape, and for a type that never overrode
-    # ``__str__`` / ``__repr__`` the answer is the default ``object.__repr__``
-    # — ``<X object at 0x7f...>``, a raw heap address — which a junk task
-    # ``desc`` / ``rc`` / ``finished`` field carried verbatim into
-    # GET /api/maintenance and its log route.  A slot probe on the real
-    # ``type(value)``, not an instance lookup: a ``__getattr__`` bomb
-    # answers instance probes and a flickering ``__class__`` property
-    # cannot swap the real type out.
+        text = _str_text(value)
+        if text is not None:
+            return text
+        # A lying-str claim refused the unbound read: coerce off whatever
+        # the real storage renders instead of the old "" wipe.
     try:
         cls = type(value)
         if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
@@ -429,12 +453,55 @@ def _utf8_text(value) -> str:
         raise
     except BaseException:
         return ""
-    # Belt for what the slot probe cannot see: a function / bound-method
-    # leftover (C-level ``__repr__`` override) and a value whose *rendering*
-    # embeds a default repr (``RuntimeError(<_Junk object at 0x...>)``)
-    # still answered an address.  Only this coercion arm is scrubbed —
-    # real str/bytes storage above is data and stays verbatim.
     return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry.
+
+    ``_jsonable``'s old key path ran bare ``str(k)`` on any non-str/bytes
+    key, and for a type that never overrode ``__str__``/``__repr__`` the
+    answer is the default ``object.__repr__`` — ``<X object at 0x7f...>``,
+    a raw heap address — which a junk key in a nested ``_jobs``-row cell
+    carried verbatim as a JSON *key* on the list and log routes (the
+    assistant14 ``_key_text`` rule).  Same slot probe + address belt as
+    ``_utf8_text``'s coercion arm; real str/bytes key storage — behind a
+    lying ``__class__`` too — keeps its text verbatim, and a lying-str
+    claim with no text storage no longer files its value under a
+    fabricated ``""`` key.
+    """
+    if _isinst(k, (bytes, bytearray)):
+        decoded = _decode_or_none(k)
+        if decoded is not None:
+            return decoded
+        # A lying-bytes claim: real str storage recovers just below.
+    if _isinst(k, str):
+        text = _str_text(k)
+        if text is not None:
+            return text
+        # A lying-str claim: coerce off whatever the real storage renders.
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``__str__`` key keeps dropping its entry, like before.
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def _error_text(exc) -> str:
@@ -470,25 +537,23 @@ def _jsonable(value, depth: int = 0):
     A >4300-digit ``rc`` in a junk job row still passed through untouched:
     CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
 
-    jobs14: ``isinstance`` consults ``value.__class__`` only after the
-    real-MRO check misses, so a lying ``__class__`` used to steer a leftover
-    into the arm of its *claim*, the unbound descriptor there rejected the
-    real layout, and an early return threw honest renderable storage away
-    at the wrong rank (the bookmarks14/modules14 shape): a genuine str name
-    lying ``int`` vanished to ``None``, a genuine mapping lying ``str``
-    degraded to ``""``, a genuine sequence lying ``dict`` dropped whole.
-    Each rejected arm now falls through to the arm the *real* storage
-    matches — probed via ``type(value)`` (``_real``) so the lie cannot
-    steer the walk twice — and a total impostor keeps its established drop.
-
-    The container walks also snapshot through the *unbound* builtins:
-    the old bound ``value.items()`` iterated the live mapping, so a nested
-    value whose hook (a ``__class__`` property fired by ``_isinst``)
-    resized its own host row mid-walk raised RuntimeError("dictionary
-    changed size during iteration") out of this "never raises" walk —
-    straight through ``maintenance_tasks`` into a raw 500 on
-    POST /api/maintenance/{tid}/run, and the whole GET listing (every
-    sibling task) degraded to ``[]`` at the wrong rank.
+    maint14 (the modules14/assistant14/bookmarks14 shape): ``isinstance``
+    consults ``value.__class__`` only after the real-MRO check misses, so a
+    lying ``__class__`` steered a leftover into the arm of its *claim*, the
+    unbound descriptor there rejected the real layout, and an early return
+    threw honest renderable storage away at the wrong rank — a genuine str
+    desc claiming int wiped to ``None``, a genuine float claiming int
+    dropped, a genuine bytes cell claiming str went blank.  The rejected
+    arms now fall through to the arm the *real* storage matches, probed via
+    ``_real`` so the lie cannot steer the walk twice; a total impostor — a
+    claim with no usable layout underneath — keeps its established
+    ``None``/``""`` drop.  The dict walk also snapshots its items first (a
+    nested cell mutating the mapping mid-walk used to RuntimeError the live
+    view iteration, a raw 500 on all three routes), keys go through
+    ``_key_text`` (a plain-object key used to serve its default
+    ``object.__repr__`` — a raw heap address — as a JSON key), and the
+    sequence arm iterates through the unbound bases so a real subclass's
+    ``__iter__`` bomb cannot vaporise its perfectly walkable storage.
     """
     if depth > 32:
         return None
@@ -516,7 +581,8 @@ def _jsonable(value, depth: int = 0):
                 str(num)
             except ValueError:
                 # Past CPython's int->str digit cap the encoder cannot
-                # render the number at all — same drop as its inf sibling.
+                # render the number at all — same drop as its inf float
+                # sibling.
                 return None
             return num
         if not _real(value, (float, str, bytes, bytearray, dict,
@@ -524,9 +590,7 @@ def _jsonable(value, depth: int = 0):
             # A total impostor claiming int/bool keeps the old None drop.
             return None
         # The descriptor refused the operand, so the claimed ``int`` was a
-        # lie — but the real storage matches a later arm: a genuine str /
-        # float / container behind that lie used to vanish to ``None`` at
-        # the wrong rank while its value rendered fine one gate below.
+        # lie — but the real storage matches a later arm: fall through.
     if _isinst(value, float):
         num = value if type(value) is float else None
         if num is None:
@@ -549,63 +613,67 @@ def _jsonable(value, depth: int = 0):
             return None
         # Genuine text / container behind a lying-float claim falls through.
     if _isinst(value, str):
-        if not _real(value, (dict, list, tuple, set, frozenset)):
+        # ``_str_text``, not the dispatching path: real str storage (any
+        # subclass) keeps its scrubbed text; a lying-str claim over genuine
+        # bytes / container storage falls through to the arm one rank below
+        # instead of the old "" wipe.
+        text = _str_text(value)
+        if text is not None:
+            return text
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming str keeps the established "" drop
+            # (the coercion arm's slot probe + address belt: its default
+            # repr — a heap address — must never render).
             return _utf8_text(value)
-        # Genuine mapping / sequence storage behind a lying-str
-        # ``__class__`` used to degrade to ``""`` here — the wrong rank;
-        # the arm its real storage matches walks it below.
     if _isinst(value, (bytes, bytearray)):
+        # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
+        # (a poisoned task name — or a bytes mapping *key*, which reaches
+        # _key_text below) used to 500 the encoder walk.
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
         if not _real(value, (dict, list, tuple, set, frozenset)):
-            # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
-            # (a poisoned task name — or a bytes mapping *key*, which
-            # reaches _utf8_text below) used to 500 the encoder walk.
-            return _decode_bytes(value)
+            # A total impostor claiming bytes keeps the established "" drop
+            # (the maint9 nested-liar pin).
+            return ""
         # Genuine mapping / sequence behind a lying-bytes claim falls
         # through to the arm that reads its real storage.
     if _isinst(value, dict):
-        try:
-            # Unbound ``dict.items`` snapshot, not the bound dispatch: it
-            # reads the real C-level storage underneath a subclass override,
-            # and the ``list(...)`` materialisation keeps the walk immune to
-            # a hook that resizes the mapping mid-walk (the modules13 rule)
-            # — the RuntimeError 500 described above.  A lying ``__class__``
-            # claiming dict is rejected by the descriptor instead of
-            # answering junk.
-            items = list(dict.items(value))
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            items = None
-        if items is not None:
+        plain = value if type(value) is dict else None
+        if plain is None:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover subclass method bomb
+            # cannot fire (same guard as metrics/sensors _jsonable).
+            try:
+                plain = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                plain = None
+        if plain is not None:
+            # Materialized (``list(...)``), not the live view: a nested
+            # cell whose guarded ``isoformat`` hook mutates this mapping
+            # mid-walk used to RuntimeError the live ``.items()`` iteration
+            # — outside every net — and 500 GET /api/maintenance through
+            # job_state's merge AND the run route through
+            # maintenance_tasks's row laundering.  Only genuine control
+            # flow keeps propagating.
+            try:
+                items = list(dict.items(plain))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
             out = {}
-            for pair in items:
-                try:
-                    # Guarded unpack kept for odd subclass storage shapes.
-                    k, v = pair
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
+                    # A key that cannot render (raising ``__str__``, a
+                    # total lying impostor, a default-repr heap address)
+                    # drops just this entry, keeps the rest of the mapping.
                     continue
-                # No raw ``str(k)`` pre-coercion: a junk *key* (default
-                # ``object.__repr__``) used to render its heap address as
-                # the JSON key itself, one rank above the value scrub.
-                # ``_utf8_text`` coerces the renderable kinds (int / float
-                # / tuple keys) the same as before and drops the address
-                # shapes to "".  ``_real``, not ``_isinst``: only *real*
-                # text storage may keep an empty key.
-                was_text = _real(k, (str, bytes, bytearray))
-                try:
-                    k = _utf8_text(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
-                if not k and not was_text:
-                    # A key with no real text storage that coerced to
-                    # nothing: there is no name to file the value under —
-                    # the pair drops alone, siblings survive.
-                    continue
-                out[k] = _jsonable(v, depth + 1)
+                out[key] = _jsonable(v, depth + 1)
             return out
         if not _real(value, (list, tuple, set, frozenset)):
             # A total impostor claiming dict keeps the old None drop.
@@ -613,23 +681,24 @@ def _jsonable(value, depth: int = 0):
         # Genuine sequence storage behind a lying-dict ``__class__`` falls
         # through: its elements render below instead of vanishing whole.
     if _isinst(value, (list, tuple, set, frozenset)):
+        # Unbound base iteration, real layout first-come (the jobs13/nas13
+        # decode rule at sequence rank): the bound ``list(value)``
+        # dispatched a real subclass's overridden ``__iter__``, so an
+        # iter-bomb whose C-level storage was perfectly walkable — a
+        # leftover ``rc`` list in a live ``_jobs`` row — vaporised to None
+        # even though the raise was absorbed.  Materialized inside the try:
+        # an element whose hook mutates the container mid-walk cannot blow
+        # the comprehension below.  A total impostor (every base descriptor
+        # refuses it) keeps the old None drop; only genuine control flow
+        # keeps propagating.
         for base in (list, tuple, set, frozenset):
-            if not _real(value, base):
-                continue
             try:
-                # Unbound ``base.__iter__`` snapshot off the real layout: a
-                # sequence-subclass ``__iter__`` bomb used to drop its
-                # renderable elements to ``None`` through the bound
-                # ``list(value)`` dispatch, and the snapshot keeps the walk
-                # immune to a hook that resizes its parent mid-walk.
-                vals = list(base.__iter__(value))
+                items = list(base.__iter__(value))
             except _CONTROL_FLOW:
                 raise
             except BaseException:
                 continue
-            return [_jsonable(v, depth + 1) for v in vals]
-        # A claim with no real sequence layout underneath: nothing to
-        # iterate off the C storage — the old None drop.
+            return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
         iso = getattr(value, "isoformat", None)
@@ -684,16 +753,15 @@ def _task_id(raw) -> str:
     key, so folding the newline to a space keeps the task runnable.
     """
     if _isinst(raw, str):
-        # _utf8_text returns an exact str, so a liar claiming str degrades
-        # to "" and drops its entry instead of bombing the bound calls.
-        text = _utf8_text(raw).replace("\r\n", "\n").replace("\n", " ")
-        if text or _real(raw, str):
-            return text.strip()
-        # A lying-str claim with no text storage: a genuine *int* id behind
-        # that lie used to drop its whole task from GET /api/maintenance at
-        # the wrong rank even though ``str(raw)`` rendered fine — the int
-        # arm below reads the real storage (the bookmarks14 recovery rule);
-        # every other impostor keeps the established drop.
+        # _str_text returns an exact str for real str storage, so a bombing
+        # subclass cannot reach the bound calls below.  A *lying* claim
+        # (real type is no str at all) answers None and falls through: a
+        # genuine int id claiming str used to wipe to "" right here and
+        # vanish its task from the listing at the wrong rank; the numeric
+        # arm below now recovers it, while total junk keeps dropping.
+        text = _str_text(raw)
+        if text is not None:
+            return text.replace("\r\n", "\n").replace("\n", " ").strip()
     if type(raw) is bool or not _isinst(raw, int):
         return ""
     if type(raw) is not int:
@@ -747,15 +815,27 @@ def maintenance_tasks():
     else:
         raw = None
     if _isinst(raw, list):
-        try:
-            # list() through the C storage: a leftover list-subclass whose
-            # __iter__ raises used to 500 GET /api/maintenance — and one
-            # raising a BaseException subclass kept doing so past the old
-            # ``except Exception``.
-            rows = list(raw)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
+        # Unbound base iteration, real layout first-come (the maint14
+        # recovery of the jobs13/nas13 rule at sequence rank): a leftover
+        # list-subclass whose __iter__ raises used to 500
+        # GET /api/maintenance — one raising a BaseException subclass kept
+        # doing so past the old ``except Exception`` — and the guarded
+        # bound ``list()`` that sealed it still dispatched the override,
+        # vaporising perfectly walkable real rows to the empty listing.
+        # ``list.__iter__`` / ``tuple.__iter__`` read the C-level storage
+        # underneath the bomb; a total impostor claiming list (every
+        # descriptor refuses it) keeps degrading to the empty listing, and
+        # only genuine control flow keeps propagating.
+        rows = None
+        for base in (list, tuple):
+            try:
+                rows = list(base.__iter__(raw))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            break
+        if rows is None:
             rows = []
     else:
         rows = []
@@ -878,43 +958,52 @@ def _log_lines(raw) -> list[str]:
     Only *exact* strs come back: ``job_log`` joins the result with
     ``str.join``, and a liar whose ``__class__`` answers str (not a real
     str at all) used to TypeError that join outside every net.
+
+    maint14: the materialiser reads through the unbound bases (real layout
+    first-come, the jobs13/nas13 decode rule at sequence rank) — the bound
+    ``list(raw)`` dispatched a real subclass's overridden ``__iter__``, so
+    an iter-bomb log whose C-level lines were perfectly walkable showed
+    "(waiting for output…)" over a finished job's real output; and a
+    genuine list whose ``__class__`` lied str used to wipe every honest
+    line to ``""`` in the old str arm.
     """
     if _isinst(raw, str):
         # Laundered before the truth test: a str-subclass ``__bool__``/
-        # ``__len__`` bomb used to blow ``if raw`` right here.
-        text = _utf8_text(raw)
-        return [text] if text else []
-    if not _isinst(raw, (list, tuple)):
+        # ``__len__`` bomb used to blow ``if raw`` right here.  A lying-str
+        # claim answers None and falls through to the arm the real storage
+        # matches.
+        text = _str_text(raw)
+        if text is not None:
+            return [text] if text else []
+    if not _isinst(raw, (list, tuple)) and not _real(raw, (list, tuple)):
         return []
     items = None
     for base in (list, tuple):
-        if not _real(raw, base):
-            continue
         try:
-            # Unbound ``base.__iter__`` snapshot off the real layout (the
-            # bookmarks14 rule): the old bound ``list(raw)`` dispatched a
-            # leftover subclass's ``__iter__`` bomb — which used to 500 the
-            # log route past the isinstance gate, and once absorbed still
-            # vaporized the perfectly readable C-level lines underneath it.
+            # Unbound: a leftover list-subclass whose __iter__ raises used
+            # to 500 the log route past the isinstance gate — and, once
+            # guarded, still vaporised its perfectly walkable real lines.
             items = list(base.__iter__(raw))
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            items = None
+            continue
         break
     if items is None:
-        # A lying claim with no real sequence storage: no lines to read.
         return []
     out: list[str] = []
     for item in items:
         if _isinst(item, str):
-            # _utf8_text launders a str-subclass line to an exact str: a
+            # _str_text launders a str-subclass line to an exact str: a
             # leftover whose bound methods bomb cannot reach str.join or
-            # the encoder downstream. Empty laundered junk is dropped.
-            text = _utf8_text(item)
+            # the encoder downstream. Empty laundered junk is dropped, and
+            # a lying-str claim over real bytes storage decodes below.
+            text = _str_text(item)
             if text:
                 out.append(text)
-        elif _isinst(item, (bytes, bytearray)):
+            if text is not None:
+                continue
+        if _isinst(item, (bytes, bytearray)):
             # Unbound base decode: a bytes-subclass ``decode`` bomb in a
             # leftover log list used to 500 GET /api/maintenance/{tid}/log.
             out.append(_decode_bytes(item))
@@ -1152,8 +1241,6 @@ def start_job(task):
             # env/field seams used to kill the job thread past the old
             # ``except Exception`` with the log empty.
             try:
-                # _error_text: same address belt as run_watchdog's seam —
-                # the tail this line lands in is served verbatim.
                 j["log"].append(f"!! error: {_error_text(e)}")
             except _CONTROL_FLOW:
                 raise

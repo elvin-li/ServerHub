@@ -274,9 +274,11 @@ class GuardContractTests(unittest.TestCase):
                 self.assertIsNone(module._plain_dict(_ClassPropBaseBomb()))
 
     def test_jsonable_launders_base_bomb_shapes(self):
-        # jobs14 recovers the renderable C-level storage underneath an
-        # ``__iter__`` bomb through the unbound ``list.__iter__`` snapshot
-        # (the bookmarks14 rule) — the raise is still absorbed, never a 500.
+        # The guard contract is the same for both modules: the bomb is
+        # laundered, never re-raised.  hub.jobs additionally recovers the
+        # perfectly walkable real storage underneath the override since the
+        # jobs14/maint14 unbound-snapshot sweep (the bookmarks14 recovered-shape
+        # rule); scheduler_svc keeps the guarded drop.
         self.assertEqual(jobs._jsonable(_IterBaseBombList([1])), [1])
         self.assertIsNone(scheduler_svc._jsonable(_IterBaseBombList([1])))
         for module in (jobs, scheduler_svc):
