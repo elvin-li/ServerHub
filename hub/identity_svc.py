@@ -4,6 +4,8 @@ from __future__ import annotations
 import platform
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from hub.config import cfg, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip as effective_host_ip
@@ -320,13 +322,28 @@ def get_identity() -> dict:
         host_cfg = configured_host()
     except Exception:
         host_cfg = ""
+    # platform.node()/machine() under their own try (the configured_host
+    # rule one block up): these are module-level seams tests and tooling
+    # patch, and both ran bare inside the return dict — a raising machine()
+    # 500'd GET /api/identity outright through the ``arch`` field, and a
+    # raising node() did the same the moment the hostname spawn missed and
+    # the fallback branch was actually taken.  Each now costs only its own
+    # field, like every sibling above.
+    try:
+        node_name = platform.node()
+    except Exception:
+        node_name = ""
+    try:
+        machine = platform.machine()
+    except Exception:
+        machine = ""
     return {
-        "hostname": _as_text(hostname if _rc_int(rc) == 0 else platform.node()),
+        "hostname": _as_text(hostname if _rc_int(rc) == 0 else node_name),
         "computer_name": _as_text(comp) if _rc_int(rc2) == 0 else "",
         "local_hostname": _as_text(local) if _rc_int(rc3) == 0 else "",
-        "model": _as_text(model if _rc_int(rc4) == 0 else platform.machine()),
+        "model": _as_text(model if _rc_int(rc4) == 0 else machine),
         "platform": _as_text(platform_name),
-        "arch": _as_text(platform.machine()),
+        "arch": _as_text(machine),
         "host_ip": _as_text(host_ip),
         "host_ip_config": _as_text(host_cfg),
         # _pick, not ``or``: a leftover ``__bool__``-bomb comment value used
@@ -392,7 +409,21 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             raise api_error("identity.value_too_long", field="host_ip", max=MAX_HOST_IP)
         patch["host_ip"] = host_ip_text
     if patch:
-        update_settings(patch)
+        # The saver is a seam this module does not own (tests and tooling
+        # patch it, and hub.config's own failures arrive as coded
+        # HTTPExceptions).  A leftover saver that raises a *plain* exception
+        # used to 500 PUT /api/identity raw after validation had already
+        # passed; the honest coded 503s (settings.save_failed /
+        # settings.config_unreadable) still pass through untouched, and
+        # anything else is laundered to the same coded save 503 — the save
+        # cannot be claimed either way, so "Panel settings updated" is
+        # never appended off a raise.
+        try:
+            update_settings(patch)
+        except HTTPException:
+            raise
+        except Exception:
+            raise api_error("settings.save_failed")
         msgs.append("Panel settings updated")
     if computer_name:
         name = str(computer_name).strip()
