@@ -23,11 +23,25 @@ from hub.errors import CODES, api_error
 from hub.paths import CONFIG_FILE, DATA_DIR, user_home
 from hub.util import read_text_capped, run_capped, safe_json_loads, strftime_now, utf8_env
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if _isa(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _as_text(value) -> str:
@@ -42,7 +56,9 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if value is None:
         return ""
@@ -51,18 +67,29 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound base encode (the hub.modules._utf8_text rule): ``str()`` of a
-    # subclass whose ``__str__`` answers *self* skips CPython's exact-str
-    # copy, so a leftover bound ``encode`` bomb rode this line out of the
-    # broad catches around the postgres/configs jobs — the *successful*
-    # artefact was discarded and reported as the dump's failure.  The
-    # round-trip also hands every caller an exact str, so the ``[:500]`` /
-    # ``.strip()`` that follow cannot hit another poisoned override.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _home_dir() -> Path:
@@ -307,7 +334,9 @@ def _tool_on_disk(tool) -> bool:
     """
     try:
         text = str(tool or "")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     if not text:
         return False
@@ -340,7 +369,9 @@ def _exit_code(rc):
         return rc
     try:
         return int.__index__(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -360,7 +391,9 @@ def _exit_text(rc) -> str:
         return "exit unknown"
     try:
         return f"exit {rc}"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ValueError past the digit cap — but the f-string's empty format
         # spec also dispatches to a subclass ``__str__``, so a seam rc
         # bomb raised RuntimeError past the old narrow tuple and 500'd
@@ -458,7 +491,9 @@ def _cfg_text(value) -> str | None:
         return ""
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ValueError past the int->str digit cap; RecursionError on a
         # leftover self-referential __str__.
         return None
@@ -473,7 +508,9 @@ def _cfg_text(value) -> str | None:
         return str.encode(text, "utf-8").decode("utf-8")
     except UnicodeEncodeError:
         return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -494,7 +531,9 @@ def _exact_str(value) -> str | None:
         return str.encode(value, "utf-8", "surrogatepass").decode(
             "utf-8", "surrogatepass"
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -515,7 +554,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -529,7 +570,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -548,10 +591,14 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -575,7 +622,9 @@ def _iter_list(value):
     """
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -598,7 +647,9 @@ def _cfg_map() -> dict:
     """
     try:
         raw = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     return raw if _isa(raw, dict) else {}
 
@@ -620,14 +671,18 @@ def _user_home() -> Path | None:
     """
     try:
         home = user_home()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if home is None:
         return None
     if _isa(home, (bytes, bytearray)):
         try:
             text = _decode_bytes(home)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     elif _isa(home, str):
         text = _exact_str(home)
@@ -637,7 +692,9 @@ def _user_home() -> Path | None:
         # round-trip also flattens a Path subclass carrying bound bombs.
         try:
             text = os.fspath(home)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if not _isa(text, str):
             return None
@@ -646,7 +703,9 @@ def _user_home() -> Path | None:
         return None
     try:
         return Path(text)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -1021,21 +1080,38 @@ def _utf8_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
-    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
-    # bomb rode this line to a 500 — at value, nested and mapping-key rank.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -1076,7 +1152,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -1091,7 +1169,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -1103,7 +1183,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound decode TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
@@ -1113,18 +1195,24 @@ def _jsonable(value, depth: int = 0):
         # TypeErrors the unbound view itself.
         try:
             entries = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         for k, v in entries:
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -1137,12 +1225,16 @@ def _jsonable(value, depth: int = 0):
                 # TypeErrors the unbound iteration itself.
                 try:
                     items = list(base.__iter__(value))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -1151,11 +1243,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/backups.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
