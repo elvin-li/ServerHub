@@ -1784,6 +1784,10 @@ def _launchd_apps() -> list[dict]:
         # exit reads as "no exit status" instead of running its dunders.
         last_text = _field_text(last, "")
         keep = bool(data.get("KeepAlive")) if data else False
+        interval = bool(
+            data
+            and (data.get("StartInterval") or data.get("StartCalendarInterval"))
+        )
         try:
             ov = config.override(label)
         except _CONTROL_FLOW:
@@ -1801,20 +1805,36 @@ def _launchd_apps() -> list[dict]:
         # and a silently emptied launchd section via _collect's fallback.
         if not _isa(ov, dict):
             ov = {}
+        # Same hide as Services discovery: a Disabled/hidden agent (zaoxue
+        # tunnel, dummy brew pins) must not sit in Apps as a permanent red row.
+        if _truthy(_mapping_get(ov, "hide")):
+            continue
         # _mapping_get: an override payload that is a dict subclass whose
         # ``.get`` bombs (the ups_svc convention) costs its fields only.
         name = _field_text(_mapping_get(ov, "name"), label) or label
-        acts = (
-            ["stop", "restart", "detail", "logs", "uninstall"]
-            if running
-            else ["start", "detail", "logs", "uninstall"]
-        )
-        if running:
-            status_text = f"Running · pid {pid_text}"
+        # Interval jobs hold no PID between ticks.  Treating that as down is
+        # what painted Immich keepalive / Cloudflare DDNS red on Apps while
+        # the Services page correctly said "Loaded · scheduled task".
+        if interval:
+            if not loaded:
+                state, status_text = "down", "Not loaded"
+                acts = ["start", "detail", "logs", "uninstall"]
+            else:
+                state = "ok"
+                if last_text not in ("", "-", "0"):
+                    status_text = f"Loaded · scheduled task · last exit code {last_text}"
+                else:
+                    status_text = "Loaded · scheduled task"
+                acts = ["run", "detail", "logs", "uninstall", "stop"]
+        elif running:
+            state, status_text = "ok", f"Running · pid {pid_text}"
+            acts = ["stop", "restart", "detail", "logs", "uninstall"]
         elif loaded and last_text not in ("", "-", "0") and keep:
-            status_text = f"Crash-looping · last exit {last_text}"
+            state, status_text = "down", f"Crash-looping · last exit {last_text}"
+            acts = ["start", "detail", "logs", "uninstall"]
         elif loaded and last_text not in ("", "-", "0"):
-            status_text = f"Exited · last exit {last_text}"
+            state, status_text = "down", f"Exited · last exit {last_text}"
+            acts = ["start", "detail", "logs", "uninstall"]
         elif loaded:
             state, status_text = "down", "Loaded but not running"
             acts = ["start", "detail", "logs", "uninstall"]

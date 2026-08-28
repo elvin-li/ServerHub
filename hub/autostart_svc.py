@@ -397,14 +397,14 @@ def _brew_service_items() -> list[dict]:
         raise
     except BaseException:
         rows = []
+    from hub.brew_svc import _HIDE_BREW
     for s in rows:
         # _as_text yields an exact, surrogate-scrubbed str: a str-subclass
         # name/status whose ``__format__``/``.lower()`` raises used to bomb
         # the f-string / bound-lower below the same way.
         name = _as_text(dict.get(s, "name"))
-        if not name or name == "nginx":  # managed separately via custom conf often
-            # still show nginx but mark custom
-            pass
+        if not name or name in _HIDE_BREW:
+            continue
         status = _as_text(dict.get(s, "status")).lower()
         raw_file = dict.get(s, "file")
         if _isinstance(raw_file, (str, bytes, bytearray)):
