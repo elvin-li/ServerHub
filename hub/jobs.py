@@ -30,13 +30,14 @@ LOG_TOTAL_CAP = 512 * 1024
 JOB_TIMEOUT_DEFAULT = 600
 JOB_TIMEOUT_MAX = 24 * 3600
 
-# Real control flow must keep propagating even through the bomb guards:
-# swallowing a Ctrl-C or an interpreter shutdown to save one JSON field would
-# turn the sanitizer into a hang.  Everything else BaseException-shaped that a
-# leftover raises out of its own hooks is a bomb like any other — every guard
-# below used to stop at ``except Exception``, so a leftover whose hooks raise
-# a *BaseException* subclass (the modules12/logs12/nas13 watchdog/timeout
-# shape) sailed past all three Maintenance routes' nets at once.
+# Real control flow must keep propagating even through the bomb guards
+# (the nas13/modules12/logs12/json13 convention): swallowing a Ctrl-C or
+# an interpreter shutdown to save one JSON field would turn the sanitizer
+# into a hang.  Everything else BaseException-shaped that a leftover raises
+# out of its own hooks is a bomb like any other — every guard below used to
+# stop at ``except Exception``, so a leftover whose hooks raise a
+# *BaseException* subclass sailed past all three Maintenance routes' nets
+# at once.
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 
@@ -240,6 +241,10 @@ def _plain_dict(value) -> dict | None:
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            # A liar whose ``__class__`` merely answers dict has no C-level
+            # storage, so ``dict()`` falls back to its keys()/__iter__ hooks
+            # — and a hook raising a BaseException subclass used to sail
+            # past the old ``except Exception`` and 500 the listing.
             return None
     return None
 
@@ -269,8 +274,9 @@ def _mapping_get(mapping, key, default=None):
         # A raise can only come from a poisoned stored key (or a liar whose
         # ``__class__`` merely answers dict, which the unbound descriptor
         # refuses): the field is junk-shadowed either way.  BaseException
-        # too — a shadow key whose ``__eq__`` raises one used to sail past
-        # the old ``except Exception`` and 500 all three routes.
+        # too — a shadow key whose ``__eq__`` raises a BaseException subclass
+        # used to sail past the old ``except Exception`` and 500 all three
+        # routes.
         return default
 
 
@@ -278,7 +284,10 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
     Fails closed to False: a bomb row is junk, not a live job, so treating
-    it as "running" would wedge the single-runner mutex forever.
+    it as "running" would wedge the single-runner mutex forever.  A
+    ``__bool__`` bomb raising a BaseException subclass (a leftover ``running``
+    value in a ``_jobs`` row) used to escape the old ``except Exception``
+    and 500 GET /api/maintenance through job_state.
     """
     try:
         return bool(value)
@@ -437,7 +446,8 @@ def _jsonable(value, depth: int = 0):
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            # Leftover sequence subclass whose __iter__ raises.
+            # Leftover sequence subclass whose __iter__ raises — a
+            # BaseException-subclass raise used to escape the old net.
             return None
         return [_jsonable(v, depth + 1) for v in items]
     try:
@@ -529,6 +539,9 @@ def maintenance_tasks():
     except _CONTROL_FLOW:
         raise
     except BaseException:
+        # A snapshot provider raising a BaseException subclass (the nas13
+        # watchdog shape) used to sail past the old ``except Exception``
+        # and 500 GET /api/maintenance and the run route's task walk.
         data = None
     if _isinst(data, dict):
         try:
@@ -549,7 +562,9 @@ def maintenance_tasks():
     if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
-            # __iter__ raises used to 500 GET /api/maintenance.
+            # __iter__ raises used to 500 GET /api/maintenance — and one
+            # raising a BaseException subclass kept doing so past the old
+            # ``except Exception``.
             rows = list(raw)
         except _CONTROL_FLOW:
             raise
@@ -609,6 +624,9 @@ def _jobs_row(tid: str):
     except _CONTROL_FLOW:
         raise
     except BaseException:
+        # A stored bomb key whose ``__eq__`` raises a BaseException subclass
+        # used to escape the old ``except Exception`` and 500 the listing
+        # before the rescue scan below ever ran.
         pass
     try:
         items = list(dict.items(_jobs))
@@ -750,6 +768,18 @@ def maintenance_view() -> list:
     default, ``_truthy`` fails a ``__bool__``-bomb closed, and ``_jsonable``
     launders the whole entry before it reaches Starlette's encoder.  A row
     that cannot answer anything but its id still lists under that id.
+
+    maint13: every guard along this pipe stopped at ``except Exception``, so
+    a leftover whose hook raises a *BaseException* subclass (the
+    nas13/modules12 watchdog shape) sailed past all of them at once — a
+    ``__class__`` bomb blew ``_isinst`` (the gate every arm stands on), an
+    ``__eq__`` bomb blew ``_mapping_get`` / ``_jobs_row``, ``__bool__`` blew
+    ``_truthy`` under job_state's merge, ``__str__`` / ``__iter__`` blew
+    ``_utf8_text`` / ``_jsonable`` / the row materialisers, and a raising
+    cfg() blew ``maintenance_tasks`` — each a raw 500 on GET /api/maintenance.
+    Every guard now re-raises genuine control flow (KeyboardInterrupt,
+    SystemExit) and launders everything else BaseException-shaped exactly
+    like its Exception twin.
     """
     out: list = []
     try:
