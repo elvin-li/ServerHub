@@ -23,6 +23,18 @@ from hub.host_address import host_ip
 from hub.paths import DOCKER, user_home
 from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, tail_file_lines
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/jobs13 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one JSON field would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other — the apps12 sweep sealed the rc/shape
+#: family, but every guard in this module stopped at ``except Exception``,
+#: so a leftover whose hooks raise a *BaseException* subclass (the
+#: watchdog/timeout shape the modules12/logs12/jobs13 sweeps sealed on
+#: their own surfaces) sailed past every catch at once and 500'd the four
+#: Apps managed routes raw.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that survives a leftover ``__class__``-property bomb.
@@ -40,17 +52,64 @@ def _isa(value, kinds) -> bool:
     still matches through the C-level type check; only a value that cannot
     answer what it is takes the non-matching branch (the docker_cli /
     storage_svc rule).
+
+    ``except BaseException``: the apps8 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    sailed past this catch — the gate every sanitizer arm in this module
+    stands on — and past every sibling ``except Exception`` up the stack
+    (``_collect`` included), a raw 500 on all four Apps managed routes.
+    Only genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
-def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if _isa(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+def _decode_bytes(value):
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Both bases are tried, real layout first-come (the jobs13/modules12
+    decode rule): the old arm picked the base off the *claimed*
+    ``__class__`` (``bytes if _isa(value, bytes)``), so a genuine
+    ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
+    ``bytes.decode``, rejected by the descriptor, and its perfectly
+    decodable content fell through to the ``str()`` scrub — a
+    ``bytearray(b'…')`` repr in a ports/name field instead of the honest
+    text.  Returns ``None`` for a total impostor (real type is neither
+    base); the caller degrades it like any other junk leftover.
+    """
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
+def _jsonable_safe(value):
+    """``docker_cli._jsonable``, fenced: its own guards stop at ``Exception``.
+
+    The launder is another module's funnel and every net inside it is
+    Exception-shaped, so one nested leftover whose hooks raise a
+    *BaseException* subclass detonated the launder itself — out of
+    ``_clean_rows`` (wiping a whole inventory section via _collect's
+    fallback) and out of ``_safe_payload`` (a raw 500 on the detail, logs
+    and action routes *after* the work had already run).  A bombed value
+    reads as unlaunderable (``None``); the caller degrades it at its own
+    rank — a listing row costs itself, a payload falls to the per-field
+    salvage in ``_safe_payload``.
+    """
+    try:
+        return _jsonable(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 def _rc_int(rc) -> int:
@@ -61,6 +120,12 @@ def _rc_int(rc) -> int:
     the apps8 seam absorbed it into a bare ``ok: false``, but the action's
     own output text was lost with it.  ``-255`` is no honest exit status,
     so a bomb keeps the failure branch (the storage_svc/ups_svc rule).
+
+    ``except BaseException``: the bare ``isinstance`` gates inside the try
+    read a raising ``__class__`` property, and an rc whose property raises
+    a *BaseException* subclass sailed past the apps11/apps12 catch — out
+    of ``_run_capped_pair`` (no outer net) and past ``_compose_cmd``'s
+    Exception-only seam, a raw 500 on the compose logs and action routes.
     """
     try:
         if isinstance(rc, bool):
@@ -68,7 +133,9 @@ def _rc_int(rc) -> int:
         if isinstance(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -96,7 +163,9 @@ def _plist_dict(path: Path) -> dict | None:
         return None
     try:
         data = plistlib.loads(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return data if isinstance(data, dict) else None
 
@@ -107,29 +176,37 @@ def _utf8_text(value) -> str:
     # the bytes gate itself, and a bytes-subclass ``.decode`` bomb rode the
     # old bound call (planted as an override value it raised out of
     # ``_launchd_apps`` — a 500 on the launchd detail route and a wiped
-    # launchd section).  The try is for a *lying* ``__class__`` (claims
-    # bytes, is not): the unbound decode TypeErrors and the value falls to
-    # the str() scrub below like any other junk leftover (docker_cli twin).
+    # launchd section).  ``_decode_bytes`` answers ``None`` for a *lying*
+    # ``__class__`` (claims bytes, is not): the value falls to the str()
+    # scrub below like any other junk leftover (docker_cli twin).
     if _isa(value, (bytes, bytearray)):
-        try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 the Apps routes
+        # at value, field and status-text rank.
         return ""
     # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
     # returns self keeps the subclass, so a bound ``.encode`` bomb could
     # still fire here (the modules5 unbound convention, like docker_cli).
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A lying-``__class__`` str impostor reaches here as a non-str; junk.
         return ""
 
@@ -152,20 +229,35 @@ def _mapping_get(mapping, key, default=None):
     override) used to raise out of ``_launchd_apps`` — a 500 on the
     launchd detail route and a wiped launchd section.  Only the shadowed
     field degrades to its default (the storage_svc rule).
+
+    ``except BaseException``: a shadow key whose ``__eq__`` raises a
+    *BaseException* subclass sailed past the apps9 catch and up through
+    every Exception-only seam above it — the same hash-probe detonation,
+    one exception rank over.
     """
     if not _isa(mapping, dict):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
 def _truthy(value) -> bool:
-    """``bool(value)`` that survives a leftover ``__bool__`` bomb (jobs)."""
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (jobs).
+
+    ``except BaseException``: a ``__bool__`` bomb raising a *BaseException*
+    subclass (an engine-probe leftover riding into ``inventory``'s
+    ``engine_up`` flag, a toggle result's ``ok``) sailed past the old
+    catch — a raw 500 on GET /api/apps/managed itself.
+    """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -184,9 +276,14 @@ def _run_capped_pair(argv, *, cwd, timeout, env, cap):
     ``_sh_triple`` convention).
     """
     ret = run_capped(argv, cwd=cwd, timeout=timeout, env=env, cap=cap)
+    # ``except BaseException``: a sequence subclass whose ``__iter__``
+    # raises a *BaseException* subclass blew the unpack past the apps12
+    # catch — and past ``_compose_cmd``'s Exception-only seam behind it.
     try:
         rc, msg = ret
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, ""
     return _rc_int(rc), msg
 
@@ -200,11 +297,17 @@ def _sh_triple(argv, timeout):
     both raw 500s on GET /api/apps/managed/logs?id=native:* where a
     *raising* spawn already degrades to "no logs".  ``-255`` is no honest
     exit status (the _rc_int convention), so junk reads as failure.
+
+    ``except BaseException``: a sequence subclass whose ``__iter__`` raises
+    a *BaseException* subclass blew the unpack past the apps11 catch — a
+    raw 500 on GET /api/apps/managed/logs?id=native:* with no seam behind.
     """
     try:
         rc, out, err = sh(argv, timeout=timeout)
         return rc, out, err
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
 
 
@@ -224,12 +327,17 @@ def _clean_rows(raw) -> list[dict]:
     isinstance itself — one poisoned row raised out of this loop and wiped
     its whole section (docker / native / vm) from GET /api/apps/managed via
     _collect's fallback, exactly the row-wipe this launderer exists to stop.
+
+    ``_jsonable_safe``, not a bare ``_jsonable``: the launder's own nets
+    stop at ``Exception``, so one nested value whose hooks raise a
+    *BaseException* subclass detonated the launder itself and wiped the
+    row's whole section the same way.  The bombed row costs itself only.
     """
     if not _isa(raw, list):
         return []
     out: list[dict] = []
     for row in list.__iter__(raw):
-        cleaned = _jsonable(row) if _isa(row, dict) else None
+        cleaned = _jsonable_safe(row) if _isa(row, dict) else None
         if isinstance(cleaned, dict):
             out.append(cleaned)
     return out
@@ -239,12 +347,12 @@ def _as_text(value) -> str:
     # _isa on every gate: a ``__class__``-property bomb used to detonate the
     # first isinstance below.  Unbound decode: a bytes-subclass ``.decode``
     # bomb rode the old bound call; a lying ``__class__`` (claims bytes, is
-    # not) TypeErrors the unbound read and falls to the str() scrub.
+    # not) reads as ``None`` from the both-bases decode and falls to the
+    # str() scrub.
     if _isa(value, (bytes, bytearray)):
-        try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
     if _isa(value, str):
         return _utf8_text(value)
     if _isa(value, float):
@@ -252,7 +360,9 @@ def _as_text(value) -> str:
         # bomb used to detonate the bare ``value != value`` NaN probe.
         try:
             probe = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if probe != probe or probe in (float("inf"), float("-inf")):
             return ""
@@ -262,7 +372,9 @@ def _as_text(value) -> str:
         # RecursionError on leftover ``str(e)`` is handled inside ``_utf8_text``.
         # Calling ``str(value)`` here used to skip that and return "".
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -283,7 +395,9 @@ def _field_text(value, fallback: str = "") -> str:
         # the bare NaN/inf probes below (the docker_cli._jsonable rule).
         try:
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
@@ -297,23 +411,25 @@ def _field_text(value, fallback: str = "") -> str:
         # raise past the ValueError catch the digit cap already has.
         try:
             return str(int.__index__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
     if _isa(value, str):
         return _utf8_text(value)
     if _isa(value, (bytes, bytearray)):
-        try:
-            # Unbound base decode: a bytes-subclass ``.decode`` bomb in an
-            # override field used to fire the old bound call; a lying
-            # ``__class__`` TypeErrors the unbound read and reads as junk.
-            return _decode_bytes(value)
-        except Exception:
-            return fallback
+        # Unbound both-bases decode: a bytes-subclass ``.decode`` bomb in an
+        # override field used to fire the old bound call; a lying
+        # ``__class__`` reads as ``None`` and degrades to the fallback.
+        decoded = _decode_bytes(value)
+        return decoded if decoded is not None else fallback
     if _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A ``__getattr__`` bomb raising something besides AttributeError
         # escapes getattr's default (the docker_cli._jsonable rule).
         iso = None
@@ -321,11 +437,15 @@ def _field_text(value, fallback: str = "") -> str:
         try:
             text = iso()
             return _utf8_text(text) if isinstance(text, str) and text else fallback
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
     return _utf8_text(text) if text else fallback
 
@@ -367,13 +487,49 @@ def _scrub_utf8(value, depth: int = 0):
             try:
                 key = k if isinstance(k, str) else str(k)
                 key = _utf8_text(key)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[key] = _scrub_utf8(v, depth + 1)
         return out
     if isinstance(value, list):
         return [_scrub_utf8(v, depth + 1) for v in value]
     return value
+
+
+def _salvage_dict(payload) -> dict | None:
+    """Per-field salvage when one BaseException-shaped bomb blows the launder.
+
+    ``_jsonable`` walks the whole payload eagerly and its own nets stop at
+    ``Exception``, so one nested leftover whose hooks raise a
+    *BaseException* subclass used to cost the entire response — a raw 500
+    on the detail, logs and action routes after the work had already run,
+    even though every sibling field was sane.  Read each top-level entry
+    off the real dict storage and launder it alone: the bombed field
+    degrades to ``null``, its siblings keep answering.  ``dict.items``
+    itself rejects a lying-``__class__`` impostor (real type is not a
+    dict) with a TypeError — ``None`` keeps the old unlaunderable-shape
+    contract for the caller.
+    """
+    try:
+        items = list(dict.items(payload))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    out = {}
+    for entry in items:
+        try:
+            k, v = entry
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        # _utf8_text never raises (post-widening) and answers an exact str,
+        # so inserting the key cannot dispatch into a leftover __hash__/__eq__.
+        out[_utf8_text(k)] = _jsonable_safe(v)
+    return out
 
 
 def _safe_payload(payload):
@@ -386,10 +542,18 @@ def _safe_payload(payload):
     laundered into a dict (a lying-``__class__`` dict impostor drops out of
     ``_jsonable``'s ``dict()`` copy) is handed back as-is: ``action()`` /
     ``_native_logs`` own the answer for an unusable shape.
+
+    ``_jsonable_safe`` + ``_salvage_dict``: a genuine dict whose one nested
+    value raises a *BaseException* subclass out of the Exception-guarded
+    launder used to 500 the route raw; now the bombed field costs itself
+    (``null``) and the siblings render.  Only a real impostor still takes
+    the hand-back-as-is branch.
     """
     if not _isa(payload, dict):
         return payload
-    cleaned = _jsonable(payload)
+    cleaned = _jsonable_safe(payload)
+    if not isinstance(cleaned, dict):
+        cleaned = _salvage_dict(payload)
     if not isinstance(cleaned, dict):
         return payload
     return _scrub_utf8(cleaned)
@@ -427,7 +591,9 @@ def _docker_stacks() -> list[dict]:
         # huge int, surrogate) used to raise out of this loop and cost the
         # whole docker section of the Apps page via _collect's fallback.
         stacks = _clean_rows(containers_svc.list_stacks())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stacks = []
     # map stack path → containers via compose project label or cwd
     containers = []
@@ -436,7 +602,9 @@ def _docker_stacks() -> list[dict]:
         containers = _container_rows(
             containers_svc.list_containers(with_stats=False)
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
     for s in stacks:
@@ -549,7 +717,9 @@ def _docker_stacks() -> list[dict]:
                         "category": "docker",
                         "url": None,
                     })
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return items
 
@@ -668,7 +838,12 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
             # really is up keeps the daemon's message -- it is then the truth.
             return soft_fail("container.engine_down")
         return {"ok": rc == 0, "message": text}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # A runner raising a *BaseException* subclass used to sail past the
+        # apps8 Exception-only seam — a raw 500 on the compose logs and
+        # action routes.  Same contract: the honest failure text answers.
         return {"ok": False, "message": _as_text(e)}
 
 
@@ -684,7 +859,9 @@ def _container_log(lines: int):
             return ""
         try:
             _, out, err = docker("logs", "--tail", str(lines), name, timeout=30)
-        except Exception as exc:  # noqa: BLE001 - one container must not lose the rest
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - one container must not lose the rest
             # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 GET /api/apps.
             return _as_text(exc)[-4000:]
         return _as_text(out or err)[-4000:]
@@ -704,7 +881,9 @@ def _inspect(name: str) -> tuple[int, str]:
     try:
         rc, out, _ = docker("inspect", name, timeout=15)
         return rc, out
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 1, ""
 
 
@@ -730,7 +909,9 @@ def _docker_detail(source_id: str) -> dict:
         compose = Path(path) / "compose.yml"
     try:
         containers = _container_rows(containers_svc.list_containers(with_stats=False))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # list_containers itself can raise (a hostile cached row KeyErrors
         # its own aggregation, or the engine backend is unreachable); that
         # must cost the containers section of the detail page, never the
@@ -776,7 +957,18 @@ def _docker_detail(source_id: str) -> dict:
             if c.get("ports"):
                 ports.append({"container": name, "published": c.get("ports"), "target": ""})
             continue
-        data = inspect_object(out)
+        # Guarded parse: ``_inspect`` hands the out slot back verbatim, and
+        # ``inspect_object`` names only the parse errors — a str-subclass
+        # out whose hooks raise (a BaseException subclass included) used to
+        # detonate the parse itself and 500 the detail route after every
+        # inspect had already run.  Junk output reads as "no inspect data",
+        # the same degrade a torn payload already takes.
+        try:
+            data = inspect_object(out)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            data = None
         if data is None:
             continue
         net_settings = data.get("NetworkSettings") if isinstance(data.get("NetworkSettings"), dict) else {}
@@ -848,7 +1040,9 @@ def _docker_detail(source_id: str) -> dict:
             if s.get("id") == source_id:
                 display_name = s.get("name") or source_id
                 break
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
     return {
@@ -904,7 +1098,9 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
     from hub import containers_svc
     try:
         containers = _container_rows(containers_svc.list_containers(with_stats=False))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Same guard as _docker_detail: a raising list_containers used to
         # 500 GET /api/apps/managed/logs instead of answering "no logs".
         containers = []
@@ -968,7 +1164,9 @@ def _native_apps(force: bool = False) -> list[dict]:
             bi.get("label"): bi.get("autostart")
             for bi in autostart_svc._launchd_items()
         }
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
     items = []
@@ -1070,7 +1268,11 @@ def _native_apps(force: bool = False) -> list[dict]:
                     if running
                     else ["start", "detail", "logs", "uninstall", "autostart"]
                 )
-                tunnels = _jsonable(_mapping_get(cf, "tunnels"))
+                # _jsonable_safe: a tunnels list whose one nested value
+                # raises a BaseException subclass detonated the launder
+                # itself past this branch's old Exception-only net — and
+                # silently flipped a *running* tunnel row to "down".
+                tunnels = _jsonable_safe(_mapping_get(cf, "tunnels"))
                 cf_extra = {
                     "logged_in": _truthy(_mapping_get(cf, "logged_in")),
                     "active_tunnel": _field_text(_mapping_get(cf, "active_tunnel"), ""),
@@ -1082,7 +1284,9 @@ def _native_apps(force: bool = False) -> list[dict]:
                     a = {**a, "notes": base_notes + " · " + notes_extra}
                 else:
                     a = {**a, "notes": notes_extra}
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 state = "down"
                 acts = ["start", "detail", "logs", "uninstall"]
 
@@ -1140,7 +1344,9 @@ def _native_detail(source_id: str) -> dict:
     # _collect's fallback.
     try:
         listed_rows = _clean_rows(native_catalog.list_native_apps(force=True))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         listed_rows = []
     listed = next(
         (a for a in listed_rows if a.get("id") == source_id),
@@ -1187,7 +1393,9 @@ def _native_detail(source_id: str) -> dict:
             for p in port_nums:
                 if f":{p}" in name or name.endswith(str(p)):
                     listen.append(row)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
     db_hints = []
@@ -1236,7 +1444,13 @@ def _native_detail(source_id: str) -> dict:
                     if cf.get("running")
                     else f"stopped · {cf['active_tunnel']}"
                 )
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
+            # The bare ``.get`` / f-string reads above run the status
+            # payload's own hooks, and one raising a *BaseException*
+            # subclass sailed past the old Exception-only net — a raw 500
+            # on GET /api/apps/managed/detail?id=native:native-cloudflared.
             out["cloudflared"] = {"ok": False, "message": _as_text(e)}
     return out
 
@@ -1250,7 +1464,9 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         from hub import cloudflared_svc
         try:
             cf_logs = cloudflared_svc.logs(lines=lines)
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             # A raising backend used to 500 the logs modal; exc_detail, not
             # bare str(e): a leftover ``\ud800`` / RecursionError in the
             # message must cost the message, never the modal (the _vm_logs
@@ -1261,7 +1477,7 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         # lying dict impostor) used to ride into logs()'s _safe_payload and
         # 500 GET /api/apps/managed/logs where a *raising* backend already
         # answered ok:false.  Same contract: junk shapes cost the log body.
-        cleaned = _jsonable(cf_logs) if _isa(cf_logs, dict) else None
+        cleaned = _jsonable_safe(cf_logs) if _isa(cf_logs, dict) else None
         if isinstance(cleaned, dict):
             return cleaned
         return {"ok": False, "log": f"unusable log payload ({type(cf_logs).__name__})"}
@@ -1279,7 +1495,9 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
                 chunks.append(
                     f"===== {logp} =====\n" + "\n".join(tail_file_lines(logp, lines))
                 )
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 chunks.append(f"{logp}: {_as_text(e)}")
     # launchctl print for brew services
     if pkg:
@@ -1341,7 +1559,9 @@ def _launchd_apps() -> list[dict]:
         return []
     try:
         listing = launchd_listing()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         listing = _EMPTY_LISTING
     catalog = _catalog_launchd_labels()
     items = []
@@ -1392,23 +1612,31 @@ def _launchd_apps() -> list[dict]:
         # tuple ``in`` probe below.
         try:
             pid = listing.pid_for(label)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pid = None
         pid_text = _field_text(pid, "") if pid is not None else ""
         running = pid is not None and bool(pid_text)
         try:
             loaded = bool(label in listing.loaded)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             loaded = False
         try:
             entry = listing.jobs.get(label)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             entry = None
         last = None
         if _truthy(entry):
             try:
                 last = entry[1]
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 last = None
         # The membership probe compares as sanitized text, so a junk last
         # exit reads as "no exit status" instead of running its dunders.
@@ -1416,7 +1644,9 @@ def _launchd_apps() -> list[dict]:
         keep = bool(data.get("KeepAlive")) if data else False
         try:
             ov = config.override(label)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A torn services.yaml read used to raise out of this loop:
             # GET /api/apps/managed/detail?id=launchd:* was a raw 500, and
             # the whole launchd section of the inventory vanished via
@@ -1484,7 +1714,9 @@ def _launchd_detail(label: str) -> dict:
         preview = _jsonable(services_uninstall_svc.preview(label))
     except HTTPException:
         raise
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         preview = None
     if not isinstance(preview, dict):
         preview = {}
@@ -1608,7 +1840,9 @@ def _vm_detail(source_id: str) -> dict:
     from hub import vms_svc
     try:
         vm_rows = _vm_rows(vms_svc.list_all_vms())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raising list_all_vms (utmctl torn mid-listing) used to 500 the
         # detail route; with no rows the lookup below answers the same
         # coded 404 an unusable payload already does.
@@ -1667,7 +1901,9 @@ def _vm_logs(source_id: str, lines: int = 80) -> dict:
         # coded 404 is what the SPA translates, exactly as the launchd
         # branch already answers for a vanished agent.
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # exc_detail, not bare str(e): a leftover ``\ud800`` / RecursionError
         # in a backend message must cost the message, never the modal.
         return {"ok": False, "log": exc_detail(e)}
@@ -1702,7 +1938,13 @@ def _collect(entry):
         if which == "engine":
             return engine_up()
         return _host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # ``except BaseException``: fan_out re-raises on iteration, so a
+        # collector detonated by a BaseException-shaped leftover used to
+        # 500 GET /api/apps/managed outright instead of costing its own
+        # section — the very wipe this dispatcher exists to stop.
         return _COLLECTOR_FALLBACK[which]
 
 
@@ -1842,7 +2084,14 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
         result = _action(app_id, action_name, **kwargs)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # A collaborator raising a *BaseException* subclass (a torn toggle,
+        # ``vm_action``, an uninstall backend) sailed past the apps8
+        # Exception-only seam — a raw 500 on POST /api/apps/managed/action
+        # after the work had already run.  Same contract as its Exception
+        # twin: the action answers ``ok: false`` with the failure text.
         result = {"ok": False, "message": exc_detail(e)}
     safe = _safe_payload(result)
     if type(safe) is dict:
@@ -1888,7 +2137,9 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                 containers = _container_rows(
                     containers_svc.list_containers(with_stats=False)
                 )
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 containers = []
             related = []
             for c in containers:
@@ -1910,7 +2161,9 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                     continue
                 try:
                     r = autostart_svc.set_docker_autostart(ident, enabled)
-                except Exception as e:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException as e:
                     # One container's raising toggle must cost its own line,
                     # not the containers already toggled: the blanket seam in
                     # action() would fold their results into one bare
@@ -1998,7 +2251,9 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                 # actions.unknown_target and friends: the coded answer the
                 # SPA translates.
                 raise
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 # A torn registry row / raising backend used to 500 the
                 # action instead of reporting the failure.
                 return {"ok": False, "message": _as_text(e)}
