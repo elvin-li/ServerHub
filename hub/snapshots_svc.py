@@ -76,6 +76,51 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is one of *types*.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs (the maint14/nas14 rule): ``isinstance`` consults
+    ``value.__class__`` only after the real-MRO check misses, so a lying
+    claim steered a leftover into the arm of its *claim*, the unbound
+    descriptor there refused the real layout, and the old early return
+    threw honest renderable storage away at the wrong rank.  Fail-closed
+    like ``_isa``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor.
+
+    ``str.__str__`` is a descriptor bound to the real str layout: any real
+    str (or subclass) answers its character data without dispatching an
+    override, while a *lying* ``__class__`` that only claims str rejects
+    the operand — ``None`` lets the caller fall through to the arm the
+    real storage matches instead of wiping honest non-str storage at the
+    wrong rank (the maint14/nas14 rule).
+    """
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>``) — a raw heap
+#: address, never snapshot or Time Machine data.  Applied to the *coercion*
+#: arms only: real str storage is data (a tmutil stderr tail quoting a repr
+#: serves verbatim).
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/snapshots."""
     if _isa(value, (bytes, bytearray)):
@@ -105,7 +150,25 @@ def _as_text(value) -> str:
                 continue
     if value is None:
         return ""
+    coerced = False
     if type(value) is not str:
+        if not _real(value, str):
+            # Slot probe (the maint14/nas14 rule): for a type that never
+            # overrode ``__str__``/``__repr__`` the str() below answers the
+            # default ``object.__repr__`` — ``<X object at 0x7f...>``, a
+            # raw heap address — which a junk plist Name / MountPoint /
+            # message cell used to carry verbatim onto GET /api/snapshots
+            # and the mutation bodies.  ``type(value)`` reads the C-level
+            # slot a flickering ``__class__`` property cannot swap.
+            try:
+                cls = type(value)
+                if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                    return ""
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+            coerced = True
         try:
             value = str(value)
         except RecursionError:
@@ -127,7 +190,11 @@ def _as_text(value) -> str:
     # message join and 500'd POST /api/snapshots/create, and out of
     # _jsonable's nested key/value coercion and 500'd
     # POST /api/timemachine/action.  The base pair answers an exact str.
-    return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    text = bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    # The address belt, on the coercion arm only (real str storage is
+    # data): a custom ``__repr__`` embedding a heap address the slot probe
+    # cannot see must not render either (the maint14/nas14 rule).
+    return "" if coerced and _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
@@ -209,71 +276,150 @@ def _opt_text(value) -> str:
     return _as_text(value) if _truthy(value) else ""
 
 
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry.
+
+    The old key path ran bare ``str(k)`` on any non-str/bytes key, and for
+    a type that never overrode ``__str__``/``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+    address — which a junk key nested in a run_admin payload carried
+    verbatim as a JSON *key* on POST /api/snapshots/* and
+    /api/timemachine/action (the maint14/nas14 ``_key_text`` rule).  Real
+    str/bytes key storage — behind a lying ``__class__`` too — keeps its
+    scrubbed text.
+    """
+    if _isa(k, (bytes, bytearray)):
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(k, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        # A lying-bytes claim: real str storage recovers just below.
+    if _isa(k, str) or _real(k, str):
+        text = _str_text(k)
+        if text is not None:
+            return text
+        # A lying-str claim: coerce off whatever the real storage renders.
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``__str__`` key keeps dropping its entry, like before.
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
 
     ``tmutil`` / ``run_admin`` leftover ``\\ud800`` / ``Infinity`` still 500'd
     POST /api/snapshots/delete after the plist walk already scrubbed SnapshotName.
+
+    nas14 (the maint14/jobs14 shape): a *lying* ``__class__`` steered a
+    leftover into the arm of its claim, the unbound descriptor there
+    rejected the real layout, and an early return threw honest renderable
+    storage away at the wrong rank — a genuine str message claiming int
+    wiped to None, a genuine tuple claiming list vanished whole.  The
+    rejected arms now fall through to the arm the *real* storage matches
+    (``_real``); a total impostor keeps its established None drop (the
+    nas9 pins).  The mapping walk reads the *unbound* ``dict.items`` view
+    (the nested-unbound rule this module's siblings already carry): the
+    old bound ``value.items()`` dispatched a subclass override, so an
+    items-bomb whose C-level storage was perfectly walkable vaporised the
+    whole mapping to None even though the raise was absorbed — same for
+    the sequence arm's bound comprehension and an ``__iter__`` bomb.  Keys
+    go through ``_key_text`` (a plain-object key used to serve its default
+    ``object.__repr__`` — a raw heap address — as a JSON key).
     """
     if depth > 16:
         return None
-    # _isa at every rank (the nas_common rule): a ``__class__``-property
-    # bomb nested in a run_admin payload used to detonate the first gate it
-    # failed and 500 the mutation routes; it now falls through to the final
-    # text probe like any other unrecognized leftover.
-    if value is None:
+    # ``type(value) is bool``, not the old _isa arm: bool is final, so the
+    # exact check is complete and never reads a bombing ``__class__``; a
+    # bool-liar impostor falls to the int arm's unbound coercion and from
+    # there to its real rank — or the established None drop.
+    if value is None or type(value) is bool:
         return value
-    if _isa(value, bool):
-        # ``bool`` is final, so a value that answers the bool gate while
-        # its real type is not bool is a *lying* ``__class__`` impostor
-        # (the modules9 rule).  The old arm returned it raw and Starlette's
-        # ``allow_nan=False`` encoder 500'd the mutation routes; only a
-        # real bool renders, the impostor drops like a lying int.
-        if type(value) is bool:
-            return value
-        return None
     if _isa(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
                 # Base coercion to an exact int (the modules5 / nas_common
                 # rule): an int-subclass ``__str__`` bomb in a run_admin
                 # result raised a non-ValueError past the digit-cap probe
                 # below and 500'd POST /api/snapshots/* and
                 # /api/timemachine/action.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
+                # Past CPython's int->str digit cap the encoder cannot
+                # render the number at all — same drop as its inf float
+                # sibling.
                 return None
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the old None drop.
             return None
-        return value
+        # A lying-int claim over honest storage falls through to its rank.
     if _isa(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
                 # Base coercion to an exact float: a float-subclass
                 # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf probes
                 # below and 500 the same mutation routes.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
+        # Genuine text / container behind a lying-float claim falls through.
     if _isa(value, str):
-        return _as_text(value)
+        # Real str storage (any subclass) keeps its scrubbed text; a
+        # lying-str claim over genuine bytes / container storage falls
+        # through instead of wiping at the wrong rank.
+        text = _str_text(value)
+        if text is not None:
+            return text
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming str: the coercion arm's slot probe
+            # + address belt answer (a legible ``__str__`` still renders,
+            # the default-repr heap address never does).
+            return _as_text(value)
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a bytes-subclass whose bound ``.decode``
         # raises used to 500 the mutation routes out of _admin_result.
-        # In a try (the modules9 rule): a *lying* ``__class__`` claiming
-        # bytes made the descriptor raise outside any try — the impostor
-        # drops like a lying int instead of 500ing the mutation.
         # Both bases, real layout first-come (the modules12/logs12 rule):
         # a genuine bytearray lying ``bytes`` used to fail the claimed
         # base's descriptor and drop its decodable message to null.
@@ -284,50 +430,59 @@ def _jsonable(value, depth: int = 0):
                 raise
             except BaseException:
                 continue
-        return None
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            # A total impostor claiming bytes keeps the old None drop.
+            return None
+        # Genuine container storage behind a lying-bytes claim falls
+        # through to the arm that reads its real layout.
     if _isa(value, dict):
+        # Unbound base view, materialized (the nas_common/raid rule):
+        # ``dict.items`` reads the real C-level storage, so a subclass
+        # ``items()`` bomb cannot vaporise perfectly walkable rows the way
+        # the old bound ``value.items()`` did — and the ``list(...)``
+        # snapshot keeps a mid-walk mutation from ever touching a live
+        # view.  Non-pair rows cannot happen off the real storage.
         try:
-            items = list(value.items())
+            items = list(dict.items(value))
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            # A mapping that refuses iteration (odd dict subclass in a
-            # run_admin result): nothing to salvage, but its *siblings* must
-            # survive — pre-fix this raised out of _admin_result and 500'd
-            # POST /api/snapshots/* (the ups_svc/nginx_svc._jsonable rule).
-            return None
-        out = {}
-        for pair in items:
-            try:
-                k, v = pair
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                # An items() that yields non-pairs: the two-target unpack
-                # used to happen outside the guard above and 500 the same
-                # routes — the torn row drops, its sibling pairs survive.
-                continue
-            try:
-                # Per-pair guard: a ``__class__``-bomb key used to detonate
-                # its own gate and cost the whole mapping — the torn pair
-                # drops alone, its sibling keys survive.
-                if not _isa(k, (str, bytes, bytearray)):
-                    k = str(k)
-                out[_as_text(k)] = _jsonable(v, depth + 1)
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-        return out
+            if not _real(value, (list, tuple, set, frozenset)):
+                # A total impostor claiming dict keeps the old None drop.
+                return None
+            items = None
+        if items is not None:
+            out = {}
+            for k, v in items:
+                try:
+                    # Per-pair guard: a bomb key/value drops alone; its
+                    # sibling keys survive.
+                    key = _key_text(k)
+                    if key is None:
+                        continue
+                    out[key] = _jsonable(v, depth + 1)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            return out
+        # Genuine sequence storage behind a lying-dict claim falls through.
     if _isa(value, (list, tuple, set, frozenset)):
-        try:
-            return [_jsonable(v, depth + 1) for v in value]
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # Same class as the mapping above, at sequence rank: only this
-            # field drops, never the payload or the route.
-            return None
+        # Unbound base iteration, real layout first-come (the nas13 decode
+        # rule at sequence rank): the old bound comprehension dispatched a
+        # real subclass's overridden ``__iter__``, so an iter-bomb whose
+        # C-level storage was perfectly walkable vaporised to None even
+        # though the raise was absorbed — and a total list-liar impostor
+        # keeps that None drop.
+        for base in (list, tuple, set, frozenset):
+            try:
+                rows = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable(v, depth + 1) for v in rows]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except _CONTROL_FLOW:

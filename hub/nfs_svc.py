@@ -103,6 +103,27 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is one of *types*.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap (the maint14/nas14 rule).  Fail-closed like
+    ``_isa``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>``) — a raw heap
+#: address, never NFS data.  Applied to the *coercion* arms only: real str
+#: storage is data (an /etc/exports line quoting a repr serves verbatim).
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/nfs."""
     if _isa(value, (bytes, bytearray)):
@@ -130,7 +151,25 @@ def _as_text(value) -> str:
                 continue
     if value is None:
         return ""
+    coerced = False
     if type(value) is not str:
+        if not _real(value, str):
+            # Slot probe (the maint14/nas14 rule): for a type that never
+            # overrode ``__str__``/``__repr__`` the str() below answers the
+            # default ``object.__repr__`` — ``<X object at 0x7f...>``, a
+            # raw heap address — which a junk sh detail / message cell used
+            # to carry verbatim onto GET /api/nfs and both POST bodies.
+            # ``type(value)`` reads the C-level slot a flickering
+            # ``__class__`` property cannot swap.
+            try:
+                cls = type(value)
+                if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                    return ""
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+            coerced = True
         try:
             value = str(value)
         except RecursionError:
@@ -149,11 +188,15 @@ def _as_text(value) -> str:
     # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
     # the subclass override — a leftover encode bomb 500'd the same routes.
     try:
-        return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+        text = bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return ""
+    # The address belt, on the coercion arm only (real str storage is
+    # data): a custom ``__repr__`` embedding a heap address the slot probe
+    # cannot see must not render either (the maint14/nas14 rule).
+    return "" if coerced and _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
@@ -527,7 +570,16 @@ def _validate_entry(entry: dict) -> dict:
             everyone = True
             continue
         if not _HOST_RE.match(value):
-            raise NfsConfigError("nfs.bad_client", client=value[:60])
+            # The refusal's own param must not leak a heap address: a
+            # plain-object client renders its default ``object.__repr__``
+            # (``<X object at 0x7f...>``) through the str() probe above,
+            # and the coded 4xx body used to echo it verbatim (the
+            # maint14/nas14 address-belt rule).  The refusal itself is
+            # unchanged — only the echo is scrubbed.
+            raise NfsConfigError(
+                "nfs.bad_client",
+                client="" if _ADDR_REPR_RE.search(value) else value[:60],
+            )
         clients.append(value)
     if not clients and not everyone:
         raise NfsConfigError("nfs.no_clients")
@@ -546,7 +598,14 @@ def _validate_entry(entry: dict) -> dict:
         raise NfsConfigError("nfs.bad_mapping", field="maproot", value="")
     for label, value in (("maproot", maproot), ("mapall", mapall)):
         if value and not _MAP_RE.match(value):
-            raise NfsConfigError("nfs.bad_mapping", field=label, value=value[:60])
+            # Same scrub as the client refusal: a plain-object mapping
+            # renders its default repr — a raw heap address — through the
+            # str() probe, and the coded refusal must not echo it.
+            raise NfsConfigError(
+                "nfs.bad_mapping",
+                field=label,
+                value="" if _ADDR_REPR_RE.search(value) else value[:60],
+            )
     if maproot and mapall:
         raise NfsConfigError("nfs.map_conflict")
 

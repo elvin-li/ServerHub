@@ -223,7 +223,11 @@ class ServiceJsonableIterationBombTests(unittest.TestCase):
         body = resp.json()
         _starlette(body)
         self.assertIs(body["ok"], True)
-        self.assertIsNone(body["detail"])
+        # nas14 upgraded snapshots_svc._jsonable to the unbound
+        # ``dict.items`` view (the rule raid_svc carried since nas8): the
+        # bomb's override no longer fires, so the field's real C-level
+        # storage is salvaged rather than dropped.
+        self.assertEqual(body["detail"], {"a": 1})
 
     def test_raid_delete_survives_an_items_bomb_run_admin_result(self):
         with ExitStack() as stack:
@@ -283,13 +287,16 @@ class ServiceJsonableIterationBombTests(unittest.TestCase):
                 })
                 _starlette(row)
                 self.assertEqual(row["id"], "tank")
-                if mod is raid_svc:
-                    # nas8: raid reads the unbound ``dict.items`` view, so
-                    # the bomb's own storage is salvaged, not dropped.
+                if mod in (raid_svc, snapshots_svc):
+                    # nas8 (raid) / nas14 (snapshots): the unbound
+                    # ``dict.items`` view and the unbound base ``__iter__``
+                    # walk read the real C-level storage, so the bombs'
+                    # own rows are salvaged, not dropped.
                     self.assertEqual(row["extras"], {"x": 1})
+                    self.assertEqual(row["members"], ["a"])
                 else:
                     self.assertIsNone(row["extras"])
-                self.assertIsNone(row["members"])
+                    self.assertIsNone(row["members"])
                 self.assertEqual(row["count"], 2)
 
 
