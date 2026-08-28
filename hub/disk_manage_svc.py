@@ -194,7 +194,9 @@ def _plist(cmd: list[str], timeout: int = 30) -> dict | list | None:
         if _rc_int(rc) != 0 or not stdout:
             return None
         return plistlib.loads(stdout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -286,7 +288,9 @@ def _fetch_shared(node: str) -> dict:
             # waiting much longer than that is already an anomaly.  Falling
             # back to an empty dict matches _plist()'s own behaviour on failure.
             return future.result(timeout=15)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {}
 
     try:
@@ -345,7 +349,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -368,7 +374,9 @@ def _exact_str_keys(entries) -> dict:
                 continue
             try:
                 k = str.__str__(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         out[k] = v
     return out
@@ -393,7 +401,9 @@ def _plain_info(info) -> dict:
         return {}
     try:
         entries = list(dict.items(info))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if type(info) is dict and all(type(k) is str for k, _ in entries):
         # The overwhelmingly common healthy plist: no copy needed.
@@ -418,7 +428,9 @@ def _info_read(node: str) -> dict:
     """
     try:
         return _plain_info(_diskutil_info(node))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -437,14 +449,18 @@ def _ident(value) -> str:
     if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A sequence subclass whose ``__bool__``/``__getitem__``
             # raises: nothing usable to read.
             return ""
     if _isa(value, (bytes, bytearray)):
         try:
             value = bytes(value).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` property claiming bytes: unreadable.
             return ""
     if not _isa(value, str):
@@ -453,7 +469,9 @@ def _ident(value) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError:
         return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A str-subclass ``encode`` bomb: the identifier cannot be
         # verified UTF-8-safe, so it reads as absent like the surrogate.
         return ""
@@ -464,7 +482,9 @@ def _ident(value) -> str:
         # subclass whose ``encode`` behaves could still carry ``__eq__``/
         # ``__hash__`` bombs into the set membership and de-dupe below.
         return str.__str__(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -586,13 +606,17 @@ def _req_text(raw) -> str:
     if _isa(raw, (bytes, bytearray)):
         try:
             return bytes(raw).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` property claiming bytes: unreadable.
             return ""
     if not _isa(raw, str):
         try:
             raw = str(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # The digit-cap ValueError, or a leftover whose __str__ raises.
             return ""
     if type(raw) is str:
@@ -603,7 +627,9 @@ def _req_text(raw) -> str:
         # out of the erase path's ``_req_text(name) or vol_name`` fallback
         # for in-process callers.  Surrogates survive the copy, as above.
         return str.__str__(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -623,7 +649,9 @@ def _opt_bool(value):
         # ``__bool__``/``__eq__`` bombs (the tools5 class) used to raise out
         # of the listing walk and drop the whole node for one bad flag.
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -633,7 +661,9 @@ def _size_bytes(raw) -> int:
         # ``__bool__`` and ``int()`` into a subclass ``__int__``/``__index__``
         # — neither bomb is one of the three usual conversion errors.
         size = int(raw or 0)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
     try:
         str(size)
@@ -747,7 +777,9 @@ def list_managed_volumes() -> list[dict]:
     def probe_tree() -> dict:
         try:
             found = _plist(["/usr/sbin/diskutil", "list", "-plist"], timeout=5)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # _plist guards its own body, but the probe must not raise either:
             # fan_out re-raises on iteration, and a raising tree read used to
             # cost GET /api/storage/manage a bare 500 (the pool5 guard-the-call
@@ -766,7 +798,9 @@ def list_managed_volumes() -> list[dict]:
         # containers (disk1/2/3…).
         try:
             return set(physical_whole_disks())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same guard-the-call rule as probe_tree: a raising shared read
             # degrades to "no physical list", which the synth checks below
             # already treat as unknown, instead of 500ing the listing.
@@ -775,7 +809,9 @@ def list_managed_volumes() -> list[dict]:
     def probe_root_df() -> set[str]:
         try:
             return set(root_devices())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     def probe_root_info() -> dict:
@@ -785,7 +821,9 @@ def list_managed_volumes() -> list[dict]:
             # ``root_details.get("ParentWholeDisk")`` below and cost the
             # whole manage listing through the route's catch.
             return _exact_str_keys(dict(root_info()).items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {}
 
     # `root_details`, not `root_info`: that name now belongs to the shared read this
@@ -812,7 +850,9 @@ def list_managed_volumes() -> list[dict]:
             # storage4/pool4 iteration-bomb class) and used to raise out of
             # this loop — a bare 500 on GET /api/storage/manage.
             stores = list(stores)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             stores = []
         for s in stores:
             # _isa: a class-bomb store entry drops alone.
@@ -835,7 +875,9 @@ def list_managed_volumes() -> list[dict]:
             # each node: a class-bomb entry drops alone instead of costing
             # every healthy sibling disk through the except arm.
             all_disks = [n for n in raw_disks if _isa(n, dict)]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             all_disks = []
     else:
         all_disks = []
@@ -858,7 +900,9 @@ def list_managed_volumes() -> list[dict]:
             for ch in children:
                 try:
                     walk(ch, w if is_whole else whole or w)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A hostile child (dict subclass whose ``.get`` raises —
                     # the pool5 class) drops alone; its siblings and the
                     # parent's own summary row below keep rendering.
@@ -972,7 +1016,9 @@ def list_managed_volumes() -> list[dict]:
             return []
         try:
             ident = _ident(node.get("DeviceIdentifier"))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same pool5 class as the walk: a dict subclass whose ``.get``
             # raises passed the isinstance gate and 500'd the prefetch pass
             # before the walk (and its own per-node guard) even started.
@@ -983,7 +1029,9 @@ def list_managed_volumes() -> list[dict]:
         try:
             parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
             apfs = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return found
         for ch in parts + apfs:
             # _isa: a class-bomb child drops alone from the prefetch pass.
@@ -996,7 +1044,9 @@ def list_managed_volumes() -> list[dict]:
     for d in all_disks:
         try:
             walk(d)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # One hostile top-level node costs its own subtree, never the
             # listing: pre-fix it raised out of this loop and answered a
             # bare 500 on GET /api/storage/manage while every healthy
@@ -1065,7 +1115,9 @@ def disk_action(
     if info:
         try:
             system = _is_system_related(info, did)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Fail closed (the sleep_disk rule): a disk whose eligibility
             # cannot be read must never be mounted over, renamed or erased.
             # Pre-fix a residual bomb here was a bare 500 in place of the

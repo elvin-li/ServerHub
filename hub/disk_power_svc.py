@@ -298,7 +298,9 @@ def _req_text(raw) -> str:
     if _isa(raw, (bytes, bytearray)):
         try:
             return bytes(raw).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` property claiming bytes: nothing usable.
             return ""
     try:
@@ -306,7 +308,9 @@ def _req_text(raw) -> str:
         # bomb cannot fire below); for everything else it is the digit-cap
         # probe, or a leftover whose __str__ raises.
         raw = str(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Unbound base encode: a subclass whose ``__str__`` returns *self*
     # survives the str() coercion above with its bound ``encode`` bomb live.
@@ -342,7 +346,9 @@ def _diskutil_info(node: str) -> dict:
         if _rc_int(rc) == 0 and stdout:
             parsed = plistlib.loads(stdout)
             return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return {}
 
@@ -699,7 +705,9 @@ def _describe_disk(disk_id: str) -> dict | None:
             "actions": actions,
             "hint": _hint(system, ssd, can_sleep, state),
         }
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # One unreadable disk drops its own row rather than emptying the table.
         return None
 
@@ -756,7 +764,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     disks = {}
     try:
         rows = list(list_power_disks() or [])
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -770,11 +780,15 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
                 # POST /api/storage/disks/{id}/power.  A subclass whose
                 # copy itself raises is junk and drops like a non-dict row.
                 row = dict(row)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         try:
             key = row["id"]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # KeyError/TypeError for shapeless ids — and any subclass
             # ``__getitem__``/``__hash__`` bomb beyond those two.
             continue
@@ -806,7 +820,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     # as a bare 500 instead of the coded refusal.
     try:
         protected = bool(d.get("system")) or not d.get("can_sleep")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         protected = True
     if protected:
         raise api_error("disk_power.protected")
@@ -815,7 +831,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     # leftover surrogate before the value reaches subprocess argv.
     try:
         node = _req_text(d.get("device")).strip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         node = ""
     node = node or f"/dev/{disk_id}"
     log = []

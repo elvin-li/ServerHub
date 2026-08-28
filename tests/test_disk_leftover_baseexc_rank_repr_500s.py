@@ -71,6 +71,13 @@ class DiskLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             disk_snapshot._isa(_Ki(), dict)
 
+    def test_manage_truthy_swallows_a_bool_baseexception(self):
+        class _BoolBomb:
+            def __bool__(self):
+                raise LeftoverWatchdogTimeout("disk bool watchdog")
+
+        self.assertFalse(disk_manage_svc._truthy(_BoolBomb()))
+
 
 if __name__ == "__main__":
     unittest.main()

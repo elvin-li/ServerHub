@@ -244,12 +244,16 @@ def _disk_token(value) -> str:
     if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(value, (bytes, bytearray)):
         try:
             value = bytes(value).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     if not _isa(value, str):
         return ""
@@ -347,7 +351,9 @@ def _physical_whole_disks() -> tuple[str, ...]:
             timeout=_DISKUTIL_TIMEOUT,
             runner=subprocess.run,
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rc, stdout = -1, b""
     if _rc_int(rc) == 0:
         # Truthiness and parse inside the guard: a poisoned runner's stdout
@@ -360,7 +366,9 @@ def _physical_whole_disks() -> tuple[str, ...]:
                 if not _isa(wholes, list):
                     wholes = []
                 return tuple(t for x in wholes if (t := _disk_token(x)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     rc, out, _ = _spawn(["/usr/sbin/diskutil", "list", "physical"], _DISKUTIL_TIMEOUT)
     if _rc_int(rc) != 0:
@@ -388,7 +396,9 @@ def _root_info() -> Mapping[str, Any]:
             parsed = plistlib.loads(stdout)
             if _isa(parsed, dict):
                 return MappingProxyType(parsed)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return MappingProxyType({})
 
@@ -445,13 +455,17 @@ def root_whole_disks() -> frozenset[str]:
             # collapsing to the empty set through the except.
             rc, out, _ = _spawn(["/usr/sbin/diskutil", "info", "/"], _DISKUTIL_TIMEOUT)
             return set(_DISK_RE.findall(_as_text(out))) if _rc_int(rc) == 0 else set()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     def from_mount_table() -> set[str]:
         try:
             return set(root_devices())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     def from_plist() -> set[str]:
@@ -472,7 +486,9 @@ def root_whole_disks() -> frozenset[str]:
                 whole = _whole_id(device)
                 if whole:
                     found.add(whole)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
         return found
 
