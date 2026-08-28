@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 from typing import Optional
 from urllib.parse import quote
 
@@ -14,6 +15,9 @@ from hub.resource_mode import is_high
 from hub.host_address import default_interface, host_ip, interface_address
 from hub.paths import DOCKER, ORB
 from hub.util import LazyPool, cached_snapshot, fan_out, sh
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _audit_host_change(event: str, request: Request | None, **fields) -> None:
@@ -42,7 +46,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -57,12 +63,14 @@ def _rc_int(rc) -> int:
     keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -83,12 +91,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -101,48 +113,57 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; ``.isdigit`` / JSON need text."""
-    decoded = None
-    # _isa, not a bare isinstance: a ``__class__``-property bomb in sh
-    # output used to detonate this gate one step ahead of the scrub.
-    if _isa(value, (bytes, bytearray)):
-        try:
-            # Unbound base decode (the host_address._as_text rule): the old
-            # bound ``value.decode`` dispatched into a bytes-subclass's own
-            # override, so a leftover decode bomb raised out of the scrub
-            # and 500'd GET /api/system/host.  The try is for a *lying*
-            # ``__class__`` (claims bytes, is not): the unbound call
-            # TypeErrors and the impostor renders like any junk object below.
-            base = bytes if isinstance(value, bytes) else bytearray
-            decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
-            decoded = None
-    if decoded is not None:
-        value = decoded
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            return ""
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        # Unbound str.encode: ``str()`` of a subclass whose ``__str__``
-        # answers *self* keeps the subclass, so a bound ``encode`` bomb
-        # used to ride this line to a raw 500.
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 #: Dashboard heavy tick is 90s in low mode. A 20s snapshot expired before
 #: every sit tick, so each one re-ran engine_up (~800ms) plus the iface

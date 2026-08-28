@@ -47,6 +47,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -56,6 +57,9 @@ from hub.secure_io import replace_bytes
 from hub.util import read_text_capped, safe_json_loads
 
 log = logging.getLogger("serverhub.ups_policy")
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 STATE_FILE = DATA_DIR / "ups-policy-state.json"
 #: Leftover multi-MB state used to OOM GET /api/ups.
@@ -142,43 +146,69 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
 
 
 def _as_text(value) -> str:
     """Exception/subprocess text that cannot RecursionError leftover ``str(e)``."""
-    # _isa + guarded decode: a ``__class__``-property bomb detonated the
-    # gate itself, and a lying ``__class__`` (claims bytes, is not)
-    # TypeError'd the unbound decode; both render as junk text below.
-    if _isa(value, (bytes, bytearray)):
-        try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
     if value is None:
         return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        value = str(value)
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound base encode: a str-subclass ``.encode`` bomb cannot raise out
-    # of the laundering pass itself.
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
@@ -187,8 +217,10 @@ def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     try:
         rc, text = run_capped(argv, timeout=timeout, cap=4000)
         return rc, text, ""
-    except Exception as e:  # noqa: BLE001 — a policy step must record, not raise
-        return -1, "", _as_text(e)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        return -255, "", _as_text(e)
 
 
 def _engine_up() -> bool:
