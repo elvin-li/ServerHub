@@ -408,7 +408,9 @@ def _finite_float(raw) -> float:
         return 0.0
     try:
         value = float.__float__(float(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0.0
     if value != value or value in (float("inf"), float("-inf")):
         return 0.0
@@ -420,7 +422,9 @@ def _finite_int(raw) -> int:
         return 0
     try:
         return int.__index__(int(float(raw)))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
 
 
@@ -443,7 +447,9 @@ def _candidates() -> list[dict]:
     out: list[dict] = []
     try:
         volumes = storage_svc.list_volumes()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The pool4 guard below covered *iteration* but not the call: a
         # list_volumes that raised outright (a seam replacement, a leftover
         # that slips its own guards) still 500'd every pool route at once —
@@ -456,7 +462,9 @@ def _candidates() -> list[dict]:
         volumes = []
     try:
         volumes = list(volumes)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A volume listing that passes the isinstance gate but refuses
         # *iteration* (odd list subclass from the seam) used to raise out of
         # this loop and 500 every pool route at once — GET /api/storage/pool,
@@ -495,7 +503,9 @@ def _candidates() -> list[dict]:
                     "pct": _finite_int(vol.get("pct")),
                 }
             )
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     out.sort(key=lambda v: v["mount"])
     return out
@@ -530,7 +540,9 @@ def _pick_target(members: list[dict], policy: str, counter: int = 0) -> str | No
         # first usable member) is the same answer a fresh counter gives.
         try:
             step = int.__index__(counter)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             step = 0
         return usable[step % len(usable)]["mount"]
     return max(usable, key=lambda m: m["avail_gb"])["mount"]
@@ -798,7 +810,9 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     else:
         try:
             floor = max(0.0, float.__float__(float(min_free_gb)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             floor = 0.0
     if floor != floor or floor in (float("inf"), float("-inf")):
         floor = 0.0

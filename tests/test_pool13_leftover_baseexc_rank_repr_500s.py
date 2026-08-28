@@ -66,6 +66,13 @@ class Pool13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             storage_pool_svc._isa(_Ki(), dict)
 
+    def test_wants_refresh_swallows_bool_baseexception(self):
+        class _BoolBomb:
+            def __bool__(self):
+                raise LeftoverWatchdogTimeout("pool force watchdog")
+
+        self.assertTrue(storage_pool_svc._wants_refresh(_BoolBomb()))
+
 
 if __name__ == "__main__":
     unittest.main()
