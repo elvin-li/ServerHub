@@ -1,6 +1,7 @@
 """REST API — menubar-compatible + panel."""
 from __future__ import annotations
 
+import re
 import time
 
 from fastapi import APIRouter, Request
@@ -12,6 +13,9 @@ from hub.errors import api_error
 from hub.status import cached_status, filter_status_for_resources, full_status, invalidate_status
 
 router = APIRouter()
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 class Action(BaseModel):
@@ -26,29 +30,60 @@ def _message_text(value) -> str:
     a ``str()`` RecursionError still re-raised out of the shaping and 500'd
     POST /api/action — the bulk route's ``_as_text`` contract.
     """
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    elif isinstance(value, float):
+    for base in (bytes, bytearray):
         try:
-            finite = float.__float__(value)
-        except Exception:
-            return ""
-        if finite != finite or finite in (float("inf"), float("-inf")):
-            return ""
-        value = str(finite)
-    else:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    if type(value) is not bool:
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                value = type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            if isinstance(value, float):
+                finite = float.__float__(value)
+                if finite != finite or finite in (float("inf"), float("-inf")):
+                    return ""
+                return str(finite)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            text = type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _visible_status(request: Request, *, force: bool = False) -> dict:

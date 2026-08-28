@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request
@@ -9,63 +10,77 @@ from hub import apps_manage_svc, audit, auth, autostart_svc, catalog, catalog_re
 
 from ..errors import api_error
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _isinst(value, types) -> bool:
     """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through
     (the catalog/native_catalog rule)."""
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _as_text(value) -> str:
-    """Drop leftover inf / ``\\ud800`` so POST /api/apps/credentials cannot 500."""
-    decoded = None
-    if _isinst(value, (bytes, bytearray)):
-        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if _isinst(value, bytes) else bytearray
-        try:
-            decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
-            # A lying ``__class__`` claiming bytes rejects the unbound
-            # descriptor: not really bytes, render like any other object
-            # (the modules9/json9 impostor class).
-            decoded = None
-    if decoded is not None:
-        value = decoded
-    elif value is None:
+    """Drop leftover inf / ``\\ud800`` so catalog JSON cannot 500."""
+    if value is None:
         return ""
-    elif _isinst(value, float):
-        if type(value) is not float:
-            try:
-                # Base coercion to an exact float: a subclass ``__eq__``
-                # bomb used to blow the NaN/inf probes below.
-                value = float.__float__(value)
-            except Exception:
-                return ""
-        if value != value or value in (float("inf"), float("-inf")):
-            return ""
-        value = str(value)
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    if type(value) is not bool:
+        try:
+            if isinstance(value, float):
+                finite = float.__float__(value)
+                if finite != finite or finite in (float("inf"), float("-inf")):
+                    return ""
+                return str(finite)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
-    # returns self keeps the subclass, so a bound ``.encode`` bomb could
-    # still fire (the modules5 unbound convention).
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor whose ``__str__`` returned
-        # itself lands here: junk.
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 router = APIRouter(tags=["catalog"])
