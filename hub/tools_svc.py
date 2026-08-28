@@ -8,6 +8,8 @@ Inspired by Cockpit (logs/services), OMV (SMART/updates), CasaOS (simple tiles).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import glob
 import math
 import os
@@ -62,7 +64,9 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -83,7 +87,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -100,11 +106,15 @@ def _updates_cache_store(**fields) -> None:
     """
     try:
         _updates_cache.update(**fields)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             _updates_cache.clear()
             _updates_cache.update(**fields)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
 
@@ -119,7 +129,9 @@ def _as_text(value) -> str:
             # TypeErrors and junk answers "" like any unreadable leftover.
             base = bytes if _isinst(value, bytes) else bytearray
             value = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     elif value is None:
         return ""
@@ -129,9 +141,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         # Unbound base encode (the storage7 rule): a ``__str__`` override may
@@ -140,7 +156,9 @@ def _as_text(value) -> str:
         # cross-module answer (a DNS ip, a ps row) to "".  ``str.encode``
         # reads the real char storage, so the text survives the bomb.
         return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -158,7 +176,9 @@ def _as_rc(value) -> int:
     if type(value) is not int:
         try:
             value = int(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return -255
         if type(value) is not int:
             return -255
@@ -191,12 +211,16 @@ def _sh_triple(value) -> tuple:
     elif _isinst(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isinst(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -270,7 +294,9 @@ def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
             elif _isinst(raw, float):
                 raw = float.__float__(raw)
             value = int(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             value = default
     return max(lo, min(value, hi))
 
@@ -298,7 +324,9 @@ def top_processes(limit: int = 25) -> list:
     else:
         try:
             lines = list(lines)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     if len(lines) < 2:
         return []
@@ -426,7 +454,9 @@ def _df_payload(value) -> dict | None:
             # dict() through the C storage: a dict-subclass method bomb
             # cannot fire; a lying-``__class__`` impostor TypeErrors here.
             value = dict(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     cleaned = _jsonable(value)
     if not _isinst(cleaned, dict) or type(cleaned.get("engine_up")) is not bool:
@@ -450,7 +480,9 @@ def docker_disk_usage() -> dict:
     for attempt in (0, 1):
         try:
             raw = _docker_df_cached()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A poisoned KEY detonates inside the memo's own cache.get on
             # hash collision; the raise carries no totals.
             raw = None
@@ -460,7 +492,9 @@ def docker_disk_usage() -> dict:
         if attempt == 0:
             try:
                 _docker_df_cached.invalidate()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 break
     return {"engine_up": False, "raw": "", "lines": []}
 
@@ -602,7 +636,9 @@ def diagnostics() -> dict:
                     except (TypeError, ValueError, OverflowError):
                         # Leftover ``time.time() = inf`` OverflowError'd GET /api/diagnostics.
                         return None
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         return None
 
@@ -612,7 +648,9 @@ def diagnostics() -> dict:
         try:
             eng = engine_up()
             return eng, (docker_disk_usage() if eng else {})
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return False, {}
 
     def probe_platform() -> str:
@@ -623,13 +661,17 @@ def diagnostics() -> dict:
         try:
             from hub.identity_svc import platform_string
             return platform_string()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _as_text(platform.platform())
 
     def probe_host_ip() -> str:
         try:
             return host_ip()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
 
     try:
@@ -666,7 +708,9 @@ def diagnostics() -> dict:
         root_disk_free_gb = 0.0
     try:
         metrics_points = len(metrics.history(60))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A leftover history table that refuses ``len()`` (a list-subclass
         # ``__len__`` bomb, an unsized answer) used to raise here — the one
         # unguarded cross-module read left in this collector — and 500
@@ -889,7 +933,9 @@ def _profiler_report(entry) -> tuple[int, str]:
             ["/usr/sbin/system_profiler", data_type, "-detailLevel", "mini"],
             timeout=12,
         )
-    except Exception as exc:  # noqa: BLE001 - one report must not lose the rest
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - one report must not lose the rest
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 GET /api/tools.
         return 1, _as_text(exc)[:4000]
     text = (out or err or "").strip()
@@ -914,7 +960,9 @@ def _renderable_number(value):
                 # used to blow the digit-cap probe below (only ValueError was
                 # caught) and 500 GET /api/tools/hardware.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -925,7 +973,9 @@ def _renderable_number(value):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return value if math.isfinite(value) else None
     return None
@@ -937,7 +987,9 @@ def _safe_flag(value, *, tri: bool = False):
         return None
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None if tri else False
 
 
@@ -996,7 +1048,9 @@ def _hardware_profile_uncached() -> dict:
         try:
             from hub import disk_power_svc
             rows = disk_power_svc.list_power_disks()[:12]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
         # Field-by-field, not pass-through: this boundary used to copy the six
         # fields raw, so one leftover ``\ud800`` name / inf size_gb / bytes
@@ -1008,7 +1062,9 @@ def _hardware_profile_uncached() -> dict:
         for d in rows:
             try:
                 row = _power_disk_row(d)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Last-ditch: a bomb the field scrubs miss costs its own row,
                 # never the batch (fan_out re-raises on iteration, which
                 # would wipe the profiler sections alongside).
@@ -1063,7 +1119,9 @@ def _updates_fresh() -> dict | None:
             and time.time() - stamp < _UPDATES_TTL
         ):
             return v
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return None
 
@@ -1096,7 +1154,9 @@ def start_updates_warmer(initial_delay: float = 25.0) -> None:
         while True:
             try:
                 check_updates(force=True)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A warmer must never take the panel down; the next pass retries.
                 pass
             if stop.wait(interval):
@@ -1169,7 +1229,9 @@ def _brew_outdated() -> dict:
     # lock probe must not cost the whole updates snapshot its brew card.
     try:
         busy = _brew_busy()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         busy = False
     if busy or now < _brew_retry_at:
         hit = _updates_fresh()
@@ -1184,7 +1246,9 @@ def _brew_outdated() -> dict:
         rc, out, err = _sh(
             [brew, "outdated", "--verbose"], timeout=45, env=_brew_env(),
         )
-    except Exception as exc:  # noqa: BLE001 - reported in the card
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - reported in the card
         return {"ok": False, "outdated": [], "count": 0, "raw": _as_text(exc)[:200]}
     if rc == -1 and err == "timeout":
         _brew_retry_at = now + _BREW_FAIL_COOLDOWN
@@ -1204,7 +1268,9 @@ def _macos_updates() -> dict:
     try:
         # slow by nature; a tight timeout and a partial answer beat blocking
         rc, out, err = _sh(["/usr/sbin/softwareupdate", "-l"], timeout=45)
-    except Exception as exc:  # noqa: BLE001 - reported in the card
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - reported in the card
         return {"ok": False, "lines": [], "raw": _as_text(exc)[:1500], "has_updates": False}
     raw = (out or err or "").strip()
     interesting = [
@@ -1239,7 +1305,9 @@ def _github_repo() -> str:
     try:
         from hub.config import settings_section
         raw = _as_text((settings_section("updates") or {}).get("github_repo")).strip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = ""
     if _REPO_RE.fullmatch(raw):
         return raw
@@ -1303,7 +1371,9 @@ def _github_get_json(path: str):
         body = b""
         try:
             body = exc.read(_GITHUB_BODY_CAP)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             body = b""
         raise RuntimeError(_as_text(body[:200]) or f"HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
@@ -1313,7 +1383,9 @@ def _github_get_json(path: str):
     finally:
         try:
             resp.close()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         # parse_int_capped: a leftover >4300-digit numeric literal makes
@@ -1404,7 +1476,9 @@ def _github_latest(*, force: bool = False) -> dict:
                 return hit
         try:
             result = _github_latest_uncached()
-        except Exception as exc:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:
             result = _github_empty(error=_as_text(exc)[:200])
         _github_cache.update(t=time.time(), v=result)
         return result
@@ -1515,7 +1589,9 @@ def apply_brew_upgrade(*, confirm: bool = False) -> dict:
     # anyway; a truly held lock still surfaces as brew's own message.
     try:
         busy = _brew_busy()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         busy = False
     if busy:
         raise api_error("tools.brew_busy")
@@ -1549,7 +1625,9 @@ def _check_updates_uncached(*, force: bool = False) -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     brew_result = _result(brew_future, {"ok": False, "outdated": [], "count": 0, "raw": ""})
@@ -1646,7 +1724,9 @@ def net_dns_lookup(name: str) -> dict:
         return soft_fail("tools.empty_name")
     try:
         stripped = str.strip(name)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return soft_fail("tools.empty_name")
     if not stripped:
         return soft_fail("tools.empty_name")
@@ -1681,7 +1761,9 @@ def net_dns_lookup(name: str) -> dict:
                 "ip": ip_text,
                 "family": "IPv6" if fam == socket.AF_INET6 else "IPv4",
             })
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "name": name, "message": _as_text(e), "results": []}
     # also dig if available for NS/info
     # System dig first. which("dig") used to win, so a PATH hijack could
@@ -1828,7 +1910,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -1846,7 +1930,9 @@ def _plist_map(pl) -> dict | None:
         return None
     try:
         return dict(pl)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -1863,7 +1949,9 @@ def _args_text(args, cap: int) -> str:
         return ""
     try:
         items = list.__getitem__(args, slice(None))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return " ".join(_as_text(a) for a in items)[:cap]
 
@@ -1877,12 +1965,16 @@ def _plist_int(raw):
             # ``__int__``/``__index__`` bombs used to raise past the
             # enumerated catch below and 500 the launchd views.
             value = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     else:
         try:
             value = int(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         # ``int()`` of an int is not length-capped: XML plists load
@@ -1919,7 +2011,9 @@ def _plist_jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
                 # used to raise a non-ValueError past the digit-cap probe.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -1935,7 +2029,9 @@ def _plist_jsonable(value, depth: int = 0):
             try:
                 # Base coercion to an exact float, matching the int arm.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return value if math.isfinite(value) else None
     if isinstance(value, str):
@@ -1945,7 +2041,9 @@ def _plist_jsonable(value, depth: int = 0):
         # so the salvageable keys of an items()-bomb subclass survive.
         try:
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -1965,7 +2063,9 @@ def _plist_jsonable(value, depth: int = 0):
             # rank): a subclass whose bound ``__iter__`` raises drops to
             # None only when even the base storage refuses.
             items = list(base.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         return [_plist_jsonable(v, depth + 1) for v in items]
     if isinstance(value, (bytes, bytearray)):
@@ -1975,7 +2075,9 @@ def _plist_jsonable(value, depth: int = 0):
         return base.decode(value, "utf-8", "replace")[:200]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raising ``isoformat`` property used to blow the probe itself.
         iso = None
     if callable(iso):
@@ -1983,7 +2085,9 @@ def _plist_jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/tools launchd.
             return _plist_jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _as_text(value)[:200]
 
@@ -2006,7 +2110,9 @@ def launchd_timers() -> list:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         # Laundered plain-dict copy, then plain reads: a dict-*subclass*
         # parser answer with a bombing bound ``.get`` used to raise out of
@@ -2055,7 +2161,9 @@ def launchd_agents_summary() -> dict:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items.append({
                 "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
             })
@@ -2105,14 +2213,18 @@ def about_info() -> dict:
     def probe_host_ip() -> str:
         try:
             return host_ip()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
 
     def probe_platform() -> str:
         try:
             from hub.identity_svc import platform_string
             return platform_string()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _as_text(platform.platform())
 
     ip, plat = fan_out(lambda probe: probe(), [probe_host_ip, probe_platform])
