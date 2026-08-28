@@ -54,6 +54,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from hub import auth, share_acl_svc  # noqa: E402
 from hub.app_factory import create_app  # noqa: E402
+from hub.auth import require_auth  # noqa: E402
 from hub.routers import shares as shares_router  # noqa: E402
 
 _APP = None
@@ -63,6 +64,9 @@ def app():
     global _APP
     if _APP is None:
         _APP = create_app()
+        # The routers mount behind require_auth; the browser-session and
+        # admin reads inside the routes are stubbed per-test instead.
+        _APP.dependency_overrides[require_auth] = lambda: None
     return _APP
 
 
