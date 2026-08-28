@@ -243,13 +243,18 @@ def _brew_service_items() -> list[dict]:
     # Shared TTL cache: this list was being fetched once per caller, and
     # `brew services list --json` costs ~1.3s each time.
     data = brew_services_list()
+    from hub.brew_svc import _HIDE_BREW
     for s in data:
         if not isinstance(s, dict):
             continue
         name = s.get("name") if isinstance(s.get("name"), str) else _as_text(s.get("name"))
-        if not name or name == "nginx":  # managed separately via custom conf often
-            # still show nginx but mark custom
-            pass
+        if not name:
+            continue
+        # Dummy brew formulae replaced by a custom LaunchAgent / container.
+        # Listing them here offers Enable, which recopies a KeepAlive plist
+        # and crash-loops (cloudflared, redis, nginx, ollama).
+        if name in _HIDE_BREW:
+            continue
         raw_status = s.get("status")
         status = raw_status.lower() if isinstance(raw_status, str) else _as_text(raw_status).lower()
         raw_file = s.get("file")
@@ -296,6 +301,16 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     # Same hyphen-permissive class as brew_svc had: `{"id": "brew:--all"}`
     # reached `brew services stop --all`.
     name = cli_args.require_positional(name, label="brew service name")
+    from hub.brew_svc import _BLOCK_BREW_START
+    if enabled and name in _BLOCK_BREW_START:
+        return {
+            "ok": False,
+            "message": (
+                f"{name} is replaced by a custom LaunchAgent on this host; "
+                f"do not brew services start {name}"
+            ),
+            "autostart": False,
+        }
     if not _is_file(Path(BREW)):
         raise api_error("brew.not_found")
     action = "start" if enabled else "stop"

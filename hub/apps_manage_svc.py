@@ -1068,29 +1068,53 @@ def _launchd_apps() -> list[dict]:
         entry = listing.jobs.get(label)
         last = entry[1] if entry else None
         keep = bool(data.get("KeepAlive")) if data else False
-        ov = config.override(label) or {}
-        name = _field_text(ov.get("name"), label) or label
-        acts = (
-            ["stop", "restart", "detail", "logs", "uninstall"]
-            if running
-            else ["start", "detail", "logs", "uninstall"]
+        interval = bool(
+            data
+            and (data.get("StartInterval") or data.get("StartCalendarInterval"))
         )
-        if running:
-            status_text = f"Running · pid {pid}"
+        ov = config.override(label) or {}
+        if not isinstance(ov, dict):
+            ov = {}
+        # Same hide as Services discovery: a Disabled/hidden agent (zaoxue
+        # tunnel, dummy brew pins) must not sit in Apps as a permanent red row.
+        if ov.get("hide"):
+            continue
+        name = _field_text(ov.get("name"), label) or label
+        # Interval jobs hold no PID between ticks.  Treating that as down is
+        # what painted Immich keepalive / Cloudflare DDNS red on Apps while
+        # the Services page correctly said "Loaded · scheduled task".
+        if interval:
+            if not loaded:
+                state, status_text = "down", "Not loaded"
+                acts = ["start", "detail", "logs", "uninstall"]
+            else:
+                state = "ok"
+                if last not in (None, "", "-", "0"):
+                    status_text = f"Loaded · scheduled task · last exit code {last}"
+                else:
+                    status_text = "Loaded · scheduled task"
+                acts = ["run", "detail", "logs", "uninstall", "stop"]
+        elif running:
+            state, status_text = "ok", f"Running · pid {pid}"
+            acts = ["stop", "restart", "detail", "logs", "uninstall"]
         elif loaded and last not in (None, "", "-", "0") and keep:
-            status_text = f"Crash-looping · last exit {last}"
+            state, status_text = "down", f"Crash-looping · last exit {last}"
+            acts = ["start", "detail", "logs", "uninstall"]
         elif loaded and last not in (None, "", "-", "0"):
-            status_text = f"Exited · last exit {last}"
+            state, status_text = "down", f"Exited · last exit {last}"
+            acts = ["start", "detail", "logs", "uninstall"]
         elif loaded:
-            status_text = "Loaded but not running"
+            state, status_text = "down", "Loaded but not running"
+            acts = ["start", "detail", "logs", "uninstall"]
         else:
-            status_text = "Not loaded"
+            state, status_text = "down", "Not loaded"
+            acts = ["start", "detail", "logs", "uninstall"]
         items.append({
             "id": f"launchd:{label}",
             "source_id": label,
             "kind": "launchd",
             "name": name,
-            "state": "ok" if running else "down",
+            "state": state,
             "status_text": status_text,
             "path": workdir,
             "package": None,
@@ -1612,7 +1636,7 @@ def action(app_id: str, action_name: str, **kwargs) -> dict:
                             "ok": True,
                             "message": "Ollama is already serving :11434; not starting a second brew daemon",
                         }
-                    if source_id == "native-redis" and native_catalog.redis_port_already_served():
+                    if source_id == "native-redis":
                         return {
                             "ok": True,
                             "message": "Valkey/Redis is already serving :6379; not starting Homebrew Redis",
