@@ -179,7 +179,9 @@ def _rc_int(rc) -> int:
     elif _isinst(rc, int):
         try:
             rc = int.__index__(rc)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return -255
         if type(rc) is not int:
             return -255
@@ -210,12 +212,16 @@ def _sh3(value) -> tuple:
     elif _isinst(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isinst(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -241,7 +247,9 @@ def _sh_triple(cmd, timeout: int) -> tuple:
     """
     try:
         answer = sh(cmd, timeout=timeout)
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         return -1, "", _as_text(exc)
     rc, out, err = _sh3(answer)
     return _rc_int(rc), out, err
@@ -278,7 +286,9 @@ def _jsonable(value, depth: int = 0):
                 # to blow the digit-cap probe below out of overview() and
                 # 500 GET /api/nginx.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             # A str() probe, never an isinstance(x, str) gate: the finite
@@ -295,7 +305,9 @@ def _jsonable(value, depth: int = 0):
                 # ``__eq__``/``__ne__`` raises used to blow the NaN/inf
                 # probes below the same way.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -322,7 +334,9 @@ def _jsonable(value, depth: int = 0):
         # to its text now.
         try:
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _as_text(value)
         out = {}
         for k, v in items:
@@ -335,12 +349,16 @@ def _jsonable(value, depth: int = 0):
                     # fallback every other non-str key takes.
                     try:
                         k = str(k)
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         continue
             elif not _isinst(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # The over-cap int key: the entry drops, not the row.
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
@@ -355,7 +373,9 @@ def _jsonable(value, depth: int = 0):
                 # used to 500 GET /api/nginx; it degrades to its text.
                 try:
                     elems = list(base.__iter__(value))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return _as_text(value)
                 return [_jsonable(v, depth + 1) for v in elems]
     return _as_text(value)
