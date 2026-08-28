@@ -91,6 +91,27 @@ def _utf8_text(value) -> str:
     return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
+def _truthy(value) -> bool:
+    """``bool()`` that a leftover ``__bool__`` bomb cannot detonate.
+
+    :func:`problems` does not own the *rows* it is handed (callers pass a
+    snapshot they already took, and tests plant rows directly), and a
+    ``__bool__``-bomb ``alive``/``stale`` field — or a str-subclass *name*
+    whose ``__bool__`` raises, through the old ``name or "?"`` — used to
+    raise through the per-row try and silently drop that worker's
+    dead/stale report from GET /api/health/checks.  An ``alive`` that
+    cannot answer reads False, so the poisoned worker is *reported* dead
+    rather than silently passed as healthy (the health_svc._truthy rule,
+    fail-closed in the direction this page exists to warn about).
+    """
+    if type(value) is bool:
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _mapping_get(mapping, key, default=None):
     """Entry field read that a hostile mapping *key* cannot detonate.
 
@@ -452,12 +473,18 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
             continue
         try:
             # Unbound ``dict.get`` and one Exception net per row: a
-            # dict-subclass row (or a ``__bool__``-bomb field) drops alone
-            # rather than costing every sibling's dead/stale report.
-            name = _utf8_text(dict.get(w, "name") or "?")
-            if not dict.get(w, "alive"):
+            # dict-subclass row drops alone rather than costing every
+            # sibling's dead/stale report.  _utf8_text *before* the ``or``
+            # (its answer is an exact str, so the truth test is safe) and
+            # _truthy on the flag fields: a ``__bool__``-bomb name/alive/
+            # stale used to raise through this try and silently drop the
+            # dead-worker line — a bombed ``alive`` now reads as the
+            # "thread died" report instead of vanishing.
+            raw_name = dict.get(w, "name")
+            name = (_utf8_text(raw_name) if raw_name is not None else "") or "?"
+            if not _truthy(dict.get(w, "alive")):
                 out.append(f"{name}: thread died")
-            elif dict.get(w, "stale"):
+            elif _truthy(dict.get(w, "stale")):
                 age = int(_finite_beat(dict.get(w, "age_sec")))
                 interval = int(_finite_beat(dict.get(w, "interval")))
                 out.append(f"{name}: last tick {age}s ago (interval {interval}s)")

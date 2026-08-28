@@ -65,6 +65,27 @@ def _mapping_get(mapping, key, default=None):
         return default
 
 
+def _truthy(value) -> bool:
+    """``bool()`` that a leftover ``__bool__`` bomb cannot detonate.
+
+    This module does not own the values it truth-tests: ``os.access`` /
+    ``port_open`` / the nginx overview and config-test answers are all
+    patched by tests and tooling, and a value whose ``__bool__`` raises
+    used to ride those seams three different ways — a raw 500 out of the
+    backup-dir ``if not ok`` (the one truth test left outside its try), a
+    silent wipe of every port row through ``_safe``'s fallback, and the
+    running-nginx collapse into the combined not-installed error row.  A
+    value that cannot answer what it is reads as falsy, the same
+    fail-closed direction every guard here already takes.
+    """
+    if type(value) is bool:
+        return value
+    try:
+        return bool(value)
+    except Exception:
+        return False
+
+
 def _rc_int(rc) -> int:
     """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
 
@@ -285,10 +306,17 @@ def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = ""
     }
 
 
-def _probe_port(port) -> bool | None:
-    """Port reachability that never raises, for use inside the pool."""
+def _probe_port(port) -> bool:
+    """Port reachability that never raises, for use inside the pool.
+
+    ``_truthy``, not the raw answer: this module does not own ``port_open``
+    (tests and tooling patch it), and a returned ``__bool__``-bomb rode
+    this function's own try — the raise only fired later, inside
+    ``_port_checks``'s ``if up`` comprehension, where ``_safe`` swallowed
+    it and every port row silently vanished from GET /api/health/checks.
+    """
     try:
-        return port_open(port)
+        return _truthy(port_open(port))
     except Exception:
         return False
 
@@ -310,6 +338,51 @@ def _key_ports() -> tuple:
         (8123, "Home Assistant :8123", "Check com.homeassistant.core"),
         (8281, "Nginx HTTPS :8281", "Check system Nginx / certificates"),
     )
+
+
+def _label_set(labels) -> frozenset:
+    """Exact-str running-labels set whose membership probes cannot detonate.
+
+    The old ``frozenset(running_labels)`` copy kept the probe's *elements*
+    as they were, and a set/frozenset membership check compares the lookup
+    key against the **stored** elements — so a leftover hash-shadowing
+    str-subclass element (same hash as ``homebrew.mxcl.postgresql@18`` or a
+    KeepAlive label, raising ``__eq__``) rode the copy intact and detonated
+    ``f"homebrew.mxcl.{n}" in running_labels`` / ``label in running_labels``
+    inside their per-row trys: the postgres row this page exists to show and
+    the agent's KeepAlive warning silently vanished from GET
+    /api/health/checks.  ``_as_text`` launders every element to an exact
+    str (honest labels are exact strs already, so they pass unchanged);
+    the unbound base ``__iter__`` walks a subclass's real storage past an
+    ``__iter__`` bomb, a lying-``__class__`` impostor falls through to the
+    guarded pull, and a mid-walk raise keeps the elements already yielded
+    (the worker_health._pull_guarded rule).
+    """
+    it = None
+    for base in (set, frozenset, list, tuple):
+        if _isa(labels, base):
+            try:
+                it = base.__iter__(labels)
+            except Exception:
+                it = None
+            break
+    else:
+        return frozenset()
+    if it is None:
+        try:
+            it = iter(labels)
+        except Exception:
+            return frozenset()
+    out = []
+    while True:
+        try:
+            item = next(it)
+        except StopIteration:
+            break
+        except Exception:
+            break
+        out.append(_as_text(item))
+    return frozenset(out)
 
 
 def _engine_up() -> bool:
@@ -336,7 +409,12 @@ def _nginx_pair() -> list[dict]:
         # (same hash as ``running``/``pid``/``site_count``, raising
         # ``__eq__``) detonated the plain-dict lookup inside the pair-wide
         # try — the same collapse as the over-cap ints below, one seam over.
-        ok = bool(_mapping_get(ngx, "running"))
+        # _truthy, not bare ``bool()``: a ``__bool__``-bomb *value* under an
+        # honest ``running`` key raised through the same pair-wide try — a
+        # running nginx collapsed into the combined not-installed error row
+        # and the config-syntax sibling vanished, the exact collapse the
+        # shadow-key launder above already prevents one seam over.
+        ok = _truthy(_mapping_get(ngx, "running"))
         # _as_text per field, not the bare f-string: this function does not
         # own the overview dict, and an already-int over-cap pid/site_count
         # leftover (YAML/plist hex loads uncapped) ValueError'd str() inside
@@ -353,7 +431,11 @@ def _nginx_pair() -> list[dict]:
             "launchctl kickstart -k gui/$(id -u)/local.system-nginx" if not ok else "",
         )]
         t = nginx_test()
-        t_ok = _mapping_get(t, "ok")
+        # _truthy: ``_check`` already guards its own ``bool(ok)``, but the
+        # ``if not t_ok`` fix-string probe below ran the raw value's
+        # ``__bool__`` inside the pair-wide try — a bomb under an honest
+        # ``ok`` key collapsed both rows into the combined error row.
+        t_ok = _truthy(_mapping_get(t, "ok"))
         pair.append(_check(
             "nginx_conf", "Nginx config syntax",
             "error", t_ok,
@@ -859,18 +941,12 @@ def _collect_checks() -> dict:
         except Exception:
             return []
 
-    try:
-        # A plain frozenset, not the object the probe answered: a set/list
-        # subclass whose ``__iter__`` or ``__contains__`` raises silently
-        # dropped every brew launchd re-check and KeepAlive warning through
-        # their per-row guards.
-        running_labels = (
-            frozenset(running_labels)
-            if isinstance(running_labels, (set, frozenset, list, tuple))
-            else frozenset()
-        )
-    except Exception:
-        running_labels = frozenset()
+    # A plain frozenset of exact strs, not the object the probe answered: a
+    # set/list subclass whose ``__iter__`` or ``__contains__`` raises — and,
+    # post-health11, a hash-shadowing str-subclass *element* whose ``__eq__``
+    # raises out of the membership compare — silently dropped brew launchd
+    # re-checks and KeepAlive warnings through their per-row guards.
+    running_labels = _label_set(running_labels)
 
     # OrbStack / docker
     checks.append(_check(
@@ -897,17 +973,23 @@ def _collect_checks() -> dict:
     # postgresql@18 included, the exact row this page exists to show
     # when Immich's database is down.  _as_text's guarded str() probe
     # coerces the renderable and absorbs the unrenderable to "".
+    # _isa + _mapping_get per row (the _nginx_pair rule): a ``__class__``-
+    # property-bomb row detonated the bare isinstance, and a hash-shadowing
+    # junk key riding a row (same hash as ``name``/``status``, raising
+    # ``__eq__``) detonated the bound ``.get`` — both inside the per-row
+    # try, so the postgres/mosquitto/grafana row this page exists to show
+    # silently vanished instead of rendering with the one field degraded.
     for s in _as_checks(brew_states):
         try:
-            if not isinstance(s, dict):
+            if not _isa(s, dict):
                 continue
-            n = _as_text(s.get("name"))
+            n = _as_text(_mapping_get(s, "name"))
             # postgresql@18 is a *separate* cluster (:5433) holding the
             # Immich database; @17 (:5432) holds TeslaMate.  Checking only
             # @17 reports "database fine" while Immich's DB is down.
             if n not in ("postgresql@17", "postgresql@18", "mosquitto", "grafana"):
                 continue
-            st = _as_text(s.get("status")).lower()
+            st = _as_text(_mapping_get(s, "status")).lower()
             ok = st in ("started", "running")
             if not ok and st in ("none", ""):
                 # brew reports "none" when a formula is running under a
@@ -986,7 +1068,13 @@ def _collect_checks() -> dict:
             ok = True
             backup_detail = f"{bdir} absent (not created by health check)"
         else:
-            ok = os.access(bdir, os.W_OK)
+            # _truthy: this function does not own ``os.access`` (tests and
+            # tooling patch it), and a returned ``__bool__``-bomb escaped
+            # this try raw — the ``if not ok`` fix-string probe on the
+            # ``_check`` call below then raised out of ``_collect_checks``
+            # itself, a raw 500 on GET /api/health/checks (the one truth
+            # test on this page that sat outside every guard).
+            ok = _truthy(os.access(bdir, os.W_OK))
             backup_detail = str(bdir)
     except Exception:
         # Path.home() raises RuntimeError when HOME cannot be resolved —
