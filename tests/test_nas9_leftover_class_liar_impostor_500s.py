@@ -182,11 +182,25 @@ class ReadRoutesLiarTests(unittest.TestCase):
         self.assertEqual(cleaned["row"], {"keep": 1})
 
     def test_utf8_text_bytes_liar_falls_through_to_the_str_probe(self):
-        # A legible impostor error string still renders instead of
-        # costing the funnel that carries it.
-        text = nas_common._utf8_text(_liar(bytes))
-        self.assertIsInstance(text, str)
-        self.assertTrue(text)
+        # A *legible* impostor error string (one that carries its own
+        # ``__str__``) still renders instead of costing the funnel that
+        # carries it.  nas14 update (the maint14 address-belt rule): the
+        # bare ``_liar(bytes)`` plain object used to pass this probe by
+        # rendering its default ``object.__repr__`` — ``<X object at
+        # 0x7f...>``, a raw heap address — verbatim into the funnel body;
+        # that shape now scrubs to "" while real text keeps rendering.
+        class _LegibleImpostor:
+            @property
+            def __class__(self):
+                return bytes
+
+            def __str__(self):
+                return "still-renderable"
+
+        text = nas_common._utf8_text(_LegibleImpostor())
+        self.assertEqual(text, "still-renderable")
+        scrubbed = nas_common._utf8_text(_liar(bytes))
+        self.assertEqual(scrubbed, "")
 
 
 class MutationFunnelLiarTests(unittest.TestCase):

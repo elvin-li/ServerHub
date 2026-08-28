@@ -230,13 +230,18 @@ class SnapshotsJsonableSubclassBombHttpTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         self.assertEqual(resp.json()["raw"], "z")
 
-    def test_non_pair_items_rows_drop_alone_and_the_pairs_survive(self):
+    def test_non_pair_items_rows_read_the_real_storage(self):
+        # nas14 update (the maint14 unbound-walk rule): the walk now reads
+        # the unbound ``dict.items`` view, so the override's fabricated
+        # torn/wide rows never run at all and the mapping's real C-level
+        # storage renders — the route answers 200 either way, which is the
+        # point this test pins.
         resp = self._tm_action(
             {"ok": True, "detail": _NonPairItems({"ignored": 0})})
         self.assertEqual(resp.status_code, 200, resp.text[:200])
         body = resp.json()
         _starlette(body)
-        self.assertEqual(body["detail"], {"good": 1})
+        self.assertEqual(body["detail"], {"ignored": 0})
 
     def test_thin_route_shares_the_same_scrub(self):
         with ExitStack() as stack:
@@ -282,16 +287,22 @@ class SnapshotsJsonableUnitContractTests(unittest.TestCase):
         self.assertEqual(row["b"], "z")
         self.assertEqual(row["keep"], "x")
 
-    def test_non_pair_items_salvage_the_well_formed_pairs(self):
+    def test_non_pair_items_read_the_real_storage(self):
+        # nas14 update: the unbound ``dict.items`` view reads the real
+        # C-level storage, so the override's fabricated rows never run.
         self.assertEqual(
             snapshots_svc._jsonable(_NonPairItems({"ignored": 0})),
-            {"good": 1},
+            {"ignored": 0},
         )
 
-    def test_items_bomb_mapping_keeps_the_nas4_drop_contract(self):
-        """The nas4 pin: a mapping whose items() *raises* has nothing to
-        salvage and drops to None — this sweep must not regress it."""
-        self.assertIsNone(snapshots_svc._jsonable(_ItemsBombDict({"a": 1})))
+    def test_items_bomb_mapping_salvages_its_real_storage(self):
+        """nas14 update of the nas4 pin (the maint14 unbound-walk rule): a
+        genuine dict subclass whose bound ``items()`` raises used to drop
+        its perfectly walkable C-level storage to None even though the
+        raise was absorbed — the unbound view salvages it, matching what
+        raid_svc and nas_common already did since nas8."""
+        self.assertEqual(
+            snapshots_svc._jsonable(_ItemsBombDict({"a": 1})), {"a": 1})
 
     def test_as_text_survives_a_dunder_bytes_bomb(self):
         """``bytes(value)`` consulted the subclass ``__bytes__``; the
