@@ -26,6 +26,16 @@ _pool = LazyPool(2, "hub-bookmarks")
 def shutdown_executor() -> None:
     _pool.shutdown()
 
+#: Real control flow must keep propagating even through the bomb guards:
+#: swallowing a Ctrl-C or an interpreter shutdown to save one bookmark row
+#: would turn the sanitizer into a hang.  Everything else BaseException-shaped
+#: that a leftover raises out of its own hooks is a bomb like any other —
+#: every guard below used to stop at ``except Exception``, so a leftover
+#: whose hooks raise a *BaseException* subclass (the jobs13/nas13/assistant13
+#: watchdog/timeout shape) sailed past every net at once and 500'd
+#: GET /api/bookmarks raw.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: A probe is an HTTP reachability check, nothing else.  urlopen also speaks
 #: file:, ftp: and data:, and bookmark URLs are not all typed by the operator --
 #: some are derived from container labels and VM metadata discovered at runtime --
@@ -133,7 +143,14 @@ def _probe_ms(t0: float) -> int:
     """Finite elapsed ms. Leftover ``time.time() = inf`` OverflowError'd GET /api/bookmarks."""
     try:
         ms = int((time.time() - t0) * 1000)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException, not the (TypeError, ValueError, OverflowError) trio:
+        # a leftover clock whose arithmetic hooks raise anything else — a
+        # BaseException-subclass bomb included — escaped the narrower net,
+        # and two of this helper's three call sites sit *inside* ``_probe``'s
+        # own except handlers where nothing above caught it.
         return 0
     if ms != ms or ms in (float("inf"), float("-inf")):
         return 0
@@ -184,7 +201,15 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         # 401/403 still means service is up
         ok = e.code in (401, 403)
         return {"ok": ok, "status": e.code, "ms": ms, "error": exc_detail(getattr(e, "reason", e), 120)}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # BaseException, not Exception: a raw-kept str-subclass url whose
+        # ``find`` / ``strip`` / ``__bool__`` hooks raise a BaseException
+        # subclass detonated urlsplit / the host gates past the old net,
+        # rode through the fan_out batch and 500'd the whole list route.
+        # The host gates run before any socket opens, so a bomb still
+        # fails closed — the row reads error, no probe happens.
         ms = _probe_ms(t0)
         return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
 
@@ -200,10 +225,18 @@ def _isinst(value, types) -> bool:
     GET /api/bookmarks (the modules8 rule).  A lying ``__class__`` (answers
     ``int``) is *not* an error and still reports its claim here; the numeric
     arms' unbound base coercion then drops it, exactly as before.
+
+    ``except BaseException``: the old guard stopped at ``Exception``, so a
+    ``__class__`` property raising a *BaseException* subclass sailed past
+    this catch — the gate every sanitizer arm in this module stands on —
+    and out of GET /api/bookmarks raw.  Only genuine control flow keeps
+    propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -233,10 +266,18 @@ def _key_text(value) -> str | None:
                 # int-subclass ``__str__`` bomb riding ``service:`` used
                 # to raise past the ValueError-only catch below and 500
                 # GET /api/bookmarks out of ``_resolve_backend``'s lookup.
+                # BaseException, not Exception: an ``__index__`` bomb raising
+                # a BaseException subclass sailed past the old net too.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
+            # ``except ValueError`` stays exactly this narrow (the pinned
+            # union guard): *value* is an exact int here, so ``str()`` can
+            # only raise the digit-cap ValueError — no hook of the leftover
+            # runs on this line anymore.
             s = str(value)
         except ValueError:
             return None
@@ -266,7 +307,12 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: a stored shadow key whose ``__eq__`` raises a
+        # BaseException subclass used to sail past the old net and out of
+        # every bound field read this helper fronts.
         return default
 
 
@@ -286,7 +332,9 @@ def _plain_dict(value) -> dict | None:
         return None
     try:
         return dict(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -331,24 +379,35 @@ def _cfg_get(key: str):
     """
     try:
         m = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: a cfg() raising a BaseException-subclass bomb
+        # (a leftover watchdog/timeout shape) used to sail past the old net
+        # on the very first read of the request.
         return None
     if not _isinst(m, dict):
         return None
     try:
         return dict.get(m, key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         pairs = list(dict.items(m))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     for pair in pairs:
         try:
             k, v = pair
             if type(k) is str and k == key:
                 return v
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return None
 
@@ -359,10 +418,14 @@ def _truthy(value) -> bool:
     Fails closed to False: a bomb url is not a probeable url and a bomb
     name is not a printable name — pre-fix, ``not link.get("url")`` and
     ``ov.get("url") and …`` raised straight out of GET /api/bookmarks.
+    BaseException, not Exception: a ``__bool__`` bomb raising a
+    BaseException subclass sailed past the old net the same way.
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -399,18 +462,27 @@ def _backend_index() -> dict:
     # UTM and Orb together -- so an unavailable UTM also cost the Orb machines their
     # state, and every bookmark pointing at a stopped Orb machine got probed over the
     # network instead of being reported as stopped.
+    # BaseException, not Exception, in each collector: an inventory raising a
+    # BaseException-subclass bomb used to sail past the old per-collector net,
+    # ride the fan_out iteration into this builder's future, and re-raise at
+    # ``f_idx.result()`` past *its* Exception-only net — a raw 500 on
+    # GET /api/bookmarks from the pool thread.
     def utm_vms() -> list:
         try:
             from hub import vms_svc
             return list(vms_svc.list_utm_vms() or [])
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     def orb_machines() -> list:
         try:
             from hub import vms_svc
             return list(vms_svc.list_orb_machines() or [])
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     def containers() -> list:
@@ -418,7 +490,9 @@ def _backend_index() -> dict:
             from hub.discovery.containers import discover_containers
             items, _ = discover_containers()
             return list(items or [])
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     vm_rows, orb_rows, container_rows = fan_out(
@@ -449,7 +523,12 @@ def _backend_index() -> dict:
             put(v.get("orb_name"), info)
             put(v.get("name"), info)
             put_url(v.get("url"), info)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # BaseException too: a stored shadow key riding a copied row's
+            # C-level storage used to blow this loop past the old net and
+            # wipe every sibling's entry the same way as the Exception twin.
             continue
 
     for c in container_rows:
@@ -467,7 +546,9 @@ def _backend_index() -> dict:
             put(c.get("id"), info)
             put(c.get("name"), info)
             put_url(c.get("url"), info)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     # overrides: map sid + url → best-effort (may fill gaps for launchd etc.)
@@ -478,8 +559,14 @@ def _backend_index() -> dict:
     raw_ov = _plain_dict(_cfg_get("overrides")) or {}
     for sid, raw in raw_ov.items():
         try:
+            # resolve_value stays deliberately raise-on-junk (the bookmarks5
+            # pin): the walk itself is the junk detector.  Only the absorbing
+            # net widens — a row whose hooks raise a BaseException subclass
+            # out of the walk used to escape the old ``except Exception``.
             ov = resolve_value(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         ov = _plain_dict(ov)
         if ov is None:
@@ -555,8 +642,13 @@ def _resolve_backend(link: dict, idx: dict) -> dict | None:
     raw_ov = _plain_dict(_cfg_get("overrides")) or {}
     for sid, raw in raw_ov.items():
         try:
+            # raise-on-junk kept; the absorbing net widens (see _backend_index).
+            # This copy runs per link on the request thread, where a
+            # BaseException-shaped row bomb was a raw 500 past the old net.
             ov = resolve_value(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         ov = _plain_dict(ov)
         if ov is None:
@@ -670,12 +762,25 @@ def _decode_bytes(value) -> str:
     ``bytes.decode(value)`` raises ``TypeError`` — pre-fix that rode the
     ``_jsonable`` bytes branch out to a 500 on GET /api/bookmarks.  Fall back
     to ``""`` so the row still renders and its siblings survive.
+
+    Both bases, real layout first-come (the jobs13/nas13/assistant13 rule):
+    the old pick chose the base off the *claimed* ``__class__``, so a genuine
+    ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
+    ``bytes.decode``, refused by the descriptor, and its perfectly decodable
+    content dropped to the empty cell even though the text was right there.
+    Real str storage lying bytes recovers through ``_str_text`` the same way.
+    A total liar (real type is none of the three) still drops to ``""``.
+    BaseException, not Exception: a subclass ``decode`` never dispatches
+    here, but a bomb hook reached mid-decode sailed past the old net.
     """
-    base = bytes if _isinst(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return _str_text(value) or ""
 
 
 #: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
@@ -697,7 +802,9 @@ def _str_text(value) -> str | None:
     """
     try:
         return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -725,16 +832,25 @@ def _utf8_text(value) -> str:
         cls = type(value)
         if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException, not Exception: a coercion ``__str__`` bomb raising
+        # a BaseException subclass sailed past the old net and 500'd the
+        # route from every rendered cell this arm fronts.
         return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
@@ -777,10 +893,17 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int (modules5): a subclass
                 # ``__str__`` bomb used to blow the digit-cap probe below
                 # with a non-ValueError and 500 the route at encode time.
+                # BaseException: an ``__index__`` bomb raising a
+                # BaseException subclass sailed past the old net too.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
+            # ``except ValueError`` stays exactly this narrow (the pinned
+            # union guard): *value* is an exact int here, so only the
+            # digit-cap ValueError can fire.
             str(value)
         except ValueError:
             # YAML hex/octal leftovers dodge CPython's str->int digit cap,
@@ -795,7 +918,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -807,11 +932,14 @@ def _jsonable(value, depth: int = 0):
     if _isinst(value, dict):
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass riding a
             # link field): nothing to salvage from it, but its *siblings*
             # must survive — pre-fix this raised out of the final scrub and
-            # 500'd GET /api/bookmarks (the ups_svc/nginx_svc rule).
+            # 500'd GET /api/bookmarks (the ups_svc/nginx_svc rule) — and a
+            # BaseException-shaped ``items`` bomb sailed past even that net.
             return None
         out = {}
         for pair in items:
@@ -820,7 +948,9 @@ def _jsonable(value, depth: int = 0):
                 # (``[1, 2]``) used to TypeError here, outside the list()
                 # try just above, and 500 the route at encode time.
                 k, v = pair
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             # No raw ``str(k)`` pre-coercion: a junk *key* (default
             # ``object.__repr__``) used to render its heap address as the
@@ -830,7 +960,9 @@ def _jsonable(value, depth: int = 0):
             was_text = _isinst(k, (str, bytes, bytearray))
             try:
                 k = _utf8_text(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if not k and not was_text:
                 # A key with no real text storage that coerced to nothing:
@@ -842,25 +974,34 @@ def _jsonable(value, depth: int = 0):
     if _isinst(value, (list, tuple, set, frozenset)):
         try:
             vals = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A sequence subclass whose __iter__ raises: same rule as the
             # dict branch — the bomb drops alone, siblings keep rendering.
             return None
         return [_jsonable(v, depth + 1) for v in vals]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a leftover
-        # ``__getattr__`` that raises anything else 500'd the final scrub.
+        # ``__getattr__`` that raises anything else 500'd the final scrub —
+        # and a BaseException-shaped one sailed past even the Exception net.
         iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -896,11 +1037,19 @@ def list_bookmarks() -> dict:
         # second time out of the identical call in the except fallback — a
         # 500 from the exception handler itself.
         base_links = list(raw_links) if _isinst(raw_links, list) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         base_links = []
     try:
+        # raise-on-junk kept (the bookmarks5 pin): resolve_value's walk is
+        # the junk detector and this absorb is its contract.  Only the net
+        # widens — a row bombing the walk with a BaseException subclass
+        # used to escape the old ``except Exception`` and 500 the route.
         links = resolve_value(list(base_links))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         links = base_links
     if not _isinst(links, list):
         links = []
@@ -926,7 +1075,9 @@ def list_bookmarks() -> dict:
         if _isinst(u, str) and type(u) is not str:
             try:
                 row["url"] = str.encode(u, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
     # _plain_dict, not a bare isinstance: an overrides mapping whose
     # ``items()`` raised used to 500 the merge loop below.  _cfg_get for
@@ -935,8 +1086,11 @@ def list_bookmarks() -> dict:
     # also from overrides urls
     for sid, raw in overrides.items():
         try:
+            # raise-on-junk kept; only the absorbing net widens (see above).
             ov = resolve_value(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         ov = _plain_dict(ov)
         if ov is None:
@@ -974,9 +1128,16 @@ def list_bookmarks() -> dict:
 
     try:
         idx = f_idx.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # `_backend_index` already absorbs per-CLI failures; this is the
         # last net so a raise there still leaves the bookmark list.
+        # BaseException, not Exception: ``Future.result()`` re-raises the
+        # worker's exception verbatim, so a collector bombing the pool
+        # thread with a BaseException subclass used to detonate *here*, on
+        # the request thread, past the old net — a raw 500 after every
+        # link had already been resolved.
         idx = {}
     if not _isinst(idx, dict):
         idx = {}
@@ -1010,10 +1171,18 @@ def list_bookmarks() -> dict:
             to_probe.append((i, link, backend))
 
     def probe(url: str) -> dict:
-        """Never raises: one unreachable bookmark must not drop the other rows."""
+        """Never raises: one unreachable bookmark must not drop the other rows.
+
+        BaseException, not Exception: fan_out's ``map`` re-raises on
+        iteration, so one bomb url raising a BaseException subclass out of
+        ``_probe``'s own seams used to cost the whole batch — a raw 500
+        with every healthy sibling's probe already done.
+        """
         try:
             return _probe(url)
-        except Exception as e:  # noqa: BLE001 -- surfaced in the row
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:  # noqa: BLE001 -- surfaced in the row
             return {"ok": False, "status": None, "ms": 0, "error": exc_detail(e, 120)}
 
     probes: dict[int, dict] = {
