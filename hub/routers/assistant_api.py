@@ -13,6 +13,13 @@ from hub import assistant_svc
 
 router = APIRouter(tags=["assistant"])
 
+# Real control flow (Ctrl-C, interpreter shutdown) must keep propagating;
+# everything else BaseException-shaped that a leftover raises out of its own
+# hooks is a bomb.  Both nets below used to stop at ``except Exception``, so
+# a BaseException-subclass bomb sailed straight past the drawer's
+# keep-working fallback and out of the route raw.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 class HistoryTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -37,7 +44,9 @@ def get_catalog(locale: str = "zh-CN"):
             "locale": assistant_svc.normalize_locale(locale),
             "panels": assistant_svc.catalog(locale),
         }
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         payload = {"ok": True, "locale": "en", "panels": []}
     return assistant_svc._jsonable(payload)
 
@@ -57,14 +66,20 @@ def ask(body: AskBody):
         )
     except HTTPException:
         raise
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The drawer is supposed to keep working when a collector blows up;
-        # coded 4xx from ask() still propagate above.
+        # coded 4xx from ask() still propagate above.  BaseException, not
+        # Exception: a leftover whose hooks raise a BaseException subclass
+        # used to sail past this fallback and out of the route raw.
         loc = assistant_svc.normalize_locale(body.locale)
         snapshot = {}
         try:
             snapshot = assistant_svc.build_snapshot()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             snapshot = {"counts": {"ok": 0, "warn": 0, "down": 0, "stopped": 0}}
         payload = {
             "ok": True,

@@ -31,6 +31,16 @@ _HERE = Path(__file__).resolve().parent
 #: Leftover multi-MB catalog next to this module used to OOM import / ask.
 _CATALOG_CAP = 256 * 1024
 
+#: Real control flow must keep propagating even through the bomb guards:
+#: swallowing a Ctrl-C or an interpreter shutdown to save one JSON cell would
+#: turn the sanitizer into a hang.  Everything else BaseException-shaped that
+#: a leftover raises out of its own hooks is a bomb like any other — every
+#: guard below used to stop at ``except Exception``, so a leftover whose
+#: hooks raise a *BaseException* subclass (the jobs13/nas13 watchdog/timeout
+#: shape) sailed past every net on both assistant routes at once, including
+#: the router's own error fallback, where nothing above catches it.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _capped_json_int(text):
     """``json.loads`` parse_int hook: an over-cap digit run drops to None.
@@ -68,10 +78,18 @@ def _isa(value, types) -> bool:
     router's own error fallback, where the re-raise was a guaranteed 500 on
     POST /api/assistant/ask.  A value the probe cannot classify is junk the
     caller's existing not-a-match branch already handles.
+
+    ``except BaseException``: the old guard stopped at ``Exception``, so a
+    ``__class__`` property raising a *BaseException* subclass sailed past
+    this catch — the gate every sanitizer arm in this module stands on —
+    and out of both assistant routes raw, twice per turn via the router's
+    own error fallback.  Only genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -84,7 +102,9 @@ def _safe_int(raw, default: int = 0) -> int:
         # whole snapshot to the minimal brief.
         try:
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
     if _isa(raw, float):
         if type(raw) is not float:
@@ -92,7 +112,9 @@ def _safe_int(raw, default: int = 0) -> int:
             # blow the NaN/inf probes below, outside every catch.
             try:
                 raw = float.__float__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return default
         if raw != raw or raw in (float("inf"), float("-inf")):
             return default
@@ -102,9 +124,12 @@ def _safe_int(raw, default: int = 0) -> int:
         # plist hex loads uncapped) passes int() but blows every later str()
         # — fallback_brief's f-strings and the JSON encoder both 500'd.
         str(value)
-    except Exception:
-        # Exception, not (TypeError, ValueError, OverflowError): an object
-        # whose ``__int__`` raises anything else escaped the narrow tuple.
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException, not (TypeError, ValueError, OverflowError) or even
+        # Exception: an object whose ``__int__`` raises anything else — a
+        # BaseException-subclass bomb included — escaped the narrower nets.
         return default
     return value
 
@@ -122,7 +147,9 @@ def _str_text(value):
     """
     try:
         return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -142,12 +169,22 @@ def _decode_bytes(value):
     ``bytes`` over **real str storage** used to wipe its cell to empty even
     though the text was sitting right there — the unbound ``str.__str__``
     read recovers it without dispatching anything the leftover poisoned.
+
+    Both bases, real layout first-come (the jobs13/nas13 rule): the old pick
+    chose the base off the *claimed* ``__class__``, so a genuine
+    ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
+    ``bytes.decode``, refused by the descriptor, and its perfectly decodable
+    content dropped to the empty cell even though the text was right there —
+    a problem detail, catalog cell or chat reply went blank at the wrong
+    rank.  A total liar (real type is none of the three) still drops.
     """
-    base = bytes if _isa(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        pass
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     return _str_text(value)
 
 
@@ -182,16 +219,25 @@ def _utf8_text(value) -> str:
         cls = type(value)
         if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException, not Exception: a coercion ``__str__`` bomb raising
+        # a BaseException subclass sailed past the old net — inside the
+        # router's own error fallback too, via fallback_brief's cells.
         return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
@@ -208,10 +254,14 @@ def _utf8_text(value) -> str:
 def _truthy(value) -> bool:
     """``bool()`` that cannot raise: a subclass ``__bool__``/``__len__`` bomb
     is just falsy.  ``fallback_brief`` runs inside the router's own error
-    fallback, where a re-raise is a guaranteed 500."""
+    fallback, where a re-raise is a guaranteed 500.  BaseException, not
+    Exception: a ``__bool__`` bomb raising a BaseException subclass sailed
+    past the old net on both passes of the turn."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -234,17 +284,25 @@ def _dget(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         return dict.get(mapping, key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: a shadow key whose ``__eq__`` raises one used
+        # to sail past the old ``except Exception`` and out of both routes.
         pass
     try:
         for k, v in dict.items(mapping):
             if _isa(k, str) and str.__eq__(key, k) is True:
                 return v
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return None
 
@@ -264,7 +322,9 @@ def _list_rows(value) -> list:
         return []
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -274,7 +334,9 @@ def _dict_len(mapping) -> int:
     caller's existing fallback path runs instead of a blanket except."""
     try:
         return dict.__len__(mapping)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
 
 
@@ -303,14 +365,18 @@ def _exact_number(raw):
         if type(raw) is not int:
             try:
                 raw = int.__index__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return raw
     if _isa(raw, float):
         if type(raw) is not float:
             try:
                 raw = float.__float__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if raw != raw or raw in (float("inf"), float("-inf")):
             return None
@@ -348,7 +414,9 @@ def _jsonable(value, depth: int = 0):
                 # 500 fallback_brief and suggest_panels *inside the router's
                 # own error fallback* — twice, with nothing above to catch it.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -364,7 +432,9 @@ def _jsonable(value, depth: int = 0):
                 # used to survive the NaN/inf probes, then 500 the disk
                 # threshold in suggest_panels on both raises of the turn.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -388,7 +458,9 @@ def _jsonable(value, depth: int = 0):
         # outside this try — and degrade the whole turn to the minimal brief.
         try:
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -401,11 +473,15 @@ def _jsonable(value, depth: int = 0):
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
                 k = _utf8_text(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
@@ -421,22 +497,29 @@ def _jsonable(value, depth: int = 0):
                 # comprehension below, outside every catch.
                 try:
                     rows = list(base.__iter__(value))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in rows]
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
-        # ``__getattr__`` bomb still raised out of the probe itself.
+        # ``__getattr__`` bomb still raised out of the probe itself — and a
+        # BaseException-shaped one sailed past even the Exception net.
         iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 POST /api/assistant/ask.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -465,7 +548,9 @@ def _panel_id(raw) -> str:
         # map — inside the router's error fallback too.  The base coercion
         # keeps the renderable value instead of dropping the row.
         return str(int.__index__(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -527,7 +612,9 @@ def _panel_rows() -> list:
         if _isa(rows, base):
             try:
                 return list(base.__iter__(rows))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
     return []
 
@@ -796,7 +883,12 @@ def build_snapshot() -> dict:
         # except and skipped the full_status() retry the sane path still had.
         if not (_isa(status, dict) and _dict_len(status)):
             status = full_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: a collector raising a BaseException-subclass
+        # bomb (a leftover watchdog/timeout shape) used to sail past the
+        # old net and out of both routes with nothing above to catch it.
         status = {}
     if not _isa(status, dict):
         status = {}
@@ -844,7 +936,9 @@ def build_snapshot() -> dict:
     try:
         from hub import ollama_svc
         ollama = ollama_svc.status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ollama = None
     if _isa(ollama, dict):
         # _dget / _truthy / list.__iter__, not bound ``.get`` and bare
@@ -864,7 +958,9 @@ def build_snapshot() -> dict:
     try:
         from hub.ups_svc import ups_snapshot
         ups = ups_snapshot()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ups = None
     # Same rule: a ``get`` bomb on the ups wrapper used to drop the whole
     # ups block, so the brief lost a real on-battery state.
@@ -1089,7 +1185,12 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
                 messages.append({"role": role, "content": content[:MAX_QUERY_CHARS]})
         messages.append({"role": "user", "content": user_text})
         result = ollama_svc.chat(model, messages, MAX_NUM_PREDICT)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: a chat/status seam raising a BaseException
+        # subclass used to sail past the old net and drop the whole turn
+        # raw instead of degrading to the template brief.
         return {}
     # _isa, not bare isinstance: this gate runs *outside* the try above, so
     # a chat result whose ``__class__`` is a raising property used to drop
