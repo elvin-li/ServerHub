@@ -200,7 +200,10 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         ms = _probe_ms(t0)
         # 401/403 still means service is up
         ok = e.code in (401, 403)
-        return {"ok": ok, "status": e.code, "ms": ms, "error": exc_detail(getattr(e, "reason", e), 120)}
+        # _error_text, not a bare exc_detail: a junk ``reason`` (a plain
+        # object riding a leftover HTTPError) rendered its default
+        # object.__repr__ — a raw heap address — verbatim into this cell.
+        return {"ok": ok, "status": e.code, "ms": ms, "error": _error_text(getattr(e, "reason", e), 120)}
     except _CONTROL_FLOW:
         raise
     except BaseException as e:
@@ -210,8 +213,10 @@ def _probe(url: str, timeout: float = 3.0) -> dict:
         # rode through the fan_out batch and 500'd the whole list route.
         # The host gates run before any socket opens, so a bomb still
         # fails closed — the row reads error, no probe happens.
+        # _error_text: a hook exception carrying a junk arg leaked that
+        # arg's default repr — a heap address — into this cell.
         ms = _probe_ms(t0)
-        return {"ok": False, "status": None, "ms": ms, "error": exc_detail(e, 120)}
+        return {"ok": False, "status": None, "ms": ms, "error": _error_text(e, 120)}
 
 
 def _isinst(value, types) -> bool:
@@ -240,6 +245,24 @@ def _isinst(value, types) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs below (the modules14/files16/notify13 rule): after
+    a claimed arm's unbound descriptor rejects the operand, only the arm the
+    *real* layout matches may pick the value up — the lie must not steer the
+    walk a second time.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _key_text(value) -> str | None:
     """Coerce a YAML/backend leftover into a scrubbed lookup key, or None.
 
@@ -256,10 +279,19 @@ def _key_text(value) -> str | None:
       ``service: "cam\\ud800"`` stayed raw, so the two sides of the index
       keyed by different forms and a stopped VM's bookmark probed red
       instead of gray.  Keys are scrubbed on both put and lookup.
+
+    Keyed off the *real* storage (``_real``), not the claim: the old gates
+    asked ``_isinst``, which consults a lying ``__class__`` whenever the
+    real-MRO check misses, so a genuine str ``service:`` lying ``int`` was
+    steered into the int arm, refused by the unbound ``int.__index__``, and
+    dropped at the wrong rank — and a genuine str/int lying ``bool`` was
+    dropped by the bool gate outright — so a stopped VM's bookmark probed
+    red instead of gray even though the key text was right there.  A claim
+    with no str/int storage underneath keeps the old None drop.
     """
-    if _isinst(value, bool) or not _isinst(value, (str, int)):
+    if _real(value, bool):
         return None
-    if _isinst(value, int):
+    if _real(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int (the modules5 rule): an
@@ -281,8 +313,10 @@ def _key_text(value) -> str | None:
             s = str(value)
         except ValueError:
             return None
-    else:
+    elif _real(value, str):
         s = value
+    else:
+        return None
     return _utf8_text(s) or None
 
 
@@ -788,6 +822,32 @@ def _decode_bytes(value) -> str:
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _error_text(exc, cap: int = 120) -> str:
+    """``exc_detail`` with the address belt for the probe ``error`` cells.
+
+    ``exc_detail`` renders an exception's *message objects* through
+    ``str()``, so a leftover exception carrying a junk arg — or an
+    ``HTTPError`` whose ``reason`` is junk — answered the default
+    ``object.__repr__``: ``<X object at 0x7f...>``, a raw heap address,
+    which the row's ``error`` cell carried verbatim onto GET /api/bookmarks.
+    The final ``_jsonable`` scrub cannot catch it there: by then the cell is
+    *real str storage*, which is data and stays verbatim (the bookmarks12
+    pin).  The belt belongs at this seam instead — a probe error is coerced
+    rendering, never operator data — and degrades the whole cell to the
+    same ``"error"`` token ``exc_detail`` already answers for a message it
+    cannot read at all.
+    """
+    try:
+        text = exc_detail(exc, cap)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return "error"
+    if type(text) is not str:
+        return "error"
+    return "error" if _ADDR_REPR_RE.search(text) else text
+
+
 def _str_text(value) -> str | None:
     """Exact text of *really-str* storage, or ``None`` for an impostor.
 
@@ -874,113 +934,168 @@ def _jsonable(value, depth: int = 0):
     and leftover backend ``datetime`` / bytes / inf still leaked into
     GET /api/bookmarks. A leftover ``\\ud800`` in ``name`` still 500'd the
     same encoder (``ensure_ascii=False`` then UTF-8).
+
+    ``isinstance`` consults ``value.__class__`` only after the real-MRO
+    check misses, so a lying ``__class__`` used to steer a leftover into
+    the arm of its *claim*, the unbound descriptor there rejected the real
+    layout, and an early return threw honest renderable storage away at
+    the wrong rank (the modules14/files16/notify13 shape): a genuine str
+    name lying ``int`` / ``bool`` vanished to ``None``, a genuine mapping
+    lying ``str`` / ``bytes`` degraded to ``""``, a genuine sequence lying
+    ``dict`` dropped whole.  Each rejected arm now falls through to the arm
+    the *real* storage matches — probed via ``type(value)`` (``_real``) so
+    the lie cannot steer the walk twice — and a total impostor (no usable
+    layout underneath the claim) keeps its established drop.
     """
     if depth > 32:
         return None
     if value is None:
         return value
-    if _isinst(value, bool):
-        # ``bool`` is final — it cannot be subclassed — so an ``_isinst(...,
-        # bool)`` True on a value whose real type is *not* ``bool`` is a lying
-        # ``__class__`` impostor (bookmarks8), not a real bool.  Returned as-is
-        # it leaked straight into Starlette's ``allow_nan=False`` encoder,
-        # which cannot serialise the impostor and 500'd GET /api/bookmarks.
-        # A real bool passes through; the impostor is dropped like a lying int.
-        return value if type(value) is bool else None
+    # ``type(value) is bool``, not the isinstance gate: ``bool`` is final,
+    # so only a real bool may render raw (bookmarks9).  A *lying*
+    # ``__class__`` claiming bool now falls through — ``bool`` subtypes
+    # ``int``, so the int arm's unbound ``int.__index__`` recovers genuine
+    # int storage behind the lie (the old arm dropped it to ``None`` at
+    # the wrong rank) and still drops a total impostor exactly as before.
+    if type(value) is bool:
+        return value
     if _isinst(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
                 # Base coercion to an exact int (modules5): a subclass
                 # ``__str__`` bomb used to blow the digit-cap probe below
                 # with a non-ValueError and 500 the route at encode time.
                 # BaseException: an ``__index__`` bomb raising a
                 # BaseException subclass sailed past the old net too.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                # ``except ValueError`` stays exactly this narrow (the pinned
+                # union guard): *num* is an exact int here, so only the
+                # digit-cap ValueError can fire.
+                str(num)
+            except ValueError:
+                # YAML hex/octal leftovers dodge CPython's str->int digit cap,
+                # so an over-cap link field arrived here already-int and
+                # Starlette's own json.dumps raised the int->str digit-cap
+                # ValueError — same drop as its inf float sibling.
                 return None
-        try:
-            # ``except ValueError`` stays exactly this narrow (the pinned
-            # union guard): *value* is an exact int here, so only the
-            # digit-cap ValueError can fire.
-            str(value)
-        except ValueError:
-            # YAML hex/octal leftovers dodge CPython's str->int digit cap,
-            # so an over-cap link field arrived here already-int and
-            # Starlette's own json.dumps raised the int->str digit-cap
-            # ValueError — same drop as its inf float sibling.
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the old None drop.
             return None
-        return value
+        # The descriptor refused the operand, so the claimed ``int`` was a
+        # lie — but the real storage matches a later arm: a genuine str /
+        # float / container behind that lie used to vanish to ``None`` at
+        # the wrong rank while its value rendered fine one gate below.
     if _isinst(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming float keeps the old None drop.
             return None
-        return value
+        # Genuine text / container behind a lying-float claim falls through.
     if _isinst(value, str):
-        return _utf8_text(value)
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            return _utf8_text(value)
+        # Genuine mapping / sequence storage behind a lying-str
+        # ``__class__`` used to degrade to ``""`` here — the wrong rank;
+        # the arm its real storage matches walks it below.
     if _isinst(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            return _decode_bytes(value)
+        # Genuine mapping / sequence behind a lying-bytes claim falls
+        # through to the arm that reads its real storage.
     if _isinst(value, dict):
         try:
-            items = list(value.items())
+            # Unbound ``dict.items`` snapshot, not the bound dispatch: a
+            # dict-*subclass* ``items()`` bomb riding a nested link field
+            # used to vaporize its perfectly renderable C-level entries to
+            # ``None`` (the old net absorbed the raise but threw the
+            # storage away), and a lying ``__class__`` claiming dict is
+            # rejected by the descriptor instead of answering junk.  The
+            # ``list(...)`` snapshot keeps the walk immune to a hook that
+            # resizes the mapping mid-walk (the modules13 rule).
+            items = list(dict.items(value))
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            # A mapping that refuses iteration (odd dict subclass riding a
-            # link field): nothing to salvage from it, but its *siblings*
-            # must survive — pre-fix this raised out of the final scrub and
-            # 500'd GET /api/bookmarks (the ups_svc/nginx_svc rule) — and a
-            # BaseException-shaped ``items`` bomb sailed past even that net.
+            items = None
+        if items is not None:
+            out = {}
+            for pair in items:
+                try:
+                    # Guarded unpack kept for odd subclass storage shapes.
+                    k, v = pair
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                # No raw ``str(k)`` pre-coercion: a junk *key* (default
+                # ``object.__repr__``) used to render its heap address as the
+                # JSON key itself, one rank above the value scrub.  ``_utf8_text``
+                # coerces the renderable kinds (int / float / tuple keys) the
+                # same as before and drops the address shapes to "".
+                # ``_real``, not ``_isinst``: a lying-str claim with no text
+                # storage used to file its value under a fabricated ``""``
+                # key — only *real* text storage may keep an empty key.
+                was_text = _real(k, (str, bytes, bytearray))
+                try:
+                    k = _utf8_text(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                if not k and not was_text:
+                    # A key with no real text storage that coerced to nothing:
+                    # there is no name to file the value under — the pair drops
+                    # alone, siblings survive.  A real empty-str key stays.
+                    continue
+                out[k] = _jsonable(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            # A total impostor claiming dict keeps the old None drop.
             return None
-        out = {}
-        for pair in items:
-            try:
-                # Guarded unpack: an ``items()`` that answers non-pairs
-                # (``[1, 2]``) used to TypeError here, outside the list()
-                # try just above, and 500 the route at encode time.
-                k, v = pair
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-            # No raw ``str(k)`` pre-coercion: a junk *key* (default
-            # ``object.__repr__``) used to render its heap address as the
-            # JSON key itself, one rank above the value scrub.  ``_utf8_text``
-            # coerces the renderable kinds (int / float / tuple keys) the
-            # same as before and drops the address shapes to "".
-            was_text = _isinst(k, (str, bytes, bytearray))
-            try:
-                k = _utf8_text(k)
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-            if not k and not was_text:
-                # A key with no real text storage that coerced to nothing:
-                # there is no name to file the value under — the pair drops
-                # alone, siblings survive.  A real empty-str key stays.
-                continue
-            out[k] = _jsonable(v, depth + 1)
-        return out
+        # Genuine sequence storage behind a lying-dict ``__class__`` falls
+        # through: its elements render below instead of vanishing whole.
     if _isinst(value, (list, tuple, set, frozenset)):
-        try:
-            vals = list(value)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # A sequence subclass whose __iter__ raises: same rule as the
-            # dict branch — the bomb drops alone, siblings keep rendering.
-            return None
-        return [_jsonable(v, depth + 1) for v in vals]
+        for base in (list, tuple, set, frozenset):
+            if not _real(value, base):
+                continue
+            try:
+                # Unbound ``base.__iter__`` snapshot off the real layout:
+                # a sequence-subclass ``__iter__`` bomb used to drop its
+                # renderable elements to ``None`` through the bound
+                # ``list(value)`` dispatch, and the snapshot keeps the walk
+                # immune to a hook that resizes its parent mid-walk.
+                vals = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable(v, depth + 1) for v in vals]
+        # A claim with no real sequence layout underneath: nothing to
+        # iterate off the C storage — the old None drop.
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except _CONTROL_FLOW:
@@ -1031,16 +1146,31 @@ def list_bookmarks() -> dict:
     # a hash-shadowing ``quick_links`` key used to 500 the route right here,
     # before a single link was looked at.
     raw_links = _cfg_get("quick_links")
-    try:
-        # Materialised once, on its own: a list-subclass ``__iter__`` bomb
-        # used to raise out of ``list(raw_links)`` here and then raise a
-        # second time out of the identical call in the except fallback — a
-        # 500 from the exception handler itself.
-        base_links = list(raw_links) if _isinst(raw_links, list) else []
-    except _CONTROL_FLOW:
-        raise
-    except BaseException:
-        base_links = []
+    # Materialised once, off the *real* storage: the old bound
+    # ``list(raw_links)`` dispatched a list-subclass ``__iter__`` bomb —
+    # first a 500 from the exception handler itself (it raised a second
+    # time out of the identical call in the except fallback), then, once
+    # absorbed, a silent wipe of every perfectly renderable row the real
+    # C-level storage held.  The unbound ``base.__iter__`` snapshot reads
+    # that storage without running the override (the modules14 registry-
+    # rank rule), and each base is tried against the real layout so a
+    # lying ``__class__`` cannot steer the read; a total impostor fails
+    # every base and keeps the old empty-list drop.
+    base_links: list = []
+    if _isinst(raw_links, list):
+        # Both bases against the gate's claim: a genuine tuple lying
+        # ``list`` recovers through ``tuple.__iter__``; an honest tuple
+        # never passed this gate before and still does not.
+        for base in (list, tuple):
+            if not _real(raw_links, base):
+                continue
+            try:
+                base_links = list(base.__iter__(raw_links))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            break
     try:
         # raise-on-junk kept (the bookmarks5 pin): resolve_value's walk is
         # the junk detector and this absorb is its contract.  Only the net
@@ -1183,7 +1313,9 @@ def list_bookmarks() -> dict:
         except _CONTROL_FLOW:
             raise
         except BaseException as e:  # noqa: BLE001 -- surfaced in the row
-            return {"ok": False, "status": None, "ms": 0, "error": exc_detail(e, 120)}
+            # _error_text: same address belt as _probe's own seams — a
+            # junk arg riding the escape leaked its repr into the cell.
+            return {"ok": False, "status": None, "ms": 0, "error": _error_text(e, 120)}
 
     probes: dict[int, dict] = {
         i: _compose_result(link, result, backend)

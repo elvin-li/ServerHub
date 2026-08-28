@@ -417,11 +417,14 @@ class GuardUnitPins(unittest.TestCase):
         out = bookmarks_svc._jsonable({"good": "yes", "bad": GetattrBomb()})
         self.assertEqual(out["good"], "yes")
 
-    def test_jsonable_iter_bomb_list_drops_alone(self):
+    def test_jsonable_iter_bomb_list_recovers_storage(self):
+        """Boom cannot 500 the walk (this sweep's seal), and since
+        bookmarks14 the unbound ``list.__iter__`` snapshot renders the
+        bomb's real elements instead of dropping them to None."""
         out = bookmarks_svc._jsonable({"good": "yes",
                                        "bad": IterBombList([1, 2])})
         self.assertEqual(out["good"], "yes")
-        self.assertIsNone(out["bad"])
+        self.assertEqual(out["bad"], [1, 2])
 
     def test_jsonable_digit_cap_probe_stays_valueerror_only(self):
         """The pinned union guard: an over-cap exact int still drops clean."""

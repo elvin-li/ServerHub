@@ -175,13 +175,17 @@ class BoolBombValuesHttpPins(_HttpPinBase):
 class IterBombQuickLinksHttpPins(_HttpPinBase):
     """list(raw_links) raised in the try *and again* in the except fallback."""
 
-    def test_list_subclass_iter_bomb_answers_an_empty_200(self):
+    def test_list_subclass_iter_bomb_recovers_the_real_rows(self):
+        """No 500 either way; since bookmarks14 the unbound ``list.__iter__``
+        snapshot reads the real C-level storage past the bomb, so the rows
+        render instead of wiping to the empty list."""
         resp = self._get({"quick_links": IterBombList([dict(_GOOD)]),
                           "overrides": {}})
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         body = resp.json()
-        self.assertEqual(body["bookmarks"], [])
-        self.assertEqual(body["up"], 0)
+        self.assertEqual([r["url"] for r in body["bookmarks"]],
+                         ["http://good.lan"])
+        self.assertEqual(body["up"], 1)
 
 
 class RawBombLinkRowsHttpPins(_HttpPinBase):
@@ -223,7 +227,9 @@ class RawBombLinkRowsHttpPins(_HttpPinBase):
 class JsonableBombFieldsHttpPins(_HttpPinBase):
     """items()/__iter__ bombs riding a rendered link field into _jsonable."""
 
-    def test_items_bomb_name_drops_alone_at_encode_time(self):
+    def test_items_bomb_name_recovers_storage_at_encode_time(self):
+        """No 500 either way; since bookmarks14 the unbound ``dict.items``
+        snapshot reads the bomb's real entries instead of dropping them."""
         resp = self._get({
             "quick_links": [{"name": ItemsBomb(a=1), "url": "http://a.lan"},
                             dict(_GOOD)],
@@ -232,10 +238,10 @@ class JsonableBombFieldsHttpPins(_HttpPinBase):
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         body = resp.json()
         by_url = {r["url"]: r for r in body["bookmarks"]}
-        self.assertIsNone(by_url["http://a.lan"]["name"])
+        self.assertEqual(by_url["http://a.lan"]["name"], {"a": 1})
         self.assertEqual(by_url["http://good.lan"]["name"], "good")
 
-    def test_iter_bomb_name_drops_alone_at_encode_time(self):
+    def test_iter_bomb_name_recovers_storage_at_encode_time(self):
         resp = self._get({
             "quick_links": [{"name": IterBombList(["n"]),
                              "url": "http://a.lan"}, dict(_GOOD)],
@@ -243,7 +249,7 @@ class JsonableBombFieldsHttpPins(_HttpPinBase):
         })
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         by_url = {r["url"]: r for r in resp.json()["bookmarks"]}
-        self.assertIsNone(by_url["http://a.lan"]["name"])
+        self.assertEqual(by_url["http://a.lan"]["name"], ["n"])
 
 
 class RealBackendIndexBombHttpPins(_HttpPinBase):
@@ -325,14 +331,16 @@ class BackendIndexUnitPins(unittest.TestCase):
 class JsonableUnitPins(unittest.TestCase):
     """The scrub itself: bombs drop alone, siblings stay encodable."""
 
-    def test_items_bomb_mapping_drops_alone(self):
+    def test_items_bomb_mapping_recovers_storage(self):
+        """Since bookmarks14 the unbound ``dict.items`` snapshot renders the
+        bomb's real C-level entries instead of dropping them to None."""
         out = bookmarks_svc._jsonable({"bomb": ItemsBomb(a=1), "ok": 1})
-        self.assertEqual(out, {"bomb": None, "ok": 1})
+        self.assertEqual(out, {"bomb": {"a": 1}, "ok": 1})
         json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
-    def test_iter_bomb_sequence_drops_alone(self):
+    def test_iter_bomb_sequence_recovers_storage(self):
         out = bookmarks_svc._jsonable({"bomb": IterBombList([1]), "ok": 1})
-        self.assertEqual(out, {"bomb": None, "ok": 1})
+        self.assertEqual(out, {"bomb": [1], "ok": 1})
         json.dumps(out, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
