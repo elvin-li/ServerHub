@@ -40,7 +40,7 @@
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_services') }}</span>
-        <span class="net-summary-value">{{ t('network.sum_active_n', { n: (data.services || []).filter(s => !s.disabled).length }) }}</span>
+        <span class="net-summary-value">{{ t('network.sum_active_n', { n: asServiceList(data.services).filter(s => !s.disabled).length }) }}</span>
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_listening') }}</span>
@@ -355,7 +355,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in data?.services || []" :key="s.name">
+            <tr v-for="s in asServiceList(data?.services)" :key="s.name">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.disabled') }}</span>
@@ -378,7 +378,7 @@
                 </template>
               </td>
             </tr>
-            <tr v-if="!(data?.services||[]).length && !loadError">
+            <tr v-if="!asServiceList(data?.services).length && !loadError">
               <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
@@ -404,7 +404,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
           <tbody>
-            <tr v-for="s in data?.services || []" :key="s.name">
+            <tr v-for="s in asServiceList(data?.services)" :key="s.name">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
                 <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
@@ -413,7 +413,7 @@
               <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
-            <tr v-if="!(data?.services||[]).length && !loadError">
+            <tr v-if="!asServiceList(data?.services).length && !loadError">
               <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
@@ -782,6 +782,10 @@ function priorityStatusKey(s) {
     if (!serviceHasIpv4(s)) return 'network.no_ipv4'
   }
   return 'network.on'
+}
+
+function asServiceList(raw) {
+  return Array.isArray(raw) ? raw : []
 }
 
 function cloneServiceOrder(raw) {
