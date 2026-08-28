@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -20,6 +21,9 @@ from typing import Any, Callable, TypeVar
 from hub.cli_args import as_argv
 
 log = logging.getLogger("serverhub.util")
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 T = TypeVar("T")
 
@@ -630,22 +634,66 @@ def _log_once(kind: str, cmd, message: str) -> None:
 
 def _exc_text(exc, cap: int = 200) -> str:
     """Exception text that cannot RecursionError leftover ``str(e)`` or UTF-8 500."""
-    try:
-        text = str(exc)
-    except RecursionError:
-        try:
-            text = type(exc).__name__
-        except Exception:
-            text = "error"
-    except Exception:
+    if exc is None:
         text = "error"
+    else:
+        for base in (bytes, bytearray):
+            try:
+                text = base.decode(exc, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        else:
+            try:
+                text = str.encode(str.__str__(exc), "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                text = None
+            if text is None:
+                try:
+                    cls = type(exc)
+                    if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                        text = "error"
+                    else:
+                        text = None
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    text = "error"
+            if text is None:
+                try:
+                    text = str(exc)
+                except RecursionError:
+                    try:
+                        text = type(exc).__name__
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        text = "error"
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    text = "error"
     if not isinstance(text, str):
         text = "error"
     try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        text = "error"
+    if _ADDR_REPR_RE.search(text):
+        text = "error"
+    try:
         cap_n = int(cap)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         cap_n = 200
-    return text.encode("utf-8", "replace").decode("utf-8")[: max(0, cap_n)]
+    return text[: max(0, cap_n)]
 
 
 def strftime_now(fmt: str, default: str = "") -> str:
@@ -671,7 +719,9 @@ def utf8_env(env=None) -> dict[str, str]:
     source = os.environ if env is None else env
     try:
         items = source.items()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     out: dict[str, str] = {}
     for key, value in items:
