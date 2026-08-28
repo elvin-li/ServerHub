@@ -32,28 +32,60 @@ answer in either direction is a wrong autostart toggle in the UI.
 """
 from __future__ import annotations
 
+import re
 from types import MappingProxyType
 
 from hub.util import cached_snapshot, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _as_text(value) -> str:
     """``launchctl`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 health/apps JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 #: Deliberately short.  This is a dependency cache, not a page cache: every
 #: consumer already sits behind a much longer TTL of its own (the health snapshot,
@@ -90,7 +122,9 @@ class Listing:
         clean: dict[str, tuple[str, str]] = {}
         try:
             items = list((jobs or {}).items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = []
         for label, entry in items:
             name = _as_text(label).strip()

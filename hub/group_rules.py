@@ -17,6 +17,9 @@ from typing import Any
 from hub.config import cfg, mutate
 from hub.errors import api_error
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _RE_HINT = re.compile(r"[|.*+?\[\](){}]")
@@ -78,31 +81,68 @@ SEED_RULES: tuple[dict[str, Any], ...] = (
 
 def _utf8_text(value) -> str:
     """Drop leftover ``\\ud800`` / RecursionError so matching cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _as_int(value) -> int | None:
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, (bytes, bytearray)):
-        return None
+    text = None
+    for base in (bytes, bytearray):
+        try:
+            text = base.decode(value, "utf-8", "replace")
+            break
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        n = int(value)
-    except (TypeError, ValueError, OverflowError):
+        n = int(text) if text is not None else int(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if 1 <= n <= 65535:
         return n
@@ -110,7 +150,7 @@ def _as_int(value) -> int | None:
 
 
 def _str_list(raw) -> tuple[str, ...]:
-    if raw is None or isinstance(raw, bool):
+    if raw is None or type(raw) is bool:
         return ()
     if isinstance(raw, (bytes, bytearray, str)):
         text = _utf8_text(raw).strip()
@@ -122,12 +162,14 @@ def _str_list(raw) -> tuple[str, ...]:
         items = list(raw)
     except RecursionError:
         return ()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ()
     for item in items:
-        if isinstance(item, bool) or item is None:
+        if type(item) is bool or item is None:
             continue
-        if isinstance(item, (int, float)) and not isinstance(item, bool):
+        if isinstance(item, (int, float)) and type(item) is not bool:
             # YAML leftover ``.inf`` / a bare port in a string field.
             continue
         text = _utf8_text(item).strip()
@@ -137,9 +179,9 @@ def _str_list(raw) -> tuple[str, ...]:
 
 
 def _port_list(raw) -> tuple[int, ...]:
-    if raw is None or isinstance(raw, bool):
+    if raw is None or type(raw) is bool:
         return ()
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+    if isinstance(raw, (int, float)) and type(raw) is not bool:
         n = _as_int(raw)
         return (n,) if n is not None else ()
     if isinstance(raw, str):
@@ -152,7 +194,9 @@ def _port_list(raw) -> tuple[int, ...]:
         items = list(raw)
     except RecursionError:
         return ()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ()
     for item in items:
         n = _as_int(item)
@@ -266,7 +310,9 @@ def _parse_many(raw_list) -> list[dict]:
         items = list(raw_list)
     except RecursionError:
         return []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     for item in items:
         parsed = parse_rule(item, taken=seen)
@@ -288,7 +334,9 @@ def rules_from_config(data=None) -> tuple[list[dict], str]:
     if data is None:
         try:
             data = cfg()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _parse_many(SEED_RULES), "seed"
     if not isinstance(data, dict):
         return _parse_many(SEED_RULES), "seed"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -10,6 +11,9 @@ import time
 from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.util import safe_json_loads, sh, tail_file_lines
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
@@ -38,9 +42,11 @@ def _ncpu() -> int:
     if cached is not None and now - _ncpu_cache["t"] < _NCPU_TTL:
         try:
             n = int(cached)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``;
-            # Exception because ``int()`` of a leftover subclass dispatches
+            # BaseException because ``int()`` of a leftover subclass dispatches
             # into its own ``__int__``/``__index__`` bomb.
             n = 0
         if n > 0:
@@ -50,7 +56,9 @@ def _ncpu() -> int:
     n = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
     try:
         n = int(n) if n is not None else 1
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         n = 1
     if n <= 0:
         n = 1
@@ -72,7 +80,9 @@ def _plain_dict(value) -> dict | None:
     if isinstance(value, dict):
         try:
             return dict(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -275,36 +285,63 @@ def flush_pending() -> None:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # _decode_bytes, not value.decode: a leftover bytes-subclass whose
-        # bound ``decode`` raised (modules5's bomb class) used to escape
-        # _jsonable entirely — as a value and as a mapping key.
-        return _decode_bytes(value)
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not isinstance(text, str):
         return ""
-    # Unbound ``str.encode`` (the modules6 rule sensors_svc already follows):
-    # ``str()`` of a subclass whose ``__str__`` answers *self* skips CPython's
-    # exact-str copy, so the bound ``encode`` tail ran the subclass override —
-    # a raise killed the sampler tick in record_sample() past metrics6's
-    # guards (jsonl row silently lost) and raised back at record_sample's
-    # callers; an override that *returned* a hostile buffer walked a lone
-    # surrogate past this scrub into Starlette's UTF-8 encode (a 500).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
