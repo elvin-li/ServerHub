@@ -602,7 +602,9 @@ async def bridge(websocket, reader: asyncio.StreamReader, writer: asyncio.Stream
                 state["reason"] = "disconnect"
             except (BrokenPipeError, ConnectionResetError):
                 state["reason"] = "console_closed"
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 state["reason"] = "io_error"
     finally:
         for task in tasks:
@@ -695,14 +697,20 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
         if writer is not None:
             try:
                 writer.close()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             try:
                 await writer.wait_closed()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
         try:
             await websocket.close(code=1000 if reason == "console_closed" else 1001)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 

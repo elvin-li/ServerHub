@@ -314,19 +314,25 @@ def _type_flags(device) -> tuple[str, ...]:
     """
     try:
         raw = device_type(device)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ()
     if type(raw) is tuple:
         items = raw
     elif _isa(raw, tuple):
         try:
             items = tuple(tuple.__iter__(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ()
     elif _isa(raw, list):
         try:
             items = tuple(list.__getitem__(raw, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ()
     else:
         return ()
@@ -339,7 +345,9 @@ def _type_flags(device) -> tuple[str, ...]:
             return ()
         try:
             flags.append(str.__str__(flag))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ()
     return tuple(flags)
 
@@ -433,7 +441,9 @@ def _node_list() -> list[str]:
     """
     try:
         raw = _device_nodes()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     # Unbound base iteration in a try (the modules9 rule): a lying
     # ``__class__`` claiming list TypeErrors the bound descriptor instead
@@ -441,12 +451,16 @@ def _node_list() -> list[str]:
     if _isa(raw, list):
         try:
             rows = list(list.__iter__(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     elif _isa(raw, tuple):
         try:
             rows = list(tuple.__iter__(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     else:
         return []
@@ -461,7 +475,9 @@ def _node_list() -> list[str]:
                 # Base copy: bypasses a self-returning ``__str__`` override
                 # and rejects a str-liar impostor with a caught TypeError.
                 node = str.__str__(n)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         if node and node not in nodes:
             nodes.append(node)
@@ -589,7 +605,9 @@ def _probe_caps(device) -> dict:
     failed = {"available": False, "reason": "probe_failed", "supported": []}
     try:
         caps = _capabilities(device)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return failed
     if not _isa(caps, dict):
         return failed
@@ -598,27 +616,37 @@ def _probe_caps(device) -> dict:
     # lying ``__class__`` claiming dict TypeErrors the bound descriptor.
     try:
         available = bool(dict.get(caps, "available"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return failed
     try:
         reason = dict.get(caps, "reason")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return failed
     if type(reason) is not str:
         reason = _as_text(reason) or "probe_failed"
     try:
         raw_supported = dict.get(caps, "supported")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw_supported = None
     if _isa(raw_supported, list):
         try:
             rows = list(list.__iter__(raw_supported))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     elif _isa(raw_supported, tuple):
         try:
             rows = list(tuple.__iter__(raw_supported))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     else:
         rows = []
@@ -631,7 +659,9 @@ def _probe_caps(device) -> dict:
             continue
         try:
             supported.append(str.__str__(kind))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return {"available": available, "reason": reason, "supported": supported}
 
@@ -983,7 +1013,9 @@ def _load_history() -> list[dict]:
         # ``__class__`` claiming list from a patched loader passed the gate
         # and the loop header's TypeError 500'd GET /api/smart/history.
         rows = list(list.__iter__(data))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     return [_jsonable(row) for row in rows if _isa(row, dict)]
 
@@ -1018,11 +1050,15 @@ def history(limit: int = 100) -> list[dict]:
     if _isa(limit, int) and not _isa(limit, bool):
         try:
             limit = int.__index__(limit)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             limit = 100
     try:
         n = max(1, min(int(limit or 100), 500))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         n = 100
     # _isa: a ``__class__``-property bomb row in the journal used to
     # detonate the gate itself and 500 GET /api/smart/history where every
@@ -1045,7 +1081,9 @@ def _schedule_cfg() -> dict:
     # scheduler tick (the try/except-around-cfg() union rule).
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if not _isa(data, dict):
         return {}
@@ -1088,11 +1126,15 @@ def _schedule_cfg() -> dict:
                     continue
                 try:
                     k = str.__str__(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[k] = v
         return out
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -1120,7 +1162,9 @@ def _schedule_text(value) -> str:
         return decoded if decoded is not None else ""
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Lone surrogates (a mojibake hand-edit) must not reach Starlette's
     # UTF-8 encode.  Unbound ``str.encode``: ``str(x)`` of a subclass whose
@@ -1155,7 +1199,9 @@ def _schedule_epoch(raw) -> float:
         elif _isa(raw, float):
             raw = float.__float__(raw)
         value = float(raw or 0)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0.0
     # ``last_run: .inf`` in settings used to OverflowError ``int(inf)``
     # on GET /api/smart, and Starlette's allow_nan=False encoder 500'd
@@ -1184,7 +1230,9 @@ def get_schedule() -> dict:
     # TypeError rode the same two paths; the impostor reads as no devices.
     try:
         device_rows = list(list.__iter__(devices)) if _isa(devices, list) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         device_rows = []
     for d in device_rows:
         # An over-cap device entry drops alone; its siblings stay scheduled.
@@ -1221,7 +1269,9 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
     # raised raw; it reads as no devices.
     try:
         device_rows = list(list.__iter__(devices)) if _isa(devices, list) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         device_rows = []
     cleaned = [
         node
@@ -1251,7 +1301,9 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
         })
     except HTTPException:
         raise
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"ok": False, "error": "failed"}
     invalidate()
     return {"ok": True, "schedule": get_schedule()}
@@ -1352,7 +1404,9 @@ def start_scheduler(check_interval: int = 900) -> None:
             try:
                 worker_health.beat("smart-schedule")
                 run_due_tests()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A background health task must never take the panel down.
                 pass
 
@@ -1444,7 +1498,9 @@ def start_test(device: str, kind: str) -> dict:
             admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
         except HTTPException:
             raise
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             admin = None
         # Unbound ``dict.get`` and a guarded bool: this function does not
         # own the run_admin result (tests and tooling patch it), and a dict
@@ -1459,7 +1515,9 @@ def start_test(device: str, kind: str) -> dict:
         if _isa(admin, dict):
             try:
                 ok = bool(dict.get(admin, "ok"))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 ok = False
             # The message read in its own try: ``dict.get`` is a descriptor
             # bound to the real dict layout, so a *lying* ``__class__``
@@ -1468,7 +1526,9 @@ def start_test(device: str, kind: str) -> dict:
             # operator had already typed the admin password (modules9 rule).
             try:
                 message = _as_text(dict.get(admin, "message"))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 message = ""
     else:
         ok = True
@@ -1521,7 +1581,9 @@ def abort_test(device: str) -> dict:
             result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
         except HTTPException:
             raise
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             result = None
         invalidate()
         # _isa: same ``__class__``-bomb gate as start_test, on
@@ -1572,7 +1634,9 @@ def _device_report(node: str) -> dict:
             "failures": len(failures),
             "progress": progress,
         }
-    except Exception as e:  # noqa: BLE001 -- see docstring
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # noqa: BLE001 -- see docstring
         return {
             "device": node,
             "id": node.rsplit("/", 1)[-1],

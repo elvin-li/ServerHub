@@ -72,6 +72,14 @@ class SmartVmConsoleLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             vm_console._isa(_Ki(), dict)
 
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("smart isoformat watchdog")
+
+        self.assertEqual(smart_test_svc._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()
