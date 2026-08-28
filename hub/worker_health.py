@@ -29,6 +29,7 @@ never be the thing that hurts the workers it watches.
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 
@@ -36,6 +37,8 @@ import time
 #: multiples of its own loop interval.  3x tolerates one slow tick and one
 #: missed tick before alarming, which keeps the check quiet on a loaded host.
 STALE_AFTER = 3.0
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _lock = threading.Lock()
 _workers: dict[str, dict] = {}
@@ -57,38 +60,55 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if _isa(value, (bytes, bytearray)):
-        # Unbound base decode: a subclass ``.decode`` bomb registered as a
-        # worker name used to raise out of snapshot() and silently wipe the
-        # workers row from the health page.  Guarded: a lying-``__class__``
-        # impostor (the docker10/json9 shape — ``isinstance`` says bytes, the
-        # real object is not one) passed the gate but made the unbound
-        # descriptor raise ``TypeError``, wiping the row the same way; it now
-        # falls through to the generic ``str()`` probe below.
-        base = bytes if isinstance(value, bytes) else bytearray
+    for base in (bytes, bytearray):
         try:
             return base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
-    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
-    # bound ``encode`` bomb rode this scrub out of snapshot()/problems().
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
@@ -108,7 +128,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -126,7 +148,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
