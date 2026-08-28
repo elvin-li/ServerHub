@@ -558,6 +558,17 @@ class EverythingAtOncePins(_Notify13Sandbox):
         self.sweep_channel_routes("combined", cid="bch")
         self.assert_dispatch_contract("combined")
 
+    def test_json_safe_swallows_isoformat_getattr_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("notify isoformat watchdog")
+
+        self.assertEqual(notify_channels._json_safe(_IsoBomb()), "")
+
     @staticmethod
     def _combined_topic() -> dict:
         return MidWalkMutationPins._mutating_mapping()

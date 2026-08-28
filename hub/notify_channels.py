@@ -1327,10 +1327,14 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
         finally:
             try:
                 e.close()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
         return {"ok": False, "message": f"HTTP {e.code}: {detail}"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": exc_detail(e)}
 
 
@@ -1391,9 +1395,13 @@ def _send_email(ch: dict, secrets: dict, title: str, message: str, **_) -> dict:
         finally:
             try:
                 smtp.quit()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": exc_detail(e)}
     return {"ok": True, "message": f"sent to {len(to)} recipient(s)"}
 
