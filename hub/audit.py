@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -291,6 +292,14 @@ _STR_CAP = 64 * 1024
 #: the request it audits.
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never trail data (the
+#: bookmarks/assistant/notify13 rule).  Only the free-text *coercion* arm of
+#: ``_utf8_text`` is scrubbed with it; real str/bytes storage is data — an
+#: audited shell command may legitimately contain the pattern — and stays
+#: verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
@@ -351,26 +360,53 @@ def _utf8_text(value) -> str:
                 continue
         else:
             return ""
+    elif _isa(value, str):
+        try:
+            # Unbound base encode on the real str layout: a subclass bound
+            # ``encode``/``__str__`` bomb cannot run, and a lying
+            # ``__class__`` claiming str over foreign storage is refused by
+            # the descriptor and drops to "" instead of leaking anything.
+            text = str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     else:
-        if _isa(value, str):
-            text = value
-        else:
+        # Only a type that renders *itself* may coerce.  This free-text arm
+        # ran ``str()`` on any leftover shape, and for a type that never
+        # overrode ``__str__``/``__repr__`` the answer is the default
+        # ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+        # address — which a junk field value, a mapping key and a set/list
+        # element each carried verbatim onto the 0600 disk trail *and* out
+        # through GET /api/audit/auth (the bookmarks/assistant slot-probe
+        # rule, sealed in notify13/files but never here).  A slot probe on
+        # the real ``type(value)``: a flickering ``__class__`` property
+        # cannot swap the real type out, and a ``__getattr__`` bomb never
+        # runs because nothing is looked up on the instance.
+        try:
+            cls = type(value)
+            if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        try:
+            text = str(value)
+        except RecursionError:
             try:
-                text = str(value)
-            except RecursionError:
-                try:
-                    return type(value).__name__
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    return ""
+                return type(value).__name__
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                # A ``__str__`` bomb raising a BaseException subclass used
-                # to sail past the old ``except Exception`` here and raise
-                # out of record()'s shaping — 500ing the audited request.
                 return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A ``__str__`` bomb raising a BaseException subclass used
+            # to sail past the old ``except Exception`` here and raise
+            # out of record()'s shaping — 500ing the audited request.
+            return ""
         try:
             # str() may hand back a *subclass* instance (it only checks the
             # type, it does not copy), so the scrub itself must not trust
@@ -379,6 +415,15 @@ def _utf8_text(value) -> str:
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            return ""
+        # Belt for what the slot probe cannot see: a function / bound-method
+        # leftover (C-level ``__repr__`` override) and a custom ``__str__``
+        # whose *rendering* embeds a default repr (``{'x': <_Junk object at
+        # 0x...>}``) still answered an address.  Scrubbed before the cap so
+        # a truncation can never tear an address into an unmatchable tail.
+        # Only this coercion arm is scrubbed — real str/bytes storage above
+        # is data and stays verbatim.
+        if _ADDR_REPR_RE.search(text):
             return ""
     if len(text) > _STR_CAP:
         # Same marker shape as util.py's log tailer.  Slicing is by code
@@ -487,11 +532,16 @@ def _jsonable(value, depth: int = 0):
             return out
         for k, v in items:
             if not _isa(k, (str, bytes, bytearray)):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
+                # Through the scrubbed coercion arm, not bare ``str(k)``: a
+                # plain-object leftover key rendered its ``object.__repr__``
+                # — a raw heap address — as the field *name* on the disk
+                # trail and on the wire, because the exact-str result of
+                # ``str(k)`` then rode _utf8_text's verbatim str branch past
+                # the belt.  A key that coerces to nothing (default-render
+                # junk, a ``__str__`` bomb) costs its pair, never the line —
+                # the same drop the old ``continue`` applied.
+                k = _utf8_text(k)
+                if not k:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
