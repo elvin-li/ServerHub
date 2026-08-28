@@ -217,6 +217,31 @@ def _sh3(value) -> tuple:
     return items
 
 
+def _sh_call(argv, *, timeout) -> tuple:
+    """One guarded spawn: the *call* itself can no longer cost the route.
+
+    ``_sh3`` launders the answer's shape, but every seam still ran the call
+    bare — and this module does not own ``sh`` (tests and tooling patch it;
+    the wireguard ``_sh_answer`` guarded-call rule).  A leftover stub that
+    *raises* instead of answering blew ``read_acl`` (a raw 500 on GET and
+    PUT /api/shares/acl before any gate ran), both dscl reads in
+    ``local_users`` (a raw 500 through the picker half of the GET, or one
+    poisoned per-user RealName read costing the whole picker) and
+    ``_run_unprivileged`` (a raw 500 on the PUT's owner-run path one line
+    ahead of its failure funnel).  A raising runner reads as
+    ``(-255, "", "")``: nonzero (a runner that cannot answer is never
+    consent to claim success) and never the ``-1`` spawn sentinel, and with
+    no marker text it can never mint the disk-confirmed vanished-CLI 503
+    either.  An honest answer — the ``-1`` sentinel included — keeps riding
+    ``_sh3`` untouched.
+    """
+    try:
+        answer = sh(argv, timeout=timeout)
+    except Exception:
+        return (-255, "", "")
+    return _sh3(answer)
+
+
 def _str_keyed(plain: dict) -> dict:
     """*plain* (an exact dict) with every key an exact ``str``.
 
@@ -275,6 +300,28 @@ def _plain_result(result) -> dict:
         return {"ok": False, "error": "failed"}
     plain["ok"] = _truthy(plain.get("ok"))
     return plain
+
+
+def _admin_sequence(commands) -> dict:
+    """A plain admin result even when the privileged helper itself raises.
+
+    ``_plain_result`` launders ``run_admin_sequence``'s junk *answers*, but
+    both escalation seams in ``set_user_access`` ran the call bare — and
+    this module does not own the helper (tests and tooling patch it; the
+    usage/smart/wireguard guarded-call rule).  A leftover stub that raises
+    instead of answering 500'd PUT /api/shares/acl one seam ahead of the
+    launder built for its answers, in place of the coded authorization
+    failure.  A raising helper reads as the generic coded failure — with no
+    ``-1``-shaped message text it can never mint the disk-confirmed
+    vanished-CLI answer — while an honest answer keeps riding
+    ``_plain_result`` untouched, ``cancelled`` / ``password_required``
+    shapes included.
+    """
+    try:
+        answer = macos_admin.run_admin_sequence(commands)
+    except Exception:
+        return {"ok": False, "error": "failed"}
+    return _plain_result(answer)
 
 
 class ShareAclError(Exception):
@@ -379,9 +426,11 @@ def _validated_dir(path: str) -> Path:
 def read_acl(path: str) -> dict:
     """ACL and ownership of *path* (validated absolute directory)."""
     resolved = _validated_dir(path)
-    # _sh3: a leftover subclass/impostor answer used to blow this unpack
-    # itself — a raw 500 on GET and PUT /api/shares/acl before any gate ran.
-    rc, output, error = _sh3(sh([LS, "-lde", str(resolved)], timeout=8))
+    # _sh_call (_sh3 inside): a leftover subclass/impostor answer used to
+    # blow this unpack itself — and a patched sh that *raises* blew the call
+    # one token earlier — a raw 500 on GET and PUT /api/shares/acl before
+    # any gate ran.
+    rc, output, error = _sh_call([LS, "-lde", str(resolved)], timeout=8)
     # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
     # to detonate this gate — a raw 500 on GET and PUT /api/shares/acl in
     # place of the coded read failure.  Junk rc reads as failure, and the
@@ -419,9 +468,10 @@ def local_users() -> list[dict]:
     (``_spotlight`` …) start with an underscore and real people start at
     uid 500 on macOS, so both filters together keep exactly the human set.
     """
-    # _sh3: the same unwrap seal — a poisoned dscl answer used to raise out
-    # of this unpack and 500 GET /api/shares/acl through the picker half.
-    rc, output, _ = _sh3(sh([DSCL, ".", "-list", "/Users", "UniqueID"], timeout=8))
+    # _sh_call (_sh3 inside): a poisoned dscl answer used to raise out of
+    # this unpack — and a raising patched sh out of the call itself — and
+    # 500 GET /api/shares/acl through the picker half.
+    rc, output, _ = _sh_call([DSCL, ".", "-list", "/Users", "UniqueID"], timeout=8)
     # _rc_int: an rc-``__ne__`` bomb used to raise out of this gate and 500
     # GET /api/shares/acl — the route reads the picker outside any try.
     if _rc_int(rc) != 0:
@@ -440,11 +490,12 @@ def local_users() -> list[dict]:
             continue
         username = parts[0]
         real_name = ""
-        # _sh3: one poisoned per-user RealName answer used to blow the unpack
-        # and cost the whole picker as a raw 500.
-        rc_name, name_out, _ = _sh3(sh(
+        # _sh_call (_sh3 inside): one poisoned per-user RealName answer used
+        # to blow the unpack — and one raising read the call itself — and
+        # cost the whole picker as a raw 500.
+        rc_name, name_out, _ = _sh_call(
             [DSCL, ".", "-read", f"/Users/{username}", "RealName"], timeout=5
-        ))
+        )
         # _rc_int: the same rc-``__eq__`` bomb class, per picked user — one
         # poisoned RealName read used to cost the whole picker as a raw 500.
         if _rc_int(rc_name) == 0:
@@ -522,10 +573,11 @@ def _run_unprivileged(commands: list[list[str]]) -> dict:
         # ``capture_output=True`` used to keep chmod chatter in RAM for the
         # full timeout.  ``sh`` streams to a tempfile and already maps
         # timeout/OSError to rc=-1 instead of raising into the Shares page.
-        # _sh3: a poisoned chmod answer used to blow this unpack itself — a
-        # raw 500 on PUT /api/shares/acl on the owner-run path, one line
-        # ahead of the failure funnel.
-        rc, out, err = _sh3(sh(command, timeout=15))
+        # _sh_call (_sh3 inside): a poisoned chmod answer used to blow this
+        # unpack itself — and a raising patched sh the call one token
+        # earlier — a raw 500 on PUT /api/shares/acl on the owner-run path,
+        # one line ahead of the failure funnel.
+        rc, out, err = _sh_call(command, timeout=15)
         # _rc_int: an rc-``__ne__`` bomb used to blow this probe one line
         # ahead of the funnel that classifies the failure — a raw 500 on
         # PUT /api/shares/acl on the owner-run path.
@@ -565,12 +617,15 @@ def set_user_access(path: str, username: str, level: str) -> dict:
         for command in template
     ]
 
+    # _admin_sequence (_plain_result inside): a raising leftover stub for
+    # run_admin_sequence used to blow either escalation seam as a raw 500
+    # on PUT /api/shares/acl, one token ahead of the answer launder.
     if before["owned_by_panel"]:
         result = _run_unprivileged(commands)
         if not result.get("ok") and result.get("error") == "needs_root":
-            result = _plain_result(macos_admin.run_admin_sequence(commands))
+            result = _admin_sequence(commands)
     else:
-        result = _plain_result(macos_admin.run_admin_sequence(commands))
+        result = _admin_sequence(commands)
     if not result.get("ok"):
         # _isa + _as_text, not a bare ``raw_error and``: the truth test
         # detonated a str-subclass ``__bool__`` bomb, and keeping the subclass
