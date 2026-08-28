@@ -283,6 +283,14 @@ _PUBLIC_EXCEPTIONS = (
 #: windows both the trim and the reader use.
 _STR_CAP = 64 * 1024
 
+#: Real control flow must keep propagating through every bomb guard below:
+#: swallowing a Ctrl-C or an interpreter shutdown to save one trail line
+#: would turn the sanitizer into a hang.  Everything else BaseException-
+#: shaped that a leftover raises out of its own hooks is a bomb like any
+#: other — the modules12 rule, applied to the trail that must never break
+#: the request it audits.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
@@ -298,10 +306,20 @@ def _isa(value, kinds) -> bool:
     logs9 / vms_svc rule).  A real subclass still matches through the
     C-level type check; only a value that cannot answer what it is takes
     the non-matching branch.
+
+    ``except BaseException``: the audit9 guard stopped at ``Exception``, so
+    a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (a watchdog/timeout-style leftover) sailed past this catch —
+    and past every sibling guard in this module — straight out of record()
+    into the JSON request being audited, a raw 500 from the one module
+    whose first guarantee is that logging never breaks the request.  Only
+    genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -315,10 +333,23 @@ def _utf8_text(value) -> str:
     RecursionError) net — and 500 the request being audited.
     """
     if _isa(value, (bytes, bytearray)):
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            text = base.decode(value, "utf-8", "replace")
-        except Exception:
+        # Both bases, real storage first-come — not the claimed class.  The
+        # old arm picked the base off ``_isa(value, bytes)``, so a genuine
+        # bytearray whose ``__class__`` lied ``bytes`` was handed to
+        # ``bytes.decode``, rejected by the descriptor, and its perfectly
+        # decodable content vanished to "" — the who/where detail this
+        # line existed for, degraded at the wrong rank (the modules12
+        # decode-fidelity rule).  Now the descriptor matching the real
+        # layout wins; a total impostor still fails both and drops.
+        for base in (bytes, bytearray):
+            try:
+                text = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        else:
             return ""
     else:
         if _isa(value, str):
@@ -329,16 +360,25 @@ def _utf8_text(value) -> str:
             except RecursionError:
                 try:
                     return type(value).__name__
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return ""
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A ``__str__`` bomb raising a BaseException subclass used
+                # to sail past the old ``except Exception`` here and raise
+                # out of record()'s shaping — 500ing the audited request.
                 return ""
         try:
             # str() may hand back a *subclass* instance (it only checks the
             # type, it does not copy), so the scrub itself must not trust
             # bound methods either.
             text = str.encode(text, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if len(text) > _STR_CAP:
         # Same marker shape as util.py's log tailer.  Slicing is by code
@@ -373,7 +413,9 @@ def _jsonable(value, depth: int = 0):
             # unbound base slot, so an override cannot reach it.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render the
             # number at all — json.dumps raises the same ValueError.  YAML/plist
             # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
@@ -391,7 +433,9 @@ def _jsonable(value, depth: int = 0):
             value = float.__float__(value)
             if value != value or value in (float("inf"), float("-inf")):
                 return None
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         return value
     if _isa(value, (str, bytes, bytearray)):
@@ -402,13 +446,17 @@ def _jsonable(value, depth: int = 0):
             # Unbound base read: a dict-subclass ``items()`` bomb must cost
             # this field, never the audit line (or the request behind it).
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return out
         for k, v in items:
             if not _isa(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -418,49 +466,65 @@ def _jsonable(value, depth: int = 0):
                 # Same shape as the dict read: subclass ``__iter__`` bombs
                 # bypass the base slot, so the real elements still list.
                 seq = list(base.__iter__(value))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
             return [_jsonable(v, depth + 1) for v in seq]
     try:
         # getattr, guarded: a leftover object whose ``__getattr__`` (or an
         # ``isoformat`` property) raises non-AttributeError used to escape
-        # the default and 500 out of record()'s shaping.
+        # the default and 500 out of record()'s shaping — including one
+        # raising a BaseException subclass past the old ``except Exception``.
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/audit.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
 def _is_secret_key(key: str) -> bool:
     try:
-        # str() probe, not an isinstance gate: numeric YAML ids are legitimate
-        # keys and must still be classified.  The one shape that cannot be
-        # rendered is a >4300-digit int (hex/octal YAML loads uncapped), whose
-        # str() raises the digit-cap ValueError — and redact() runs *before*
-        # record()'s swallow-all, so that raise used to turn the failed
-        # sign-in being logged into a 500 of its own.  An unrenderable key
-        # carries no name to match a hint against, and _jsonable drops it
-        # before disk regardless, so "not secret" is the safe answer.
+        # Classify the text the *writer* will render, not what a bound
+        # ``__str__`` volunteers.  The old probe was ``str(key)``: a str
+        # subclass named ``password`` whose ``__str__`` raised made the
+        # classifier answer "no name here" — while ``_jsonable`` rendered
+        # that same key's real text through the unbound base encode
+        # (``_utf8_text`` never calls ``str()`` on a str instance) and the
+        # secret value landed on disk under its secret name.  The route's
+        # read-side re-redact kept it off the wire, but the on-disk trail —
+        # the copy an operator or an older build reads directly — carried
+        # the plaintext, breaking this module's first guarantee.  Going
+        # through ``_utf8_text`` keeps classifier and writer agreeing on
+        # the key's name for every shape: a str subclass reads via the
+        # unbound encode its bombs cannot reach, and a genuinely
+        # unrenderable key (a >4300-digit YAML int, whose str() is the
+        # digit-cap ValueError) still reads as "" — no name to match, and
+        # _jsonable drops it before disk regardless, so "not secret" stays
+        # the safe answer there.
         #
-        # Unbound ``str.lower`` on the base type: ``str()`` of a subclass
-        # whose ``__str__`` returns ``self`` hands the *subclass* instance
-        # straight through, and its bound ``lower()`` can do the same — so
-        # the substring probes below used to run ``in`` against a hostile
-        # ``__contains__``, outside this net, and one poisoned key wiped
-        # the whole line's detail.  The base method always returns an
-        # exact str, which the ``in`` probes can trust.
-        lowered = str.lower(str(key))
-    except Exception:
+        # Unbound ``str.lower`` on the exact-str scrub result, as before:
+        # the substring probes below must never run ``in`` against a
+        # hostile bound ``lower()``/``__contains__``.
+        lowered = str.lower(_utf8_text(key))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
         return False
@@ -494,7 +558,9 @@ def redact(value: Any, _depth: int = 0) -> Any:
             # record()'s swallow-all, so a dict-subclass ``items()`` bomb in
             # a nested detail used to raise out of the request being audited.
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -502,7 +568,9 @@ def redact(value: Any, _depth: int = 0) -> Any:
                 continue
             try:
                 out[k] = redact(v, _depth + 1)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A key whose ``__hash__`` re-raises on the rebuild costs
                 # itself, never the sibling fields.
                 continue
@@ -511,7 +579,9 @@ def redact(value: Any, _depth: int = 0) -> Any:
         if _isa(value, base):
             try:
                 seq = list(base.__iter__(value))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
             return [redact(v, _depth + 1) for v in seq]
     return value
@@ -567,14 +637,19 @@ def record(event: str, /, **fields: Any) -> dict:
             "event": _utf8_text(event),
             **extra,
         }
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Shaping runs before the swallow-all below, so a poisoned field
         # shape it cannot handle must degrade to a minimal line — losing the
         # detail is acceptable, raising into (or losing) the sign-in being
-        # audited is not.  Exception, not the old (ValueError, TypeError,
-        # RecursionError) shortlist: a leftover subclass bomb raises whatever
-        # it likes, and this module's first guarantee is that logging never
-        # breaks the request.
+        # audited is not.  BaseException, not the audit9 ``Exception`` (nor
+        # the older (ValueError, TypeError, RecursionError) shortlist): a
+        # leftover subclass bomb raises whatever it likes — including a
+        # watchdog/timeout-shaped BaseException subclass that sailed past
+        # the Exception net straight into the JSON request being audited —
+        # and this module's first guarantee is that logging never breaks
+        # the request.  Genuine control flow re-raises above.
         entry = None
     if not isinstance(entry, dict):
         # This fallback runs *outside* both nets, so everything here must be
@@ -617,11 +692,15 @@ def record(event: str, /, **fields: Any) -> dict:
             if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
                 os.chmod(AUDIT_PATH, 0o600)
             _trim(AUDIT_PATH)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An unwritable or unencodable log must never turn a valid sign-in
-        # into a 500.  Exception (was OSError/TypeError/ValueError/
-        # RecursionError): the write path crosses locks, stat and chmod, and
-        # any surprise there belongs to the log, not to the request.
+        # into a 500.  BaseException (was Exception, before that OSError/
+        # TypeError/ValueError/RecursionError): the write path crosses
+        # locks, stat and chmod, and any surprise there belongs to the log,
+        # not to the request.  Ctrl-C and interpreter shutdown still
+        # propagate above.
         pass
     return entry
 
@@ -660,7 +739,13 @@ def recent(limit: int = 100) -> list[dict]:
     else:
         try:
             n = int(limit)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # ``int()`` runs the object's own ``__int__``/``__index__``; the
+            # audit11 clamp stopped at Exception, so a leftover whose slot
+            # raised a BaseException subclass still blew out of the one
+            # reader whose job is answering "who did this" no matter what.
             n = 100
     n = max(1, min(n, 1000))
     try:
