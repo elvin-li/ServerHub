@@ -157,6 +157,29 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh_triple(argv, *, timeout: int) -> tuple:
+    """The ``sh`` seam laundered to an exact ``(rc, out, err)`` shape.
+
+    nas11's ``_rc_int`` laundered the rc *value*, but the answer's *shape*
+    stayed bare: ``rc, out, err = sh(...)`` iterates whatever the seam
+    handed back, and this module does not own ``sh`` (tests and tooling
+    patch it).  A leftover sequence subclass whose ``__iter__`` raises, a
+    torn two-field answer, or a patched ``sh`` that raises outright each
+    used to blow the unpack itself — inside ``_nfsd_status`` /
+    ``_active_exports`` / ``check_exports`` (all unguarded under
+    ``overview``, a raw 500 on GET /api/nfs) and ``statistics`` (a raw 500
+    on GET /api/nfs/stats) — one step ahead of the ``_rc_int`` /
+    ``_as_text`` guards on the fields themselves (the ups/vms/storage
+    ``_sh3`` rule).  An unreadable answer reads as spawn failure:
+    ``-255`` is nonzero and never ``sh``'s ``-1`` sentinel.
+    """
+    try:
+        rc, out, err = sh(argv, timeout=timeout)
+        return rc, out, err
+    except Exception:
+        return -255, "", ""
+
+
 def _admin_result(result) -> dict:
     """A privileged-helper result as a plain dict with a real bool ``ok``.
 
@@ -508,8 +531,13 @@ def render_exports(entries: list[dict]) -> str:
 # ── nfsd state ───────────────────────────────────────────────────────────────
 
 def _nfsd_status() -> dict:
-    rc, out, err = sh([NFSD, "status"], timeout=8)
-    text = _as_text(out or err).strip()
+    rc, out, err = _sh_triple([NFSD, "status"], timeout=8)
+    # ``_as_text(out) or _as_text(err)``, not ``_as_text(out or err)``: the
+    # bare ``or`` asked the raw slot for truth, so a leftover str-subclass
+    # ``__bool__`` bomb from a hostile sh detonated the pick itself —
+    # unguarded under ``overview()``, a raw 500 on GET /api/nfs one step
+    # ahead of the laundering (the autostart_svc rule).
+    text = (_as_text(out) or _as_text(err)).strip()
     lowered = text.lower()
     enabled = "is enabled" in lowered or "is running" in lowered
     running = "is running" in lowered
@@ -522,7 +550,7 @@ def _active_exports() -> list[dict]:
     Short timeout on purpose: with ``nfsd`` stopped this RPC hangs until it gives
     up, and the page must not block for that long.
     """
-    rc, out, _ = sh([SHOWMOUNT, "-e", "localhost"], timeout=4)
+    rc, out, _ = _sh_triple([SHOWMOUNT, "-e", "localhost"], timeout=4)
     if _rc_int(rc) != 0:
         return []
     rows = []
@@ -536,8 +564,10 @@ def _active_exports() -> list[dict]:
 
 def check_exports() -> dict:
     """Validate the live ``/etc/exports`` without changing anything."""
-    rc, out, err = sh([NFSD, "checkexports"], timeout=10)
-    text = _as_text(out or err).strip()
+    rc, out, err = _sh_triple([NFSD, "checkexports"], timeout=10)
+    # Same or-seam as _nfsd_status: the bare ``out or err`` ran a leftover
+    # ``__bool__`` bomb ahead of the laundering and 500'd GET /api/nfs.
+    text = (_as_text(out) or _as_text(err)).strip()
     return {"ok": _rc_int(rc) == 0, "detail": text[:600]}
 
 
@@ -663,7 +693,13 @@ _SERVER_ACTIONS = {
 
 
 def server_action(action: str) -> dict:
-    commands = _SERVER_ACTIONS.get((action or "").strip().lower())
+    # _as_text is a str() probe, not a bare ``(action or "").strip()``: the
+    # route hands the verb over as str through Pydantic, but the service is
+    # also called in-process, and a leftover ``__bool__``-bomb action
+    # detonated the bare ``or`` — and a non-str leftover AttributeError'd
+    # ``.strip()`` — a raw raise where the coded ``bad_action`` refusal is
+    # the contract (the snapshots_svc.time_machine_action convention).
+    commands = _SERVER_ACTIONS.get(_as_text(action).strip().lower())
     if not commands:
         return {"ok": False, "error": "bad_action"}
     # _admin_result before any read: the raw run_admin_sequence payload used
@@ -679,5 +715,5 @@ def server_action(action: str) -> dict:
 
 def statistics() -> dict:
     """Server-side NFS counters, useful when a client reports slow mounts."""
-    rc, out, _ = sh([NFSSTAT, "-s"], timeout=6)
+    rc, out, _ = _sh_triple([NFSSTAT, "-s"], timeout=6)
     return {"ok": _rc_int(rc) == 0, "text": _as_text(out)[:4000]}

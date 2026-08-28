@@ -77,12 +77,45 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh_triple(argv, *, timeout: int) -> tuple:
+    """The ``sh`` seam laundered to an exact ``(rc, out, err)`` shape.
+
+    nas11's ``_rc_int`` laundered the rc *value*, but the answer's *shape*
+    stayed bare: ``rc, out, _ = sh(...)`` iterates whatever the seam handed
+    back, and this module does not own ``sh`` (tests and tooling patch it).
+    A leftover sequence subclass whose ``__iter__`` raises, a torn
+    two-field answer, or a patched ``sh`` that raises outright each used to
+    blow the unpack inside ``_plist`` — the read page catches it in
+    ``_listing``, but ``list_sets`` / ``disk_topology`` /
+    ``candidate_devices`` on the mutation path (``_resolve_set`` /
+    ``_check_devices``) do not, a raw 500 on every POST /api/raid/* — one
+    step ahead of the ``_rc_int`` guard on the field itself (the
+    ups/vms/storage ``_sh3`` rule).  An unreadable answer reads as spawn
+    failure: ``-255`` is nonzero and never ``sh``'s ``-1`` sentinel.
+    """
+    try:
+        rc, out, err = sh(argv, timeout=timeout)
+        return rc, out, err
+    except Exception:
+        return -255, "", ""
+
+
 def _plist(argv: list[str], *, timeout: int = 15) -> dict:
-    rc, out, _ = sh(argv, timeout=timeout)
-    if _rc_int(rc) != 0 or not out:
+    rc, out, _ = _sh_triple(argv, timeout=timeout)
+    if _rc_int(rc) != 0:
         return {}
     if _isa(out, (bytes, bytearray)):
-        out = bytes(out).decode("utf-8", "replace")
+        # Unbound base decode in a try (the modules9 / snapshots rule): the
+        # old bound ``bytes(out)`` copy consulted a subclass ``__bytes__``,
+        # and a *lying* ``__class__`` claiming bytes rejects either call
+        # with a TypeError — outside any try, a raw 500 on every
+        # POST /api/raid/* through the mutation walks (the read page hides
+        # behind ``_listing``).  Output that cannot decode is no plist.
+        base = bytes if _isa(out, bytes) else bytearray
+        try:
+            out = base.decode(out, "utf-8", "replace")
+        except Exception:
+            return {}
     elif not _isa(out, str):
         try:
             out = str(out)
@@ -90,6 +123,18 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
             return {}
         except Exception:
             return {}
+    # Exact-str copy before any probe: the old bare ``not out`` asked a
+    # leftover str-subclass ``__bool__`` bomb for truth, and the bound
+    # ``out.find`` ran a subclass override — each a raw raise on the same
+    # mutation paths.  The unbound base pair answers an exact str (and
+    # scrubs lone surrogates); a str-liar impostor TypeErrors here and
+    # reads as the empty document.
+    try:
+        out = bytes.decode(str.encode(out, "utf-8", "replace"), "utf-8")
+    except Exception:
+        return {}
+    if not out:
+        return {}
     start = out.find("<?xml")
     if start < 0:
         return {}
@@ -756,11 +801,20 @@ def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
     # used to blow the old ``(devices or [])`` raw — past the router's
     # RaidError catch — where every junk device already earns the coded
     # ``raid.bad_device`` refusal.
-    if _isa(devices, list):
-        rows = list.__iter__(devices)
-    elif _isa(devices, tuple):
-        rows = tuple.__iter__(devices)
-    else:
+    # The unbound ``__iter__`` in a try (the modules9 rule nfs_svc's
+    # save_exports already carries): a *lying* ``__class__`` claiming
+    # list/tuple passed the ``_isa`` gate with no real sequence storage,
+    # and the descriptor's TypeError raised raw past the router's
+    # RaidError catch — a raw 500 where an empty table earns the coded
+    # ``raid.too_few_members`` refusal.
+    try:
+        if _isa(devices, list):
+            rows = list.__iter__(devices)
+        elif _isa(devices, tuple):
+            rows = tuple.__iter__(devices)
+        else:
+            rows = iter(())
+    except Exception:
         rows = iter(())
     for device in rows:
         # _req_text, not str(): a leftover int already past CPython's
