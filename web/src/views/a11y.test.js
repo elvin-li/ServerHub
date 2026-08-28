@@ -2721,7 +2721,7 @@ describe('leftover Infinity interpolations', () => {
     // The message is a live region and the error detail goes through
     // finiteText so a leftover value cannot render as junk.
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
-    expect(apps).toMatch(/class="field-help" v-if="!\(cfStatus\.tunnels \|\| \[\]\)\.length" role="status"/)
+    expect(apps).toMatch(/class="field-help" v-if="!asArray\(cfStatus\.tunnels\)\.length" role="status"/)
     expect(apps).toMatch(/cfStatus\.logged_in && finiteText\(cfStatus\.tunnels_error, ''\)/)
     expect(apps).toMatch(/t\('apps\.cf_tunnels_failed'\)/)
     expect(apps).not.toMatch(/\{\{\s*cfStatus\.tunnels_error\s*\}\}/)
