@@ -549,7 +549,9 @@ def _normalized_shutdown(raw: dict | None) -> dict:
     if _isa(raw, dict):
         try:
             items = list(raw.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A shutdown block that refuses iteration (odd dict subclass
             # passing the isinstance gate) used to raise out of this merge
             # and 500 GET /api/ups; the defaults are the honest degrade.
@@ -564,7 +566,9 @@ def _normalized_shutdown(raw: dict | None) -> dict:
                 k, v = pair
                 if k in SHUTDOWN_DEFAULTS:
                     out[k] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     # Explicit null still means "condition off"; leftover inf must not leak
     # into GET /api/ups (Starlette allow_nan=False) or fire the policy.
@@ -583,7 +587,9 @@ def ups_settings() -> dict:
     # defaults, the same degrade every other unreadable block gets.
     try:
         root = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         root = None
     # _mapping_get at every rank: the ``.get`` bombs pass the isinstance
     # gates below, and this function backs four routes at once.
@@ -595,7 +601,9 @@ def ups_settings() -> dict:
         raw = {}
     try:
         raw_items = list(raw.items())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # settings.ups that refuses iteration: same class as the shutdown
         # block below — pre-fix the comprehension raised and 500'd
         # GET /api/ups instead of falling back to the defaults.
@@ -610,12 +618,16 @@ def ups_settings() -> dict:
             k, v = pair
             if k in UPS_DEFAULTS and k != "shutdown" and v is not None:
                 out[k] = v
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     if "alerts_enabled" in out:
         try:
             out["alerts_enabled"] = bool(out["alerts_enabled"])
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A __bool__ bomb value is unreadable either way; the default
             # is the honest degrade, never a 500.
             out["alerts_enabled"] = UPS_DEFAULTS["alerts_enabled"]
@@ -645,7 +657,9 @@ def ups_status(force: bool = False) -> dict:
         # impostor from a patched seam passes no isinstance gate honestly);
         # the settings half of the payload must survive it.
         merged = {**snap} if _isa(snap, dict) else {}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         merged = {}
     # Launder *before* the "settings" insert, not after: writing a str key
     # into the raw copy probes every stored key that shares its hash, so a

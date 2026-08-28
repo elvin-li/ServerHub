@@ -73,6 +73,14 @@ class Ups13LeftoverTests(unittest.TestCase):
 
         self.assertIsNone(ups_policy._jsonable(_IterBomb([1])))
 
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("ups isoformat watchdog")
+
+        self.assertEqual(ups_svc._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()
