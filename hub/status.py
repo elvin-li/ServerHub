@@ -31,6 +31,8 @@ def _status_ttl() -> float:
     return _STATUS_TTL_HIGH if is_high() else _STATUS_TTL
 _status_cache = {"t": 0.0, "v": None}
 _lock = threading.Lock()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 # Single-flight: only one full refresh at a time; waiters reuse the result.
 _refresh_lock = threading.Lock()
 # Bumped by invalidate_status().  Every container mutation calls that, and the
@@ -63,14 +65,27 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _mapping_get(mapping, key, default=None):
@@ -91,7 +106,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -106,7 +123,9 @@ def _cache_age(now, stamp) -> float:
     """
     try:
         return now - float(stamp)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return float("inf")
 
 
@@ -122,11 +141,15 @@ def _cache_publish(cache: dict, **fields) -> None:
     """
     try:
         cache.update(fields)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             cache.clear()
             cache.update(fields)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
 
@@ -144,42 +167,63 @@ def _cfg_value(key, default=None):
     """
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
     if not _isa(data, dict):
         return default
     try:
         return dict.get(data, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    # _isa on the bytes gate, try on the decode: a ``__class__``-property
-    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
-    # bytes, is not) TypeErrors the unbound decode and renders below.
-    if _isa(value, (bytes, bytearray)):
+    for base in (bytes, bytearray):
         try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    if not isinstance(text, str):
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this scrub — 500ing GET /api/status and (via the
-    # ``full_status`` call in check_once) POST /api/alerts/check.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _name_text(raw) -> str:
