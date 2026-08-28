@@ -110,7 +110,9 @@ def _fold(value: str) -> str:
         text = str(value)
     except RecursionError:
         return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return text.lower()
 
@@ -184,7 +186,9 @@ def _setting(key: str, default=None):
     """
     try:
         return dict.get(_settings(), key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -224,18 +228,24 @@ def _rc_int(rc) -> int:
             # never ``-1``, which is a real exit status.
             try:
                 rc = int(rc)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return -255
     else:
         try:
             rc = int(rc)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return -255
     try:
         # An over-cap exact int (>4300 digits — YAML/plist hex loads dodge
         # the parse-time cap) is unrenderable anywhere downstream; junk.
         str(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
     return rc
 
@@ -304,7 +314,9 @@ def _sh_triple(cmd, timeout: int) -> tuple:
     """
     try:
         answer = sh(cmd, timeout=timeout)
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         return -255, "", _as_text(exc)
     rc, out, err = _sh3(answer)
     return _rc_int(rc), out, err
@@ -331,7 +343,9 @@ def _host_text() -> str:
     """
     try:
         host = host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "localhost"
     return _as_text(host).strip() or "localhost"
 
@@ -353,14 +367,18 @@ def _spawn_env() -> dict:
     """
     try:
         env = utf8_env()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if type(env) is dict:
         return env
     if _isinst(env, dict):
         try:
             return dict(dict.items(env))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {}
     return {}
 
@@ -381,7 +399,9 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -495,7 +515,9 @@ def _finite_int(value, default: int = 0) -> int:
     try:
         value = int(value)
         float(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # (TypeError, ValueError, OverflowError, OSError) are the ordinary
         # conversion failures.  The broad arm also eats a leftover int
         # *subclass* whose ``__int__``/``__index__`` raises (the modules5
@@ -663,7 +685,9 @@ def default_roots() -> list[dict]:
         # like an absent key.
         try:
             custom = list(custom)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             custom = []
     else:
         custom = []
@@ -721,7 +745,9 @@ def default_roots() -> list[dict]:
                         "name": rname,
                         "path": _as_text(p),
                     })
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Broad like the list() guard above: whatever a bombing row
                 # value raises (a ``__bool__`` bomb on the path value is not
                 # bound to any exception type), the cost is that one row,
@@ -914,7 +940,9 @@ def list_dir(path: str | None = None, root_id: str | None = None) -> dict:
         # ``_setting`` for the read itself: a hash-colliding eq-bomb key
         # answers the default instead of relying on this try alone.
         show_hidden = bool(_setting("show_hidden"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         show_hidden = False
     for c in children:
         if c.name.startswith(".") and not show_hidden:
@@ -1082,7 +1110,9 @@ def _rmtree_iterative(top: Path) -> None:
         for fd, it, _name, _parent in frames:
             try:
                 it.close()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             try:
                 os.close(fd)
@@ -1307,7 +1337,9 @@ def download(path: str, root_id: str | None = None) -> StreamingResponse:
                 os.close(fd)
 
         return StreamingResponse(chunks(), media_type=media, headers=headers)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         os.close(fd)
         raise
 
@@ -1353,7 +1385,9 @@ async def upload(path: str, file: UploadFile, root_id: str | None = None) -> dic
         if opened:
             try:
                 _resolve_safe(opened, root_id)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 os.close(fd)
                 for victim in (opened, dest):
                     try:
@@ -1487,7 +1521,9 @@ def _plist_keepalive() -> bool | None:
         import plistlib
         pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
         return bool(isinstance(pl, dict) and pl.get("KeepAlive"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -1620,7 +1656,9 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
     from hub import secure_io
     try:
         pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An enumerated tuple is a losing game against plistlib's XML path:
         # a torn or invalid-UTF-8 plist raises xml.parsers.expat.ExpatError,
         # a junk <date> raises AttributeError, and a stray <key> outside any

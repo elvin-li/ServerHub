@@ -387,5 +387,33 @@ class RootLabelAndCfgPathUnitTests(unittest.TestCase):
             self.assertIsNone(files_svc._cfg_path_text(junk))
 
 
+class LeftoverWatchdogTimeout(BaseException):
+    pass
+
+
+class Files16BaseExceptionNetTests(unittest.TestCase):
+    def test_fold_swallows_str_baseexception(self):
+        class _StrBomb:
+            def __str__(self):
+                raise LeftoverWatchdogTimeout("fold watchdog")
+
+        self.assertEqual(files_svc._fold(_StrBomb()), "")
+
+    def test_sh_triple_swallows_runner_baseexception(self):
+        def boom(*_a, **_k):
+            raise LeftoverWatchdogTimeout("sh watchdog")
+
+        with mock.patch.object(files_svc, "sh", boom):
+            self.assertEqual(files_svc._sh_triple(["true"], timeout=1)[0], -255)
+
+    def test_fold_still_propagates_keyboardinterrupt(self):
+        class _Ki:
+            def __str__(self):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            files_svc._fold(_Ki())
+
+
 if __name__ == "__main__":
     unittest.main()
