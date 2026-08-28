@@ -574,9 +574,15 @@ def _public_settings() -> dict:
             # probe inside is guarded: a YAML hex/octal over-cap integer
             # (exempt from the digit cap at parse time) answers "" instead of
             # ValueError'ing this whole endpoint.
-            "url": (ollama_svc.settings_text(ollama.get("url")).strip().rstrip("/")
-                    or ollama_svc.DEFAULT_URL),
-            "label": ollama_svc.settings_text(ollama.get("label")).strip(),
+            # _mapping_get, not a bare ``.get``: ``_as_map``'s laundering
+            # copy keeps hostile stored *keys*, and a leftover str-subclass
+            # key whose hash shadows ``url``/``label`` and whose ``__eq__``
+            # raises used to detonate the plain lookup and 500
+            # GET /api/settings raw — the same hash-shadow class the
+            # terminal render already absorbs a few lines up.
+            "url": (ollama_svc.settings_text(_mapping_get(ollama, "url"))
+                    .strip().rstrip("/") or ollama_svc.DEFAULT_URL),
+            "label": ollama_svc.settings_text(_mapping_get(ollama, "label")).strip(),
         },
         "paths": {"docker": _text(DOCKER), "orb": _text(ORB)},
         # No ``or []``: the truthiness probe reflects into the stored value's
@@ -674,9 +680,12 @@ def put_settings(body: SettingsPatch, request: Request = None):
         if body.ollama.label is not None:
             o["label"] = ollama_svc.validate_settings_label(body.ollama.label)
         if o:
-            cur_o = dict(settings_section("ollama"))
-            cur_o.update(o)
-            patch["ollama"] = cur_o
+            # _merged_section, not dict()+update (the terminal-branch rule
+            # this save never got): merging the stored section back into the
+            # write runs hostile stored keys' own ``__eq__`` inside the
+            # update's insert probe, and a leftover key whose hash shadows
+            # ``url``/``label`` used to 500 the ollama save raw.
+            patch["ollama"] = _merged_section("ollama", o)
     if not patch:
         raise api_error("settings.empty_patch")
     update_settings(patch)
