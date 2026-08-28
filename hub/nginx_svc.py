@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from hub.adaptive import nginx_sites
 from hub.errors import api_error
 from hub.launchd_cache import invalidate_launchd, listing as launchd_listing
@@ -355,11 +357,111 @@ def _pid_text(value) -> str | None:
 
 
 def _nginx_present() -> bool:
-    """``os.path.isfile`` re-raises EIO/ESTALE; that must not 500 Test/Reload."""
+    """``os.path.isfile`` re-raises EIO/ESTALE; that must not 500 Test/Reload.
+
+    The two arms answer *opposite* defaults on purpose.  An OSError is the
+    disk speaking (dying mount, stale handle) and keeps the historical
+    "cannot see it -> not present" answer.  Anything else means the probe
+    itself is junk — a patched or odd ``NGINX_BIN`` whose ``__fspath__``
+    bombs TypeErrors ``os.stat`` past the OSError-only catch, which used to
+    500 POST /api/nginx/test|reload right at the vanished-CLI classify.
+    Junk answers "present": an unreadable probe is no *confirmation* that
+    the binary left the disk, so it can never mint the coded 503 (the same
+    no-forgery rule ``_rc_int`` applies to the -1 spawn sentinel).
+    """
     try:
         return os.path.isfile(NGINX_BIN)
     except OSError:
         return False
+    except Exception:
+        return True
+
+
+def _conf_present() -> bool:
+    """Strict-bool ``NGINX_CONF.is_file()`` that junk cannot 500 through.
+
+    ``test_config`` does not own the conf constant at call time (tests and
+    tooling patch it): a patched or odd path object whose ``is_file`` raises
+    outside the historical ``(OSError, ValueError)`` pair — or answers a
+    ``__bool__``-bombing leftover that detonated the bare ``not present``
+    truth-test — used to ride to Starlette uncaught and 500 POST
+    /api/nginx/test and /reload.  An unreadable probe reads "missing", the
+    same coded 404 a dying-mount EIO already answered.
+    """
+    try:
+        return bool(NGINX_CONF.is_file())
+    except Exception:
+        return False
+
+
+def _conf_arg() -> str:
+    """The ``-c`` argv text; a conf whose ``str()`` bombs must not 500 the spawn.
+
+    ``str(NGINX_CONF)`` ran bare inside the argv literal — *before*
+    ``_sh_triple``'s guard could see it — so a patched or odd conf object
+    whose ``__str__`` raises blew POST /api/nginx/test and both spawn ranks
+    of /reload out of the handler as a raw 500.  ``_as_text`` degrades it to
+    ""; nginx then fails the run honestly and the coded failure shape holds.
+    """
+    return _as_text(NGINX_CONF)
+
+
+def _invalidate_quietly(*invalidators) -> None:
+    """Cache invalidation after a reload/kickstart must not 500 the answer.
+
+    ``reload_nginx`` does not own the shared caches: the production
+    ``invalidate_launchd`` / ``invalidate_status`` never raise, but a patched
+    or odd one (the same class ``_sh_message`` guards for ``sh``) used to
+    detonate *after* the kickstart — and even after a fully successful
+    reload — turning a completed action into HTTP 500, so the operator
+    retried a reload that had already happened.  A stale cache self-heals on
+    its short TTL; a lost answer does not.
+    """
+    for invalidate in invalidators:
+        try:
+            invalidate()
+        except Exception:
+            pass
+
+
+def _probe_answer(probe) -> tuple[bool, str]:
+    """Exact ``(ok, message)`` from a possibly-poisoned config-probe answer.
+
+    ``reload_nginx`` reads the probe through the module global, which tests
+    and tooling patch, so the answer is a seam like ``sh``: the bare
+    ``t["ok"]`` / ``not t["ok"]`` / ``t.get("message")`` reads used to 500
+    POST /api/nginx/reload for
+
+    * a dict *subclass* whose bound ``__getitem__``/``get``/``__bool__``
+      raise (the honest fields underneath survive the unbound reads now);
+    * a *hash-shadowing* stored key — a str-subclass key over the ``ok`` or
+      ``message`` slot whose ``__eq__`` raises: the C lookup compares the
+      *stored* key against the query, so even an exact-str probe detonated
+      the stored bomb (the shape ``dict.get`` cannot dodge, only the guard
+      can catch);
+    * an ``ok`` value whose ``__bool__`` bombs, and non-dict answers
+      (None / str) that blew the subscript outright.
+
+    Junk never consents: an unreadable ``ok`` reads False, so a poisoned
+    probe keeps the "Invalid configuration; not reloaded" branch instead of
+    reloading on evidence that cannot be read.  An honest exact answer is
+    untouched.
+    """
+    if not _isinst(probe, dict):
+        return False, _as_text(probe) if probe is not None else ""
+    try:
+        ok = dict.get(probe, "ok")
+    except Exception:
+        ok = False
+    try:
+        ok = bool(ok)
+    except Exception:
+        ok = False
+    try:
+        message = dict.get(probe, "message")
+    except Exception:
+        message = None
+    return ok, _as_text(message)
 
 
 def _raise_if_cli_vanished(rc: int, message: str) -> None:
@@ -445,16 +547,15 @@ def overview() -> dict:
 
 
 def test_config() -> dict:
-    try:
-        present = NGINX_CONF.is_file()
-    except (OSError, ValueError):
-        # Dying mount EIO / a NUL leftover used to 500 Settings → Test/Reload.
-        present = False
-    if not present:
+    # Dying mount EIO / a NUL leftover used to 500 Settings → Test/Reload;
+    # _conf_present also strict-bools the answer and holds the wider guard
+    # (a patched or odd conf object raising past OSError/ValueError, or an
+    # is_file() answering a __bool__ bomb, each used to 500 the same way).
+    if not _conf_present():
         raise api_error("nginx.conf_missing")
     # ``sh`` swallows FileNotFoundError / TimeoutExpired; a missing binary
     # used to 500 Settings → Reload instead of returning a coded failure.
-    rc, out, err = _sh_triple([NGINX_BIN, "-t", "-c", str(NGINX_CONF)], timeout=15)
+    rc, out, err = _sh_triple([NGINX_BIN, "-t", "-c", _conf_arg()], timeout=15)
     # bytes/None from a patched or odd `sh` used to TypeError when Reload
     # concatenated the probe text onto a str prefix.
     message = _sh_message(err, out)
@@ -463,14 +564,25 @@ def test_config() -> dict:
 
 
 def reload_nginx() -> dict:
-    t = test_config()
-    if not t["ok"]:
+    # The probe read via the module global is a seam (tests and tooling
+    # patch it).  A coded raise stays itself — conf_missing 404 and
+    # nginx.not_found 503 keep their contract — but a junk raise used to
+    # ride to Starlette uncaught and 500 POST /api/nginx/reload; an
+    # unreadable probe is not consent to reload, so it keeps the invalid
+    # branch with the raise's text.
+    try:
+        probe_ok, probe_msg = _probe_answer(test_config())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        probe_ok, probe_msg = False, _as_text(exc)
+    if not probe_ok:
         return {
             "ok": False,
-            "message": "Invalid configuration; not reloaded\n" + _as_text(t.get("message")),
+            "message": "Invalid configuration; not reloaded\n" + probe_msg,
         }
     rc, out, err = _sh_triple(
-        [NGINX_BIN, "-c", str(NGINX_CONF), "-s", "reload"], timeout=15,
+        [NGINX_BIN, "-c", _conf_arg(), "-s", "reload"], timeout=15,
     )
     if rc != 0:
         # nginx vanished between ``-t`` and ``-s reload``: a coded 503,
@@ -481,11 +593,10 @@ def reload_nginx() -> dict:
             ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{LABEL}"],
             timeout=30,
         )
-        invalidate_launchd()
-        invalidate_status()
+        _invalidate_quietly(invalidate_launchd, invalidate_status)
         return {
             "ok": rc2 == 0,
-            "message": _sh_message(err2, out2, _as_text(t.get("message")) or "kickstart"),
+            "message": _sh_message(err2, out2, probe_msg or "kickstart"),
         }
-    invalidate_status()
-    return {"ok": True, "message": "Reloaded\n" + _as_text(t.get("message"))}
+    _invalidate_quietly(invalidate_status)
+    return {"ok": True, "message": "Reloaded\n" + probe_msg}
