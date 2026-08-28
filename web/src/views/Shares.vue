@@ -371,7 +371,7 @@ const iconMap = {
   bluetooth_sharing: Bluetooth,
 }
 const serviceIcon = (id) => iconMap[id] || Archive
-const systemServices = computed(() => data.value?.system_services || [])
+const systemServices = computed(() => asArray(data.value?.system_services))
 const coreServices = computed(() => systemServices.value.filter((service) => service.controllable))
 const managedServices = computed(() => systemServices.value.filter((service) => !service.controllable))
 const shareCount = computed(() => data.value?.smb?.length || 0)
@@ -462,7 +462,7 @@ async function loadAcl(path) {
 
 /** Level currently granted to *username* by a direct (non-inherited) entry. */
 function aclLevelOf(username) {
-  const entries = acl.value?.entries || []
+  const entries = asArray(acl.value?.entries)
   const direct = entries.filter(
     (entry) => entry.kind === 'user' && entry.name === username && !entry.inherited,
   )

@@ -8,7 +8,7 @@
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <span v-if="loaded" class="badge" :class="view?.configured ? 'ok' : ''">
-        {{ view?.configured ? t('pool.state_configured', { n: (view?.members || []).length }) : t('pool.state_unconfigured') }}
+        {{ view?.configured ? t('pool.state_configured', { n: asArray(view?.members).length }) : t('pool.state_unconfigured') }}
       </span>
       <span class="badge accent">{{ t('pool.badge_no_raid') }}</span>
     </div>
@@ -33,7 +33,7 @@
 
     <!-- Configured members that are not mounted right now. -->
     <div
-      v-if="(view?.missing_members || []).length"
+      v-if="asArray(view?.missing_members).length"
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
@@ -313,8 +313,8 @@ const policies = computed(() => view.value?.policies || ['most-free', 'least-use
 
 /** Every poolable volume the backend reported, members and unassigned alike. */
 const allCandidates = computed(() => [
-  ...(view.value?.members || []),
-  ...(view.value?.unassigned || []),
+  ...asArray(view.value?.members),
+  ...asArray(view.value?.unassigned),
 ])
 
 const selectedMembers = computed(() => {
@@ -330,7 +330,7 @@ const availableCandidates = computed(() => {
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
 const shownSummary = computed(() => preview.value?.summary || view.value?.summary || {})
 const shownTarget = computed(() => preview.value?.next_write_target ?? view.value?.next_write_target)
-const shownFaults = computed(() => preview.value?.fault_model || view.value?.fault_model || [])
+const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model))
 
 function barClass(pct) {
   if (pct >= 90) return 'danger'

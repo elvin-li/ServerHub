@@ -117,7 +117,7 @@ import {
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -183,11 +183,11 @@ function softText(j, fallbackKey = 'common.fail') {
 }
 
 function fieldsFor(ty) {
-  return types.value[ty]?.fields || []
+  return asArray(types.value[ty]?.fields)
 }
 
 function secretsFor(ty) {
-  return types.value[ty]?.secrets || []
+  return asArray(types.value[ty]?.secrets)
 }
 
 async function load() {

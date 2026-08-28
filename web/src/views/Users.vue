@@ -95,7 +95,7 @@
                   <div class="show-m sub">2FA {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}</div>
                   <div class="show-m sub">
                     <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                    <template v-else-if="(acct.resources || []).length">{{ resourceList(acct.resources) }}</template>
+                    <template v-else-if="asArray(acct.resources).length">{{ resourceList(acct.resources) }}</template>
                     <template v-else>{{ t('accounts.no_resources') }}</template>
                   </div>
                 </td>
@@ -111,7 +111,7 @@
                 </td>
                 <td class="mono col-hide-m" style="font-size:11px">
                   <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                  <template v-else-if="(acct.resources || []).length">{{ resourceList(acct.resources) }}</template>
+                  <template v-else-if="asArray(acct.resources).length">{{ resourceList(acct.resources) }}</template>
                   <template v-else><span style="color:var(--sub)">{{ t('accounts.no_resources') }}</span></template>
                 </td>
                 <td style="text-align:right">
@@ -373,7 +373,7 @@ function toggleEditor(acct) {
     return
   }
   editing.value = acct.username
-  editResources.value = [...(acct.resources || [])]
+  editResources.value = [...asArray(acct.resources)]
   resetPassword.value = ''
 }
 

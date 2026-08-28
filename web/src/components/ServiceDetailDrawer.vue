@@ -59,15 +59,15 @@
           <div v-if="service.start_cmd" class="k">start</div><div v-if="service.start_cmd" class="mono break">{{ finiteText(service.start_cmd) }}</div>
           <div v-if="service.stop_cmd" class="k">stop</div><div v-if="service.stop_cmd" class="mono break">{{ finiteText(service.stop_cmd) }}</div>
         </div>
-        <div v-if="(service.ports || []).length" class="ports-list mono">
+        <div v-if="asArray(service.ports).length" class="ports-list mono">
           <div v-for="(p, i) in service.ports" :key="i">{{ finiteText(typeof p === 'object' ? JSON.stringify(p) : p) }}</div>
         </div>
-        <div v-if="(service.links || []).length" class="quick-links" style="margin-top:8px">
+        <div v-if="asArray(service.links).length" class="quick-links" style="margin-top:8px">
           <a v-for="l in service.links" :key="l.url" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
         </div>
       </section>
 
-      <section class="drawer-sec" v-if="(service.mounts || []).length">
+      <section class="drawer-sec" v-if="asArray(service.mounts).length">
         <h3>{{ t('services.sec_mounts') }}</h3>
         <ul class="plain-list mono">
           <li v-for="(m, i) in service.mounts.slice(0, 12)" :key="i">{{ finiteText(m.source) }} → {{ finiteText(m.destination) }} {{ m.rw === false ? '(ro)' : '' }}</li>

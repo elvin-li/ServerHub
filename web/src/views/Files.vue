@@ -226,7 +226,7 @@ async function loadOverview() {
   try {
     const j = await getFilesOverview()
     if (request !== listRequest) return false
-    roots.value = j.roots || []
+    roots.value = asArray(j.roots)
     fb.value = j.filebrowser || {}
     if (!rootId.value && roots.value.length) {
       rootId.value = roots.value[0].id

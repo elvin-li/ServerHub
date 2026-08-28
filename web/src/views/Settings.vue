@@ -593,9 +593,9 @@
           <p class="hint" v-if="upsLast" style="margin-top:10px" data-test="last-run">
             {{ t('settings.ups_last_trigger', { time: fmtUpsTs(upsLast.engaged_at), reason: finiteText(upsLast.reason) }) }}
             <template v-if="upsLast.restored_at">
-              · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: (upsLast.restarted || []).length }) }}
+              · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: asArray(upsLast.restarted).length }) }}
             </template>
-            <template v-if="(upsLast.failed || []).length">
+            <template v-if="asArray(upsLast.failed).length">
               · {{ t('settings.ups_last_failed', { ids: asArray(upsLast.failed).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
             </template>
           </p>
@@ -810,13 +810,13 @@
         <h2 class="section-title">{{ t('settings.assertions') }}</h2>
         <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
-        <div v-else-if="(sysBundle.power?.assertions||[]).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
-          <div v-for="(a,i) in sysBundle.power.assertions" :key="i" style="margin-bottom:6px">{{ finiteText(a) }}</div>
+        <div v-else-if="asArray(sysBundle.power?.assertions).length" class="mono" style="font-size:11px;max-height:180px;overflow:auto">
+          <div v-for="(a,i) in asArray(sysBundle.power.assertions)" :key="i" style="margin-bottom:6px">{{ finiteText(a) }}</div>
         </div>
         <div v-else class="sub">{{ t('settings.no_assertions') }}</div>
         <p v-if="hiddenAssertions" class="hint">
           {{ t('settings.assertions_truncated', {
-            shown: (sysBundle?.power?.assertions || []).length,
+            shown: asArray(sysBundle?.power?.assertions).length,
             total: finiteN(sysBundle?.power?.assertion_count),
           }) }}
         </p>
@@ -1203,7 +1203,7 @@ const sysBundleError = ref('')
 const hiddenAssertions = computed(() => {
   const power = sysBundle.value?.power
   if (!power) return 0
-  const shown = (power.assertions || []).length
+  const shown = asArray(power.assertions).length
   const total = finiteN(power.assertion_count, shown)
   return Math.max(0, total - shown)
 })
@@ -1293,7 +1293,7 @@ const haltLevel = ref(null)
 
 const upsPhase = computed(() => upsInfo.value?.shutdown_state?.phase || 'idle')
 const upsLast = computed(() => upsInfo.value?.shutdown_state?.last || null)
-const upsScriptChoices = computed(() => upsPlan.value?.catalog?.scripts || [])
+const upsScriptChoices = computed(() => asArray(upsPlan.value?.catalog?.scripts))
 
 function fmtUpsTs(ts) {
   return fmtTs(ts)
@@ -1307,7 +1307,7 @@ function moveStackRow(i, delta) {
 }
 
 function buildStackRows() {
-  const catalog = upsPlan.value?.catalog?.stacks || []
+  const catalog = asArray(upsPlan.value?.catalog?.stacks)
   const saved = upsInfo.value?.settings?.shutdown?.stacks
   const custom = Array.isArray(saved)
   const rows = []
@@ -1779,7 +1779,7 @@ async function load() {
         auto_bind: s.ip_aliases?.auto_bind !== false,
         prefer_wired: s.ip_aliases?.prefer_wired !== false,
         interval: s.ip_aliases?.interval ?? 60,
-        ips: s.ip_aliases?.ips || [],
+        ips: asArray(s.ip_aliases?.ips),
         netmask: s.ip_aliases?.netmask || '255.255.255.255',
       },
       metrics_interval: s.metrics_interval || 90,

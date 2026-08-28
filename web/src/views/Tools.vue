@@ -26,10 +26,10 @@
         <p v-if="catalog.hint_key || catalog.hint" class="hint" style="margin-top:0">
           {{ catalog.hint_key ? t(catalog.hint_key) : finiteText(catalog.hint) }}
         </p>
-        <div v-if="!(catalog.tiles || []).length" class="placeholder">{{ t('common.none') }}</div>
+        <div v-if="!asArray(catalog.tiles).length" class="placeholder">{{ t('common.none') }}</div>
         <div v-else class="tool-grid">
           <button
-            v-for="tile in catalog.tiles || []"
+            v-for="tile in asArray(catalog.tiles)"
             :key="tile.id"
             type="button"
             class="tool-tile"
@@ -698,7 +698,7 @@ const filteredProc = computed(() => {
 const aboutCredits = computed(() => {
   const a = about.value || {}
   if (a.credit_keys?.length) return a.credit_keys.map((k) => t(k))
-  return a.credits || []
+  return asArray(a.credits)
 })
 
 function tileLabel(tile) {
@@ -836,7 +836,7 @@ async function loadDocker() {
     ])
     if (generation !== reloadGeneration || !pageAlive) return
     df.value = a
-    sizes.value = b.containers || []
+    sizes.value = asArray(b.containers)
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('docker', e)
@@ -879,7 +879,7 @@ async function loadSched() {
       j = await getSystemScheduler()
     }
     if (generation !== reloadGeneration || !pageAlive) return
-    timers.value = j.timers || []
+    timers.value = asArray(j.timers)
     const nextAgents = await getToolsAgents()
     if (generation !== reloadGeneration || !pageAlive) return
     agents.value = nextAgents

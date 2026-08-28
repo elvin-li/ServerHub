@@ -730,7 +730,7 @@ const arrayDevices = computed(() => {
 })
 const sharedDiskIds = computed(() => {
   const s = new Set()
-  for (const g of data.value?.array?.capacity_groups || []) {
+  for (const g of asArray(data.value?.array?.capacity_groups)) {
     if (g.mode === 'shared_pool' && g.disk_id) s.add(g.disk_id)
   }
   return s
@@ -850,7 +850,7 @@ function smartReasons(smart) {
   // separates red from amber: the raw counters alone are a bad severity signal, so
   // "crossed the threshold the vendor set" is the fatal test, and a non-zero raw
   // count is only the warn below.
-  for (const attr of smart.attrs || []) {
+  for (const attr of asArray(smart.attrs)) {
     if (!attr || typeof attr !== 'object' || String(attr.type || '') !== 'Pre-fail') continue
     const value = smartNum(attr.value)
     // A threshold of 0 means the vendor declared no failure point for this

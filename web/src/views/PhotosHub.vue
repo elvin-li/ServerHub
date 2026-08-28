@@ -106,7 +106,7 @@
         <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn-text)">
           {{ t('photoshub.gated_warn') }}
         </p>
-        <p v-if="(pending?.assets || []).length" class="meta select-all">
+        <p v-if="asArray(pending?.assets).length" class="meta select-all">
           <label>
             <input type="checkbox" :checked="allSelected" @change="toggleAll" />
             {{ t('photoshub.select_all') }}
@@ -115,12 +115,12 @@
         <!-- role=status: the scanning -> "no pending deletes" flip is the
              whole outcome of an empty refresh and was paint-only (the Logs
              empty/loading treatment). -->
-        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty" role="status">
+        <p v-if="!pendingError && !asArray(pending?.assets).length" class="meta" data-test="photoshub-pending-empty" role="status">
           {{ pendingLoading ? t('common.scanning') : t('photoshub.no_pending') }}
         </p>
         <div v-else class="review-grid" data-test="photoshub-pending-grid">
           <label
-            v-for="a in pending?.assets || []"
+            v-for="a in asArray(pending?.assets)"
             :key="a.id"
             class="review-tile"
             :class="{ picked: selected.includes(a.id) }"
@@ -363,7 +363,7 @@ const originalsColor = computed(() => {
   return 'var(--down-text)'
 })
 const allSelected = computed(() => {
-  const assets = pending.value?.assets || []
+  const assets = asArray(pending.value?.assets)
   return assets.length > 0 && selected.value.length === assets.length
 })
 const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))

@@ -86,7 +86,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { askAssistant } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -151,7 +151,7 @@ function formatBrief(snap) {
       engine: snap.engine_up ? t('common.on') : t('common.off'),
     }),
   ]
-  const problems = snap.problems || []
+  const problems = asArray(snap.problems)
   if (problems.length) {
     lines.push(t('assistant.brief_problems'))
     for (const p of problems.slice(0, 6)) {
@@ -166,7 +166,7 @@ function formatBrief(snap) {
 function displayText(out, query) {
   if (out.kind === 'find') {
     if (!query) return t('assistant.find_browse')
-    return (out.panels && out.panels.length)
+    return asArray(out.panels).length
       ? t('assistant.find_result')
       : t('assistant.find_none', { q: finiteText(query, '') })
   }
@@ -237,7 +237,7 @@ async function send(action, preset = '') {
     }
     pending.pending = false
     pending.content = finiteText(displayText(out, query), '') || t('assistant.empty_reply')
-    pending.panels = out.panels || []
+    pending.panels = asArray(out.panels)
     if (out.used_llm && out.model) {
       pending.meta = t('assistant.via_model', { model: finiteText(out.model) })
     } else if (out.kind === 'brief' || out.kind === 'answer') {

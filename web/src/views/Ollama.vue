@@ -150,7 +150,7 @@
                 <td class="mono col-hide-m">{{ finiteText(m.quantization) }}</td>
                 <td class="col-hide-m">
                   <span v-for="c in m.capabilities" :key="c" class="badge cap">{{ finiteText(c) }}</span>
-                  <span v-if="!(m.capabilities || []).length">—</span>
+                  <span v-if="!asArray(m.capabilities).length">—</span>
                 </td>
                 <td class="meta col-hide-m">{{ fmtDate(m.modified) }}</td>
                 <td class="ops">

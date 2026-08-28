@@ -160,7 +160,7 @@
         <!-- role=status: the count is the only feedback the search box and kind
              select give, and it changed silently for a screen reader. Same
              pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ (managed.items || []).length }}</span>
+        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ asArray(managed.items).length }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
@@ -282,7 +282,7 @@
             <!-- Same split: a kind/search filter that matches nothing must not
                  claim the host has no managed apps. -->
             <tr v-if="!filteredManaged.length && !managedError">
-              <td colspan="7" class="empty-row">{{ (managed.items || []).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
+              <td colspan="7" class="empty-row">{{ asArray(managed.items).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -323,7 +323,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="it in (autostartByGroup[grp] || [])" :key="it.id">
+              <tr v-for="it in asArray(autostartByGroup[grp])" :key="it.id">
                 <td>
                   <strong>{{ finiteText(it.name) }}</strong>
                   <div class="sub-line mono" v-if="it.program">{{ finiteText(it.program) }}</div>
@@ -365,7 +365,7 @@
                   <span v-else class="sub-line">{{ finiteText(it.kind) }}</span>
                 </td>
               </tr>
-              <tr v-if="!(autostartByGroup[grp] || []).length">
+              <tr v-if="!asArray(autostartByGroup[grp]).length">
                 <td colspan="5" class="empty-row">—</td>
               </tr>
             </tbody>
@@ -501,13 +501,13 @@
             <div class="form-field">
               <select v-model="cfSelectedTunnel" :disabled="cfBusy" style="width:100%;padding:8px;border-radius:8px" :aria-label="t('apps.cf_existing_tunnel')">
                 <option value="">{{ t('apps.cf_select_ph') }}</option>
-                <option v-for="tn in (cfStatus.tunnels || [])" :key="tn.id" :value="tn.name">
+                <option v-for="tn in asArray(cfStatus.tunnels)" :key="tn.id" :value="tn.name">
                   {{ finiteText(tn.name) }} ({{ String(finiteText(tn.id)).slice(0, 8) }}…){{ tn.active ? ` · ${t('apps.cf_connected')}` : '' }}
                 </option>
               </select>
               <!-- Error vs empty: a failed tunnel-list fetch used to render as
                    "No tunnels found", silently hiding the failure. -->
-              <div class="field-help" v-if="!(cfStatus.tunnels || []).length" role="status">
+              <div class="field-help" v-if="!asArray(cfStatus.tunnels).length" role="status">
                 <template v-if="cfStatus.logged_in && finiteText(cfStatus.tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(cfStatus.tunnels_error, '') }}</template>
                 <template v-else>{{ cfStatus.logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
               </div>
@@ -681,7 +681,7 @@
         </p>
         <p v-else class="path-line mono">→ ~/Services/{{ finiteText(installTpl.id) }}/docker-compose.yml</p>
 
-        <div v-if="(installTpl.vars || []).length" class="form-grid">
+        <div v-if="asArray(installTpl.vars).length" class="form-grid">
           <template v-for="v in installTpl.vars" :key="v.name">
             <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
             <div class="form-field">
@@ -768,13 +768,13 @@
         </p>
         <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
           {{ summaryLine(remoteResult) }}
-          <ul v-if="(remoteResult.rejected || []).length" class="plain-list mono" style="margin-top:6px">
+          <ul v-if="asArray(remoteResult.rejected).length" class="plain-list mono" style="margin-top:6px">
             <li v-for="r in remoteResult.rejected" :key="r.id">
               {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
             </li>
           </ul>
         </div>
-        <section v-if="(remoteInfo?.overrides || []).length">
+        <section v-if="asArray(remoteInfo?.overrides).length">
           <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
           <table class="mini-table">
             <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
@@ -1040,7 +1040,7 @@ function stateLabel(s) {
 function canAct(it, act) {
   if (!it) return false
   if (act === 'uninstall') return true
-  const acts = it.actions || []
+  const acts = asArray(it.actions)
   if (acts.includes(act)) return true
   // fallbacks when backend omits flags
   if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd')) return true
@@ -1119,7 +1119,7 @@ function catalogOpenUrl(tpl) {
   }
   const host = finiteText(window.location.hostname, '') || 'localhost'
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
-  const vars = tpl.vars || []
+  const vars = asArray(tpl.vars)
   for (const v of vars) {
     if (v && v.name && v.default != null && v.default !== '') {
       out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
@@ -1890,7 +1890,7 @@ function openInstall(tpl) {
   installUrl.value = ''
   installCreds.value = ''
   const vars = {}
-  for (const v of tpl.vars || []) vars[v.name] = v.default || ''
+  for (const v of asArray(tpl.vars)) vars[v.name] = v.default || ''
   installVars.value = vars
 }
 

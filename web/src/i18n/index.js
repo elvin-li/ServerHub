@@ -1,4 +1,5 @@
 import { computed, inject, ref } from 'vue'
+import { asArray } from '../lib/finite'
 
 const MESSAGES = {}
 const MESSAGE_LOADERS = {
@@ -49,7 +50,7 @@ function detectLocale() {
   // English rather than falling through on the first entry alone.
   const tags = typeof navigator === 'undefined'
     ? []
-    : [...(navigator.languages || []), navigator.language || '']
+    : [...asArray(navigator.languages), navigator.language || '']
   for (const tag of tags) {
     const hit = matchLocale(tag)
     if (hit) return hit
