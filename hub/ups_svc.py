@@ -17,6 +17,9 @@ import re
 from hub.config import cfg, update_settings
 from hub.util import cached_snapshot, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: Panel-level alert policy (settings.ups).  Distinct from the pmset halt
 #: thresholds, which are the *system's* hard shutdown policy: the panel warns
 #: first so the operator can act before macOS pulls the plug.
@@ -60,7 +63,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -74,19 +79,32 @@ def _rc_int(rc) -> int:
     bomb keeps the failure branch and pmset output reads as empty.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _sh_triple(argv, timeout: int) -> tuple:
@@ -103,7 +121,9 @@ def _sh_triple(argv, timeout: int) -> tuple:
     try:
         rc, out, err = sh(argv, timeout=timeout)
         return rc, out, err
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
 
 
@@ -118,14 +138,18 @@ def _as_text(value) -> str:
             # *lying* ``__class__`` (claims str, is not): the unbound call
             # TypeErrors and the impostor renders like junk below.
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     elif _isa(value, (bytes, bytearray)):
         try:
             # Same impostor guard: a lying ``__class__`` that claims bytes
             # TypeErrors the unbound base decode and renders as junk below.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     elif value is None:
         return ""
@@ -134,14 +158,29 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -179,7 +218,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -194,7 +235,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -205,19 +248,25 @@ def _jsonable(value, depth: int = 0):
         try:
             value = str(value)
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims bytes, is not) TypeErrors the
             # unbound decode: junk drops like any other unrenderable.
             return None
     if _isa(value, dict):
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass): there is
             # nothing to salvage from it, but its *siblings* must survive —
             # pre-fix this raised out of ups_status()'s scrub and 500'd
@@ -230,19 +279,25 @@ def _jsonable(value, depth: int = 0):
             # GET /api/ups with every sane sibling pair.
             try:
                 k, v = pair
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A lying ``__class__`` key TypeErrors the unbound
                     # decode; it renders through str() below instead.
                     pass
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             # A str *key* skipped the string sanitizer: a leftover lone
             # surrogate in a settings key used to 500 Starlette's UTF-8
@@ -251,24 +306,32 @@ def _jsonable(value, depth: int = 0):
             # through str() + the unbound base encode.
             try:
                 k = str(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             try:
                 k = str.encode(k, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the row or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -277,11 +340,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/ups.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -303,10 +370,14 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -329,7 +400,9 @@ def _finite_int(raw, default: int | None):
             # Base coercion to an exact float, so the NaN/inf probe below
             # never runs a subclass ``__eq__``.
             raw = float.__float__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
         if raw != raw or raw in (float("inf"), float("-inf")):
             return default
@@ -338,13 +411,17 @@ def _finite_int(raw, default: int | None):
             # Base coercion: an int subclass whose ``__int__``/``__str__``
             # raises must fall back, not 500.
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
     try:
         n = int(raw)
         float(n)
         return n
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # int() runs the value's own __int__/__index__/__trunc__: a leftover
         # conversion bomb raising outside Type/Value/OverflowError is the
         # same unreadable value, never a 500.
