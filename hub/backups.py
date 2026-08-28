@@ -1286,13 +1286,32 @@ def _immich_conn() -> dict:
         if line.startswith("DB_URL="):
             raw = line.split("=", 1)[1].strip().strip("\"'")
             break
-    parsed = urlparse(raw) if raw else None
+    try:
+        # A torn IPv6 literal in the netloc ("[::1" with no closing bracket)
+        # makes urlsplit — which urlparse calls — raise ValueError("Invalid
+        # IPv6 URL"), the catalog5 leftover class.  That is a raw stdlib error,
+        # not this helper's documented RuntimeError, and but for the caller's
+        # broad catch it would surface CPython-internal text ("Invalid IPv6
+        # URL") as the immich dump's failure instead of a coded reason.  A
+        # torn DB_URL means the same operator-facing state every other bad
+        # db.env here gets: unusable, raise the coded refusal.
+        parsed = urlparse(raw) if raw else None
+    except ValueError as exc:
+        raise RuntimeError("Immich db.env has an unparsable DB_URL") from exc
     password = unquote(parsed.password) if parsed and parsed.password else ""
     if not password:
         raise RuntimeError("Immich db.env has no usable DB_URL password")
+    try:
+        # ``.port`` re-parses the netloc and raises ValueError on an
+        # out-of-range or non-numeric port ("host:99999999999999999999",
+        # "host:notaport") — the same raw stdlib leak as the torn bracket
+        # above, and accessed unguarded twice below.  Read it once, coded.
+        port = parsed.port if parsed and parsed.port else 5433
+    except ValueError as exc:
+        raise RuntimeError("Immich db.env DB_URL port is out of range") from exc
     return {
         "host": (parsed.hostname if parsed and parsed.hostname else "127.0.0.1"),
-        "port": (parsed.port if parsed and parsed.port else 5433),
+        "port": port,
         "user": unquote(parsed.username) if parsed and parsed.username else "immich",
         "db": (parsed.path or "/immich").lstrip("/") or "immich",
         "password": password,
