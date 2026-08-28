@@ -315,21 +315,36 @@ def _truthy(value) -> bool:
         return False
 
 
-def _plain_mapping_get(mapping, key):
-    """Unbound ``dict.get`` behind the liar-proof shape gate, or None.
+def _mapping_get(mapping, key, default=None):
+    """Unbound ``dict.get`` behind the liar-proof shape gate, or *default*.
 
     The read side of every ``dict.get(x, k) if isinstance(x, dict)`` seam:
     ``_isa`` absorbs a raising-``__class__`` property, and the ``try``
     absorbs a *lying*-``__class__`` impostor (the brew10/json9 shape —
     ``isinstance`` answers dict, the real object is a plain object) that
     passes the gate and makes the descriptor itself raise TypeError.
+
+    The ``try`` also absorbs a *hash-shadow* stored key: a str-subclass key
+    whose ``__hash__`` collides with a real field name ("ip", "PublicKey",
+    "Address", …) and whose ``__eq__`` raises detonates the C-level probe
+    loop *inside* ``dict.get`` itself — the launderers copy rows through
+    exact ``dict(...)``, which preserves poisoned keys without re-hashing,
+    so every bound ``row.get(...)`` / bare ``dict.get(row, ...)`` after the
+    copy used to raise a raw 500 out of GET /api/wireguard, /next-ip,
+    /export, /readiness and POST /api/wireguard/ping for a field the row
+    does not honestly carry.  A shadowed lookup reads as absent.
     """
     if not _isa(mapping, dict):
-        return None
+        return default
     try:
-        return dict.get(mapping, key)
+        return dict.get(mapping, key, default)
     except Exception:
-        return None
+        return default
+
+
+def _plain_mapping_get(mapping, key):
+    """The historical None-defaulted spelling of :func:`_mapping_get`."""
+    return _mapping_get(mapping, key)
 
 
 def _nonfinite(value) -> bool:
@@ -616,12 +631,28 @@ def save_settings(patch: dict) -> dict:
     data = cfg()
     raw = _plain_mapping_get(data, "settings")
     stored = _plain_mapping_get(raw, "wireguard")
+    # Exact-str keys only, rebuilt one entry at a time.  The old
+    # ``dict(stored)`` fast copy preserved a *hash-shadow* stored key (a
+    # str-subclass whose hash collides with a real field name and whose
+    # ``__eq__`` raises), and the ``current[key] = value`` insert below then
+    # detonated the probe loop — a raw 500 on PUT /api/wireguard/settings
+    # after validation had already passed.  A shadow key is junk by
+    # construction (services.yaml round-trips exact strings), so it is
+    # dropped; every honest entry still merges.
     current = {}
+    items = ()
     if _isa(stored, dict):
         try:
-            current = dict(stored)
+            items = list(dict.items(stored))
         except Exception:
-            current = {}
+            items = ()
+    for pair in items:
+        try:
+            key, value = pair
+            if type(key) is str:
+                current[key] = value
+        except Exception:
+            continue
     for key, value in (patch or {}).items():
         if key not in DEFAULTS:
             continue
@@ -694,6 +725,49 @@ def conf_path(interface: str | None = None) -> Path:
     return conf_dir() / f"{interface or settings()['interface']}.conf"
 
 
+def _sh_answer(runner, argv, *, timeout):
+    """``(rc, out, err)`` from an ``sh``-shaped *runner*; junk never raises.
+
+    None of these spawn seams own their runner — tests and tooling patch
+    ``sh`` and ``sudo_capture`` — and the bare ``rc, out, err = sh(...)``
+    unpack detonated on any answer that is not a 3-sequence (None, a bare
+    string, a 2- or 4-tuple, a tuple-liar whose ``__iter__`` refuses, or a
+    runner that raises outright): a raw 500 on GET /api/wireguard and GET
+    /api/wireguard/settings (through :func:`_binary_version` /
+    :func:`_dump_all` / :func:`live_interface`), POST /api/wireguard/peers,
+    /peers/batch and /peers/psk (:func:`generate_keypair` /
+    :func:`generate_psk`), POST /api/wireguard/sync (:func:`apply_live`)
+    and POST /api/wireguard/interface (:func:`interface_action`).
+
+    A junk answer reads as ``(-255, "", "")`` — the :func:`_ping_rc`
+    convention: ``-255`` is no honest exit and never ``sh``'s ``-1``
+    FileNotFoundError sentinel, so a mangled answer can neither pass an
+    ``== 0`` success probe nor fake the vanished-CLI shape that
+    :func:`_cli_missing` / :func:`_ping_spawn_sentinel` upgrade to a coded
+    503 (and those still disk-confirm before claiming it).  An honest
+    3-tuple passes through untouched, bombs and all — the per-site
+    ``_ping_rc`` / ``_as_text`` launders keep absorbing those.
+    """
+    try:
+        answer = runner(argv, timeout=timeout)
+    except Exception:
+        return -255, "", ""
+    fields = None
+    if _isa(answer, tuple):
+        try:
+            fields = list(tuple.__iter__(answer))
+        except Exception:
+            fields = None
+    elif _isa(answer, list):
+        try:
+            fields = list(list.__iter__(answer))
+        except Exception:
+            fields = None
+    if fields is None or len(fields) != 3:
+        return -255, "", ""
+    return fields[0], fields[1], fields[2]
+
+
 def _binary_version(binary: str) -> str:
     """First line of ``<binary> --version``, or "" when it would not answer.
 
@@ -712,7 +786,9 @@ def _binary_version(binary: str) -> str:
     """
     if not _path_exists(binary):
         return ""
-    rc, out, err = sh([binary, "--version"], timeout=8)
+    # _sh_answer: a patched sh answering a junk shape (or raising) used to
+    # blow the bare 3-way unpack through installation()'s fan_out.
+    rc, out, err = _sh_answer(sh, [binary, "--version"], timeout=8)
     # _ping_rc before the comparison (the health9 rc rule): this probe does
     # not own ``sh`` — tests and tooling patch it — and an rc-subclass whose
     # ``__eq__`` raises used to detonate ``rc == 0`` through installation()'s
@@ -824,7 +900,11 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
 
 def generate_keypair() -> tuple[str, str]:
     """A fresh (private, public) Curve25519 pair from ``wg genkey`` / ``wg pubkey``."""
-    rc, private, err = sh([WG, "genkey"], timeout=8)
+    # _sh_answer: a junk-shaped answer from a patched sh used to blow the
+    # bare unpack — a raw 500 on POST /api/wireguard/peers before the coded
+    # keygen_failed could answer.  Junk reads -255, never the -1 sentinel,
+    # so it cannot fake the vanished-CLI 503 either.
+    rc, private, err = _sh_answer(sh, [WG, "genkey"], timeout=8)
     private = _as_text(private).strip()
     # _ping_rc (the health9 rc rule): this spawn does not own ``sh`` — tests
     # and tooling patch it — and an rc-subclass whose ``__eq__``/``__ne__``
@@ -849,7 +929,8 @@ def generate_keypair() -> tuple[str, str]:
 
 
 def generate_psk() -> str:
-    rc, psk, err = sh([WG, "genpsk"], timeout=8)
+    # _sh_answer: same junk-shape launder as :func:`generate_keypair`.
+    rc, psk, err = _sh_answer(sh, [WG, "genpsk"], timeout=8)
     psk = _as_text(psk).strip()
     # _ping_rc: same rc-``__eq__`` bomb launder as :func:`generate_keypair`.
     if _ping_rc(rc) != 0 or not _KEY_RE.match(psk):
@@ -1057,7 +1138,10 @@ def server_identity() -> dict:
     )
     default_address = f"{network.network_address + 1}/{network.prefixlen}"
 
-    private = _as_text(iface.get("PrivateKey")).strip()
+    # _mapping_get on every block pull: a hash-shadow key survives
+    # _conf_interface's exact-dict copy and used to detonate the bound
+    # ``.get`` here — a raw 500 out of every peer mutation's conf write.
+    private = _as_text(_mapping_get(iface, "PrivateKey")).strip()
     if not _KEY_RE.match(private):
         directory = conf_dir()
         key_file = directory / "privatekey"
@@ -1074,8 +1158,8 @@ def server_identity() -> dict:
         "public_key": public_from_private(private),
         # _as_text first: the old ``iface.get(...) or default`` blank probe
         # reflected into a leftover value's own ``__bool__``.
-        "address": _as_text(iface.get("Address")).strip() or default_address,
-        "listen_port": _conf_int(iface.get("ListenPort"), cfg_["listen_port"]),
+        "address": _as_text(_mapping_get(iface, "Address")).strip() or default_address,
+        "listen_port": _conf_int(_mapping_get(iface, "ListenPort"), cfg_["listen_port"]),
     }
 
 
@@ -1170,24 +1254,41 @@ def peer_records() -> list[dict]:
     # a dict-subclass row, or a value whose __bool__/__str__ raises used to
     # 500 every caller of this listing (GET /api/wireguard, /readiness,
     # /next-ip, POST /ping) instead of costing only the junk row.
+    #
+    # _mapping_get on every field pull: the exact ``dict(row)`` copies keep
+    # poisoned *keys*, and a hash-shadow key (hash collides with
+    # "PublicKey" / "AllowedIPs" / a registry field, ``__eq__`` raises) used
+    # to detonate the bound ``.get`` probe loop itself — the same raw 500 on
+    # every caller, for a field the row does not honestly carry.
     for peer in _conf_peers(parsed):
-        public = _as_text(peer.get("PublicKey")).strip()
+        public = _as_text(_mapping_get(peer, "PublicKey")).strip()
         if not public:
             continue
-        meta = registry.get(public) or {}
-        if not isinstance(meta, dict):
+        # _mapping_get + _truthy: a registry keyed by a shadow of this
+        # public key, or a meta whose ``__bool__`` bombs, must cost only
+        # this row's metadata, never the listing.
+        meta = _mapping_get(registry, public)
+        if _isa(meta, dict):
+            # Exact-dict launder in a try (the _ping_targets rule): a
+            # lying-``__class__`` impostor meta passes the gate and refuses
+            # the C-level copy; it reads as no metadata, not a 500.
+            try:
+                meta = dict(meta)
+            except Exception:
+                meta = {}
+        else:
             meta = {}
         records.append({
             "public_key": public,
-            "ip": _as_text(peer.get("AllowedIPs")).strip(),
-            "preshared_key": _as_text(peer.get("PresharedKey")).strip(),
-            "keepalive": _as_text(peer.get("PersistentKeepalive")).strip(),
-            "name": _as_text(meta.get("name")),
-            "mode": _as_text(meta.get("mode")),
-            "created": _conf_int(meta.get("created"), 0),
+            "ip": _as_text(_mapping_get(peer, "AllowedIPs")).strip(),
+            "preshared_key": _as_text(_mapping_get(peer, "PresharedKey")).strip(),
+            "keepalive": _as_text(_mapping_get(peer, "PersistentKeepalive")).strip(),
+            "name": _as_text(_mapping_get(meta, "name")),
+            "mode": _as_text(_mapping_get(meta, "mode")),
+            "created": _conf_int(_mapping_get(meta, "created"), 0),
             # Whether this peer's config/QR can be produced again.
-            "reissuable": _truthy(meta.get("private_key")),
-            "known": bool(meta),
+            "reissuable": _truthy(_mapping_get(meta, "private_key")),
+            "known": _truthy(meta),
         })
     return records
 
@@ -1370,9 +1471,13 @@ def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
     # from a patched/odd sh or sudo_capture used to detonate the bare
     # ``rc != 0`` — a raw 500 on GET /api/wireguard.  ``int.__index__``
     # salvages the honest exit; only a value that cannot answer one fails.
-    rc, out, err = sh([WG, "show", "all", "dump"], timeout=10)
+    # _sh_answer on both spawns: a junk-shaped answer blew the unpack the
+    # same way, one token earlier.
+    rc, out, err = _sh_answer(sh, [WG, "show", "all", "dump"], timeout=10)
     if _ping_rc(rc) != 0:
-        rc, out, err = sudo_capture([WG, "show", "all", "dump"], timeout=10)
+        rc, out, err = _sh_answer(
+            sudo_capture, [WG, "show", "all", "dump"], timeout=10
+        )
     if _ping_rc(rc) != 0:
         del out  # carries key material; never reported
         return {}, _tool_error(err, "could not read interface state")
@@ -1400,11 +1505,15 @@ def _identify(grouped: dict[str, list[list[str]]]) -> str:
     write-shaped side effect that has no business firing on a status poll.
     """
     iface_block = _conf_interface(read_conf())
+    # _mapping_get: a hash-shadow key in the parsed block used to detonate
+    # the bound ``.get`` probes — a raw 500 on GET /api/wireguard.
     try:
-        expected_key = public_from_private(_as_text(iface_block.get("PrivateKey")))
+        expected_key = public_from_private(
+            _as_text(_mapping_get(iface_block, "PrivateKey"))
+        )
     except WireGuardError:
         expected_key = ""
-    expected_port = _as_text(iface_block.get("ListenPort")).strip()
+    expected_port = _as_text(_mapping_get(iface_block, "ListenPort")).strip()
 
     by_port = ""
     for device, rows in grouped.items():
@@ -1436,12 +1545,15 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
     if device:
         # _ping_rc on the exit probes (the health9 rc rule): a bombed rc
         # from a patched sh/sudo_capture used to 500 GET /api/wireguard.
-        rc, out, err = sh([WG, "show", device, "dump"], timeout=10)
+        # _sh_answer: so did a junk-shaped answer, at the unpack itself.
+        rc, out, err = _sh_answer(sh, [WG, "show", device, "dump"], timeout=10)
         if _ping_rc(rc) != 0:
             # The UAPI socket is root-owned: retry with root.  sudo_capture uses
             # the web-entered password when this request carries one (management
             # from another device), else the packaged passwordless sudoers rules.
-            rc, out, err = sudo_capture([WG, "show", device, "dump"], timeout=10)
+            rc, out, err = _sh_answer(
+                sudo_capture, [WG, "show", device, "dump"], timeout=10
+            )
         if _ping_rc(rc) == 0:
             return device, _dump_rows(out, device), ""
         first_error = _tool_error(err, "")
@@ -1452,7 +1564,7 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
         # down" from "the dump could not be read".  Those call for opposite
         # responses -- start the interface, or fix the sudoers rule -- and the old
         # code reported the kernel's "No such file or directory" for both.
-        rc, out, _ = sh([WG, "show", "interfaces"], timeout=8)
+        rc, out, _ = _sh_answer(sh, [WG, "show", "interfaces"], timeout=8)
         if _ping_rc(rc) == 0 and not _as_text(out).strip():
             return "", [], "not running"
         return "", [], first_error or error or "interface not found"
@@ -1561,8 +1673,11 @@ def status(force: bool = False) -> dict:
     # patched provider used to KeyError this walk (a raw 500 on every
     # GET /api/wireguard poll), and a value's __bool__/__str__ bomb fired
     # from the old ``stats.get(...) or record[...]`` chains.
+    # _mapping_get on the record pulls: a hash-shadow stored key survives
+    # _plain_rows' exact-dict copies and used to detonate the bound ``.get``
+    # probe loop itself — the same raw 500 on every poll.
     for record in records:
-        public = _as_text(record.get("public_key"))
+        public = _as_text(_mapping_get(record, "public_key"))
         stats = live.get(public) or {}
         handshake = _conf_int(stats.get("last_handshake"), 0)
         age = (now - handshake) if handshake else 0
@@ -1574,7 +1689,7 @@ def status(force: bool = False) -> dict:
         # which would read as "keepalive set" in the count below.  _isa: a
         # stored value whose __class__ is a raising property detonated this
         # very gate — a raw 500 on every GET /api/wireguard poll.
-        raw_keep = record.get("keepalive")
+        raw_keep = _mapping_get(record, "keepalive")
         if not _isa(raw_keep, (str, bytes, bytearray, int, float)):
             raw_keep = ""
         keepalive = (
@@ -1584,29 +1699,31 @@ def status(force: bool = False) -> dict:
             keepalive_missing += 1
         rx = _conf_int(stats.get("rx"), 0)
         tx = _conf_int(stats.get("tx"), 0)
-        reissuable = _truthy(record.get("reissuable"))
+        reissuable = _truthy(_mapping_get(record, "reissuable"))
         peers.append({
             "pubkey": public,
-            "name": _as_text(record.get("name")),
-            "mode": _as_text(record.get("mode")),
-            "allowed_ips": _as_text(stats.get("allowed_ips")) or _as_text(record.get("ip")),
+            "name": _as_text(_mapping_get(record, "name")),
+            "mode": _as_text(_mapping_get(record, "mode")),
+            "allowed_ips": _as_text(stats.get("allowed_ips")) or _as_text(_mapping_get(record, "ip")),
             "endpoint": _as_text(stats.get("endpoint")),
             "last_handshake": handshake,
             "handshake_age": age,
             "active": is_active,
             "stale": is_stale,
             "keepalive": keepalive,
-            "psk": _truthy(stats.get("preshared")) or _truthy(record.get("preshared_key")),
+            "psk": _truthy(stats.get("preshared")) or _truthy(_mapping_get(record, "preshared_key")),
             "rx": rx,
             "tx": tx,
             "rx_human": _human_bytes(rx),
             "tx_human": _human_bytes(tx),
             "reissuable": reissuable,
-            "known": _truthy(record.get("known")),
+            "known": _truthy(_mapping_get(record, "known")),
         })
 
     iface = _conf_interface(read_conf())
-    address = _as_text(iface.get("Address")).strip()
+    # _mapping_get on the block pulls: a hash-shadow "Address"/"MTU"/"DNS"
+    # key survives the exact-dict launder and used to 500 the poll here.
+    address = _as_text(_mapping_get(iface, "Address")).strip()
     # Only derive the key from the config when the running interface did not report
     # one.  `public_key` below is `server_public or conf_public`, so on a healthy
     # tunnel this value was computed and then discarded -- and computing it runs
@@ -1616,7 +1733,9 @@ def status(force: bool = False) -> dict:
     conf_public = ""
     if not server_public:
         try:
-            conf_public = public_from_private(_as_text(iface.get("PrivateKey")))
+            conf_public = public_from_private(
+                _as_text(_mapping_get(iface, "PrivateKey"))
+            )
         except WireGuardError:
             conf_public = ""
 
@@ -1628,13 +1747,13 @@ def status(force: bool = False) -> dict:
         "running": up,
         "state_error": _as_text(error),
         "listen_port": listen_port or _conf_int(
-            iface.get("ListenPort"), cfg_["listen_port"],
+            _mapping_get(iface, "ListenPort"), cfg_["listen_port"],
         ),
         "public_key": _as_text(server_public or conf_public),
         "address": address,
         "subnet": _as_text(cfg_["subnet"]),
-        "mtu": _conf_int(iface.get("MTU"), cfg_["mtu"]),
-        "dns": _as_text(iface.get("DNS")) or _as_text(cfg_["dns"]),
+        "mtu": _conf_int(_mapping_get(iface, "MTU"), cfg_["mtu"]),
+        "dns": _as_text(_mapping_get(iface, "DNS")) or _as_text(cfg_["dns"]),
         "endpoint": _as_text(cfg_["endpoint"]),
         "wstunnel": wstunnel_status(),
         "peers": peers,
@@ -1656,13 +1775,16 @@ def used_addresses() -> set[str]:
     # Laundered shape + _as_text: a subclass block/row or a bombing value
     # used to 500 GET /api/wireguard/next-ip and every peer mutation's
     # allocation step; junk now costs only the value it sits in.
-    address = _as_text(_conf_interface(parsed).get("Address"))
+    # _mapping_get: a hash-shadow key ("Address"/"AllowedIPs" collision,
+    # raising ``__eq__``) survives the exact-dict launder and used to
+    # detonate the bound ``.get`` itself — the same raw 500.
+    address = _as_text(_mapping_get(_conf_interface(parsed), "Address"))
     for part in address.split(","):
         host = part.strip().split("/")[0].strip()
         if host:
             used.add(host)
     for peer in _conf_peers(parsed):
-        for part in _as_text(peer.get("AllowedIPs")).split(","):
+        for part in _as_text(_mapping_get(peer, "AllowedIPs")).split(","):
             host = part.strip().split("/")[0].strip()
             if host:
                 used.add(host)
@@ -2149,15 +2271,40 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     public = str(pubkey or "").strip()
     if not _KEY_RE.match(public):
         raise WireGuardError("wg.bad_key")
-    meta = _registry_peers().get(public)
+    # _mapping_get + shape launder: the registry does not own its providers
+    # (tests and tooling patch ``_registry_peers`` / ``peer_records``), and a
+    # hash-shadow stored key, a meta whose ``__bool__`` bombs, or the old
+    # ``meta.get(...) or ""`` reflected-``__bool__`` probes used to raise a
+    # raw 500 out of GET /api/wireguard/peers/config, /peers/download and
+    # /export — a coded 404-shaped error (or a clean skip) is the honest
+    # answer for junk this route can never render anyway.
+    meta = _mapping_get(_registry_peers(), public)
+    if _isa(meta, dict):
+        try:
+            meta = dict(meta)
+        except Exception:
+            meta = {}
+    else:
+        meta = {}
     if not meta:
         raise WireGuardError("wg.peer_unknown", pubkey=public[:16])
-    private = _as_text(meta.get("private_key") or "")
+    private = _as_text(_mapping_get(meta, "private_key"))
     if not private:
         raise WireGuardError("wg.peer_not_reissuable", pubkey=public[:16])
 
+    # _plain_rows + _mapping_get (the export walk rule): a junk listing, a
+    # partial row (bare ``r["public_key"]`` used to KeyError) or a shadowed
+    # key must read as "not configured", never a raw 500.
+    try:
+        rows = _plain_rows(peer_records())
+    except Exception:
+        rows = []
     configured = next(
-        (r for r in peer_records() if r["public_key"] == public), None
+        (
+            r for r in rows
+            if _as_text(_mapping_get(r, "public_key")) == public
+        ),
+        None,
     )
     if configured is None:
         # In the registry but not in the config: the peer was removed from the
@@ -2171,13 +2318,14 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
         # whenever the conf block had no AllowedIPs to prefer, and 500'd
         # peers/config (JSON body), peers/download (PlainTextResponse
         # encode) and export under Starlette's UTF-8 encode.
-        ip=configured["ip"] or _as_text(meta.get("ip") or "").strip(),
-        mode=str(meta.get("mode") or "split"),
-        preshared_key=configured["preshared_key"],
+        ip=_as_text(_mapping_get(configured, "ip")).strip()
+        or _as_text(_mapping_get(meta, "ip")).strip(),
+        mode=_as_text(_mapping_get(meta, "mode")) or "split",
+        preshared_key=_as_text(_mapping_get(configured, "preshared_key")),
         obfuscated=(fmt or "").lower() == "wst",
     )
     cfg_ = settings()
-    name = _as_text(meta.get("name") or "peer") or "peer"
+    name = _as_text(_mapping_get(meta, "name")) or "peer"
     rendered = wireguard_export.render(
         fmt, conf, name, lan_cidr=cfg_["lan_cidr"], wg_cidr=cfg_["subnet"]
     )
@@ -2194,13 +2342,24 @@ def export_all(fmt: str = "wg") -> dict:
     """Every re-issuable peer rendered in *fmt*, for a bulk hand-out."""
     items = []
     skipped = []
-    for record in peer_records():
+    # _plain_rows + _mapping_get (the status()/_ping_targets provider rule):
+    # this walk does not own ``peer_records`` — a junk listing, a partial
+    # row (the bare ``record["public_key"]`` used to KeyError) or a
+    # hash-shadow stored key used to raise a raw 500 out of GET
+    # /api/wireguard/export where every non-reissuable peer already lands
+    # in ``skipped``.
+    try:
+        rows = _plain_rows(peer_records())
+    except Exception:
+        rows = []
+    for record in rows:
+        public = _as_text(_mapping_get(record, "public_key"))
         try:
-            items.append(peer_conf(record["public_key"], fmt))
+            items.append(peer_conf(public, fmt))
         except WireGuardError:
             skipped.append({
-                "pubkey": _as_text(record["public_key"]),
-                "name": _as_text(record["name"]),
+                "pubkey": public,
+                "name": _as_text(_mapping_get(record, "name")),
                 "reason": "not_reissuable",
             })
     return {"ok": True, "format": (fmt or "wg").lower(), "items": items, "skipped": skipped}
@@ -2244,7 +2403,11 @@ def apply_live() -> dict:
         # its coded wg.sync_failed.
         return {"ok": False, "error": "stage_unwritable"}
 
-    rc, _, err = sh(["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30)
+    # _sh_answer: a junk-shaped answer from a patched sh blew the unpack —
+    # a raw 500 on POST /api/wireguard/sync after the config was staged.
+    rc, _, err = _sh_answer(
+        sh, ["/usr/bin/sudo", "-n", WG, "syncconf", device, str(staged)], timeout=30
+    )
     # _ping_rc (the health9 rc rule): an rc-subclass ``__eq__`` bomb from a
     # patched/odd sh used to detonate the bare ``rc == 0`` — a raw 500 on
     # POST /api/wireguard/sync and on every peer mutation's apply step after
@@ -2342,7 +2505,11 @@ def interface_action(action: str) -> dict:
     # itself -- no password can fix a bad config, and saying "password required"
     # sent operators looking in the wrong place entirely.
     for command in commands:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+        # _sh_answer: a junk-shaped answer from a patched sh blew the bare
+        # unpack — a raw 500 on POST /api/wireguard/interface.
+        rc, out, err = _sh_answer(
+            sh, ["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT
+        )
         # _ping_rc on both exit probes (the health9 rc rule): an rc-subclass
         # ``__eq__`` bomb used to detonate the bare ``rc == 0`` — a raw 500
         # on POST /api/wireguard/interface.  ``_as_text`` before
@@ -2361,8 +2528,12 @@ def interface_action(action: str) -> dict:
             fresh = runtime_state(settings()["interface"])
             if fresh["live"]:
                 return {"ok": True, "action": verb, "already_running": True}
-            sh(["/usr/bin/sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20)
-            rc, out, err = sh(["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT)
+            _sh_answer(
+                sh, ["/usr/bin/sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20
+            )
+            rc, out, err = _sh_answer(
+                sh, ["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT
+            )
             if _ping_rc(rc) == 0:
                 continue
             combined = (_as_text(err) + "\n" + _as_text(out)).strip()
@@ -2483,9 +2654,12 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None, bool]:
     ``fan_out`` re-raises on iteration, so an exception here would lose every
     peer's result instead of marking one unreachable.
     """
+    # _sh_answer (the answer-shape launder): a junk-shaped answer from a
+    # patched sh reads as rc -255 — one unreachable row, never the -1
+    # sentinel, so it cannot fake the disk-confirmed wg.ping_missing 503.
     try:
-        rc, out, err = sh(
-            [PING, "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
+        rc, out, err = _sh_answer(
+            sh, [PING, "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
         )
     except Exception:
         return False, None, False
@@ -2593,9 +2767,13 @@ def _ping_targets() -> list[tuple[dict, str]]:
             record = dict(record)
         except Exception:
             continue
-        # Unbound ``dict.get`` (the smart_test_svc._schedule_cfg rule): a
-        # dict-subclass row whose ``.get`` raises must drop alone.
-        ip = _as_text(dict.get(record, "ip"))
+        # _mapping_get (the smart_test_svc._schedule_cfg rule, plus the
+        # hash-shadow launder): a dict-subclass row whose ``.get`` raises,
+        # or a row carrying a stored key whose hash collides with "ip" and
+        # whose ``__eq__`` raises inside the probe loop — the exact
+        # ``dict(record)`` copy above preserves poisoned keys — must drop
+        # alone, never 500 POST /api/wireguard/ping.
+        ip = _as_text(_mapping_get(record, "ip"))
         host = ip.split("/")[0].split(",")[0].strip()
         if not host:
             continue
@@ -2635,10 +2813,14 @@ def ping_peers(timeout_ms: int = 800) -> dict:
         # its honest unreachable rows below.
         raise WireGuardError("wg.ping_missing")
 
+    # _mapping_get, not bare ``dict.get``: a hash-shadow stored key whose
+    # ``__eq__`` raises survives the exact-dict copy in _ping_targets and
+    # used to detonate the probe loop here — a raw 500 on POST
+    # /api/wireguard/ping after every probe had already answered.
     results = [
         {
-            "pubkey": _as_text(dict.get(record, "public_key")),
-            "name": _as_text(dict.get(record, "name")),
+            "pubkey": _as_text(_mapping_get(record, "public_key")),
+            "name": _as_text(_mapping_get(record, "name")),
             "ip": host,
             "reachable": reachable,
             "latency_ms": latency,

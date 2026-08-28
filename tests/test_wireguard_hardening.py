@@ -78,12 +78,22 @@ class InstallationDetectionTests(unittest.TestCase):
         self.assertTrue(info["probe_failed"], "the degraded state should be visible")
 
     def test_a_timeout_does_not_mean_uninstalled(self):
+        # The real ``sh`` never raises (a timeout answers ``(-1, "",
+        # "timeout")``); this models a broken/patched runner.  Propagating
+        # its exception — the pre-wg11 pin — was itself a raw 500 out of
+        # GET /api/wireguard, so ``_sh_answer`` now degrades the probe:
+        # still installed (a fact about the filesystem), visibly degraded.
         with (
             patch.object(wireguard_svc.Path, "exists", _wireguard_present),
             patch.object(wireguard_svc, "sh", side_effect=TimeoutError("slow")),
         ):
-            with self.assertRaises(TimeoutError):
-                wireguard_svc.installation()
+            info = wireguard_svc.installation()
+        self.assertTrue(
+            info["installed"],
+            "a raising version probe reported the tools as missing/broken",
+        )
+        self.assertEqual(info["tools_version"], "")
+        self.assertTrue(info["probe_failed"], "the degraded state should be visible")
 
     def test_missing_binaries_do_mean_uninstalled(self):
         # Only the WireGuard binaries are made to look absent. `patch.object(

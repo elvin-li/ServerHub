@@ -689,10 +689,16 @@ def peer_origin_conflict() -> dict:
     records = wireguard_svc._plain_rows(raw)
     if not records:
         return {"conflict": False, "reason": "no_peers", "foreign": 0, "total": 0}
+    # _mapping_get, not bound ``.get`` (the wireguard_svc hash-shadow rule):
+    # ``_plain_rows``'s exact ``dict(row)`` copies preserve poisoned *keys*,
+    # and a stored key whose hash collides with "known" / "reissuable" /
+    # "public_key" and whose ``__eq__`` raises used to detonate the probe
+    # loop inside these pulls — a raw 500 on GET /api/wireguard/readiness
+    # for a row every other junk shape already drops silently.
     foreign = [
         r for r in records
-        if not wireguard_svc._truthy(r.get("known"))
-        and not wireguard_svc._truthy(r.get("reissuable"))
+        if not wireguard_svc._truthy(wireguard_svc._mapping_get(r, "known"))
+        and not wireguard_svc._truthy(wireguard_svc._mapping_get(r, "reissuable"))
     ]
     conflict = len(foreign) == len(records)
     return {
@@ -700,7 +706,10 @@ def peer_origin_conflict() -> dict:
         "reason": "all_peers_foreign" if conflict else "",
         "foreign": len(foreign),
         "total": len(records),
-        "foreign_keys": [_as_text(r.get("public_key"))[:16] for r in foreign[:10]],
+        "foreign_keys": [
+            _as_text(wireguard_svc._mapping_get(r, "public_key"))[:16]
+            for r in foreign[:10]
+        ],
     }
 
 
