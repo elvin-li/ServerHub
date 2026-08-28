@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import re
+
 from hub import cli_args
 from hub.config import cfg
 from hub.group_rules import configured_group_rules, resolve_yaml_entry_group
 from hub.host_address import resolve_value
 from hub.util import fan_out, port_open, sh
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 # Both collectors here probe one configured entry at a time, and a single probe
 # is a `pgrep` (up to 3s) plus a TCP connect (0.6s against a closed port).  In
@@ -29,16 +34,47 @@ def _entry_id(raw) -> str:
     matches ``actions._as_text`` so the id a row serves is byte-for-byte the
     registry key that can act on it.
     """
-    if isinstance(raw, (bytes, bytearray)):
-        raw = bytes(raw).decode("utf-8", "replace")
-    if isinstance(raw, str):
-        return raw.encode("utf-8", "replace").decode("utf-8").strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if type(raw) is bool:
+        return ""
+    if raw is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(raw, "utf-8", "replace").strip()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    if type(raw) is int:
+        try:
+            text = str(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        return text
+    if type(raw) is str:
+        try:
+            return str.encode(raw, "utf-8", "replace").decode("utf-8").strip()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        text = str(raw)
+    except RecursionError:
+        return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
-        return str(raw)
-    except ValueError:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8").strip()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _probe_app(entry):
@@ -52,7 +88,9 @@ def _probe_app(entry):
     try:
         rc, _, _ = sh(["/usr/bin/pgrep", "-x", process], timeout=3)
         return rc == 0, port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False, None
 
 
@@ -77,7 +115,9 @@ def collect_apps(engine_up):
         # it, so an unnamed entry is now skipped instead.
         try:
             process = str(a.get("process") or "").strip()
-        except ValueError:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A hand-edited hex leftover (``process: 0xfff…`` loads uncapped
             # through YAML) raised the int->str digit-cap ValueError here and
             # killed the whole collector — every app row silently vanished
@@ -121,7 +161,9 @@ def _probe_port(port):
     """Port reachability that never raises, for use inside the pool."""
     try:
         return port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 

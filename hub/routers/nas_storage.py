@@ -27,6 +27,8 @@ from hub.routers.nas_common import (
 
 router = APIRouter(tags=["nas-storage"])
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _rendered(payload):
     """Read payload through the shared sanitizer before Starlette renders it.
@@ -317,13 +319,17 @@ def _known_mount(mount: str) -> str:
     known = {"/"}
     try:
         rows = iter(snapshots_svc.snapshot_mounts())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     try:
         for row in rows:
             if isinstance(row, str):
                 known.add(row)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if value not in known:
         raise api_error("snapshot.bad_mount", mount=value[:80])
@@ -549,7 +555,9 @@ def api_nfs_preview():
     # the preview instead of rendering the salvageable lines.
     try:
         rows = iter(entries) if isinstance(entries, list) else iter(())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     try:
         for e in rows:
@@ -558,7 +566,9 @@ def api_nfs_preview():
             raw = _utf8_text(dict.get(e, "raw"))
             if raw:
                 lines.append(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A walk dying mid-iteration keeps the lines already collected.
         pass
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""))
