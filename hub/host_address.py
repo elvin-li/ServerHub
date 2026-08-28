@@ -25,6 +25,8 @@ _AUTO_VALUES = {"", "auto", "automatic", "dhcp", "dynamic"}
 _BIND_ONLY_HOSTS = frozenset({"0.0.0.0", "127.0.0.1", "::", "::1", "[::]", "[::1]"})
 _VAR_RE = re.compile(r"\$?\{([A-Za-z][A-Za-z0-9_.-]{0,63})\}")
 _cache_lock = threading.Lock()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 #: Held across the detection itself, so concurrent callers that miss a cold cache
 #: wait for one answer instead of each running the probes.  Separate from
 #: `_cache_lock`, which is only ever held for the dict access: holding one lock for
@@ -54,7 +56,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -73,7 +77,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -113,19 +119,25 @@ def _sh_run(cmd, timeout) -> tuple:
     """
     try:
         value = sh(cmd, timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
     if type(value) is tuple:
         items = value
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -144,56 +156,62 @@ def _rc_int(rc) -> int:
     ``-255`` is no honest exit status, so a bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
-    # _isa, not a bare isinstance: a ``__class__``-property bomb planted in
-    # the detection cache used to detonate this gate itself.
-    decoded = None
-    if _isa(value, (bytes, bytearray)):
-        try:
-            # Unbound base decode: a bytes-subclass ``decode`` bomb planted
-            # in the detection cache must not raise out of this scrub (the
-            # modules5 convention its sibling sanitizers already use).  The
-            # try is for a *lying* ``__class__`` (claims bytes, is not): the
-            # unbound call TypeErrors and the impostor renders like any
-            # other junk object below.
-            base = bytes if isinstance(value, bytes) else bytearray
-            decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
-            decoded = None
-    if decoded is not None:
-        value = decoded
-    elif value is None:
+    if value is None:
         return ""
-    elif type(value) is not str:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this scrub — a leftover planted in the LAN-address
-    # detection cache then raised straight out of ``host_ip()`` and 500'd its
-    # one unguarded consumer, GET /api/system/host (the status.py convention).
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor lands here: junk.
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def configured_host() -> str:
