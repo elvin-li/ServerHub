@@ -731,6 +731,109 @@ def parse_ps(payload: dict) -> list[dict]:
 
 # ── owning launchd job discovery ─────────────────────────────────────────────
 
+def _label_set(raw) -> frozenset:
+    """*raw* as a frozenset of exact-str labels.  Never raises.
+
+    The launchd-listing seam this module always trusted: ``discover_label``
+    ran ``label in running`` / ``label in loaded`` and ``_service_state`` ran
+    ``label in jobs.loaded`` on whatever the cached listing answered.  A
+    membership probe compares the query against every stored element whose
+    hash collides — dispatching into that element's own ``__eq__`` — so a
+    leftover str-subclass label riding the cached listing (the health12 /
+    dash12 shadow-element class) detonated the bare ``in`` and took
+    GET /api/ollama/status to the coded 500 ``ollama.status_failed``; a
+    junk non-set view (None, a scalar) TypeError'd the same probes.  The
+    laundered copy holds only exact strs, so no override can fire downstream;
+    a genuine label wrapped in a bomb subclass keeps its text and still
+    reports loaded/running (do-not-weaken).
+    """
+    if not _isa(raw, (frozenset, set, list, tuple)):
+        return frozenset()
+    items = None
+    for base in (frozenset, set, list, tuple):
+        if _isa(raw, base):
+            # Unbound base iteration (the _pull_log_lines convention): a
+            # subclass ``__iter__`` bomb cannot 500, and a lying
+            # ``__class__`` impostor TypeErrors the unbound call itself.
+            try:
+                items = list(base.__iter__(raw))
+            except Exception:
+                return frozenset()
+            break
+    if items is None:
+        return frozenset()
+    out: set[str] = set()
+    for item in items:
+        if not _isa(item, (str, bytes, bytearray)):
+            continue
+        text = _as_text(item).strip()
+        if text:
+            out.add(text)
+    return frozenset(out)
+
+
+def _listing_attr(jobs, name):
+    """One attribute of the cached listing, or None.  Never raises.
+
+    ``jobs.loaded`` / ``jobs.running`` on a junk cached object whose
+    attribute is a *raising property* used to detonate the bare read out of
+    ``_service_state`` — the coded 500 on GET /api/ollama/status.
+    """
+    if jobs is None:
+        return None
+    try:
+        return getattr(jobs, name, None)
+    except Exception:
+        return None
+
+
+def _listing_pid(jobs, label):
+    """``jobs.pid_for(label)`` laundered to a non-negative int, or None.
+
+    Three ex-detonations on GET /api/ollama/status: a junk listing whose
+    ``pid_for`` raises blew the bare call; a str-subclass pid whose
+    ``__bool__`` bombs blew the old ``if pid`` truth test; and an
+    int-subclass pid whose ``__eq__`` bombs blew ``_safe_int``'s own
+    ``raw in (None, "")`` membership probe.  A real pid answer (str digits,
+    or a genuine int) keeps its value; junk reads as "not running".
+    """
+    if jobs is None:
+        return None
+    try:
+        raw = jobs.pid_for(label)
+    except Exception:
+        return None
+    if raw is None or type(raw) is bool:
+        return None
+    if _isa(raw, int):
+        try:
+            # Base coercion to an exact int (the _jsonable rule): a
+            # subclass ``__index__``/``__str__`` bomb drops instead of
+            # raising out of the snapshot.
+            n = int.__index__(raw)
+        except Exception:
+            return None
+    else:
+        text = _as_text(raw).strip()
+        if not text or not text.isdigit():
+            return None
+        try:
+            n = int(text)
+        except ValueError:
+            # >4300 digits: the str->int digit cap.  Not a pid.
+            return None
+    if n < 0:
+        return None
+    try:
+        # An over-cap already-int leftover would ValueError json.dumps
+        # itself at int->str time (the _safe_int rule).
+        str(n)
+    except ValueError:
+        return None
+    return n
+
+
+
 def _plist_label_if_ollama(path: Path) -> str | None:
     """The plist's Label when its content references ollama at all.
 
@@ -859,7 +962,15 @@ def discover_label(
                 running = jobs.running
         except Exception:
             loaded = frozenset()
-    running = running or frozenset()
+    # _label_set on both views, not ``running or frozenset()``: the ``or``
+    # truth test reflected into a junk view's own ``__bool__``, and the
+    # membership loops below ran a leftover shadow element's ``__eq__``
+    # inside the C-level probe — either used to detonate out of every
+    # caller (the coded 500 on GET /api/ollama/status through
+    # ``_service_state``, and the health fan-out row).  The laundered sets
+    # hold exact strs only, so a genuine label still wins its rank.
+    loaded = _label_set(loaded)
+    running = _label_set(running)
     for label in candidates:
         if label in running:
             return label
@@ -886,10 +997,18 @@ def _service_state(*, reachable: bool = False) -> dict:
         jobs = listing()
     except Exception:
         jobs = None
-    label = discover_label(
-        loaded=jobs.loaded if jobs else frozenset(),
-        running=jobs.running if jobs else frozenset(),
-    )
+    # The try above only covered the *call*.  The reads were still bare:
+    # ``jobs.loaded if jobs else …`` ran a junk cached listing's own
+    # ``__bool__`` and then its raising ``loaded``/``running`` properties,
+    # ``label in jobs.loaded`` ran a leftover shadow element's ``__eq__``
+    # inside the membership probe, and ``if pid`` / ``_safe_int(pid)`` ran
+    # a junk pid answer's ``__bool__``/``__eq__`` — each used to detonate
+    # out of :func:`status` as the coded 500 ``ollama.status_failed``.
+    # ``_listing_attr`` + ``_label_set`` + ``_listing_pid`` launder the
+    # whole seam; a healthy listing keeps its exact answers.
+    loaded = _label_set(_listing_attr(jobs, "loaded"))
+    running = _label_set(_listing_attr(jobs, "running"))
+    label = discover_label(loaded=loaded, running=running)
     state = {
         "label": label,
         "loaded": False,
@@ -898,11 +1017,11 @@ def _service_state(*, reachable: bool = False) -> dict:
         "candidates": _candidate_labels(),
         "inferred": False,
     }
-    if label and jobs:
-        state["loaded"] = label in jobs.loaded
-        pid = jobs.pid_for(label)
+    if label:
+        state["loaded"] = label in loaded
+        pid = _listing_pid(jobs, label)
         state["running"] = pid is not None
-        state["pid"] = _safe_int(pid) if pid else None
+        state["pid"] = pid
     if reachable and not state["running"]:
         state["running"] = True
         state["loaded"] = True
@@ -1126,9 +1245,14 @@ def start_pull(name: str) -> dict:
 
     def run():
         try:
-            _pull["rc"] = run_watchdog(
+            # _run_cli: a leftover raising runner used to skip the ``rc``
+            # write whole — the pull finished with running=False, rc=None
+            # and an empty verdict (the jobs.start_job silent-loss shape);
+            # a junk rc answer now lands laundered instead of riding raw
+            # into the pull row.
+            _pull["rc"] = _run_cli(
                 [binary, "pull", name],
-                timeout=PULL_TIMEOUT, log=_pull["log"], env=_cli_env(),
+                timeout=PULL_TIMEOUT, log=_pull["log"],
             )
         finally:
             _pull["running"] = False
@@ -1140,6 +1264,61 @@ def start_pull(name: str) -> dict:
 
 
 # ── delete / unload / quick test ─────────────────────────────────────────────
+
+def _exact_rc(raw) -> int:
+    """A runner's exit answer as an exact, renderable int; junk reads as -1.
+
+    ``delete_model`` compared the answer raw: ``rc != 0`` dispatches into
+    the value's own ``__ne__``, so an int-subclass rc whose comparison
+    bombs (the wg11/vms11 junk-answer-shape class) used to 500
+    POST /api/ollama/models/delete before any coded error could form, and
+    a float/None/str answer rode into ``f"exit {rc}"`` or the ``rc == -1``
+    probe the same way.  A genuine subclass carrying a real code keeps its
+    value through the unbound base coercion (do-not-weaken); anything that
+    cannot answer as an int is the could-not-run sentinel.
+    """
+    if type(raw) is bool:
+        return int(raw)
+    if _isa(raw, int):
+        if type(raw) is not int:
+            try:
+                n = int.__index__(raw)
+            except Exception:
+                return -1
+        else:
+            n = raw
+        try:
+            # An over-cap leftover would ValueError json.dumps / the
+            # f-string render at int->str time (the _safe_int rule).
+            str(n)
+        except ValueError:
+            return -1
+        return n
+    return -1
+
+
+def _run_cli(argv, *, timeout, log) -> int:
+    """:func:`hub.jobs.run_watchdog` with the answer seam laundered.
+
+    Never raises, and always answers an exact int.  ``run_watchdog``
+    guards its own body, but the seam itself was still bare at both call
+    sites: a leftover raising runner used to 500
+    POST /api/ollama/models/delete raw, and in the pull thread it skipped
+    the ``rc`` write entirely — the job finished with no verdict at all
+    (the hub.jobs.start_job silent-loss rule).  A raise is the same
+    could-not-run -1 sentinel run_watchdog itself reports, with the error
+    text kept in the log so the UI can say why.
+    """
+    try:
+        rc = run_watchdog(argv, timeout=timeout, log=log, env=_cli_env())
+    except Exception as e:
+        try:
+            log.append(f"!! error: {_utf8_text(e)}")
+        except Exception:
+            pass
+        return -1
+    return _exact_rc(rc)
+
 
 def delete_model(name: str) -> dict:
     """`ollama rm <name>` — argv, never a shell; confirm is enforced upstream."""
@@ -1161,8 +1340,16 @@ def delete_model(name: str) -> dict:
                 model=_utf8_text(busy) if busy is not None else "",
             )
     log: list[str] = []
-    rc = run_watchdog([binary, "rm", name], timeout=RM_TIMEOUT, log=log, env=_cli_env())
+    # _run_cli, not a bare run_watchdog: a leftover raising runner or a
+    # junk rc answer shape used to 500 this POST raw at the ``rc != 0``
+    # comparison / the f-string render.
+    rc = _run_cli([binary, "rm", name], timeout=RM_TIMEOUT, log=log)
     status.invalidate()
+    # _pull_log_lines + _utf8_text on the tail, not a bare str.join: a
+    # leftover runner that hands back bytes/None/int lines TypeError'd the
+    # join — on the *success* return too — and a lone surrogate in a kept
+    # line still 500'd Starlette's UTF-8 encode of the response body.
+    tail = _utf8_text("\n".join(_pull_log_lines(log)))
     if rc != 0:
         # rc -1 is run_watchdog's could-not-run sentinel — but it is also
         # what a SIGHUP-killed rm reports, so the sentinel alone must not
@@ -1173,8 +1360,8 @@ def delete_model(name: str) -> dict:
         # path, never on a successful rm.
         if rc == -1 and binary_path() is None:
             raise api_error("ollama.not_installed")
-        raise api_error("ollama.rm_failed", error="\n".join(log)[-300:] or f"exit {rc}")
-    return {"ok": True, "model": name, "message": "\n".join(log)[-300:]}
+        raise api_error("ollama.rm_failed", error=tail[-300:] or f"exit {rc}")
+    return {"ok": True, "model": name, "message": tail[-300:]}
 
 
 def unload_model(name: str) -> dict:
