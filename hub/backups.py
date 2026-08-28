@@ -579,11 +579,82 @@ def _iter_list(value):
         return []
 
 
+def _cfg_map() -> dict:
+    """The config snapshot as a dict — or ``{}`` when the provider itself
+    raises (the ``hub.config.settings_section`` rule these readers never got).
+
+    Every cfg read in this module goes through ``_mapping_get`` — but the
+    ``cfg()`` *call* sat outside every guard, so a snapshot provider that
+    raises 500'd GET /api/backups and POST /api/backups/postgres straight
+    out of ``pg_targets`` (and once more per listed row via ``scan_backups``
+    → ``restore_hint``), and POST /api/backups/configs out of
+    ``config_archive_extra_paths`` (outside the tar try) and
+    ``agent_keywords`` (inside a catch that only covers OSError) — all
+    before any job's broad catch got a turn.  In ``_pg_env`` the same raise
+    landed *inside* the dump's broad catch instead, which ``_discard``'ed
+    the finished artefact and blamed pg_dump for a config leftover the dump
+    never read.  A snapshot that cannot be read means the same thing an
+    empty services.yaml means: nothing is configured.
+    """
+    try:
+        raw = cfg()
+    except Exception:
+        return {}
+    return raw if _isa(raw, dict) else {}
+
+
+def _user_home() -> Path | None:
+    """Best-effort HOME through the module seam (never raises, always a Path).
+
+    ``hub.paths.user_home`` already guards ``Path.home()`` — but the seam
+    itself is a snapshot provider like ``cfg``, and this module joined its
+    answer bare: ``home / "Services" / …`` in :func:`scan_backups` and the
+    LaunchAgents join in :func:`_backup_configs`.  A leftover provider that
+    raises — or answers *text* instead of a Path — detonated those joins
+    (TypeError on ``str.__truediv__``) and 500'd GET /api/backups and
+    POST /api/backups/configs outside every catch.  A textual answer still
+    names a real directory, so it is kept as a Path (``_exact_str``:
+    surrogates in an undecodable HOME are legitimate there); junk that
+    cannot name one degrades to None — the same "no home" answer an
+    unresolvable HOME already gets.
+    """
+    try:
+        home = user_home()
+    except Exception:
+        return None
+    if home is None:
+        return None
+    if _isa(home, (bytes, bytearray)):
+        try:
+            text = _decode_bytes(home)
+        except Exception:
+            return None
+    elif _isa(home, str):
+        text = _exact_str(home)
+    else:
+        # Path and any real os.PathLike; a lying-``__class__`` Path impostor
+        # has no __fspath__ to answer with and drops here.  The fspath
+        # round-trip also flattens a Path subclass carrying bound bombs.
+        try:
+            text = os.fspath(home)
+        except Exception:
+            return None
+        if not _isa(text, str):
+            return None
+        text = _exact_str(text)
+    if not text:
+        return None
+    try:
+        return Path(text)
+    except Exception:
+        return None
+
+
 def _backups_cfg() -> dict:
     # _isa, not bare isinstance: a ``backups:`` value whose ``__class__`` is a
     # raising property detonated this gate itself — a 500 on GET /api/backups
     # and both POST dumps before any reader ran.
-    raw = _mapping_get(cfg(), "backups")
+    raw = _mapping_get(_cfg_map(), "backups")
     return raw if _isa(raw, dict) else {}
 
 
@@ -736,7 +807,10 @@ def _pg_env(target: dict) -> dict:
     # bomb in settings used to be swallowed by the broad catch around the
     # dump and reported as its failure ("leftover .get bomb") — a lie that
     # blamed pg_dump for a config leftover the dump never even read.
-    settings = _mapping_get(cfg(), "settings")
+    # _cfg_map, not a bare cfg(): a snapshot provider that raises was the
+    # same swallowed-and-blamed lie — the finished artefact discarded and
+    # the provider's text reported as pg_dump's failure.
+    settings = _mapping_get(_cfg_map(), "settings")
     raw = _mapping_get(settings, "maintenance_env")
     # _isa + a try around the unbound view: a raising ``__class__`` bomb
     # detonated the bare isinstance, and a *lying* ``__class__`` dict
@@ -846,7 +920,9 @@ def scan_backups() -> list:
     older than the cap were deleted.
     """
     items = []
-    home = user_home()
+    # _user_home, not the bare seam: a raising or text-answering provider
+    # used to 500 this join — and with it the whole GET /api/backups page.
+    home = _user_home()
     roots = [BACKUP_ROOT, DATA_DIR]
     if home is not None:
         roots.insert(1, home / "Services" / "teslamate" / "backups")
@@ -2235,7 +2311,9 @@ def _backup_configs() -> dict:
     # itself is 0600 in a 0700 directory via _private_dest, same as before.
     paths = [CONFIG_FILE, *data_state_paths(), *config_archive_extra_paths()]
     # include launchagents selectively
-    home = user_home()
+    # _user_home, not the bare seam: a raising or text-answering provider
+    # used to 500 POST /api/backups/configs at this join, outside the tar try.
+    home = _user_home()
     agents = (home / "Library" / "LaunchAgents") if home is not None else None
     try:
         if agents is not None and agents.is_dir():
