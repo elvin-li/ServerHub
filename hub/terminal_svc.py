@@ -151,7 +151,9 @@ def _home_dir() -> str:
     """
     try:
         home = user_home()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         home = None
     if home is not None:
         if _isa(home, (bytes, bytearray)):
@@ -657,12 +659,16 @@ def _receipt_map(result) -> dict:
     if _isa(result, dict):
         try:
             items = list(dict.items(result))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = []
         for key, val in items:
             try:
                 out[key] = val
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Unhashable key, or a hash-shadowing key whose __eq__
                 # raised against the seeded exact-str field: the seeded
                 # default stays and only this entry degrades.
@@ -747,7 +753,9 @@ def _audit(entry: dict[str, Any]) -> None:
                     secure_io.replace_secret_text(
                         AUDIT_PATH, "\n".join(lines) + "\n"
                     )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception, not the old (OSError, ValueError, TypeError,
         # OverflowError, UnicodeError, RecursionError) shortlist — the
         # hub.audit.record() rule: the write path crosses the lock, the
@@ -902,7 +910,9 @@ def _clamp_timeout(timeout: int | None) -> int:
             # and a bomb there raises an arbitrary type.  On success int()
             # always answers an exact int, so the clamp below is safe.
             value = int(timeout)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             value = DEFAULT_TIMEOUT
     return max(1, min(value, MAX_TIMEOUT))
 
@@ -925,7 +935,9 @@ def _spawn_receipt(argv: list[str], timeout: int, cwd: str | None = None) -> dic
         return _receipt_map(_run(argv, timeout, cwd=cwd))
     except HTTPException:
         raise
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return _receipt_map({})
 
 
@@ -941,7 +953,9 @@ def _looks_engine_down(blob: str) -> bool:
     """
     try:
         return _cfg_truthy(looks_engine_down(blob))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -959,11 +973,15 @@ def _engine_confirmed_down() -> bool:
     """
     try:
         answer = engine_up(force=True)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     try:
         return not bool(answer)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -1264,7 +1282,9 @@ def recent_audit(limit: int = 50) -> list[dict]:
     else:
         try:
             n = int(limit)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             n = 50
     n = max(1, min(n, 500))
     try:
@@ -1280,7 +1300,9 @@ def recent_audit(limit: int = 50) -> list[dict]:
         # 500 rows of ~1 KB each need ~500 KB.  hub/audit.recent fixed the
         # identical mismatch for the auth trail.
         lines = tail_file_lines(AUDIT_PATH, n, max_bytes=_AUDIT_MAX_BYTES)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Exception, not the old ``except OSError``: this reader does not
         # own the tailer (tests and tooling patch ``tail_file_lines`` — the
         # storage12 provider-seam rule), and a patched tailer that raises
@@ -1293,7 +1315,9 @@ def recent_audit(limit: int = 50) -> list[dict]:
         # (or a generator that raises mid-walk) used to TypeError the row
         # loop itself — the ollama12 answer-shape rule.
         rows = list(lines)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out: list[dict] = []
     for raw in rows:
@@ -1305,7 +1329,9 @@ def recent_audit(limit: int = 50) -> list[dict]:
             continue
         try:
             parsed = safe_json_loads(raw, parse_int=_capped_json_int)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # ValueError (bad JSON) and RecursionError (over-deep nest) as
             # before, plus whatever a subclass row's own hooks raise while
             # the decoder walks it: the row is unreadable either way.
