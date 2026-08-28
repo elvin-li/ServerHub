@@ -55,6 +55,9 @@ from hub.paths import DATA_DIR, pinned_or
 from hub.secure_io import drop_leftover_nonfile, replace_secret_text
 from hub.util import fan_out, read_text_capped, safe_json_loads, sh, strftime_now, utf8_env
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 WG = pinned_or("wg", "/opt/homebrew/bin/wg")
 WG_QUICK = "/opt/homebrew/bin/wg-quick"
 RM = "/bin/rm"
@@ -226,12 +229,16 @@ def _as_text(value) -> str:
     if _isa(value, bytes):
         try:
             text = bytes.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             text = None
     elif _isa(value, bytearray):
         try:
             text = bytearray.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             text = None
     elif _isa(value, str):
         text = value
@@ -245,23 +252,42 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        out = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A str-liar rode the ``_isa(value, str)`` branch as *text* itself,
         # and unbound ``str.encode`` cannot apply to it — one last guarded
         # ``str()`` renders its honest ``__str__`` instead of 500ing.
         try:
-            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
-        except Exception:
+            out = str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(out) else out
 
 
 def _path_exists(path) -> bool:
@@ -311,7 +337,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__``/``__len__`` bomb."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -338,7 +366,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -2845,7 +2875,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -2865,12 +2897,14 @@ def _ping_rc(rc) -> int:
     /api/wireguard and GET /api/wireguard/settings.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
