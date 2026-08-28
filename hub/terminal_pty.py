@@ -32,6 +32,9 @@ from hub.errors import exc_detail
 from hub.util import safe_json_loads
 from hub.websocket_security import authenticate_websocket
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 MAX_SESSIONS = 4
 MAX_SESSIONS_PER_USER = 2
 MAX_INPUT_BYTES = 64 * 1024
@@ -59,18 +62,46 @@ _sessions_lock = threading.Lock()
 def _bounded_int(value: str | int | None, default: int, low: int, high: int) -> int:
     # Bool is an int, and JSON ``1e309`` is ``inf`` — ``int(inf)`` OverflowError
     # used to kill the PTY session as ``io_error`` on a resize frame.
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         parsed = default
     else:
         try:
             parsed = int(value)
-        except (TypeError, ValueError, OverflowError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             parsed = default
     return max(low, min(parsed, high))
 
 
 def _safe_arg(value: str | None, *, max_len: int = 255) -> str:
-    text = str(value or "").strip()
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            text = base.decode(value, "utf-8", "replace")
+            break
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    else:
+        try:
+            text = str.__str__(value) if type(value) is str else str(value)
+        except RecursionError:
+            return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8").strip()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if _ADDR_REPR_RE.search(text):
+        return ""
     if len(text) > max_len or "\x00" in text or "\n" in text or "\r" in text:
         return ""
     return text
@@ -349,7 +380,9 @@ async def terminal_websocket(websocket: WebSocket) -> None:
                 task.result()
             except WebSocketDisconnect:
                 close_reason = "disconnect"
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 close_reason = "io_error"
     except (WebSocketDisconnect, BrokenPipeError, ConnectionResetError):
         close_reason = "disconnect"
@@ -359,7 +392,9 @@ async def terminal_websocket(websocket: WebSocket) -> None:
         close_reason = "not_found"
         try:
             await websocket.send_json({"type": "error", "code": "terminal.runtime_not_found"})
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     finally:
         # A transport-level cancellation — the server tearing this handler
@@ -438,5 +473,7 @@ async def terminal_websocket(websocket: WebSocket) -> None:
         _finish(rc)
         try:
             await websocket.close(code=1000 if close_reason == "process_exit" else 1001)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
