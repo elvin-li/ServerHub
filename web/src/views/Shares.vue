@@ -308,7 +308,7 @@
                 <code v-for="entry in acl.entries" :key="entry.index" class="acl-entry mono">
                   {{ finiteN(entry.index) }}: {{ finiteText(entry.kind) }}:{{ finiteText(entry.name) }}
                   {{ entry.inherited ? 'inherited ' : '' }}{{ finiteText(entry.effect) }}
-                  {{ (entry.perms || []).map(p => finiteText(p, '')).filter(Boolean).join(',') }}
+                  {{ asArray(entry.perms).map(p => finiteText(p, '')).filter(Boolean).join(',') }}
                 </code>
               </details>
               <p class="acl-hint">{{ t('shares.acl_guest_note') }}</p>
@@ -334,7 +334,7 @@ import {
   createShare, getShareAcl, getShares, openSharingSettings,
   removeShare as removeShareRequest, setShareAcl, setSystemSharing, updateShare,
 } from '../api/client'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import LoadFailure from '../components/LoadFailure.vue'

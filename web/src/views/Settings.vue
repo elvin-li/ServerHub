@@ -596,7 +596,7 @@
               · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: (upsLast.restarted || []).length }) }}
             </template>
             <template v-if="(upsLast.failed || []).length">
-              · {{ t('settings.ups_last_failed', { ids: (upsLast.failed || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
+              · {{ t('settings.ups_last_failed', { ids: asArray(upsLast.failed).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
             </template>
           </p>
 
@@ -1145,7 +1145,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import qrcode from 'qrcode-generator'
-import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,

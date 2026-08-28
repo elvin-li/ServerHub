@@ -286,7 +286,7 @@
             </div>
           </div>
           <p v-if="logError" class="hint bad" role="alert">{{ finiteText(logError) }}</p>
-          <pre v-if="(logData?.lines || []).length" class="mono logbox" aria-live="polite">{{ (logData?.lines || []).map(l => finiteText(l, '')).filter(Boolean).join('\n') }}</pre>
+          <pre v-if="asArray(logData?.lines).length" class="mono logbox" aria-live="polite">{{ asArray(logData?.lines).map(l => finiteText(l, '')).filter(Boolean).join('\n') }}</pre>
           <pre v-else class="mono logbox">{{ '—' }}</pre>
         </div>
       </template>
@@ -307,7 +307,7 @@ import {
   getPhotosHubLogs,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, withUnit } from '../lib/finite'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 
@@ -657,7 +657,7 @@ async function removeSelected() {
 
 function toggleAll(ev) {
   const on = ev.target.checked
-  selected.value = on ? (pending.value?.assets || []).map(a => a.id) : []
+  selected.value = on ? asArray(pending.value?.assets).map(a => a.id) : []
 }
 
 async function switchLog(n) {

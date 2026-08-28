@@ -9,7 +9,7 @@
            hide the paint and spell the state — same treatment as the
            Containers rows and Dashboard cards. ledText reuses the state-chip
            words, so no new locale strings. -->
-      <span v-for="p in (status.problems || []).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
+      <span v-for="p in asArray(status.problems).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
         <span class="led" :class="ledOf(p.state)" aria-hidden="true"></span>
         <span class="sr-only">{{ ledText(p.state) }}</span>
         {{ finiteText(p.name) }}
@@ -281,7 +281,7 @@ import {
 import { injectI18n } from '../i18n'
 import { groupI18nKey } from '../i18n/groupLabels'
 import { authState } from '../lib/authState'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { canLogs, ledOf, portOf, serviceLabels, signatureOf } from '../lib/serviceActions'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'

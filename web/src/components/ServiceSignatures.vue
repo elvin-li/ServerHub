@@ -87,7 +87,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forgetServiceSignature, getServiceSignatures, upsertServiceSignature } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -109,7 +109,7 @@ function httpValue(http) {
 }
 
 function fmtPorts(ports) {
-  const parts = (ports || []).map((p) => finiteText(p, '')).filter(Boolean)
+  const parts = asArray(ports).map((p) => finiteText(p, '')).filter(Boolean)
   return parts.length ? parts.join(', ') : '—'
 }
 
@@ -150,8 +150,8 @@ function startEdit(row) {
     slug: row.slug,
     name: row.name || '',
     category: row.category || '',
-    procs: (row.procs || []).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
-    ports: (row.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    procs: asArray(row.procs).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    ports: asArray(row.ports).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
     http: httpValue(row.http),
     brew: row.brew || '',
   }

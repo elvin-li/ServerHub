@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { finiteN, finiteText } from './lib/finite'
+import { asArray, finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -532,7 +532,7 @@ function navCurrent(item) {
   // an *ancestor* of the open page, so it takes `true` and leaves `page` to
   // the child.
   if (!isActive(item)) return undefined
-  return (item.children || []).some(isChildActive) ? 'true' : 'page'
+  return asArray(item.children).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {

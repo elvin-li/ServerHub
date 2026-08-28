@@ -283,7 +283,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
-import { barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -351,7 +351,7 @@ function policyLabel(p) {
 function syncFromView(data) {
   view.value = data
   preview.value = null
-  selected.value = (data.members || []).map((m) => m.mount)
+  selected.value = asArray(data.members).map((m) => m.mount)
   poolName.value = data.name || 'pool'
   minFreeGb.value = Number(data.min_free_gb) || 0
   if (data.policy) policy.value = data.policy

@@ -556,7 +556,7 @@
                   <td class="col-hide-m">{{ finiteText(m.smart?.wear) }}</td>
                   <td class="mono col-hide-m">{{ finiteText(m.smart?.power_on) }}</td>
                   <td class="col-hide-m" style="font-size:11px">
-                    <span v-if="m.caps?.supported?.length">{{ (m.caps.supported || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
+                    <span v-if="asArray(m.caps?.supported).length">{{ asArray(m.caps.supported).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
                     <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.caps.reason) }}</div>
                     <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
@@ -1081,7 +1081,7 @@ async function power(d, action) {
   try {
     const j = await setDiskPower(d.id, action)
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + (j.log || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? `✅ ${labels[action]} ${finiteText(d.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1000)
   } catch (e) {
@@ -1109,7 +1109,7 @@ async function manage(v, action) {
   try {
     const j = await manageStorageDevice(v.id, { action })
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + (j.log || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? `✅ ${action} ${finiteText(v.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(800)
   } catch (e) {
@@ -1171,7 +1171,7 @@ async function doFormat() {
       confirm_name: formatConfirm.value.trim(),
     })
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + (j.log || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? '✅ ' + t('main_extra.formatted') : `❌ ${finiteText(j.message)}`)
     if (j.ok) {
       formatTarget.value = null

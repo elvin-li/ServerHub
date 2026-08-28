@@ -581,7 +581,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import {
   flushDns,
   generateDiagnostics,
@@ -1055,7 +1055,7 @@ async function doDns() {
     const j = await lookupDns(dnsName.value)
     if (generation !== reloadGeneration || !pageAlive) return
     if (j.ok) {
-      dnsOut.value = (j.results || []).map(x => `${finiteText(x.family, '')} ${finiteText(x.ip, '')}`).filter(s => s.trim()).join('\n')
+      dnsOut.value = asArray(j.results).map(x => `${finiteText(x.family, '')} ${finiteText(x.ip, '')}`).filter(s => s.trim()).join('\n')
         + (finiteText(j.dig, '') ? `\n\ndig:\n${finiteText(j.dig)}` : '')
     } else {
       dnsOut.value = softText(j)
@@ -1074,7 +1074,7 @@ async function doFlushDns() {
     const j = await flushDns()
     if (generation !== reloadGeneration || !pageAlive) return
     toast(j.ok ? '✅ ' + t('tools.flush_ok') : '❌ ' + t('tools.flush_partial'))
-    dnsOut.value = (j.detail || []).map(n => finiteText(n, '')).filter(Boolean).join('\n')
+    dnsOut.value = asArray(j.detail).map(n => finiteText(n, '')).filter(Boolean).join('\n')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

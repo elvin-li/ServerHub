@@ -143,7 +143,7 @@
                 <td class="mono">
                   {{ finiteText(m.name) }}
                   <div class="show-m sub">{{ finiteText(m.family) }}{{ finiteText(m.parameter_size, '') ? ' ' + finiteText(m.parameter_size) : '' }} · {{ finiteText(m.quantization) }}</div>
-                  <div v-if="(m.capabilities || []).length" class="show-m sub">{{ (m.capabilities || []).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
+                  <div v-if="asArray(m.capabilities).length" class="show-m sub">{{ asArray(m.capabilities).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
                 </td>
                 <td>{{ fmtSize(m.size) }}</td>
                 <td class="col-hide-m">{{ finiteText(m.family) }} <span v-if="finiteText(m.parameter_size, '')" class="meta">{{ finiteText(m.parameter_size) }}</span></td>
@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'

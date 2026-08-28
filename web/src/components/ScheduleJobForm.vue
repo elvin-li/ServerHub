@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -154,7 +154,7 @@ const command = ref(p.command || '')
 const direction = ref(p.direction || 'push')
 const src = ref(p.src || '')
 const dest = ref(p.dest || '')
-const excludeText = ref((p.exclude || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
+const excludeText = ref(asArray(p.exclude).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
 const del = ref(Boolean(p.delete))
 const compress = ref(Boolean(p.compress))
 const bwlimit = ref(p.bwlimit_kbps || null)
