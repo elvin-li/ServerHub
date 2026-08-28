@@ -765,7 +765,9 @@ def pg_targets(raw: list | None = None) -> list[dict]:
             port = int(5432 if port_raw in (None, "") else port_raw)
         except (TypeError, ValueError, OverflowError):
             continue
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A leftover comparison / __int__ bomb in ``port`` (the ``in``
             # check runs the value's ``__eq__``) is the same "drop this
             # entry", never a 500 out of GET /api/backups.
@@ -880,7 +882,9 @@ def _pg_env(target: dict) -> dict:
     if _isa(raw, dict):
         try:
             entries = list(dict.items(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             entries = []
         # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
         # used to UnicodeEncodeError Popen on POST /api/backups.
@@ -1540,7 +1544,9 @@ def _backup_immich_script() -> dict:
         # so an int-subclass ``__eq__`` / ``__str__`` bomb 500'd the route
         # after the script had already produced its artefact.
         rc = _exit_code(rc)
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
         return {"ok": False, "message": _as_text(exc)[:500]}
     if _cli_vanished(rc, text, IMMICH_SCRIPT):
@@ -1597,7 +1603,9 @@ def _backup_immich_native() -> dict:
         return {"ok": False, "message": "postgresql@18 pg_dump is not installed"}
     try:
         conn = _immich_conn()
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         return {"ok": False, "message": _as_text(exc)[:200]}
 
     stamp = strftime_now("%Y%m%d_%H%M%S", "0")
@@ -1683,7 +1691,9 @@ def _backup_immich_native() -> dict:
     except RecursionError:
         _discard(dest)
         return {"ok": False, "message": (err_text or "immich dump failed")[:500]}
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         _discard(dest)
         return {"ok": False, "message": (err_text or _as_text(exc))[:500]}
     finally:
@@ -1794,7 +1804,9 @@ def _dump_one_postgres(target: dict) -> dict:
     except RecursionError:
         _discard(dest)
         return {"ok": False, "message": "dump failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         _discard(dest)
         return {"ok": False, "message": _as_text(e)}
 
@@ -1930,7 +1942,9 @@ def _run_argv(argv: list[str], *, timeout: int, cap: int = 4000) -> tuple[int, s
         # Junk that cannot coerce maps to the same -1 the except arm uses.
         rc = _exit_code(rc)
         return (-1 if rc is None else rc), _as_text(text), ""
-    except Exception as e:  # noqa: BLE001 — a backup step must report, not raise
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # noqa: BLE001 — a backup step must report, not raise
         return -1, "", _as_text(e)
 
 
@@ -2144,7 +2158,9 @@ def recover_interrupted_stack_backups() -> list[dict]:
                     f"(after compose stop); automatic recovery: {detail}"
                 ),
             )
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Recovery must finish even when the alert pipeline is broken.
             pass
         try:
@@ -2481,6 +2497,8 @@ def _backup_configs() -> dict:
         # The coded refusal above must reach the route, not be flattened
         # into an uncoded ok:false by the broad catch below.
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         _discard(dest)
         return {"ok": False, "message": _as_text(e)}
