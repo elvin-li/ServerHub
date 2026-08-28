@@ -19,6 +19,8 @@ from hub.errors import api_error, exc_detail
 
 router = APIRouter(tags=["ollama"])
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 class ModelBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -57,7 +59,9 @@ class ChatBody(BaseModel):
 def get_status(force: bool = False):
     try:
         return ollama_svc.status(force=force)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("ollama.status_failed", detail=exc_detail(e))
 
 
