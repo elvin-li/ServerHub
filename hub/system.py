@@ -424,7 +424,9 @@ def collect_system():
         used = getattr(du, "used", 0) or 0
         total = getattr(du, "total", 0) or 0
         free = getattr(du, "free", 0) or 0
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A dying root mount used to OSError/RuntimeError collect_system
         # and empty the ``system`` object on GET /api/status.
         used = total = free = None
@@ -441,7 +443,9 @@ def collect_system():
     # unreadable stamp reads as due and re-probes.
     try:
         smart_due = time.time() - float(_mapping_get(_smart_cache, "t", 0.0)) > 600
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         smart_due = True
     def _ncpu_and_memsize():
         # One worker, two cheap integer sysctls: ctypes first, shell fallback.
@@ -465,7 +469,9 @@ def collect_system():
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; memory_pressure must not drop load/disk from /api/status.
@@ -534,13 +540,17 @@ def collect_system():
                         smart.setdefault("temp", f"{parts[9]} Celsius")
             try:
                 _smart_cache.update(t=time.time(), v=smart)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A shadow key raises out of the insert compare at the end
                 # of a successful probe; clear() never compares keys.
                 try:
                     _smart_cache.clear()
                     _smart_cache.update(t=time.time(), v=smart)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
     n = ncpu_i or 1
     load_pct = None
