@@ -8,6 +8,9 @@ from hub.disk_snapshot import df_lines
 from hub.paths import SMARTCTL, user_home
 from hub.util import LazyPool, fan_out, sh, ttl_memo
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: Outer composer only.  ``smart_devices`` fans out per disk on the shared
 #: probe pool; putting that work on the same executor would serialize the
 #: disks (or deadlock before the reentrancy guard).
@@ -52,7 +55,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -69,7 +74,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -84,12 +91,14 @@ def _rc_int(rc) -> int:
     bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -114,12 +123,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -141,25 +154,27 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if _isa(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        # A lying ``__class__`` property that merely *claims* bytes reaches
-        # here as a non-bytes object, so the unbound descriptor TypeErrors —
-        # it used to raise out of ``_jsonable`` and null the volume table.
-        # bytes(value) gives its ``__bytes__`` one guarded chance before the
-        # field drops to empty.
+    for base in (bytes, bytearray):
         try:
-            return bytes(value).decode("utf-8", "replace")
-        except Exception:
-            return ""
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _as_text(value) -> str:
@@ -175,7 +190,9 @@ def _as_text(value) -> str:
             # Base coercion first (the modules5 rule): a float-subclass
             # ``__eq__`` bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if value != value or value in (float("inf"), float("-inf")):
             return ""
@@ -188,15 +205,29 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode: ``str()`` launders most subclasses, but one whose
-    # ``__str__`` returns *self* keeps its type through the coercion above,
-    # and its bound ``encode`` bomb used to raise out of here — nulling the
-    # whole volume table on GET /api/storage?light for one bad field.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _parent_disk_id(filesystem: str) -> str | None:
@@ -371,7 +402,9 @@ def _jsonable(value, depth: int = 0):
         # It used to ride through as-is and 500 Starlette's encoder.
         try:
             return bool(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, int):
         if type(value) is not int:
@@ -382,7 +415,9 @@ def _jsonable(value, depth: int = 0):
                 # guard, and blank the whole volume table to ``null`` on
                 # GET /api/storage.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -397,7 +432,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below the same way.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -419,7 +456,9 @@ def _jsonable(value, depth: int = 0):
         # such a leftover falls through to the text salvage instead.
         try:
             rows = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
         if rows is not None:
             out = {}
@@ -431,11 +470,15 @@ def _jsonable(value, depth: int = 0):
                     # bare bytes gate above and null the containing table.
                     try:
                         k = str(k)
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         continue
                 try:
                     out[_as_text(k)] = _jsonable(v, depth + 1)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # Residual raise out of one entry: only that entry
                     # drops; the sibling keys keep their sane data.
                     continue
@@ -455,14 +498,18 @@ def _jsonable(value, depth: int = 0):
             base = frozenset
         try:
             items = list(base.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = None
         if items is not None:
             out_seq = []
             for v in items:
                 try:
                     out_seq.append(_jsonable(v, depth + 1))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # Residual raise out of one element: pre-fix one bombed
                     # volume row nulled the *whole* ``volumes`` list to
                     # ``null``; now only the element degrades and the
@@ -471,7 +518,9 @@ def _jsonable(value, depth: int = 0):
             return out_seq
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A leftover whose ``isoformat`` is a raising property used to blow
         # this probe and null the containing table.
         iso = None
@@ -480,11 +529,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/storage.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
