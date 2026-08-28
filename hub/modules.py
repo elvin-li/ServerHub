@@ -170,6 +170,13 @@ MODULES: list[ModuleInfo] = [
 ]
 
 
+# Real control flow must keep propagating even through the bomb guards:
+# swallowing a Ctrl-C or an interpreter shutdown to save one JSON row would
+# turn the sanitizer into a hang.  Everything else BaseException-shaped that
+# a leftover raises out of its own hooks is a bomb like any other.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+
 def _isinst(value, types) -> bool:
     """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
 
@@ -180,10 +187,18 @@ def _isinst(value, types) -> bool:
     A lying ``__class__`` (answers ``int``) is *not* an error and still
     reports its claim here; the numeric arms' unbound base coercion then
     drops it, exactly as before.
+
+    ``except BaseException``: the modules8 guard stopped at ``Exception``,
+    so a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (a watchdog/timeout-style leftover) sailed past this catch —
+    and past every sibling guard below — straight out of GET /api/modules
+    as a raw 500.  Only genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -197,12 +212,23 @@ def _decode_bytes(value):
     same seam the numeric arms already close via ``int.__index__`` /
     ``float.__float__``.  A raise means "not really this type"; the caller
     drops the impostor exactly as it drops a lying ``int``/``float``.
+
+    Both bases are tried, real layout first-come: the old arm picked the
+    base off the *claimed* ``__class__`` (``bytes if _isinst(value, bytes)``),
+    so a genuine ``bytearray`` whose ``__class__`` lied ``bytes`` was handed
+    to ``bytes.decode``, rejected, and its perfectly decodable content
+    vanished to ``None`` — degrade at the wrong rank.  Now the descriptor
+    that matches the real storage wins and the content survives; a total
+    impostor still fails both and drops exactly as before.
     """
-    base = bytes if _isinst(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        return None
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
 
 
 def _utf8_text(value) -> str:
@@ -216,9 +242,16 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 GET /api/modules
+        # at value, nested and mapping-key rank.
         return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
@@ -258,7 +291,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -273,7 +308,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -293,7 +330,9 @@ def _jsonable(value, depth: int = 0):
         # call outside any try — drop the impostor like a lying ``int``.
         try:
             items = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -306,7 +345,9 @@ def _jsonable(value, depth: int = 0):
             elif not _isinst(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -320,26 +361,38 @@ def _jsonable(value, depth: int = 0):
                 # not) makes it reject the operand — drop the impostor.
                 try:
                     items = base.__iter__(value)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
-        # ``__getattr__`` bomb still raised out of the probe itself.
+        # ``__getattr__`` bomb still raised out of the probe itself —
+        # including one raising a BaseException subclass past the old
+        # ``except Exception``.
         iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/modules.
+            # An ``isoformat`` raising a BaseException subclass rode past
+            # the old ``except Exception`` here to the same raw 500.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -348,7 +401,9 @@ def _module_row(m) -> dict | None:
     if _isinst(m, ModuleInfo):
         try:
             row = asdict(m)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Field-level salvage: ``asdict`` walks every field eagerly
             # (``getattr`` then ``copy.deepcopy``), so one raising property
             # on a leftover ``ModuleInfo`` subclass — or one nested value
@@ -356,11 +411,16 @@ def _module_row(m) -> dict | None:
             # the *whole* row even though every other field was sane.  Pull
             # each declared field individually; a bombed field vanishes
             # alone and ``_jsonable`` still sanitizes whatever survives.
+            # Both tries reach past ``Exception``: a field property or a
+            # nested deepcopy hook raising a *BaseException* subclass used
+            # to skip the salvage entirely and 500 the route raw.
             row = {}
             for f in fields(ModuleInfo):
                 try:
                     row[f.name] = getattr(m, f.name)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             if not row:
                 # A lying ``__class__`` claiming ModuleInfo carries none of
@@ -411,7 +471,9 @@ def _registry_entries() -> list:
         if _isinst(reg, base):
             try:
                 return list(base.__iter__(reg))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
     return []
 
