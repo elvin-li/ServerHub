@@ -333,11 +333,21 @@ class JsonSafeScalarBombPins(_Notify6Sandbox):
     def test_list_iterbomb_value_keeps_its_elements(self):
         self.assertEqual(self._topic(ListIterBomb([1, "x"])), [1, "x"])
 
-    def test_getattr_bomb_falls_back_to_text(self):
-        self.assertIn("GetattrBomb", self._topic(GetattrBomb()))
+    def test_getattr_bomb_degrades_address_free(self):
+        # Superseded by the notify13 heap-address rule: the old text
+        # fallback rendered this type's default ``object.__repr__`` —
+        # ``<…GetattrBomb object at 0x7f…>``, a raw heap address — into
+        # GET /api/alerts/channels.  A type that never overrode
+        # ``__str__`` / ``__repr__`` now degrades to "" instead.
+        rendered = self._topic(GetattrBomb())
+        self.assertEqual(rendered, "")
+        self.assertNotIn(" at 0x", str(rendered))
 
-    def test_isoformat_property_bomb_falls_back_to_text(self):
-        self.assertIn("IsoPropertyBomb", self._topic(IsoPropertyBomb()))
+    def test_isoformat_property_bomb_degrades_address_free(self):
+        # Same notify13 heap-address rule as the getattr bomb above.
+        rendered = self._topic(IsoPropertyBomb())
+        self.assertEqual(rendered, "")
+        self.assertNotIn(" at 0x", str(rendered))
 
     def test_name_bytes_decode_bomb_still_decodes(self):
         self.plant(_notify_cfg({"channels": [_row(name=BytesDecodeBomb(b"panel"))]}))

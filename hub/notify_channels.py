@@ -105,6 +105,12 @@ LEVELS = {"info": 0, "ok": 0, "warn": 1, "down": 2}
 #: id charset kept URL- and YAML-friendly; it also keys the secrets file.
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never channel data (the
+#: bookmarks/assistant rule).  Only the free-text *coercion* arms are
+#: scrubbed with it; real str/bytes storage is data and stays verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: Per-type schema: which keys are plain config (services.yaml), which are
 #: secrets (credentials file), which must be present to send at all, and
 #: which hold URLs that need the SSRF scheme check.
@@ -344,6 +350,24 @@ def _plain_row(ch) -> dict | None:
     return out
 
 
+def _decode_bytes_or_none(value) -> str | None:
+    """Both-bases first-come decode, or None when neither layout matches.
+
+    The distinction the callers that *recover* need: ``b""`` decodes to a
+    legitimate ``""``, while a value that fails both base descriptors is no
+    bytes at all — its honest storage (a genuine str behind a lying-bytes
+    ``__class__``) may still render at a later arm instead of vanishing.
+    """
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
 
@@ -359,14 +383,8 @@ def _decode_bytes(value) -> str:
     at the wrong rank.  The descriptor that matches the real storage wins;
     a total impostor still fails both and falls to ``""``.
     """
-    for base in (bytes, bytearray):
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            continue
-    return ""
+    decoded = _decode_bytes_or_none(value)
+    return "" if decoded is None else decoded
 
 
 def _id_text(raw) -> str:
@@ -396,8 +414,27 @@ def _id_text(raw) -> str:
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return ""
+            # No ``return ""`` on the descriptor's rejection (the logs13/
+            # audit13 recover-the-real-storage rule): this gate matches
+            # through a *lying* ``__class__`` too, so a genuine bytes /
+            # bytearray / int / date id claiming ``str`` reached the unbound
+            # read, was refused for its real layout, and the whole row
+            # silently unlisted — invisible to GET /api/alerts/channels and
+            # unreachable by PUT/DELETE/test — although ``b"chan1"`` / 123
+            # render perfectly one arm below.  Degrade at the wrong rank;
+            # fall through and let each later arm real-type-check the
+            # honest storage.  A total impostor matches none of them and
+            # still drops at the tail gates.
+            pass
     if raw is None or type(raw) is bool:
+        return ""
+    if _isa(raw, (bytes, bytearray)):
+        # Both-bases first-come decode: the arm a genuine bytes id lying
+        # ``str`` falls through to.  A bare ``str(raw)`` on real bytes
+        # would render the quoted ``b'…'`` repr, never a usable id.
+        decoded = _decode_bytes_or_none(raw)
+        if decoded is not None:
+            return decoded
         return ""
     if _isa(raw, int) and type(raw) is not int:
         # Base coercion to an exact int: an int-subclass ``__str__`` bomb
@@ -409,7 +446,23 @@ def _id_text(raw) -> str:
         except BaseException:
             return ""
     try:
-        return str(raw)
+        cls = type(raw)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            # For a type that never overrode ``__str__`` / ``__repr__`` the
+            # coercion below answers the default ``object.__repr__`` —
+            # ``<X object at 0x7f…>``, a raw heap address — which used to
+            # become a *listed channel id*, rendered verbatim by
+            # GET /api/alerts/channels and echoed through dispatch results
+            # (the bookmarks/assistant slot-probe rule).  A slot probe on
+            # the real ``type(raw)``: a flickering ``__class__`` property
+            # cannot swap the real type out.
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(raw)
     except ValueError:
         # Past the int->str digit cap the id cannot be rendered, matched,
         # or used as a secrets key — treat the row as having no id at all.
@@ -422,6 +475,22 @@ def _id_text(raw) -> str:
         # row's id 500'd all six channel routes at once and raised out of
         # dispatch() on the alert thread.
         return ""
+    if type(text) is not str:
+        # ``str()`` returns a subclass instance verbatim when ``__str__``
+        # manufactures one: an id whose coercion answered an ``__eq__``-bomb
+        # str subclass broke this function's exact-str promise, and every
+        # later ``== cid`` (get_channel behind POST/PUT/DELETE/test)
+        # detonated the stored comparison — a raw 500 on four routes at
+        # once.  The unbound base read copies the real text.
+        try:
+            text = str.__str__(text)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) still renders a heap address.
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 # ── configuration ─────────────────────────────────────────────────────────────
@@ -464,12 +533,18 @@ def channels(raw: dict | None = None) -> list[dict]:
     # and the real rows still walk.  Try-wrapped: a lying ``__class__``
     # impostor passes the list gate but is no list underneath, and the
     # unbound call's TypeError used to 500 the same six routes.
+    # ``list(...)`` snapshots the rows before any leftover hook runs: the
+    # old lazy iterator walked the *live* cfg() list, so a bomb value's
+    # ``__class__`` property that popped rows mid-walk silently unlisted
+    # every honest sibling behind it (and an appending one could spin the
+    # walk forever) — the audit13 snapshot rule.  ``list()`` of the unbound
+    # iterator copies references at C level without running any hook.
     try:
-        walk = list.__iter__(rows)
+        walk = list(list.__iter__(rows))
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        walk = iter(())
+        walk = []
     for ch in walk:
         # Plain-dict copy first (C-level storage): the row's own overridden
         # ``.get`` / ``keys`` never runs.  Rows are the live cfg() cache,
@@ -867,7 +942,48 @@ def _utf8_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a subclass ``.decode`` bomb used to raise
         # straight out of GET /api/alerts/channels.
-        return _decode_bytes(value)
+        decoded = _decode_bytes_or_none(value)
+        if decoded is not None:
+            return decoded
+        if not _isa(value, str):
+            return ""
+        # Honest str storage behind a lying-bytes ``__class__`` (the
+        # logs13/audit13 recover-the-real-storage rule): the gate above
+        # matches through the *lie*, both base decodes reject the str
+        # layout, and the old unconditional ``return ""`` vanished a
+        # name / topic / min_level whose real text renders verbatim one
+        # arm below — degrade at the wrong rank.  Only a real str falls
+        # through; a total impostor (neither layout) still degrades to "".
+    if _isa(value, str):
+        # Unbound base read, not the dispatching ``str()``: real str
+        # storage keeps its text even when the subclass ``__str__`` /
+        # ``encode`` is poisoned, while a *lying* ``__class__`` that only
+        # claims str rejects the descriptor and falls to the coercion arm
+        # below instead of leaking its repr.  The encode-replace pass
+        # scrubs lone surrogates the same way as before.
+        try:
+            return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    # Only a type that renders *itself* may coerce.  This free-text arm ran
+    # ``str()`` on any leftover shape, and for a type that never overrode
+    # ``__str__`` / ``__repr__`` the answer is the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which a junk channel
+    # name, a config field and a dispatch result message each carried
+    # verbatim into GET /api/alerts/channels and POST /api/alerts/test
+    # bodies (the bookmarks/assistant slot-probe rule).  A slot probe on the
+    # real ``type(value)``: a flickering ``__class__`` property cannot swap
+    # the real type out.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -891,7 +1007,12 @@ def _utf8_text(value) -> str:
     # skips CPython's exact-str copy above and used to carry its bound
     # ``encode`` bomb into this scrub — raising out of dispatch()'s
     # never-raises paths (POST /api/alerts/test, the alert thread's sweep).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) and a value whose *rendering*
+    # embeds a default repr still answered an address.  Only this coercion
+    # arm is scrubbed — real str/bytes storage above is data and stays.
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _json_safe(value, depth: int = 0):
@@ -917,39 +1038,63 @@ def _json_safe(value, depth: int = 0):
     if type(value) is bool or value is None:
         return value
     if _isa(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _isa(value, (dict, list, tuple, set, frozenset,
+                            str, bytes, bytearray, int)):
+            # A total impostor claiming float keeps the old None degrade.
             return None
-        return value
+        # The descriptor refused the operand, so the claimed ``float`` was
+        # a lie — but the real storage matches a later arm (the logs13/
+        # audit13 recover-the-real-storage rule): a genuine int / str /
+        # container behind that lie used to vanish to None at the wrong
+        # rank while its value rendered fine one gate below.  Fall through.
     if _isa(value, dict):
         # Unbound base view: a dict-subclass ``items()`` that raises or
         # yields non-pairs cannot 500, and the real entries still walk.
         # Try-wrapped: a lying ``__class__`` impostor passes the dict gate
         # but is no dict underneath — the unbound TypeError used to 500.
+        # ``list(...)`` snapshots the pairs before any leftover hook runs:
+        # iterating the live view, a nested value's ``__class__`` property
+        # that resized its parent mapping mid-walk raised RuntimeError
+        # ("dictionary changed size during iteration") straight out of
+        # this sanitizer and 500'd GET /api/alerts/channels.
         try:
-            pairs = dict.items(value)
+            pairs = list(dict.items(value))
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return None
-        out = {}
-        for k, v in pairs:
-            try:
-                key = _utf8_text(k)
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-            out[key] = _json_safe(v, depth + 1)
-        return out
+            pairs = None
+        if pairs is None:
+            if not _isa(value, (list, tuple, set, frozenset,
+                                str, bytes, bytearray, int)):
+                return None
+            # Genuine sequence / text behind a lying-dict ``__class__``
+            # falls through to the arm its real storage matches; a total
+            # impostor keeps the old None (the wrong-rank rule).
+        else:
+            out = {}
+            for k, v in pairs:
+                try:
+                    key = _utf8_text(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                out[key] = _json_safe(v, depth + 1)
+            return out
     if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
             if _isa(value, base):
@@ -957,32 +1102,53 @@ def _json_safe(value, depth: int = 0):
                 # cannot 500 and the real elements still survive.
                 # Try-wrapped for the lying-``__class__`` impostor, whose
                 # unbound call TypeErrors before yielding anything.
+                # ``continue`` on rejection, not ``return None``: the old
+                # arm stopped at the *claimed* base, so a genuine tuple
+                # whose ``__class__`` lied ``list`` was handed to
+                # ``list.__iter__``, rejected by the descriptor, and its
+                # perfectly renderable elements vanished — the wrong-rank
+                # degrade the audit13 sequence arm already shed.  The
+                # ``list(...)`` snapshot also keeps a mid-walk resize hook
+                # (a set element's ``__class__`` property) from tearing
+                # the element walk.
                 try:
-                    return [_json_safe(v, depth + 1)
-                            for v in base.__iter__(value)]
+                    seq = list(base.__iter__(value))
                 except _CONTROL_FLOW:
                     raise
                 except BaseException:
-                    return None
+                    continue
+                return [_json_safe(v, depth + 1) for v in seq]
+        if not _isa(value, (str, bytes, bytearray, int)):
+            # A total impostor claiming a sequence keeps the old None.
+            return None
+        # Genuine text / int behind a lying-sequence claim falls through.
     if _isa(value, str):
         return _utf8_text(value)
     if _isa(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
+                # Past CPython's int->str digit cap the encoder cannot
+                # render the number at all — same drop as its inf float
+                # sibling.
                 return None
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+            return num
+        if not _isa(value, (bytes, bytearray)):
+            # A total impostor claiming int keeps the old None degrade.
             return None
-        return value
+        # Genuine bytes behind a lying-int ``__class__`` fall through to
+        # the decode arm, which reads the real storage.
     if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
