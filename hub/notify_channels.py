@@ -57,6 +57,13 @@ _OPENER = no_redirect_opener()
 
 _log = logging.getLogger("serverhub.notify")
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one channel row would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: Where channel secrets live.  Module-level so tests can point it at a
 #: scratch directory, same pattern as service_credentials.INDEX_FILE.
 SECRETS_FILE = DATA_DIR / "notify-credentials.json"
@@ -189,10 +196,20 @@ def _isa(value, kinds) -> bool:
     on the alert engine's single thread (the ups_svc/smart_test_svc rule).
     A real subclass still matches through the C-level type check; only a
     value that cannot answer what it is takes the non-matching branch.
+
+    ``except BaseException``: the notify9 guard stopped at ``Exception``,
+    so a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (the watchdog/timeout shape logs12 just sealed) sailed past
+    this catch — and past every sibling guard in this module — straight out
+    of all six /api/alerts/channels routes and POST /api/alerts/test raw,
+    plus a raise out of :func:`dispatch` on the alert engine's single
+    thread.  Only genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -215,10 +232,17 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return mapping.get(key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``.get`` bomb raising a *BaseException* subclass used to sail
+        # past the ``except Exception`` here, one line ahead of the
+        # dict.get salvage below (the logs12 rule).
         try:
             return dict.get(mapping, key, default)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
 
@@ -244,7 +268,15 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__bool__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — one such leftover on a
+        # row's ``enabled`` flag 500'd GET /api/alerts/channels and POST
+        # /api/alerts/test raw and raised out of dispatch() on the alert
+        # thread; the same bomb on the legacy ``ha_token`` slot took the
+        # global test route with it.
         return False
 
 
@@ -287,7 +319,9 @@ def _plain_row(ch) -> dict | None:
         return None
     try:
         items = list(dict.items(ch))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     out = {}
     for k, v in items:
@@ -296,11 +330,15 @@ def _plain_row(ch) -> dict | None:
                 continue
             try:
                 k = str.__str__(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         try:
             out[k] = v
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # An unhashable / hash-bomb key holds nothing addressable.
             continue
     return out
@@ -312,12 +350,23 @@ def _decode_bytes(value) -> str:
     Try-wrapped: a *lying* ``__class__`` (claims bytes, is not) passes the
     callers' bytes gates, and the unbound base call used to TypeError out
     of ``_json_safe`` / ``_utf8_text`` into a 500 on GET /api/alerts/channels.
+
+    Both bases are tried, real layout first-come (the modules12/logs12
+    ``_decode_bytes`` rule): the old arm picked the base off the *claimed*
+    ``__class__``, so a genuine ``bytearray`` whose ``__class__`` lied
+    ``bytes`` was handed to ``bytes.decode``, rejected by the descriptor,
+    and its perfectly decodable name/topic/id vanished to ``""`` — degrade
+    at the wrong rank.  The descriptor that matches the real storage wins;
+    a total impostor still fails both and falls to ``""``.
     """
-    base = bytes if _isa(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
 
 
 def _id_text(raw) -> str:
@@ -344,7 +393,9 @@ def _id_text(raw) -> str:
             return raw
         try:
             return str.__str__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if raw is None or type(raw) is bool:
         return ""
@@ -353,7 +404,9 @@ def _id_text(raw) -> str:
         # id must keep its real number, not drop the row.
         try:
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         return str(raw)
@@ -361,7 +414,13 @@ def _id_text(raw) -> str:
         # Past the int->str digit cap the id cannot be rendered, matched,
         # or used as a secrets key — treat the row as having no id at all.
         return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — one such leftover as a
+        # row's id 500'd all six channel routes at once and raised out of
+        # dispatch() on the alert thread.
         return ""
 
 
@@ -372,9 +431,15 @@ def _raw_notify_cfg() -> dict:
     # a leftover section's ``__class__`` property, so a bomb planted as the
     # whole ``settings.notify`` value used to raise out of this read and 500
     # five of the six channel routes at once (dispatch alone wrapped it).
+    # ``except BaseException``: a snapshot provider (or a hook the section
+    # read runs) raising a *BaseException* subclass used to sail past both
+    # this catch and dispatch()'s — the one raise its never-raises contract
+    # could not hold.  Only genuine control flow keeps propagating.
     try:
         raw = config.settings_section("notify")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     return raw if _isa(raw, dict) else {}
 
@@ -401,7 +466,9 @@ def channels(raw: dict | None = None) -> list[dict]:
     # unbound call's TypeError used to 500 the same six routes.
     try:
         walk = list.__iter__(rows)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         walk = iter(())
     for ch in walk:
         # Plain-dict copy first (C-level storage): the row's own overridden
@@ -699,7 +766,9 @@ def _secret_map(data: dict, cid: str) -> dict:
         return {}
     try:
         return dict(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -747,7 +816,9 @@ def set_channel_secrets(cid: str, values: dict, *, require: tuple = ()) -> None:
                 value = str(value)
             except RecursionError:
                 raise api_error("notify.secret_control_chars", field="value")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if _has_control_chars(value):
                 raise api_error("notify.secret_control_chars", field=str(key))
@@ -804,9 +875,15 @@ def _utf8_text(value) -> str:
         # via dispatch ``str(exc)`` after the sender was already wrapped.
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here.
         return ""
     if not _isa(text, str):
         return ""
@@ -845,7 +922,9 @@ def _json_safe(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -857,13 +936,17 @@ def _json_safe(value, depth: int = 0):
         # but is no dict underneath — the unbound TypeError used to 500.
         try:
             pairs = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in pairs:
             try:
                 key = _utf8_text(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[key] = _json_safe(v, depth + 1)
         return out
@@ -877,7 +960,9 @@ def _json_safe(value, depth: int = 0):
                 try:
                     return [_json_safe(v, depth + 1)
                             for v in base.__iter__(value)]
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
     if _isa(value, str):
         return _utf8_text(value)
@@ -887,7 +972,9 @@ def _json_safe(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -900,20 +987,27 @@ def _json_safe(value, depth: int = 0):
         return _decode_bytes(value)
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
-        # ``__getattr__`` bomb still raised out of the probe itself.
+        # ``__getattr__`` bomb still raised out of the probe itself — and a
+        # *BaseException*-raising one still did after the Exception net.
         iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/alerts/channels.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -1083,7 +1177,9 @@ def _recipients(raw) -> list[str]:
     if _isa(raw, list):
         try:
             return [str(a).strip() for a in raw if str(a).strip()]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     return []
 
@@ -1258,7 +1354,14 @@ def _send_via(sender, ch: dict, secrets: dict, title: str, message: str,
     """One channel's send, shaped for a worker thread: never raises."""
     try:
         res = sender(ch, secrets, title, message, level=level, event=event)
-    except Exception as e:  # a broken channel must not sink the others
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # a broken channel must not sink the others
+        # BaseException, not Exception: a bomb config field detonating
+        # *inside* a sender's own truth test with a BaseException subclass
+        # rode the future back into dispatch(), whose ``fut.result()`` net
+        # also stopped at Exception — a raise out of the never-raises
+        # contract on the alert thread and a 500 on POST /api/alerts/test.
         res = {"ok": False, "message": _utf8_text(e)}
     if not _isa(res, dict):
         # A sender that returns None/list used to AttributeError *outside* the
@@ -1292,7 +1395,9 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
     """
     try:
         raw = _raw_notify_cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = {}
     # _isa, not bare isinstance: a raw section wearing a __class__-property
     # bomb used to detonate this gate itself — the one raise the try above
@@ -1344,7 +1449,12 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
             if fut.done():
                 try:
                     results.append(fut.result())
-                except Exception as e:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException as e:
+                    # The pool worker stores BaseException subclasses on the
+                    # future too, and ``fut.result()`` re-raises them here —
+                    # the old Exception net let a bomb ride out of dispatch.
                     # Same leftover ``id: "\ud800"`` as _send_via: the
                     # timeout/exception path used to skip _json_safe and
                     # 500 POST /api/alerts/test under Starlette's UTF-8 encoder.
