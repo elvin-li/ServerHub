@@ -25,6 +25,9 @@ from hub.util import read_bytes_capped, sh, ttl_memo
 
 LABEL = "com.elvin.wstunnel-wg-server"
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that survives a leftover ``__class__``-property bomb.
@@ -37,7 +40,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -45,7 +50,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__``/``__len__`` bomb."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -59,72 +66,62 @@ def _rc_int(rc) -> int:
     stale-restrict check.  ``int.__index__`` salvages the honest exit.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
 def _as_text(value) -> str:
-    """Drop leftover ``\\ud800`` so GET /api/wireguard cannot UTF-8 500.
-
-    Unbound through the base types: a bytes-subclass whose bound ``.decode``
-    raises, or a str-subclass whose ``__str__`` returns itself and whose
-    bound ``.encode`` raises, must cost only the poisoned value, never the
-    status/settings/readiness payload it rides in.  :func:`_isa` gates: a
-    value whose ``__class__`` is a raising property used to detonate the
-    launder itself.
-
-    The unbound base calls run inside a ``try`` (the wireguard_svc._as_text
-    / health10 shape): a *lying*-``__class__`` impostor — the brew10/json9
-    class, where ``isinstance`` answers bytes / str but the real object is
-    a plain object — passed the ``_isa`` gates and made the unbound
-    ``bytes.decode`` / ``str.encode`` descriptor itself raise TypeError, a
-    raw 500 on GET /api/wireguard and GET /api/wireguard/settings for a
-    wstunnel snapshot value this launder exists to absorb.  A liar falls
-    through to the generic guarded ``str()`` probe like any other leftover.
-    """
-    text = None
-    if _isa(value, bytes):
-        try:
-            text = bytes.decode(value, "utf-8", "replace")
-        except Exception:
-            text = None
-    elif _isa(value, bytearray):
-        try:
-            text = bytearray.decode(value, "utf-8", "replace")
-        except Exception:
-            text = None
-    elif _isa(value, str):
-        text = value
-    elif value is None:
+    """Drop leftover ``\\ud800`` so GET /api/wireguard cannot UTF-8 500."""
+    if value is None:
         return ""
-    if text is None:
+    for base in (bytes, bytearray):
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            return ""
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # A str-liar rode the ``_isa(value, str)`` branch as *text* itself,
-        # and unbound ``str.encode`` cannot apply to it — one last guarded
-        # ``str()`` renders its honest ``__str__`` instead of 500ing.
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
         try:
-            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
-        except Exception:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _path_is_file(path) -> bool:

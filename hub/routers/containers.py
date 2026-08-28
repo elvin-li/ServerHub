@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request
@@ -13,26 +14,66 @@ from hub import containers_svc as svc
 from hub.errors import api_error
 from hub.paths import DOCKER
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _as_text(value) -> str:
     """Drop leftover RecursionError / ``\\ud800`` so SSE log start cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    if type(value) is not bool:
+        try:
+            if isinstance(value, float):
+                finite = float.__float__(value)
+                if finite != finite or finite in (float("inf"), float("-inf")):
+                    return ""
+                return str(finite)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 router = APIRouter(tags=["containers"])

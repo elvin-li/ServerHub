@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -7,6 +8,9 @@ from pydantic import BaseModel, Field
 
 from hub import audit, auth, disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
 from hub.util import LazyPool
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
@@ -33,37 +37,57 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
-    if _isa(value, (bytes, bytearray)):
-        # bytes() base copy first: a subclass ``.decode`` bomb cannot fire.
-        try:
-            value = bytes(value).decode("utf-8", "replace")
-        except Exception:
-            # A lying ``__class__`` property claiming bytes TypeErrors the
-            # base copy; the leftover falls to the str() salvage below.
-            return ""
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    # Unbound base encode: an exception whose ``__str__`` returns a
-    # str-subclass ``encode`` bomb used to raise out of this scrub *inside*
-    # the routes' own except handlers — a bare 500 on GET /api/storage/disks
-    # where the degraded ``error`` body is the contract.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 router = APIRouter(tags=["storage"])
