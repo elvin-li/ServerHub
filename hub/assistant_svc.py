@@ -151,6 +151,11 @@ def _decode_bytes(value):
     return _str_text(value)
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never drawer data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if _isa(value, (bytes, bytearray)):
@@ -163,6 +168,22 @@ def _utf8_text(value) -> str:
         # lying ``__class__`` claiming str drops to "" instead of leaking
         # its ``repr`` (a memory address) into the response body.
         return _str_text(value) or ""
+    # Only a type that renders *itself* may coerce.  This free-text arm ran
+    # ``str()`` on any leftover shape, and for a type that never overrode
+    # ``__str__``/``__repr__`` the answer is the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which a junk
+    # disk-size cell, problem detail, catalog title, blurb, alias or chat
+    # reply carried verbatim into the JSON body of both assistant routes.
+    # The lying-``__class__`` impostors already dropped; the plain-object
+    # junk did not.  A slot probe on the real ``type(value)``, not an
+    # instance lookup: a ``__getattr__`` bomb answers instance probes and a
+    # flickering ``__class__`` property cannot swap the real type out.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except Exception:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -175,7 +196,13 @@ def _utf8_text(value) -> str:
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
     # bomb rode a catalog path straight to a 500 on GET /api/assistant/catalog.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) and a container cell whose
+    # *rendering* embeds a default repr (``{'x': <_Junk object at 0x...>}``)
+    # still answered an address.  Only this coercion arm is scrubbed — real
+    # str/bytes storage above is data and stays verbatim.
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
