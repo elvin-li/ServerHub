@@ -411,7 +411,9 @@ def _pid_text(value) -> str | None:
                 # to escape into overview()'s guard and flip ``running`` to
                 # a false "stopped" while nginx held a real pid.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             value = str(value)
@@ -446,7 +448,9 @@ def _nginx_present() -> bool:
         return os.path.isfile(NGINX_BIN)
     except OSError:
         return False
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return True
 
 
@@ -463,7 +467,9 @@ def _conf_present() -> bool:
     """
     try:
         return bool(NGINX_CONF.is_file())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -493,7 +499,9 @@ def _invalidate_quietly(*invalidators) -> None:
     for invalidate in invalidators:
         try:
             invalidate()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
 
@@ -524,15 +532,21 @@ def _probe_answer(probe) -> tuple[bool, str]:
         return False, _as_text(probe) if probe is not None else ""
     try:
         ok = dict.get(probe, "ok")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ok = False
     try:
         ok = bool(ok)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ok = False
     try:
         message = dict.get(probe, "message")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         message = None
     return ok, _as_text(message)
 
@@ -559,7 +573,9 @@ def overview() -> dict:
     # ``nginx_sites`` (MemoryError / ValueError are not OSError).
     try:
         sites = nginx_sites()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         sites = []
     # _isinst, not a bare isinstance: a sites *return* whose ``__class__``
     # is a raising property blew this gate outside the try above and 500'd
@@ -579,7 +595,9 @@ def overview() -> dict:
     # site down with the 500.
     try:
         rows = list(sites)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     sites = []
     for row in rows:
@@ -600,7 +618,9 @@ def overview() -> dict:
     # `local.system-nginx`.
     try:
         pid = _pid_text(launchd_listing().pid_for(LABEL))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pid = None
     running = pid is not None
     # ``str(path)`` verbatim used to 500 the encode: these two derive from
@@ -647,7 +667,9 @@ def reload_nginx() -> dict:
         probe_ok, probe_msg = _probe_answer(test_config())
     except HTTPException:
         raise
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         probe_ok, probe_msg = False, _as_text(exc)
     if not probe_ok:
         return {

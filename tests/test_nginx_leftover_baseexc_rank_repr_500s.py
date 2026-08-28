@@ -45,6 +45,14 @@ class NginxLeftoverTests(unittest.TestCase):
         with mock.patch.object(nginx_svc, "user_home", boom):
             self.assertIsNone(nginx_svc._user_home())
 
+    def test_nginx_present_swallows_fspath_baseexception(self):
+        class _PathBomb:
+            def __fspath__(self):
+                raise LeftoverWatchdogTimeout("nginx path watchdog")
+
+        with mock.patch.object(nginx_svc, "NGINX_BIN", _PathBomb()):
+            self.assertTrue(nginx_svc._nginx_present())
+
     def test_control_flow_still_propagates_from_isinst(self):
         class _Ki:
             @property
