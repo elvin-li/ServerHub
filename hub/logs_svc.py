@@ -74,7 +74,14 @@ def _utf8_text(value) -> str:
                 raise
             except BaseException:
                 continue
-        return ""
+        # Honest str storage behind a lying-bytes ``__class__`` (the
+        # audit13 recover-the-real-storage rule): the gate above matches
+        # through the *lie*, both base decodes reject the str layout, and
+        # the old unconditional ``return ""`` vanished text that the str
+        # probe below renders verbatim.  Only a real str falls through; a
+        # total impostor (neither layout) still degrades to ``""``.
+        if not _isa(value, str):
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -191,15 +198,30 @@ def _stat_size(path: Path) -> int:
         # riding a poisoned stat used to raise past the conversion catch and
         # 500 GET /api/logs and GET /api/logs/{id} together.  The unbound
         # slots read the real number stored underneath the override.
+        size = None
         if _isa(raw, int):
-            size = int.__index__(raw)
-        elif _isa(raw, float):
-            value = float.__float__(raw)
-            if value != value or value in (float("inf"), float("-inf")):
-                return 0
-            size = int(value)
-        else:
-            size = int(raw)
+            try:
+                size = int.__index__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # The int gate matches through a lying ``__class__`` too
+                # (the audit13 recover-the-real-storage rule): a genuine
+                # float ``st_size`` claiming int reached ``int.__index__``,
+                # was rejected for its real layout, and the honest number a
+                # FUSE stub reported degraded to 0 one arm too early.  A
+                # real float falls to the float arm below; anything else
+                # is the same junk as before and takes the 0.
+                if not _isa(raw, float):
+                    raise
+        if size is None:
+            if _isa(raw, float):
+                value = float.__float__(raw)
+                if value != value or value in (float("inf"), float("-inf")):
+                    return 0
+                size = int(value)
+            else:
+                size = int(raw)
         float(size)
     except _CONTROL_FLOW:
         raise
@@ -235,12 +257,23 @@ def _config_text(value) -> str | None:
         # in play for every later bound read, and one self-``__str__``
         # encode bomb as an id/name used to 500 both logs routes.  The
         # unbound base ``__str__`` copies the carried text to an exact str.
+        #
+        # No ``return None`` on failure (the audit13 recover-the-real-
+        # storage rule): this gate matches through a *lying* ``__class__``
+        # too, so a genuine bytes/bytearray (or date, or int) id/name
+        # claiming ``str`` reached the descriptor, was rejected for its
+        # real layout, and the old unconditional None silently unlisted a
+        # source whose ``b"logid"`` decodes perfectly — degrade at the
+        # wrong rank, the same shape logs12 sealed in the decode arms.
+        # Falling through lets each later arm real-type-check the honest
+        # storage; a total impostor (claims str, carries no renderable
+        # layout) matches none of them and still drops at the tail gate.
         try:
             return str.__str__(value)
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return None
+            pass
     if _isa(value, (bytes, bytearray)):
         # Unbound decode: ``bytes(value)`` dispatches into a subclass
         # ``__bytes__`` override, and one such bomb as an id used to 500
@@ -420,9 +453,19 @@ def _entries() -> list[tuple[Path, dict]]:
                     raise
                 except BaseException:
                     continue
-            if decoded is None:
+            if decoded is not None:
+                raw_path = decoded
+            elif not _isa(raw_path, str):
+                # Claimed-bytes junk with no readable layout drops, as
+                # before.  But honest str storage behind a lying-bytes
+                # ``__class__`` (the audit13 recover-the-real-storage
+                # rule) used to drop here too: the gate above matches
+                # through the *lie*, both base decodes reject the str
+                # layout, and a source whose real path text was perfectly
+                # usable silently vanished from the listing — degrade at
+                # the wrong rank.  A real str falls through to the str
+                # arm below, which reads the carried text unbound.
                 continue
-            raw_path = decoded
         if _isa(raw_path, str):
             # Exact-str launder (the json6 ``str.__str__`` convention, the
             # same one ``_config_text`` gives the id/name fields): a str
