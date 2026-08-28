@@ -14,6 +14,9 @@ from hub.paths import DATA_DIR
 from hub.status import full_status
 from hub.util import read_text_capped, safe_json_loads, strftime_now, tail_file_lines
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 ALERTS_FILE = DATA_DIR / "alerts.jsonl"
 STATE_FILE = DATA_DIR / "alert_state.json"
 #: Leftover multi-MB alert_state.json used to OOM GET /api/alerts.
@@ -206,10 +209,30 @@ def _alert_ts(raw) -> int | None:
     return None
 
 
+def _isa(value, kinds) -> bool:
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _mapping_get(mapping, key, default=None):
@@ -227,14 +250,18 @@ def _mapping_get(mapping, key, default=None):
     the real C-level storage underneath the override, so the sane data a
     poisoned wrapper carries still feeds the sweep.
     """
-    if not isinstance(mapping, dict):
+    if not _isa(mapping, dict):
         return default
     try:
-        return mapping.get(key, default)
-    except Exception:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(mapping, key, default)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
 
@@ -251,11 +278,13 @@ def _truthy(value) -> bool:
     containment.  Fails closed to False — a bomb flag is junk, not consent
     to notify (or to sweep with it).
     """
-    if isinstance(value, bool):
+    if type(value) is bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -276,16 +305,29 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    if not isinstance(text, str):
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this very scrub — a raw 500 on the alerts routes.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable_alert(value, depth: int = 0):
@@ -313,7 +355,9 @@ def _jsonable_alert(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -331,7 +375,9 @@ def _jsonable_alert(value, depth: int = 0):
                 # drop just that entry, never the dict (or the route).
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable_alert(v, depth + 1)
         return out
@@ -350,7 +396,9 @@ def _jsonable_alert(value, depth: int = 0):
                 # raising anything but ValueError escaped the digit-cap
                 # probe below and 500'd the route.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -363,7 +411,9 @@ def _jsonable_alert(value, depth: int = 0):
         return _decode_bytes(value)
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -372,11 +422,15 @@ def _jsonable_alert(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/alerts.
             return _jsonable_alert(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
