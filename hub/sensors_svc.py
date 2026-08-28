@@ -13,6 +13,9 @@ from pathlib import Path
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
@@ -27,14 +30,27 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _mapping_get(mapping, key, default=None):
@@ -51,7 +67,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -65,7 +83,9 @@ def _cache_age(now, stamp) -> float:
     """
     try:
         return now - float(stamp)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return float("inf")
 
 
@@ -78,12 +98,14 @@ def _rc_int(rc) -> int:
     honest exit status, so a bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -101,19 +123,25 @@ def _sh_run(cmd, timeout) -> tuple:
     """
     try:
         value = sh(cmd, timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
     if type(value) is tuple:
         items = value
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -123,57 +151,55 @@ def _sh_run(cmd, timeout) -> tuple:
 
 
 def _as_text(value) -> str:
-    # _isa on the bytes gate, try on the decode: a ``__class__``-property
-    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
-    # bytes, is not) TypeErrors the unbound decode and renders below.
-    if _isa(value, (bytes, bytearray)):
-        try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if value is None:
         return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        value = str(value)
-    except RecursionError:
-        try:
-            return type(value).__name__
-        except Exception:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    if not isinstance(value, str):
-        return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this scrub — the status.py convention.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
-
-
-def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    # Same _isa + lying-``__class__`` decode guard as _as_text.
-    if _isa(value, (bytes, bytearray)):
-        try:
-            return _decode_bytes(value)
-        except Exception:
-            pass
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    if not isinstance(text, str):
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this scrub — 500ing GET /api/system/sensors on the
-    # cache-hit path, the light peek, and the cold collect's final sweep.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    return _as_text(value)
 
 
 def _jsonable(value, depth: int = 0):
@@ -227,7 +253,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -242,7 +270,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -254,7 +284,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound decode TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
@@ -264,18 +296,24 @@ def _jsonable(value, depth: int = 0):
         # TypeErrors the unbound view itself.
         try:
             entries = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         for k, v in entries:
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -287,13 +325,17 @@ def _jsonable(value, depth: int = 0):
                 # lying-``__class__`` impostor, which TypeErrors here.
                 try:
                     items = base.__iter__(value)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
@@ -302,11 +344,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/system/sensors.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -321,7 +367,9 @@ def _sysctl_int(value) -> int | None:
             # class) used to escape this helper's callers.
             try:
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
@@ -345,7 +393,9 @@ def _finite_float(value) -> float | None:
     """
     try:
         n = float(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if n != n or n in (float("inf"), float("-inf")):
         return None

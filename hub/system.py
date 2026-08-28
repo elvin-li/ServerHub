@@ -8,6 +8,9 @@ import time
 from hub.paths import SMARTCTL
 from hub.util import LazyPool, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _pool = LazyPool(4, "hub-system")
 
 
@@ -30,14 +33,27 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _mapping_get(mapping, key, default=None):
@@ -55,42 +71,57 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    # _isa on the bytes gate, try on the decode: a ``__class__``-property
-    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
-    # bytes, is not) TypeErrors the unbound decode and renders below.
-    decoded = None
-    if _isa(value, (bytes, bytearray)):
-        try:
-            decoded = _decode_bytes(value)
-        except Exception:
-            decoded = None
-    if decoded is not None:
-        value = decoded
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    if not isinstance(value, str):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode``: a str-subclass whose ``__str__`` answers *self*
-    # skips CPython's exact-str copy above and used to carry its bound
-    # ``encode`` bomb into this scrub — raising out of ``collect_system`` and
-    # silently wiping the whole ``system`` tile from GET /api/status.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -137,7 +168,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -152,7 +185,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -164,7 +199,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound decode TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
@@ -174,18 +211,24 @@ def _jsonable(value, depth: int = 0):
         # TypeErrors the unbound view itself.
         try:
             entries = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         for k, v in entries:
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -197,13 +240,17 @@ def _jsonable(value, depth: int = 0):
                 # lying-``__class__`` impostor, which TypeErrors here.
                 try:
                     items = base.__iter__(value)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -212,11 +259,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/status system.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -236,7 +287,9 @@ def _rc_int(rc) -> int:
         if isinstance(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -256,12 +309,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -280,7 +337,9 @@ def _sysctl_int(value) -> int | None:
             # subclass whose comparison methods raise (the modules5 bomb
             # class) used to escape this helper's callers.
             value = int.__index__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
