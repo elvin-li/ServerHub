@@ -41,6 +41,9 @@ def _default_services_root() -> Path:
 
 
 SERVICES_ROOT = _default_services_root()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+#: CPython's angle-repr shape — a raw heap address, never catalog data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 #: Leftover multi-MB ``*.yml`` used to OOM GET /api/catalog.
 _TEMPLATE_CAP = 64 * 1024
 #: Port scan only needs the compose ports block, not a leftover multi-MB file.
@@ -159,54 +162,6 @@ CATEGORIES = [
 ]
 
 
-def _plain_str(value, default: str = "") -> str:
-    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store.
-
-    ``_isinst`` gates throughout (a raising ``__class__`` property answers
-    False instead of detonating the gate), and the unbound base decode runs in
-    a try: a *lying* ``__class__`` claiming bytes rejects the descriptor with
-    a TypeError that used to escape this launderer — a raise means "not really
-    bytes", so the impostor degrades to *default* like every other junk shape
-    (the modules9/json9 impostor class).
-    """
-    if _isinst(value, str):
-        text = value
-    elif _isinst(value, (bytes, bytearray)):
-        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if _isinst(value, bytes) else bytearray
-        try:
-            text = base.decode(value, "utf-8", "replace")
-        except Exception:
-            return default
-    elif _isinst(value, bool) or value is None:
-        return default
-    elif _isinst(value, float):
-        if type(value) is not float:
-            try:
-                # Base coercion to an exact float: a subclass ``__eq__``
-                # bomb used to blow the NaN/inf probes below.
-                value = float.__float__(value)
-            except Exception:
-                return default
-        if value != value or value in (float("inf"), float("-inf")):
-            return default
-        text = str(value)
-    elif _isinst(value, (dict, list, tuple, set, frozenset)):
-        return default
-    else:
-        try:
-            text = str(value)
-        except Exception:
-            return default
-    try:
-        # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
-        # returns self keeps the subclass, so a bound ``.encode`` bomb could
-        # still fire (the modules5 unbound convention, like docker_cli).
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        return default
-
-
 def _isinst(value, types) -> bool:
     """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through.
 
@@ -223,8 +178,130 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor."""
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _decode_or_none(value):
+    """Both bases, real layout first-come — or ``None`` for a total liar."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
+def _plain_str(value, default: str = "") -> str:
+    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store.
+
+    catalog14: a lying ``__class__`` no longer wipes honest storage at the
+    wrong rank, a BaseException-shaped bomb no longer sails past
+    ``except Exception``, and the free-text coercion arm no longer serves
+    a default ``object.__repr__`` heap address.
+    """
+    if _isinst(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+        # Lying-bytes claim: recover genuine str below.
+    if _isinst(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    if _real(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+    if _real(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    if type(value) is bool or value is None:
+        return default
+    if _isinst(value, float):
+        num = value if type(value) is float else None
+        if num is None:
+            try:
+                num = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
+                return default
+            return str(num)
+        if not _real(value, (int, str, bytes, bytearray)):
+            return default
+    if _isinst(value, int) and type(value) is not bool:
+        try:
+            num = value if type(value) is int else int.__index__(value)
+            str(num)
+            return str(num)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
+    if _isinst(value, (dict, list, tuple, set, frozenset)):
+        if not _real(value, (str, bytes, bytearray, int, float)):
+            return default
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return default
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+    return default if _ADDR_REPR_RE.search(text) else text
 
 
 def _rc_int(rc) -> int:
@@ -241,14 +318,14 @@ def _rc_int(rc) -> int:
     sentinel, so junk can never be misread as a vanished CLI or success.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
-        # Digit-cap probe: past CPython's int->str cap the status cannot be
-        # rendered by any log line or JSON encoder — junk, reads as failure.
+        value = int.__index__(rc) if _isinst(rc, int) else int(rc)
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -272,7 +349,9 @@ def _safe_host_ip() -> str:
     """
     try:
         host = host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if _isinst(host, (str, bytes, bytearray)):
         return _plain_str(host)

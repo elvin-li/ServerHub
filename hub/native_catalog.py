@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import threading
@@ -46,6 +47,8 @@ def _default_services_root() -> Path:
 
 
 SERVICES_ROOT = _default_services_root()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 #: Install outcomes go to the panel's own log (~/Library/Logs/serverhub.err.log).
 #: An install that fails in a browser leaves no trace anywhere else: the response
@@ -104,7 +107,9 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -116,7 +121,9 @@ def _as_text(value) -> str:
         base = bytes if _isinst(value, bytes) else bytearray
         try:
             decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A *lying* ``__class__`` (claims bytes, is not): the unbound
             # descriptor rejects the foreign operand.  A raise means "not
             # really bytes" — render like any other object instead of 500ing
@@ -135,7 +142,9 @@ def _as_text(value) -> str:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
         if value != value or value in (float("inf"), float("-inf")):
             return ""
@@ -146,18 +155,23 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode: a str subclass whose ``__str__`` returns self
     # keeps its bound ``.encode`` bomb live (the modules5 unbound convention).
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor lands here (it passed the
-        # str gate without being one): junk, never worth a raw 500.
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _rc_int(rc) -> int:
@@ -187,14 +201,14 @@ def _rc_int(rc) -> int:
     success.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
         value = int.__index__(rc) if isinstance(rc, int) else int(rc)
-        # Digit-cap probe: past CPython's int->str cap the status cannot be
-        # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
