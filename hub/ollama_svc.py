@@ -453,7 +453,9 @@ def settings_text(value) -> str:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes (the modules5 rule).
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if value != value or value in (float("inf"), float("-inf")):
             return ""
@@ -463,7 +465,9 @@ def settings_text(value) -> str:
         # dispatches to its overridden ``__str__``, whose bomb used to raise
         # out of every base_url()/discover_label() caller.
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not isinstance(text, str):
         return ""
@@ -486,10 +490,14 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -503,7 +511,9 @@ def _settings() -> dict:
     # storage, ignoring overridden methods.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A detonating config loader used to raise out of every base_url()
         # / discover_label() caller — a coded 500 on GET /api/ollama/status
         # (the hub.status._cfg_root rule).  No config reads as defaults.
@@ -517,7 +527,9 @@ def _settings() -> dict:
         return raw
     try:
         return dict(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -714,7 +726,9 @@ def _engine_confirmed_down() -> bool:
     try:
         _api("/api/version")
         return False
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return True
 
 
@@ -820,7 +834,9 @@ def _label_set(raw) -> frozenset:
             # ``__class__`` impostor TypeErrors the unbound call itself.
             try:
                 items = list(base.__iter__(raw))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return frozenset()
             break
     if items is None:
@@ -846,7 +862,9 @@ def _listing_attr(jobs, name):
         return None
     try:
         return getattr(jobs, name, None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -864,7 +882,9 @@ def _listing_pid(jobs, label):
         return None
     try:
         raw = jobs.pid_for(label)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if raw is None or type(raw) is bool:
         return None
@@ -874,7 +894,9 @@ def _listing_pid(jobs, label):
             # subclass ``__index__``/``__str__`` bomb drops instead of
             # raising out of the snapshot.
             n = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     else:
         text = _as_text(raw).strip()
@@ -907,7 +929,9 @@ def _plist_label_if_ollama(path: Path) -> str | None:
     """
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if not isinstance(pl, dict):
         return None
@@ -956,7 +980,9 @@ def _agent_origins(label: str | None = None) -> str:
     path = Path(AGENTS_DIR) / f"{name}.plist"
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not isinstance(pl, dict):
         return ""
@@ -1023,7 +1049,9 @@ def discover_label(
             loaded = jobs.loaded
             if running is None:
                 running = jobs.running
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             loaded = frozenset()
     # _label_set on both views, not ``running or frozenset()``: the ``or``
     # truth test reflected into a junk view's own ``__bool__``, and the
@@ -1058,7 +1086,9 @@ def _service_state(*, reachable: bool = False) -> dict:
 
     try:
         jobs = listing()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         jobs = None
     # The try above only covered the *call*.  The reads were still bare:
     # ``jobs.loaded if jobs else …`` ran a junk cached listing's own
@@ -1105,13 +1135,17 @@ def status() -> dict:
     try:
         version = _as_text(_api("/api/version").get("version"))
         reachable = True
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         error = exc_detail(e)
     if reachable:
         try:
             models = parse_tags(_api("/api/tags"))
             resident = parse_ps(_api("/api/ps"))
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             # Version answered but tags/ps failed: still "reachable", but say why.
             error = exc_detail(e)
     binary = binary_path()
@@ -1166,7 +1200,9 @@ def _row_get(key, default=None):
     """
     try:
         return _pull.get(key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -1182,7 +1218,9 @@ def _reset_pull_row(row: dict) -> None:
     """
     try:
         _pull.update(row)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         _pull.clear()
         _pull.update(row)
 
@@ -1231,7 +1269,9 @@ def _pull_log_lines(raw) -> list[str]:
             # try is for a lying ``__class__`` (claims str, is not), which
             # TypeErrors the unbound call.
             return [raw] if str.__len__(raw) else []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     if not _isa(raw, (list, tuple)):
         return []
@@ -1241,7 +1281,9 @@ def _pull_log_lines(raw) -> list[str]:
         # 500 GET /api/ollama/pull/log past the isinstance gate (the
         # hub.jobs._log_lines rule), and the real lines still survive.
         items = list(base.__iter__(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out: list[str] = []
     for item in items:
@@ -1258,13 +1300,17 @@ def _pull_log_lines(raw) -> list[str]:
                 # with bound ``__len__``/``__bool__`` bombs) still passes;
                 # only an impostor TypeErrors and drops alone.
                 str.__len__(item)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out.append(item)
         elif _isa(item, (bytes, bytearray)):
             try:
                 out.append(_decode_bytes(item))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -1346,7 +1392,9 @@ def _exact_rc(raw) -> int:
         if type(raw) is not int:
             try:
                 n = int.__index__(raw)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return -1
         else:
             n = raw
@@ -1374,10 +1422,14 @@ def _run_cli(argv, *, timeout, log) -> int:
     """
     try:
         rc = run_watchdog(argv, timeout=timeout, log=log, env=_cli_env())
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         try:
             log.append(f"!! error: {_utf8_text(e)}")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         return -1
     return _exact_rc(rc)
@@ -1437,7 +1489,9 @@ def unload_model(name: str) -> dict:
     name = validate_model_name(name)
     try:
         _api("/api/generate", {"model": name, "keep_alive": 0}, timeout=UNLOAD_TIMEOUT)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise _daemon_error(e, "ollama.unload_failed")
     status.invalidate()
     return {"ok": True, "model": name}
@@ -1461,7 +1515,9 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     t0 = time.monotonic()
     try:
         resp = _api("/api/generate", payload, timeout=GENERATE_TIMEOUT)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise _daemon_error(e, "ollama.generate_failed")
     elapsed = time.monotonic() - t0
     eval_count = _safe_int(resp.get("eval_count"))
@@ -1558,7 +1614,9 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
     t0 = time.monotonic()
     try:
         resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise _daemon_error(e, "ollama.chat_failed")
     msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
     eval_count = _safe_int(resp.get("eval_count"))
@@ -1595,10 +1653,14 @@ def _open_chat_http(payload: dict):
         err = ""
         try:
             err = e.read(400).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             err = exc_detail(e)
         raise api_error("ollama.chat_failed", error=(err or exc_detail(e))[:200])
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise _daemon_error(e, "ollama.chat_failed")
 
 
@@ -1629,7 +1691,9 @@ def start_chat_stream(name: str, messages: list, num_predict: int = 128):
         finally:
             try:
                 resp.close()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
     return lines()
@@ -1670,7 +1734,9 @@ def health_checks() -> list[dict]:
     try:
         version = _as_text(_api("/api/version").get("version"))
         resident = parse_ps(_api("/api/ps"))
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         rows.append({
             "id": "ollama_api",
             "name": row_name,
