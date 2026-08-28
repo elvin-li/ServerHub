@@ -141,14 +141,21 @@ class JsonableParamLiarPins(unittest.TestCase):
                 self.assertEqual(out, {"ok": 1})
                 _renderable(out)
 
-    def test_non_pair_items_subclass_drops_entries_not_raises(self):
+    def test_non_pair_items_subclass_recovers_its_real_entries(self):
+        # json14 (the maint14/bookmarks14 rule): the dict arm copies through
+        # the C-level storage, so a real subclass's lying ``items()`` cannot
+        # vaporise the honest entries underneath it any more.
         out = errors._jsonable_param(NonPairItemsDict(a=1))
-        self.assertEqual(out, {})
+        self.assertEqual(out, {"a": 1})
         _renderable(out)
 
-    def test_dict_liar_with_non_pair_items_drops_entries_not_raises(self):
+    def test_dict_liar_with_non_pair_items_drops_whole_not_raises(self):
+        # A *total* impostor claiming dict has no C-level dict storage for
+        # the json14 copy to read, so it keeps the established liar drop —
+        # now to null like every other container liar (the jobs14 rule),
+        # instead of serving its own hostile ``items()`` a second time.
         out = errors._jsonable_param(DictLiarWithItems())
-        self.assertEqual(out, {})
+        self.assertIsNone(out)
         _renderable(out)
 
 
