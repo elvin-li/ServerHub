@@ -9,7 +9,11 @@ this module size-probes, rejects a zero ``hw.memsize``, and falls back to
 from __future__ import annotations
 
 import ctypes
+import re
 import struct
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 INTEGER_KEYS = frozenset({"hw.ncpu", "hw.memsize", "hw.pagesize"})
 _SYSCTL = "/usr/sbin/sysctl"
@@ -41,20 +45,25 @@ if _libc is not None:
 
 def parse_int(value) -> int | None:
     """int from a sysctl ``-n`` payload that may be str, bytes, or already int."""
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, int):
+    if type(value) is int:
         return value if value >= 0 else None
-    if isinstance(value, (bytes, bytearray)):
+    for base in (bytes, bytearray):
         try:
-            value = value.decode("utf-8", "replace")
-        except Exception:
-            return None
+            value = base.decode(value, "utf-8", "replace")
+            break
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
         text = str(value).strip()
     except RecursionError:
         return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if not text.isdigit():
         return None
@@ -118,6 +127,8 @@ def sysctl_int(name: str, *, timeout: int = 2, sh=None) -> int | None:
         # failure, same as a raising spawn.
         if rc != 0:
             return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return parse_int(out)
