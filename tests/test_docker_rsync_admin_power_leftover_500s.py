@@ -55,6 +55,17 @@ class DockerRsyncAdminPowerLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             rsync_svc._as_text(_Ki())
 
+    def test_power_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("power isoformat watchdog")
+
+        self.assertEqual(power_svc._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()

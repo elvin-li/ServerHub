@@ -122,23 +122,34 @@ def _jsonable(value, depth: int = 0):
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/system/power.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 VNC_PORT = 5900
@@ -234,7 +245,9 @@ def screensharing_status() -> dict:
     running = _screensharing_running()
     try:
         host = _as_text(_host_ip())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         host = ""
     return _jsonable({
         "running": running,
@@ -304,7 +317,9 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
         time.sleep(delay)
         try:
             _do_power(action)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     threading.Thread(target=job, daemon=True, name=f"power-{action}").start()
@@ -338,7 +353,9 @@ def power_overview() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; a wedged `pmset` must not drop the power tile.
@@ -353,7 +370,9 @@ def power_overview() -> dict:
         screen_sharing = {}
     try:
         host = screen_sharing.get("host") or _host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         host = ""
     return _jsonable({
         "actions": list(_ACTIONS),

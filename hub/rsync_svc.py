@@ -466,7 +466,9 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
         _kill_group(proc)
         try:
             proc.wait()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         drainer.join(timeout=2)
         # text=True wraps the pipes; leaving them open is the unittest
@@ -572,7 +574,9 @@ def run_job(params: dict, *, log: list[str], timeout: int = 3600,
     except RecursionError:
         log.append("!! rsync failed")
         return -1
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         detail = getattr(e, "detail", None)
         message = detail.get("message") if isinstance(detail, dict) else _as_text(e)
         log.append(f"!! {message}")
