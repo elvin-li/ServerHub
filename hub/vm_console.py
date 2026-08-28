@@ -34,6 +34,9 @@ from fastapi import WebSocket
 
 from hub.config import settings_section
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: A console ticket only has to survive the round trip from the REST response to
 #: the WebSocket upgrade the browser opens immediately afterwards.
 TICKET_TTL_SECONDS = 30
@@ -115,7 +118,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -133,7 +138,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -145,7 +152,9 @@ def _allowlist() -> dict[str, Any]:
     # the UTM listing via ``capability()``.
     try:
         settings = settings_section("vm_console")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     allowlist = _mapping_get(settings, "allowlist")
     return allowlist if _isa(allowlist, dict) else {}
@@ -163,7 +172,9 @@ def _exact_str(value) -> str:
         return str.encode(value, "utf-8", "surrogatepass").decode(
             "utf-8", "surrogatepass"
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -193,7 +204,9 @@ def _probe_text(value) -> str:
         return base.decode(value, "utf-8", "replace")
     try:
         return _exact_str(str(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -216,7 +229,9 @@ def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
                 return value
             try:
                 return dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
     return None
 
@@ -230,7 +245,9 @@ def _flag(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -250,13 +267,17 @@ def _coerce_port(value) -> int | None:
     if _isa(value, int):
         try:
             return int.__index__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, float):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -282,18 +303,23 @@ def _as_host_text(value) -> str:
     detonated the bare ``isinstance`` and 500'd the mint.
     """
     if _isa(value, (bytes, bytearray)):
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8")
-        except UnicodeDecodeError:
-            return ""
-        except Exception:
-            return ""
+        decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(value, "utf-8")
+                break
+            except UnicodeDecodeError:
+                return ""
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if decoded is not None:
+            value = decoded
     if not _isa(value, str):
         return ""
-    # Exact-str copy before the bound .strip(): a str-subclass leftover's
-    # strip bomb used to 500 the mint out of _is_loopback/resolve_target.
-    return _exact_str(value).strip()
+    text = _exact_str(value).strip()
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _is_loopback(host: str) -> bool:
