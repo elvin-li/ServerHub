@@ -71,6 +71,9 @@ from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 REMOTE_DIR = DATA_DIR / "catalog-remote"
 STATE_PATH = REMOTE_DIR / "state.json"
 #: Leftover multi-MB state used to OOM GET /api/catalog/remote.
@@ -306,46 +309,57 @@ def _isinst(value, types) -> bool:
     (the catalog/native_catalog/docker_cli rule)."""
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _as_text(value) -> str:
     """Exception text that cannot RecursionError leftover ``str(exc)`` or UTF-8 500."""
-    decoded = None
-    if _isinst(value, (bytes, bytearray)):
-        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
-        base = bytes if _isinst(value, bytes) else bytearray
-        try:
-            decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
-            # A lying ``__class__`` claiming bytes rejects the unbound
-            # descriptor: not really bytes, render like any other object
-            # (the modules9/json9 impostor class).
-            decoded = None
-    if decoded is not None:
-        value = decoded
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            return ""
-    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
-    # returns self keeps the subclass, so a bound ``.encode`` bomb could
-    # still fire (the modules5 unbound convention, like docker_cli).
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor whose ``__str__`` returned
-        # itself lands here: junk.
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 from pathlib import Path
 
 from hub import cli_args
@@ -31,6 +32,9 @@ from hub.paths import AGENTS_DIR, user_home  # noqa: E402
 # autostart quietly reported "brew missing" on a host where other pages using
 # hub.paths.BREW worked fine.
 from hub.paths import BREW  # noqa: E402
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _TTL = 12.0
 #: Leftover multi-MB LaunchAgent plist used to OOM GET /api/apps/autostart.
@@ -58,7 +62,9 @@ def _isinstance(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -71,25 +77,49 @@ def _as_text(value) -> str:
     raise out of the launchctl log tail below and 500 POST /api/apps/autostart.
     Guarded isinstance: a ``__class__`` property bomb used to blow the chain.
     """
-    if _isinstance(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
-    elif _isinstance(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
-    elif _isinstance(value, str):
-        text = value
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _plain_rc(value):
@@ -104,17 +134,21 @@ def _plain_rc(value):
     anything non-numeric degrades to None.  Guarded isinstance: a leftover
     rc whose ``__class__`` property raises used to blow the first probe here.
     """
-    if _isinstance(value, bool):
+    if type(value) is bool:
         return int(value)
-    if _isinstance(value, int):
+    if _isinstance(value, int) and type(value) is not bool:
         try:
             return int.__index__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, float):
         try:
             return float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 

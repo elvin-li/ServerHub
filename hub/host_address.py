@@ -368,7 +368,9 @@ def _cached_detection(now: float) -> str:
         value = _mapping_get(_detect_cache, "value")
         try:
             age = now - float(_mapping_get(_detect_cache, "t", 0.0))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Blanket, not the typed trio: a leftover planted in the ``t``
             # slot whose ``__float__`` raises RuntimeError (the same bomb
             # class its ``value`` sibling already absorbs below) used to
@@ -381,7 +383,9 @@ def _cached_detection(now: float) -> str:
         # host_ip() consumer.  A bomb reads as a miss and re-detects.
         try:
             live = bool(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if live and age < _DETECT_TTL:
             return _as_text(value)
