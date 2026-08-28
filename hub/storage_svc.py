@@ -209,8 +209,18 @@ def _parent_disk_id(filesystem: str) -> str | None:
 
 def list_volumes() -> list:
     items = []
-    home = user_home()
-    orbstack_home = str(home / "OrbStack") if home is not None else ""
+    # The home read and join in one try: this module does not own
+    # ``user_home`` (tests and tooling patch it), and a provider that
+    # raises — or answers a junk non-Path the ``/`` join TypeErrors —
+    # used to unwind out of here before the first table line was read:
+    # ``storage_overview``'s catch wiped the *whole* volume table to []
+    # on GET /api/storage?light where only the OrbStack-home hint is
+    # unreadable.  No hint simply skips that one skip-filter refinement.
+    try:
+        home = user_home()
+        orbstack_home = str(home / "OrbStack") if home is not None else ""
+    except Exception:
+        orbstack_home = ""
     # The shared mount table (hub/disk_snapshot.py).  This module spelled the command
     # `df` and disk_power_svc spelled it `/bin/df`, so `/api/storage` read the table
     # twice and neither spawn looked like a duplicate of the other -- and the bare

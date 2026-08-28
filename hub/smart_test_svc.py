@@ -26,6 +26,8 @@ import threading
 import time
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from hub.config import cfg, update_settings
 from hub.macos_admin import run_admin
 from hub.paths import DATA_DIR, SMARTCTL
@@ -280,13 +282,67 @@ def device_type(device: str) -> tuple[str, ...]:
         return ()
 
 
+def _type_flags(device) -> tuple[str, ...]:
+    """The transport flags as an exact tuple of exact base strs; junk reads auto.
+
+    This module does not own :func:`device_type` at the seam (tests and
+    tooling patch it), and every consumer used the raw answer bare: a
+    provider that *raises* — or answers a lying ``__class__`` impostor
+    claiming tuple, a subclass whose bound ``__iter__`` bombs, or entries
+    that are not text — detonated the ``list(device_type(node))`` /
+    ``[*flags]`` splats in ``start_test`` / ``abort_test`` / ``_smartctl``
+    and the ``" ".join`` in ``_capabilities`` (raw 500s on
+    POST /api/smart/test and /api/smart/abort where every junk answer
+    already earns a coded refusal; the storage11 runner-seam rule one
+    provider up).  The unbound base reads see the real C-level storage, so
+    an honest answer in a subclass wrapper survives — ``str.__str__`` base
+    copies keep an honest subclass flag's text.  Anything unreadable
+    degrades to ``()``: smartctl's auto transport, the same answer an
+    unprobeable device already gets — never a torn half of a ``-d nvme``
+    pair.
+    """
+    try:
+        raw = device_type(device)
+    except Exception:
+        return ()
+    if type(raw) is tuple:
+        items = raw
+    elif _isa(raw, tuple):
+        try:
+            items = tuple(tuple.__iter__(raw))
+        except Exception:
+            return ()
+    elif _isa(raw, list):
+        try:
+            items = tuple(list.__getitem__(raw, slice(None)))
+        except Exception:
+            return ()
+    else:
+        return ()
+    flags: list[str] = []
+    for flag in items:
+        if type(flag) is str:
+            flags.append(flag)
+            continue
+        if not _isa(flag, str):
+            return ()
+        try:
+            flags.append(str.__str__(flag))
+        except Exception:
+            return ()
+    return tuple(flags)
+
+
 def _smartctl(args: list[str], *, timeout: int = 20) -> tuple[int, str, str]:
     """Run smartctl for a device, injecting the transport flags it needs.
 
     The device node is the last element of *args*, matching smartctl's own usage.
     """
     if args and str(args[-1]).startswith("/dev/"):
-        flags = device_type(args[-1])
+        # _type_flags, not the raw provider: a raising / wrong-shape
+        # device_type used to blow the splat below — through _caps_raw
+        # that was a raw 500 on POST /api/smart/test.
+        flags = _type_flags(args[-1])
         argv = [*args[:-1], *flags, args[-1]]
     else:
         argv = list(args)
@@ -494,10 +550,79 @@ def _capabilities(
         "available": bool(supported),
         "supported": supported,
         "reason": reason,
-        "device_type": " ".join(device_type(device)) or "auto",
+        # _type_flags: junk provider entries used to TypeError the join.
+        "device_type": " ".join(_type_flags(device)) or "auto",
         "estimated_minutes": minutes or {k: v for k, v in _KIND_HINT_MINUTES.items() if k in supported},
         "detail": (err or log_err or "").strip()[:200],
     }
+
+
+def _probe_caps(device) -> dict:
+    """``_capabilities`` for the mutation gates, as exact shapes only.
+
+    ``start_test`` read the raw answer bare (``caps["available"]``,
+    ``caps["reason"] == …``, ``test not in caps["supported"]``), but this
+    module does not own the probe at the seam (tests and tooling patch
+    ``_capabilities`` / ``_caps_raw``): a probe that *raises*, a
+    ``__class__``-property bomb or short mapping (KeyError), a dict
+    subclass whose ``.get`` raises, or a str-*subclass* ``supported`` entry
+    whose ``__eq__`` fires during the membership walk — each was a raw 500
+    on POST /api/smart/test where every junk answer already earns a coded
+    refusal.  An unreadable probe answers the ``probe_failed`` shape the
+    per-disk report already ships: unavailable, so the route refuses coded
+    ``unsupported`` — and ``probe_failed`` is never ``no_smart_passthrough``,
+    so a probe that cannot answer can never forge the confirmed-vanished
+    ``smartctl_missing`` refusal.  Honest subclass ``supported`` entries
+    base-copy their text, so a supported kind still matches.
+    """
+    failed = {"available": False, "reason": "probe_failed", "supported": []}
+    try:
+        caps = _capabilities(device)
+    except Exception:
+        return failed
+    if not _isa(caps, dict):
+        return failed
+    # Unbound dict.get, each read in its own try: a stored shadow key's
+    # ``__eq__`` runs during the hash probe (the storage9 rule), and a
+    # lying ``__class__`` claiming dict TypeErrors the bound descriptor.
+    try:
+        available = bool(dict.get(caps, "available"))
+    except Exception:
+        return failed
+    try:
+        reason = dict.get(caps, "reason")
+    except Exception:
+        return failed
+    if type(reason) is not str:
+        reason = _as_text(reason) or "probe_failed"
+    try:
+        raw_supported = dict.get(caps, "supported")
+    except Exception:
+        raw_supported = None
+    if _isa(raw_supported, list):
+        try:
+            rows = list(list.__iter__(raw_supported))
+        except Exception:
+            rows = []
+    elif _isa(raw_supported, tuple):
+        try:
+            rows = list(tuple.__iter__(raw_supported))
+        except Exception:
+            rows = []
+    else:
+        rows = []
+    supported: list[str] = []
+    for kind in rows:
+        if type(kind) is str:
+            supported.append(kind)
+            continue
+        if not _isa(kind, str):
+            continue
+        try:
+            supported.append(str.__str__(kind))
+        except Exception:
+            continue
+    return {"available": available, "reason": reason, "supported": supported}
 
 
 _SELFTEST_ROW = re.compile(
@@ -1049,14 +1174,30 @@ def set_schedule(*, interval: str, kind: str, devices: list[str]) -> dict:
         if node and _DEV_RE.match(node) and node in known
     ]
     current = _schedule_cfg()
-    update_settings({
-        "smart_schedule": {
-            "interval": interval,
-            "kind": kind,
-            "devices": cleaned,
-            "last_run": _schedule_epoch(current.get("last_run")),
-        }
-    })
+    # The write in its own try (the try-around-cfg() union rule at the
+    # writer seam): this module does not own update_settings (tests and
+    # tooling patch it), and a writer that raises used to unwind out of
+    # here bare — a raw 500 on PUT /api/smart/schedule.  A schedule that
+    # cannot persist is a failure, and ``failed`` rides the route's funnel
+    # into the same coded ``admin.failed`` refusal every other unusable
+    # answer earns.  HTTPException re-raises untouched: config.mutate's
+    # own coded refusal for a torn services.yaml
+    # (``settings.config_unreadable``, a 503 that keeps the file intact)
+    # is the stronger, already-pinned answer and must not be laundered
+    # down to the generic one (the health6 contract).
+    try:
+        update_settings({
+            "smart_schedule": {
+                "interval": interval,
+                "kind": kind,
+                "devices": cleaned,
+                "last_run": _schedule_epoch(current.get("last_run")),
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception:
+        return {"ok": False, "error": "failed"}
     invalidate()
     return {"ok": True, "schedule": get_schedule()}
 
@@ -1099,7 +1240,10 @@ def run_due_tests() -> dict:
 
     started = 0
     for device in schedule["devices"]:
-        caps = _capabilities(device)
+        # _probe_caps / _type_flags — same wrong-shape provider notes as
+        # start_test, on the scheduler tick (a raise here used to silently
+        # kill the whole tick through the loop's catch).
+        caps = _probe_caps(device)
         if schedule["kind"] not in caps["supported"]:
             _append_history({
                 "ts": _now(),
@@ -1111,7 +1255,7 @@ def run_due_tests() -> dict:
                 "message": caps["reason"],
             })
             continue
-        flags = list(device_type(device))
+        flags = list(_type_flags(device))
         rc, out, err = _spawn(
             ["/usr/bin/sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], 60
         )
@@ -1196,7 +1340,10 @@ def start_test(device: str, kind: str) -> dict:
     if test not in TEST_KINDS:
         return {"ok": False, "error": "bad_kind"}
 
-    caps = _capabilities(node)
+    # _probe_caps, not the raw probe: a raising / wrong-shape capabilities
+    # answer used to KeyError (or run a shadow entry's ``__eq__``) right
+    # here — a raw 500 on POST /api/smart/test.
+    caps = _probe_caps(node)
     if not caps["available"]:
         # sh()'s vanished-binary sentinel and a controller with no SMART
         # passthrough answer identically from the exit code alone; only a
@@ -1212,7 +1359,9 @@ def start_test(device: str, kind: str) -> dict:
     if test not in caps["supported"]:
         return {"ok": False, "error": "kind_unsupported", "supported": caps["supported"], "device": node}
 
-    flags = list(device_type(node))
+    # _type_flags: a raising / wrong-shape device_type used to blow this
+    # very list() — a raw 500 on POST /api/smart/test.
+    flags = list(_type_flags(node))
     # _spawn: a runner that raises — or answers a wrong shape — used to
     # blow this unpack bare, a raw 500 on POST /api/smart/test.
     rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], 60)
@@ -1228,7 +1377,20 @@ def start_test(device: str, kind: str) -> dict:
         if _spawn_missing(rc, out, err) and not _smartctl_installed():
             return {"ok": False, "error": "smartctl_missing", "device": node}
         # No passwordless rule: ask macOS for one-shot authorization instead.
-        admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
+        # The call in its own try (the storage11 runner-seam rule, one
+        # provider up): this module does not own run_admin (tests and
+        # tooling patch it), and a sheet that *raises* instead of answering
+        # used to unwind out of here bare — a raw 500 on
+        # POST /api/smart/test where a denied sheet already earns the coded
+        # ``admin.failed`` refusal through the route's funnel.  A sheet
+        # that cannot answer reads as the same denial.  A coded refusal
+        # (HTTPException) is already a rendered answer and re-raises.
+        try:
+            admin = run_admin([SMARTCTL, "-t", test, *flags, node], timeout=120)
+        except HTTPException:
+            raise
+        except Exception:
+            admin = None
         # Unbound ``dict.get`` and a guarded bool: this function does not
         # own the run_admin result (tests and tooling patch it), and a dict
         # subclass whose ``.get``/``__bool__`` raises — or an ``ok`` value
@@ -1282,7 +1444,9 @@ def abort_test(device: str) -> dict:
     node = _schedule_text(device).strip()
     if not _DEV_RE.match(node) or node not in _known_nodes():
         return {"ok": False, "error": "bad_device"}
-    flags = list(device_type(node))
+    # _type_flags — same raising / wrong-shape provider note as start_test,
+    # on POST /api/smart/abort.
+    flags = list(_type_flags(node))
     # _spawn + _rc_int — same rc-subclass ``__eq__``-bomb / raising-runner
     # note as start_test, on POST /api/smart/abort.
     rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], 30)
@@ -1293,7 +1457,17 @@ def abort_test(device: str) -> dict:
         # tool-absent 503; anything else keeps the authorization fallback.
         if _spawn_missing(rc, out, err) and not _smartctl_installed():
             return {"ok": False, "error": "smartctl_missing", "device": node}
-        result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
+        # Guarded sheet — same raising-run_admin note as start_test: a
+        # sheet that cannot answer reads as the failed result the junk-
+        # result arm below already degrades, never a raw 500 on
+        # POST /api/smart/abort.  A coded refusal (HTTPException) is
+        # already a rendered answer and re-raises.
+        try:
+            result = run_admin([SMARTCTL, "-X", *flags, node], timeout=60)
+        except HTTPException:
+            raise
+        except Exception:
+            result = None
         invalidate()
         # _isa: same ``__class__``-bomb gate as start_test, on
         # POST /api/smart/abort.
@@ -1316,6 +1490,11 @@ def _device_report(node: str) -> dict:
     try:
         # Resolve the transport flags first. Both reads below need them, and probing
         # from inside the pair would make one of them wait on the other's probe.
+        # Deliberately the raw provider, not _type_flags: a raising probe
+        # lands in this report's own except arm and keeps its message in
+        # the guarded ``probe_failed`` row (the test_disk_storage_leftovers
+        # contract) — the launderer guards the *mutation* paths, where a
+        # raise used to be a raw 500 instead of a rendered row.
         device_type(node)
         # `smartctl -l selftest` and `smartctl -c` are separate conversations with
         # the drive and neither parses the other's output.

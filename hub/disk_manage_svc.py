@@ -388,6 +388,27 @@ def _plain_info(info) -> dict:
     return _exact_str_keys(entries)
 
 
+def _info_read(node: str) -> dict:
+    """One guarded ``diskutil info`` read: a raising provider reads as no info.
+
+    ``_plain_info`` launders every *shape* the cache can answer, but the
+    call itself was still bare, and this module does not own the provider
+    at the seam (tests and tooling patch ``_diskutil_info``): a provider
+    that *raises* instead of answering used to unwind out of
+    ``disk_action``'s first read — a raw 500 on POST /api/storage/manage/{id}
+    — and to drop every node from the manage listing walk (with a single
+    disk, the whole listing) where the wedged-diskutil contract this module
+    already ships is ``{}``: the node renders without details, and the
+    mutation path keeps its own eligibility gates (an unreadable disk0
+    child still refuses ``disk.system_protected``; the storage11
+    runner-seam rule one provider up).
+    """
+    try:
+        return _plain_info(_diskutil_info(node))
+    except Exception:
+        return {}
+
+
 def _ident(value) -> str:
     """Plist device identifier as a string.
 
@@ -811,10 +832,12 @@ def list_managed_volumes() -> list[dict]:
                     continue
             # still record whole disk summary
             if is_whole:
-                # _plain_info: a dict-subclass leftover in the info cache
-                # whose ``.get`` raises used to drop this node (with a
-                # single disk, the whole listing) on the first field read.
-                info = _plain_info(_diskutil_info(ident))
+                # _info_read (_plain_info plus the guarded call): a
+                # dict-subclass leftover in the info cache whose ``.get``
+                # raises — or a provider that raises outright — used to
+                # drop this node (with a single disk, the whole listing)
+                # on the first field read.
+                info = _info_read(ident)
                 # _size_bytes / _text each candidate before ``or``: the bare
                 # ``a or b`` chain reflected into a leftover value's own
                 # ``__bool__`` and dropped the node for one bad field.
@@ -853,9 +876,9 @@ def list_managed_volumes() -> list[dict]:
             return
 
         # leaf volume / partition
-        # Same _plain_info / split-``or`` treatment as the whole-disk
+        # Same _info_read / split-``or`` treatment as the whole-disk
         # summary above, for the same one-bad-field node drops.
-        info = _plain_info(_diskutil_info(ident))
+        info = _info_read(ident)
         size = _size_bytes(node.get("Size")) or _size_bytes(info.get("TotalSize"))
         mount = _text(info.get("MountPoint")) or _text(node.get("MountPoint"))
         content = _text(node.get("Content")) or _text(info.get("Content"))
@@ -997,10 +1020,11 @@ def disk_action(
 ) -> dict[str, Any]:
     """Execute mount/unmount/rename/format via diskutil."""
     did = _normalize_id(device)
-    # _plain_info: a dict-subclass leftover in the info cache whose
+    # _info_read: a dict-subclass leftover in the info cache whose
     # ``__bool__``/``__len__``/``.get`` raises used to 500 every manage
-    # mutation right out of the truthiness probe below.
-    info = _plain_info(_diskutil_info(did))
+    # mutation right out of the truthiness probe below — and a provider
+    # that raises outright blew the call itself, one seam earlier.
+    info = _info_read(did)
     if not info and action not in ("mount", "mountDisk"):
         # may still exist
         pass
