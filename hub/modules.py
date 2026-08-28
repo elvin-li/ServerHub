@@ -5,6 +5,7 @@ Keeps ServerHub feature surface discoverable and documentable.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, fields
 
 
@@ -170,6 +171,13 @@ MODULES: list[ModuleInfo] = [
 ]
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never module data (the
+#: bookmarks/assistant rule).  Only the free-text *coercion* arms are
+#: scrubbed with it; real str/bytes storage is data and stays verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 # Real control flow must keep propagating even through the bomb guards:
 # swallowing a Ctrl-C or an interpreter shutdown to save one JSON row would
 # turn the sanitizer into a hang.  Everything else BaseException-shaped that
@@ -196,6 +204,24 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs below: after a claimed arm's unbound descriptor
+    rejects the operand, only the arm the *real* layout matches may pick
+    the value up — the lie must not steer the walk a second time.
+    Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -237,6 +263,43 @@ def _utf8_text(value) -> str:
         decoded = _decode_bytes(value)
         if decoded is not None:
             return decoded
+        if not _isinst(value, str):
+            # A total impostor claiming bytes carries nothing the str
+            # read below could recover either — degrade like before.
+            return ""
+        # Honest str storage behind a lying-bytes ``__class__`` (the
+        # files16/notify13 recover-the-real-storage rule): the gate above
+        # matches through the *lie*, both base decodes reject the str
+        # layout, and the real text renders verbatim one arm below.
+    if _isinst(value, str):
+        # Unbound base read, not the dispatching ``str()``: real str
+        # storage keeps its text even when the subclass ``__str__`` /
+        # ``encode`` is poisoned, while a *lying* ``__class__`` that only
+        # claims str rejects the descriptor and falls to the coercion arm
+        # below instead of leaking its repr.  The encode-replace pass
+        # scrubs lone surrogates the same way as before.
+        try:
+            return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    # Only a type that renders *itself* may coerce.  This free-text arm ran
+    # ``str()`` on any leftover shape, and for a type that never overrode
+    # ``__str__`` / ``__repr__`` the answer is the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which a junk name,
+    # description or nested field carried verbatim into the GET /api/modules
+    # body (the bookmarks/assistant slot-probe rule).  A slot probe on the
+    # real ``type(value)``: a flickering ``__class__`` property cannot swap
+    # the real type out.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -257,7 +320,70 @@ def _utf8_text(value) -> str:
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
     # bomb rode this line to a 500 — at value, nested and mapping-key rank,
     # through the dataclass arm, and as a ``by_category`` group key.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) and a value whose *rendering*
+    # embeds a default repr still answered an address.  Only this coercion
+    # arm is scrubbed — real str/bytes storage above is data and stays.
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _key_text(k) -> str | None:
+    """Render a mapping key, or ``None`` to drop just that entry.
+
+    Keys keep the modules4 rule — a key that cannot render drops its own
+    entry, never the row — so the coercion failures here answer ``None``
+    where ``_utf8_text`` degrades values to ``""``.  Two leftovers fixed
+    against the same rule:
+
+    * a genuine str key behind a lying-bytes ``__class__`` matched the
+      bytes gate through the lie, both base decodes rejected the str
+      layout, and the old ``continue`` dropped an entry whose real key
+      text renders verbatim — degrade at the wrong rank;
+    * a key type that never overrode ``__str__``/``__repr__`` coerced to
+      the default ``object.__repr__`` — ``<X object at 0x7f...>``, a raw
+      heap address, leaked verbatim as a JSON *key* by GET /api/modules.
+      The slot probe (and the ``_ADDR_REPR_RE`` belt for C-level repr
+      overrides like functions) drops the entry instead.
+    """
+    if _isinst(k, (bytes, bytearray)):
+        decoded = _decode_bytes(k)
+        if decoded is not None:
+            return decoded
+        if not _isinst(k, str):
+            # A total impostor claiming bytes — drop just this entry.
+            return None
+        # Honest str storage behind the lying-bytes claim falls through.
+    if _isinst(k, str):
+        try:
+            return str.encode(str.__str__(k), "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass  # a lying-str claim — coerce off whatever renders below
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``__str__`` key keeps dropping its entry (RecursionError
+        # included) — the modules4 shape.
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -274,53 +400,78 @@ def _jsonable(value, depth: int = 0):
         return None
     if value is None:
         return value
-    if _isinst(value, bool):
-        # ``bool`` is final, so a value that answers the ``bool`` gate while
-        # its real type is not ``bool`` is a *lying* ``__class__`` impostor,
-        # not a genuine bool.  The old arm returned it raw, handing the
-        # ``allow_nan=False`` encoder a non-serializable object that 500'd
-        # GET /api/modules — at value rank and as ``enabled``.  Only a real
-        # bool renders; the impostor drops to ``None`` like its numeric
-        # siblings' lying-``__class__`` coercion does.
-        if type(value) is bool:
-            return value
-        return None
+    # ``type(value) is bool``, not the isinstance gate: ``bool`` is final,
+    # so only a real bool may render raw.  A *lying* ``__class__`` claiming
+    # bool now falls through — ``bool`` subtypes ``int``, so the int arm's
+    # unbound ``int.__index__`` recovers genuine int storage behind the lie
+    # (the old arm dropped it to ``None`` at the wrong rank) and still
+    # drops a total impostor exactly as before.
+    if type(value) is bool:
+        return value
     if _isinst(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
+                # Past CPython's int->str digit cap the encoder cannot
+                # render the number at all — same drop as its inf float
+                # sibling.
                 return None
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the old None drop.
             return None
-        return value
+        # The descriptor refused the operand, so the claimed ``int`` was a
+        # lie — but the real storage matches a later arm (the files16/
+        # notify13 recover-the-real-storage rule): a genuine str / float /
+        # container behind that lie used to vanish to ``None`` at the
+        # wrong rank while its value rendered fine one gate below.
     if _isinst(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming float keeps the old None drop.
             return None
-        return value
+        # Genuine text / container behind a lying-float claim falls through.
     if _isinst(value, str):
-        return _utf8_text(value)
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            return _utf8_text(value)
+        # Genuine mapping / sequence storage behind a lying-str
+        # ``__class__`` used to render as its ``str()`` text blob here —
+        # the wrong rank; the arm its real storage matches walks it below.
     if _isinst(value, (bytes, bytearray)):
-        # A lying ``__class__`` claiming ``bytes``/``bytearray`` makes the
-        # unbound base decode reject the foreign operand; drop it.
-        return _decode_bytes(value)
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            # A total impostor claiming bytes keeps the old None drop.
+            return None
+        # Genuine mapping / sequence behind a lying-bytes claim falls
+        # through to the arm that reads its real storage.
     if _isinst(value, dict):
         # Unbound base view: a dict subclass whose ``items()`` raises
         # or yields non-pairs used to 500 GET /api/modules, nested and
@@ -345,24 +496,23 @@ def _jsonable(value, depth: int = 0):
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            items = None
+        if items is not None:
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
+                    # A key that cannot render (raising ``__str__``, a
+                    # total lying-bytes impostor, a default-repr address)
+                    # drops just this entry, keeps the rest of the mapping.
+                    continue
+                out[key] = _jsonable(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            # A total impostor claiming dict keeps the old None drop.
             return None
-        out = {}
-        for k, v in items:
-            if _isinst(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-                if k is None:
-                    # A lying ``__class__`` key claiming bytes — drop just
-                    # this entry, keep the rest of the mapping.
-                    continue
-            elif not _isinst(k, str):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
-        return out
+        # Genuine sequence storage behind a lying-dict ``__class__`` falls
+        # through: its elements render below instead of vanishing whole.
     if _isinst(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
             if _isinst(value, base):
@@ -429,6 +579,7 @@ def _jsonable(value, depth: int = 0):
 
 def _module_row(m) -> dict | None:
     """Serialize one registry entry. Junk rows used to 500 GET /api/modules."""
+    row = None
     if _isinst(m, ModuleInfo):
         try:
             row = asdict(m)
@@ -445,19 +596,23 @@ def _module_row(m) -> dict | None:
             # Both tries reach past ``Exception``: a field property or a
             # nested deepcopy hook raising a *BaseException* subclass used
             # to skip the salvage entirely and 500 the route raw.
-            row = {}
+            salvage = {}
             for f in fields(ModuleInfo):
                 try:
-                    row[f.name] = getattr(m, f.name)
+                    salvage[f.name] = getattr(m, f.name)
                 except _CONTROL_FLOW:
                     raise
                 except BaseException:
                     continue
-            if not row:
-                # A lying ``__class__`` claiming ModuleInfo carries none of
-                # the declared fields — drop the impostor like before.
-                return None
-    elif _isinst(m, dict):
+            if salvage:
+                row = salvage
+            # A lying ``__class__`` claiming ModuleInfo carries none of
+            # the declared fields — but the claim may sit on *genuine
+            # dict storage* whose entries render fine one arm below (the
+            # files16/notify13 recover-the-real-storage rule): the old
+            # early return unlisted that whole row at the wrong rank.
+            # Fall through; a total impostor still drops like before.
+    if row is None and _real(m, dict):
         # No pre-copy: ``dict(m)`` on a subclass that overrides
         # ``__iter__`` abandons CPython's fast storage copy for the
         # generic mapping path, running the subclass's ``keys()`` and
@@ -466,7 +621,7 @@ def _module_row(m) -> dict | None:
         # the row.  Its dict arm already copies via unbound
         # ``dict.items``, straight off the real storage.
         row = m
-    else:
+    if row is None:
         return None
     row = _jsonable(row)
     if not isinstance(row, dict):
@@ -505,7 +660,18 @@ def _registry_entries() -> list:
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                return []
+                # ``continue``, not ``return []``: the old arm stopped at
+                # the *claimed* base, so a genuine tuple registry whose
+                # ``__class__`` lied ``list`` was handed to
+                # ``list.__iter__``, rejected by the descriptor, and every
+                # perfectly renderable row it really held vanished — the
+                # whole Modules page wiped at registry rank, the same
+                # wrong-rank degrade the value-rank sequence arm already
+                # shed.  The descriptor matching the real storage wins on
+                # a later pass; a total impostor (real type is none of the
+                # four) still fails every base and drops to the empty
+                # registry exactly as before.
+                continue
     return []
 
 
