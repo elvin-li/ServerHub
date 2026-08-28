@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from hub import cli_args, secure_io
-from hub.containers_svc import _field_text, _stack_paths
+from hub.containers_svc import _field_text, _plain_job, _stack_paths
 from hub.docker_cli import (
     _isa, _rc_int, cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down,
 )
@@ -121,9 +121,103 @@ def _disk_text(value) -> str | None:
     return None
 
 
+def _home_path():
+    """Best-effort HOME through the module seam (never raises, Path or None).
+
+    ``hub.paths.user_home`` already guards ``Path.home()`` — but the seam
+    itself is a provider like ``cfg`` (tests and tooling patch it — the
+    backups12 / gateway12 rule) and this module consumed its answer bare:
+    a provider that *raises* escaped ``save_compose`` / ``create_stack`` /
+    ``validate_compose_text`` before any catch, and a *textual* answer
+    detonated the ``home / "Services"`` joins (TypeError on
+    ``str.__truediv__``) — ``validate_compose_text`` builds its default
+    working directory and ``create_stack`` its stack root *outside* every
+    try, so each one was a raw 500 on POST /api/compose/validate and
+    POST /api/compose.  A textual answer still names a real directory, so
+    it is kept as a Path (surrogates in an undecodable HOME are legitimate
+    there); junk that cannot name one degrades to None — the same "no
+    home" answer an unresolvable HOME already gets.
+    """
+    try:
+        home = user_home()
+    except Exception:
+        return None
+    if home is None:
+        return None
+    text = _disk_text(home)
+    if text is None:
+        # Path and any real os.PathLike; a lying-``__class__`` impostor has
+        # no ``__fspath__`` to answer with and drops here.  The round-trip
+        # also flattens a Path subclass carrying bound method bombs.
+        try:
+            text = os.fspath(home)
+        except Exception:
+            return None
+        text = _disk_text(text)
+    if not text:
+        return None
+    try:
+        return Path(text)
+    except Exception:
+        return None
+
+
+def _row_get(row, key):
+    """Unbound ``dict.get`` through the C storage; junk rows read as empty.
+
+    Stack rows normally come out of ``_stack_paths`` as plain dicts, but
+    ``_find_stack`` is itself a seam (tests and tooling patch it) and its
+    return used to be consumed with *bound* ``.get``: a dict-subclass row
+    whose ``.get`` raises, or a str-subclass key whose ``__eq__`` bomb wins
+    the reflected compare on hash collision, 500'd GET/PUT
+    /api/compose/{id} and POST /api/compose/{id}/validate (the docker7
+    unbound-``dict.get`` convention).  Junk that is not a mapping reads as
+    an empty row.
+    """
+    if not _isa(row, dict):
+        return None
+    try:
+        return dict.get(row, key)
+    except Exception:
+        return None
+
+
 def _find_stack(stack_id: str) -> dict:
-    for s in _stack_paths():
-        if s.get("id") == stack_id:
+    """The plain-dict stack row for *stack_id*, or the coded 404.
+
+    ``_stack_paths`` launders what it builds, but the *call* is a listing
+    seam (tests and tooling patch it — the files14 runner-seam rule) and
+    this loop consumed its answer raw: a provider that raises, a non-list
+    answer, or a list-subclass whose ``__iter__`` bombs took down every
+    compose route at once, a non-dict row AttributeError'd the bound
+    ``.get``, and an ``id`` whose ``__eq__`` raises detonated the match
+    probe — each one a raw 500 on GET/PUT /api/compose/{id},
+    POST /api/compose/{id}/validate and POST /api/compose.  Junk rows are
+    junk, not stacks: they drop (the empty-row rule) and an honest row
+    later in the listing still matches.
+    """
+    try:
+        rows = _stack_paths()
+    except Exception:
+        rows = []
+    if _isa(rows, (list, tuple)):
+        try:
+            # list() through the C storage: a list-subclass ``__iter__``
+            # bomb cannot fire mid-loop.
+            rows = list(rows)
+        except Exception:
+            rows = []
+    else:
+        rows = []
+    for s in rows:
+        # _plain_job: C-level dict copy with laundered keys, junk rows None.
+        s = _plain_job(s)
+        if s is None:
+            continue
+        # Exact-str copy before ``==``: the route's stack_id is a plain str,
+        # and comparing two exact strs never dispatches into a subclass.
+        sid = _disk_text(_row_get(s, "id"))
+        if sid is not None and sid == stack_id:
             return s
     raise api_error("compose.unknown_stack", stack=stack_id)
 
@@ -139,10 +233,18 @@ def _io_compose_path(s: dict):
     Same convention as the logs tail: read through the raw name the listing
     found, publish the scrubbed text.
     """
-    path = s.get("os_compose_path")
-    if isinstance(path, str) and path:
+    # _row_get + _isa + exact-str copy, not bound ``.get`` and a bare
+    # isinstance: a row whose path field is a ``__class__``-property bomb
+    # used to detonate the gate itself, and a str-subclass field carrying a
+    # ``__len__``/``__eq__`` bomb detonated the truthiness probe or the
+    # Path()/read that consumed the raw value one call later (the compose11
+    # ``_disk_text`` convention, applied to the row seam).
+    path = _row_get(s, "os_compose_path")
+    path = _disk_text(path) if _isa(path, str) else None
+    if path:
         return path
-    return s.get("compose_path")
+    path = _row_get(s, "compose_path")
+    return _disk_text(path) if _isa(path, str) else None
 
 
 def _spawnable_dir(text):
@@ -153,11 +255,16 @@ def _spawnable_dir(text):
     with the opaque ``invalid argv`` sentinel.  Falling back to None lets
     ``validate_compose_text`` use its clean ~/Services default instead.
     """
-    if not isinstance(text, str) or not text:
+    # _isa + exact-str copy: a ``__class__``-property-bomb workdir used to
+    # detonate the bare isinstance, and a str-subclass whose ``__len__`` or
+    # bound ``.encode`` raises blew the truthiness probe / the encode probe
+    # below — each a raw 500 on POST /api/compose/{id}/validate.
+    text = _disk_text(text) if _isa(text, str) else None
+    if not text:
         return None
     try:
         text.encode("utf-8")
-    except UnicodeEncodeError:
+    except Exception:
         return None
     return text
 
@@ -165,7 +272,7 @@ def _spawnable_dir(text):
 def get_compose(stack_id: str) -> dict:
     s = _find_stack(stack_id)
     path = _io_compose_path(s)
-    if not isinstance(path, str) or not path:
+    if type(path) is not str or not path:
         raise api_error("container.no_compose_file")
     try:
         # is_file-then-read raced: a compose deleted between the check and
@@ -198,17 +305,26 @@ def get_compose(stack_id: str) -> dict:
     content = _disk_text(text)
     if content is None:
         raise api_error("container.no_compose_file")
-    sid = _utf8_text(s.get("id")) if isinstance(s.get("id"), str) else ""
+    # _row_get + _isa + exact-str copies, not bound ``.get`` and bare
+    # isinstance gates: ``_find_stack`` is a seam, and a row whose id/name/
+    # path is a ``__class__``-property bomb used to detonate the gates here
+    # — a raw 500 on GET /api/compose/{id} after the compose was in hand.
+    raw_id = _row_get(s, "id")
+    sid = (_disk_text(raw_id) if _isa(raw_id, str) else None) or ""
+    sid = _utf8_text(sid) if sid else ""
     if not sid:
         sid = "stack"
-    name = _utf8_text(s.get("name")) if isinstance(s.get("name"), str) else ""
+    raw_name = _row_get(s, "name")
+    name = (_disk_text(raw_name) if _isa(raw_name, str) else None) or ""
+    name = _utf8_text(name) if name else ""
     if not name:
         name = sid
-    stack_path = s.get("path")
+    stack_path = _row_get(s, "path")
+    stack_path = _disk_text(stack_path) if _isa(stack_path, str) else None
     return {
         "id": sid,
         "name": name,
-        "path": _utf8_text(stack_path) if isinstance(stack_path, str) else None,
+        "path": _utf8_text(stack_path) if stack_path is not None else None,
         "compose_path": _utf8_text(path),
         "content": _utf8_text(content),
         "size": len(content),
@@ -219,15 +335,21 @@ def get_compose(stack_id: str) -> dict:
 def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
     s = _find_stack(stack_id)
     path = _io_compose_path(s)
-    if not isinstance(path, str) or not path:
+    if type(path) is not str or not path:
         raise api_error("container.no_compose_file")
-    if isinstance(content, (bytes, bytearray)):
-        content = content.decode("utf-8", "replace")
-    if not isinstance(content, str) or not content.strip():
+    # _disk_text, not a bare isinstance + bound decode: a bytes-subclass
+    # ``.decode`` bomb, a ``__class__``-property bomb and a str-subclass
+    # whose ``strip``/``__len__`` raises each used to detonate this entry
+    # gate raw (the direct-call seam — the compose11 validate-gate rule).
+    # Bytes still decode; junk still reads as "no content".
+    content = _disk_text(content)
+    if content is None or not content.strip():
         raise api_error("compose.empty_content")
     content = _utf8_text(content)
     # basic safety: no path escape in content writing
-    home = user_home()
+    # _home_path, not the bare seam: a raising or text-answering provider
+    # used to fail this join (and a raise escaped as a raw 500 on PUT).
+    home = _home_path()
     if home is None:
         raise api_error("container.no_compose_file")
     try:
@@ -333,13 +455,22 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         return {"ok": False, "message": exc_detail(e, 800)}
     if not isinstance(doc, dict):
         return {"ok": False, "message": "compose file must be a YAML mapping"}
-    if isinstance(cwd, str) and cwd.strip():
-        work = cwd
-    else:
-        home = user_home()
+    # _disk_text + _isa, not a bare isinstance + bound strip: a leftover
+    # cwd whose ``__class__`` is a raising property, or a str-subclass
+    # whose ``strip`` raises, used to detonate this gate *outside* the
+    # blanket try below.  And the default-home branch consumed the
+    # ``user_home`` seam bare: a raising provider escaped, and a textual
+    # answer TypeError'd the ``home / "Services"`` join — both raw 500s on
+    # POST /api/compose/validate and every save/create that validates.
+    work = _disk_text(cwd) if _isa(cwd, str) else None
+    if work is None or not work.strip():
+        home = _home_path()
         if home is None:
             return {"ok": False, "message": "invalid working directory"}
-        work = str(home / "Services")
+        try:
+            work = str(home / "Services")
+        except Exception:
+            return {"ok": False, "message": "invalid working directory"}
     # NUL / control bytes never reach docker compose: Path() can store them
     # and unlink() then raises ValueError (not OSError) out of finally.
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in work):
@@ -426,9 +557,14 @@ def validate_stack(stack_id: str) -> dict:
     # *create a brand-new sibling tree* next to the real stack on every
     # validate click.  A genuinely unspawnable raw name falls back to the
     # clean ~/Services default via _spawnable_dir.
-    workdir = s.get("os_path")
-    if not isinstance(workdir, str) or not workdir:
-        workdir = s.get("path")
+    # _row_get + _isa + exact-str copies (the row seam again): a bomb
+    # ``os_path`` used to detonate the bare isinstance one line before
+    # ``_spawnable_dir`` got a chance to refuse it.
+    workdir = _row_get(s, "os_path")
+    workdir = _disk_text(workdir) if _isa(workdir, str) else None
+    if not workdir:
+        raw = _row_get(s, "path")
+        workdir = _disk_text(raw) if _isa(raw, str) else None
     return validate_compose_text(data["content"], cwd=_spawnable_dir(workdir))
 
 
@@ -437,9 +573,13 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     stack_id = cli_args.require_positional(stack_id, label="stack id", max_len=41)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,40}", stack_id):
         raise api_error("compose.bad_stack_id")
-    if isinstance(content, (bytes, bytearray)):
-        content = content.decode("utf-8", "replace")
-    content = _utf8_text(content) if isinstance(content, str) else content
+    # _disk_text, not a bare isinstance + bound decode (the direct-call
+    # seam): a bytes-subclass ``.decode`` bomb used to detonate here raw.
+    # Junk that is no text stays as-is — ``validate_compose_text`` is fully
+    # guarded and answers the coded YAML refusal for it.
+    text = _disk_text(content)
+    if text is not None:
+        content = _utf8_text(text)
     # _field_text probe before the name lands in services.yaml: a JSON body
     # ``{"name": "\ud800"}`` (json.loads accepts the escape) was persisted
     # verbatim — latent corruption every later reader had to re-scrub — and
@@ -447,7 +587,10 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
     # (settings.save_failed) *after* the stack directory and compose file
     # were already created.  Unusable names fall back to the stack id.
     name = _field_text(name) or None
-    home = user_home()
+    # _home_path, not the bare seam: a raising provider escaped this call
+    # and a textual answer TypeError'd the ``home / "Services"`` join two
+    # lines down — both raw 500s on POST /api/compose (outside every try).
+    home = _home_path()
     if home is None:
         raise api_error("compose.invalid", detail="home directory is unavailable")
     root = home / "Services" / stack_id
