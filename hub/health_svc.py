@@ -1019,10 +1019,18 @@ def _collect_checks() -> dict:
     # after the fan-out and empty the whole /api/health/checks payload.
     import glob, plistlib
     try:
-        agent_paths = glob.glob(str(Path(AGENTS_DIR) / "*.plist"))
-    except (OSError, TypeError, ValueError):
+        # list() inside the same try: a patched glob answering a lazily
+        # raising iterable would otherwise detonate the loop header below,
+        # past this guard.
+        agent_paths = list(glob.glob(str(Path(AGENTS_DIR) / "*.plist")))
+    except Exception:
         # A None/NUL AGENTS_DIR used to TypeError after the fan-out and
-        # empty GET /api/health/checks.
+        # empty GET /api/health/checks.  Exception, not the old
+        # (OSError, TypeError, ValueError) trio: a leftover path-like
+        # AGENTS_DIR whose ``__fspath__`` raises RuntimeError escaped the
+        # narrow net out of ``Path(AGENTS_DIR)`` itself — a raw 500 on
+        # every GET /api/health/checks (the _fresh_snapshot arithmetic-trio
+        # rule, one seam over).  The KeepAlive rows drop; the page renders.
         agent_paths = []
     for path in agent_paths:
         try:

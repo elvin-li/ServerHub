@@ -278,14 +278,32 @@ def _name_key(name) -> str:
     fallback is deterministic rather than "".  A bare ``str(name)`` used to
     re-raise a subclass ``__str__`` bomb out of register() on the worker's
     own thread — killing the loop this registry exists to watch.
+
+    Exact ``str`` always (the modules6 rule at key rank): ``str(x)`` of a
+    subclass whose ``__str__`` answers *self* — or any ``__str__`` that
+    answers a str *subclass* — skips CPython's exact-str copy, so the old
+    answer still carried live comparison hooks.  Planted as a registry name,
+    that rode this key into :func:`snapshot`'s ``sorted`` compare, where a
+    ``__lt__``/``__gt__`` bomb raised out of the sort itself: snapshot()
+    blew up, ``problems()``'s rows=None path re-raised, and the workers row
+    — honest dead-worker reports included — silently vanished from GET
+    /api/health/checks.  The unbound base encode/decode copies the
+    subclass's real storage without running any of its hooks; an exact str
+    passes through untouched, so honest keys are unchanged.
     """
     try:
-        return str(name)
+        text = str(name)
     except Exception:
         try:
-            return type(name).__name__
+            text = type(name).__name__
         except Exception:
             return "?"
+    if type(text) is str:
+        return text
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return "?"
 
 
 def register(name: str, interval: float, thread: threading.Thread | None = None) -> None:
@@ -379,7 +397,14 @@ def snapshot(now: float | None = None) -> list[dict]:
     # (YAML/plist hex loads uncapped) ValueError'd the sort key itself, and a
     # subclass ``__str__`` bomb raised the same way — snapshot() blew up and
     # the workers row silently vanished from GET /api/health/checks.
-    for name, entry in sorted(items, key=lambda kv: _name_key(kv[0])):
+    # Guarded sort: _name_key now answers exact strs (whose compares cannot
+    # run user hooks), but the sort stays fail-open to insertion order so no
+    # future key shape can re-detonate the same wipe.
+    try:
+        ordered = sorted(items, key=lambda kv: _name_key(kv[0]))
+    except Exception:
+        ordered = items
+    for name, entry in ordered:
         # _mapping_get, not bound ``.get``: a hash-shadowing junk key riding
         # the copied entry (same hash as ``thread``/``beat``/``interval``,
         # raising ``__eq__``) used to detonate the plain-dict lookup here
@@ -472,21 +497,30 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
         if not _isa(w, dict):
             continue
         try:
-            # Unbound ``dict.get`` and one Exception net per row: a
-            # dict-subclass row drops alone rather than costing every
-            # sibling's dead/stale report.  _utf8_text *before* the ``or``
+            # _mapping_get, not unbound ``dict.get``, and one Exception net
+            # per row: a dict-subclass row drops alone rather than costing
+            # every sibling's dead/stale report — but the old bare
+            # ``dict.get`` still ran the *stored keys'* own ``__eq__``
+            # during the hash probe, so a hash-shadowing junk key riding a
+            # row (same hash as ``name``/``alive``/``stale``/``age_sec``,
+            # raising ``__eq__``) raised through this try and silently
+            # dropped that worker's report — a dead worker passed as
+            # healthy, the exact fail-open direction the ``alive`` launder
+            # below exists to prevent.  Only the shadowed field degrades to
+            # its default; a shadowed ``alive`` reads absent -> falsy ->
+            # the "thread died" report.  _utf8_text *before* the ``or``
             # (its answer is an exact str, so the truth test is safe) and
             # _truthy on the flag fields: a ``__bool__``-bomb name/alive/
             # stale used to raise through this try and silently drop the
             # dead-worker line — a bombed ``alive`` now reads as the
             # "thread died" report instead of vanishing.
-            raw_name = dict.get(w, "name")
+            raw_name = _mapping_get(w, "name")
             name = (_utf8_text(raw_name) if raw_name is not None else "") or "?"
-            if not _truthy(dict.get(w, "alive")):
+            if not _truthy(_mapping_get(w, "alive")):
                 out.append(f"{name}: thread died")
-            elif _truthy(dict.get(w, "stale")):
-                age = int(_finite_beat(dict.get(w, "age_sec")))
-                interval = int(_finite_beat(dict.get(w, "interval")))
+            elif _truthy(_mapping_get(w, "stale")):
+                age = int(_finite_beat(_mapping_get(w, "age_sec")))
+                interval = int(_finite_beat(_mapping_get(w, "interval")))
                 out.append(f"{name}: last tick {age}s ago (interval {interval}s)")
         except Exception:
             continue
