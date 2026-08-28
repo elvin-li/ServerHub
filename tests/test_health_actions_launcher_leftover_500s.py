@@ -55,6 +55,16 @@ class HealthActionsLauncherLeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             launcher_svc._as_text(_Ki())
 
+    def test_actions_text_swallows_str_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _StrBomb:
+            def __str__(self):
+                raise LeftoverWatchdogTimeout("actions str watchdog")
+
+        self.assertEqual(actions._as_text(_StrBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()

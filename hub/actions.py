@@ -158,7 +158,9 @@ def _job_pid_and_status(label: str) -> tuple[str, str] | None:
     try:
         from hub.launchd_cache import listing
         entry = listing(force=True).jobs.get(label)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if entry is None:
         return None
@@ -209,7 +211,9 @@ def _confirm_launchd_alive(label: str, rc: int, out: str, err: str,
 def _plist_dict(path) -> dict | None:
     try:
         data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return data if isinstance(data, dict) else None
 
@@ -314,7 +318,9 @@ def registry():
                 reg.setdefault(oid, ("vm", {"backend": "orb", "name": oname or oid}))
             if oname:
                 reg.setdefault(oname, ("vm", {"backend": "orb", "name": oname}))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return reg
 
@@ -357,7 +363,9 @@ def run_action(target, action):
                 return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
             except HTTPException:
                 raise
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 raise api_error("actions.unknown_target", target=target)
         raise api_error("actions.unknown_target", target=target)
     kind, meta = reg[target]
@@ -379,7 +387,9 @@ def run_action(target, action):
                 _launchctl(["enable", f"{dom}/{label}"])
                 try:
                     _set_plist_disabled(meta["path"], False)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
             rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
             if not _bootstrap_ok_to_kickstart(rc, o, e):
@@ -453,7 +463,9 @@ def run_action(target, action):
             return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
         except HTTPException:
             raise
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             name = cli_args.require_positional(target, label="vm")
             if action == "start":
                 return sh([UTMCTL, "start", name], timeout=60)
