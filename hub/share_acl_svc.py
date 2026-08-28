@@ -107,8 +107,42 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never share/ACL data (the
+#: bookmarks/assistant/files13 rule).  Only the free-text *coercion* arm of
+#: ``_as_text`` is scrubbed with it; real str/bytes storage is data — an ls
+#: line may legitimately contain the pattern — and stays verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _as_text(value) -> str:
-    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares/acl."""
+    """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares/acl.
+
+    The type gates match through a *lying* ``__class__`` too (isinstance
+    consults it once the real-MRO check misses), so each arm can be handed a
+    value whose real storage belongs to a different arm — and the old flow
+    degraded honest data at the wrong rank (the files13/notify13/logs13
+    recover-the-real-storage rule): a genuine str whose ``__class__`` lied
+    ``bytes`` failed both base decodes, then fell to the *dispatching*
+    ``str(value)``, so a bombed ``__str__`` vanished the perfectly readable
+    ls/dscl text to ``""`` — GET /api/shares/acl answered the coded read
+    failure where the honest listing should have parsed, and a legible
+    coded ``error`` ("cancelled") on PUT degraded to the generic
+    authorization failure in place of its own refusal.  Real str storage now
+    reads through the unbound ``str.encode`` no matter what the claim says.
+
+    The free-text coercion arm ran ``str()`` on any leftover shape, and for
+    a type that never overrode ``__str__``/``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+    address — which a junk ls answer carried verbatim into the GET
+    /api/shares/acl body (the ``group`` column of the parsed header) and a
+    junk RealName read into every picker row (the bookmarks/assistant
+    address-leak rule).  A slot probe on the real ``type(value)`` refuses
+    the shape, and the regex belt catches what the probe cannot see
+    (C-level ``__repr__`` overrides and container renders embedding a
+    default repr).  Only the coercion arm is scrubbed — real str/bytes
+    storage is data and stays verbatim.
+    """
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # whose bound ``.decode`` raises used to escape read_acl untyped and
@@ -121,8 +155,9 @@ def _as_text(value) -> str:
         # decodable ls/dscl text fell through to the str() rank — a
         # ``bytearray(b'…')`` repr where the honest listing should have
         # parsed.  A total impostor (real type is neither base) still falls
-        # through to the str() rank so a legible impostor renders instead
-        # of costing the route.
+        # through so a legible impostor renders instead of costing the
+        # route; honest str storage behind a lying-bytes ``__class__``
+        # recovers through the unbound str read below.
         for base in (bytes, bytearray):
             try:
                 value = base.decode(value, "utf-8", "replace")
@@ -132,6 +167,32 @@ def _as_text(value) -> str:
             except BaseException:
                 continue
     if value is None:
+        return ""
+    if _isa(value, str):
+        # Unbound base read, not the dispatching ``str()``: real str storage
+        # keeps its text even when the subclass ``__str__`` raises (and a
+        # ``__str__`` answering *self* can no longer ride its bound
+        # ``encode`` bomb out of this line — the modules6 rule).  Exact strs
+        # take this arm untouched: real storage is data, never belt-scrubbed.
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Claims str, carries no character storage: a lying impostor —
+            # fall to the coercion arm so a legible one still renders.
+            pass
+    # Free-text coercion arm: only a type that renders *itself* may coerce.
+    # For a type that never overrode ``__str__``/``__repr__`` the coercion
+    # answers the default ``object.__repr__`` — a raw heap address — which
+    # used to ride into the GET body verbatim.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if type(value) is not str:
         try:
@@ -150,11 +211,19 @@ def _as_text(value) -> str:
             # sail past the ``except Exception`` here and 500 GET and PUT
             # /api/shares/acl at value, field and message rank.
             return ""
-    # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
-    # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
-    # bound ``encode`` bomb in sh output rode this line to a raw 500 on GET
-    # and PUT /api/shares/acl (read_acl, local_users and the failure funnels).
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    if not _isa(value, str):
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) and a rendering that embeds a
+    # default repr (``{'x': <_Junk object at 0x...>}``) still answered an
+    # address.  Only this coercion arm is scrubbed.
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
