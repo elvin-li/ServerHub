@@ -7,6 +7,8 @@ from fastapi import WebSocket
 
 from hub.auth import COOKIE_NAME, is_admin, session_username, setup_required, verify_session
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def origin_allowed(origin: str | None, host: str | None) -> bool:
     """Return whether an HTTP(S) Origin exactly matches the request Host.
@@ -15,13 +17,22 @@ def origin_allowed(origin: str | None, host: str | None) -> bool:
     headers and an exact authority match prevents a third-party page from using
     a logged-in browser to open a privileged socket.
     """
-    if not isinstance(origin, str) or not isinstance(host, str):
+    try:
+        origin_ok = isinstance(origin, str)
+        host_ok = isinstance(host, str)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+    if not origin_ok or not host_ok:
         return False
     if not origin or not host:
         return False
     try:
         parsed = urlsplit(origin)
-    except ValueError:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
@@ -40,7 +51,9 @@ async def reject_websocket(websocket: WebSocket, close_code: int, error: str) ->
     finally:
         try:
             await websocket.close(code=close_code)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
 

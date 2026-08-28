@@ -26,6 +26,8 @@ from hub.secure_io import replace_bytes
 from hub.status import invalidate_status
 from hub.util import iter_capped_lines, read_text_capped, run_capped, safe_json_loads, strftime_now, ttl_memo, utf8_env
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
 _cjobs_lock = threading.Lock()
@@ -53,7 +55,9 @@ def _job_epoch() -> int:
     """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd job ids."""
     try:
         return int(time.time())
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
 
 
@@ -78,11 +82,15 @@ def _job_scalar(value):
     """
     try:
         isinstance(value, str)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     try:
         return _jsonable(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -96,11 +104,15 @@ def _log_text(value) -> str:
     """
     try:
         isinstance(value, str)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 

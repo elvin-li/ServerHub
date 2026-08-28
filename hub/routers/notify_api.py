@@ -23,6 +23,8 @@ from hub.util import strftime_now
 
 router = APIRouter(tags=["notify"])
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 _LEVELS = ("info", "warn", "down")
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
@@ -209,13 +211,17 @@ def create_channel(body: ChannelBody, request: Request):
         # by DELETE.  The half-completed *delete* mirror of this is exactly
         # what the pre-write wipe above exists for.
         notify_channels.save_channel(record)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Don't leave orphaned secrets for a channel that was never created.
         # The drop itself is best-effort: masking the coded 503 with a raise
         # out of the cleanup would trade an orphan for a 500.
         try:
             notify_channels.drop_channel_secrets(cid)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         raise
     audit.record(audit.NOTIFY_CHANNEL_CREATED,

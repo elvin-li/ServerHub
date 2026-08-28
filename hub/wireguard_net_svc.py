@@ -77,6 +77,9 @@ PF_MARKER = "# ServerHub WireGuard NAT"
 
 _STAGE_DIR = DATA_DIR
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _stage_file(path: Path, content: str) -> bool:
     """Write a staging file under data/, clearing an empty leftover occupant.
@@ -99,33 +102,50 @@ def _stage_file(path: Path, content: str) -> bool:
 
 
 def _as_text(value) -> str:
-    """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500.
-
-    Unbound through the base types: a bytes-subclass whose bound ``.decode``
-    raises, or a str-subclass whose ``__str__`` returns itself and whose
-    bound ``.encode`` raises, used to detonate this launderer — the readiness
-    probes run under ``fan_out``, which re-raises, so one poisoned ``sh``
-    stream 500'd the whole page.
-    """
-    if isinstance(value, bytes):
-        text = bytes.decode(value, "utf-8", "replace")
-    elif isinstance(value, bytearray):
-        text = bytearray.decode(value, "utf-8", "replace")
-    elif isinstance(value, str):
-        text = value
-    elif value is None:
+    """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500."""
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            text = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _default_wan_interface() -> str:
