@@ -252,6 +252,33 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _safe_host_ip() -> str:
+    """The panel's advertised address, laundered to an exact str.
+
+    This module does not own ``host_ip`` (tests and tooling patch it — the
+    docker_cli / native_catalog seam rule), and three consumers read it raw:
+    the url-hint fallback's f-string in ``_build_listing``, ``auto_var_values``
+    (whose values ``_expand_auto`` calls ``.replace`` on for every template
+    default that carries a ``{{...}}``), and install's own HOST_IP injection.
+    A leftover provider that raises — or answers bytes, ``None``, or a
+    ``__str__``/``__format__`` bomb — used to 500 GET /api/catalog/templates
+    and POST /api/catalog/{id}/install outright, and silently emptied the
+    docker half of GET /api/catalog through catalog_overview's fallback.
+    Junk degrades to "" (the same "no address" the honest probe can answer);
+    a genuine address passes byte-for-byte.  The shape gate is str/bytes
+    only: an address is never any other type, and the generic ``str(value)``
+    tail of ``_plain_str`` would render an arbitrary object's *repr* into
+    url hints and compose variables as if it were a host.
+    """
+    try:
+        host = host_ip()
+    except Exception:
+        return ""
+    if _isinst(host, (str, bytes, bytearray)):
+        return _plain_str(host)
+    return ""
+
+
 def _exists(path: Path) -> bool:
     try:
         return path.exists()
@@ -489,15 +516,23 @@ def host_ui_languages() -> str:
 
 
 def auto_var_values() -> dict[str, str]:
-    """Values for the placeholders the server fills in on its own."""
+    """Values for the placeholders the server fills in on its own.
+
+    Every value is laundered through ``_plain_str``: ``_expand_auto`` calls
+    ``val.replace`` on each of them for every template default carrying a
+    ``{{...}}``, inside ``_parse_template`` — whose only guard in
+    ``_build_listing`` is ``except OSError``.  A leftover host seam answering
+    bytes / ``None`` / a ``__str__`` bomb was an AttributeError there, a raw
+    500 on GET /api/catalog/templates and POST /api/catalog/{id}/install.
+    """
     home = user_home()
     return {
-        "HOST_IP": host_ip(),
-        "HOME": str(home) if home is not None else "",
-        "SERVICES": str(SERVICES_ROOT),
-        "TZ": host_timezone(),
-        "OCR_LANG": host_ocr_languages(),
-        "UI_LANGS": host_ui_languages(),
+        "HOST_IP": _safe_host_ip(),
+        "HOME": _plain_str(str(home)) if home is not None else "",
+        "SERVICES": _plain_str(str(SERVICES_ROOT)),
+        "TZ": _plain_str(host_timezone(), "UTC") or "UTC",
+        "OCR_LANG": _plain_str(host_ocr_languages()),
+        "UI_LANGS": _plain_str(host_ui_languages()),
     }
 
 
@@ -826,8 +861,11 @@ def _build_listing(now: float, sig: str) -> list:
             except Exception:
                 url_hint = ""
         if not url_hint and meta.get("ports"):
-            # first numeric web-ish port as fallback
-            hip = host_ip()
+            # first numeric web-ish port as fallback.  _safe_host_ip, not the
+            # raw seam: a leftover host bomb used to detonate the f-string
+            # below — a raw 500 on GET /api/catalog/templates after every
+            # template had already parsed cleanly.
+            hip = _safe_host_ip()
             for port_spec in meta.get("ports") or []:
                 ps = str(port_spec).split("/")[0]
                 if ps.isdigit() and ps not in ("1883", "5432", "6379", "3306", "5672", "5900", "9100", "22000"):
@@ -1023,7 +1061,10 @@ def _suggest_url(meta: dict, values: dict) -> str | None:
     tpl = meta.get("url_template")
     if not isinstance(tpl, str) or not tpl:
         return None
-    host = _plain_str(values.get("HOST_IP")).strip() or host_ip()
+    # _safe_host_ip, not the raw seam: this fallback fires exactly when the
+    # laundered HOST_IP came up empty — i.e. when the provider is already
+    # suspect — and junk here used to TypeError ``tpl.replace`` below.
+    host = _plain_str(values.get("HOST_IP")).strip() or _safe_host_ip()
     port = _plain_str(values.get("HOST_PORT") or values.get("WEB_PORT"))
     out = tpl.replace("{{HOST_IP}}", host).replace("{{HOST_PORT}}", port)
     out = out.replace("{{WEB_PORT}}", _plain_str(values.get("WEB_PORT") or port))
@@ -1324,7 +1365,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     # Auto-injected placeholders so shipped templates never need to hardcode a
     # developer-specific absolute paths that would make templates non-portable.
     if "HOST_IP" not in values:
-        values["HOST_IP"] = host_ip()
+        # _safe_host_ip: this assignment runs before the broad rollback try
+        # below even starts, so a raising host seam was a raw 500 on
+        # POST /api/catalog/{id}/install — not even the coded rollback shape.
+        values["HOST_IP"] = _safe_host_ip()
     home = user_home()
     values.setdefault("HOME", str(home) if home is not None else "")
     values.setdefault("SERVICES", str(SERVICES_ROOT))

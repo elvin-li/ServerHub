@@ -333,6 +333,71 @@ def _brew_list_installed() -> set[str]:
     return formulas | casks
 
 
+def _installed_set(raw) -> set[str]:
+    """Laundered installed-package union for the ``pkg in inst`` probes.
+
+    This module does not own the brew snapshot the listing pool hands back
+    (tests and tooling patch ``_brew_list_installed``): a set whose
+    ``__bool__`` raises detonated the old ``... or set()`` fallback before a
+    single row was built, and a *hash-shadowing* member (same hash as a
+    catalog package name, raising ``__eq__``) detonated the C-level compare
+    inside ``pkg in inst`` — and because ``fan_out`` re-raises, either bomb
+    cost every native row of GET /api/catalog, not just itself.  Members are
+    rebuilt as exact strs (``_as_text`` reads the honest text underneath a
+    subclass override), so a bomb wrapper around a real package name still
+    answers that package.
+    """
+    if not _isinst(raw, (set, frozenset, list, tuple)):
+        return set()
+    try:
+        items = list(raw)
+    except Exception:
+        # A lying ``__class__`` claiming a container it is not.
+        return set()
+    out: set[str] = set()
+    for item in items:
+        text = _as_text(item)
+        if text:
+            out.add(text)
+    return out
+
+
+def _service_states(rows) -> dict[str, str]:
+    """package -> lowercase status, laundered row by row.
+
+    The shared ``brew services list`` snapshot is another module's payload
+    (and a seam tests patch).  The old inline loop read it raw — a bare
+    ``isinstance`` (detonated by a ``__class__``-property bomb), a bound
+    ``s.get`` (a dict-subclass override), ``or`` truthiness on the name (a
+    ``__bool__`` bomb) and bare ``str()`` (a >4300-digit int is the digit-cap
+    ValueError) — so one poisoned row raised out of ``list_native_apps`` and
+    emptied the entire native half of GET /api/catalog while its honest
+    siblings were dropped with it.  Junk rows now cost only themselves.
+    """
+    states: dict[str, str] = {}
+    if not _isinst(rows, (list, tuple)):
+        return states
+    try:
+        items = list(rows)
+    except Exception:
+        # A rows object whose ``__iter__`` bombs, or a lying ``__class__``.
+        return states
+    for s in items:
+        if not _isinst(s, dict):
+            continue
+        try:
+            # Unbound dict.get: reads the C-level storage underneath a
+            # subclass ``.get`` override, and rejects a lying dict impostor.
+            name = _as_text(dict.get(s, "name"))
+            status = _as_text(dict.get(s, "status"))
+        except Exception:
+            continue
+        if not name:
+            continue
+        states[name] = status.lower()
+    return states
+
+
 def _screen_sharing_on() -> bool:
     # launchctl print system/com.apple.screensharing
     rc, out, _ = sh(
@@ -884,18 +949,13 @@ def list_native_apps(force: bool = False) -> list[dict]:
             return fallback
 
     # `.result()` re-raises; a dead brew must not empty the Apps catalog.
-    brew_inst = _result(f_installed, set()) or set()
-    service_rows = _result(f_services, []) or []
-    host = _result(f_host, "") or ""
-
-    service_states: dict[str, str] = {}
-    for s in service_rows:
-        if not isinstance(s, dict):
-            continue
-        name = s.get("name") or ""
-        if not name:
-            continue
-        service_states[str(name)] = str(s.get("status") or "").lower()
+    # Laundered shapes, not bare ``or`` fallbacks: a snapshot whose
+    # ``__bool__`` raises used to detonate the truthiness probe itself, one
+    # step before the row loop — the same whole-half loss as a poisoned row.
+    brew_inst = _installed_set(_result(f_installed, None))
+    service_states = _service_states(_result(f_services, None))
+    # The host is only ever consumed by _resolve_url, which launders it.
+    host = _result(f_host, "")
 
     # Install and liveness probes are independent per app, and each can shell out
     # (`launchctl print`, `brew list`, a `ps` scan).  Resolve them concurrently, then
@@ -972,9 +1032,17 @@ def _process_running(process_substr: str) -> bool:
     `ps aux` across the catalog listing still left `/api/apps/managed` reading the
     table twice, because cloudflared's liveness probe kept its own copy of this
     same scan.  The cache is process-wide and short-lived, so a listing pass and
-    every other reader in the same request now share one spawn.
+    every other reader in     the same request now share one spawn.
+
+    Guarded: the table is another module's payload (and a seam tests patch).
+    A raising provider used to escape every ``probe`` in the listing pass —
+    and because ``fan_out`` re-raises, one bad scan emptied the whole native
+    half of GET /api/catalog instead of reading as "not running".
     """
-    return process_matches(process_substr)
+    try:
+        return bool(process_matches(process_substr))
+    except Exception:
+        return False
 
 
 class _LaunchdSnapshot:
@@ -1003,7 +1071,14 @@ class _LaunchdSnapshot:
     __slots__ = ()
 
     def running_labels(self) -> frozenset[str]:
-        return launchd_running_labels()
+        # The shared listing is another module's payload (and a seam tests
+        # patch): a raising provider must read as "nothing running", not
+        # raise out of the probe and — fan_out re-raises — empty the whole
+        # native half of GET /api/catalog.
+        try:
+            return launchd_running_labels()
+        except Exception:
+            return frozenset()
 
 
 def _launchd_or_process_running(
@@ -1013,8 +1088,15 @@ def _launchd_or_process_running(
 ) -> bool:
     if label:
         if launchd is not None:
-            if label in launchd.running_labels():
-                return True
+            try:
+                if label in launchd.running_labels():
+                    return True
+            except Exception:
+                # A *hash-shadowing* member planted in the shared listing
+                # (same hash as this label, raising ``__eq__``) detonates
+                # the C-level compare inside ``in`` itself; junk reads as
+                # "not running" and the process probe below still answers.
+                pass
         else:
             # No shared listing (single-app callers below); ask about this one label.
             rc, out, _ = sh(
@@ -1103,8 +1185,29 @@ def _port_list(raw) -> list:
 
 def _resolve_url(hint: str, host: str, ports: list) -> str:
     """Fill {{HOST}} / build http URL from first web port when hint empty."""
-    host = host if isinstance(host, str) and host else "localhost"
-    if not isinstance(hint, str):
+    # _isinst + unbound base encode, not the bare isinstance gate: a host
+    # whose ``__class__`` is a raising property detonated the gate itself,
+    # a host ``__bool__`` bomb detonated the truthiness probe, and a lying
+    # ``__class__`` impostor claiming str passed the old gate and blew
+    # ``hint.replace`` — each emptied every native row of GET /api/catalog
+    # (fan_out re-raises).  Junk degrades to the same "localhost" the old
+    # gate answered for any non-str host.
+    if _isinst(host, str):
+        try:
+            host = str.encode(host, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            host = ""
+    else:
+        host = ""
+    host = host or "localhost"
+    if _isinst(hint, str):
+        try:
+            # Launders a str subclass to an exact str, so a bound
+            # ``.replace``/``.encode`` bomb cannot ride into the chain below.
+            hint = str.encode(hint, "utf-8", "replace").decode("utf-8")
+        except Exception:
+            hint = ""
+    else:
         # A mapping leftover used to raise on hint.replace and 500 the store.
         hint = ""
     if hint:
@@ -1295,7 +1398,26 @@ def _brew_install_ok(msg: str, rc: int) -> bool:
 
 
 def _host_for_url() -> str:
-    return host_ip()
+    """The advertised host for install-response URLs, laundered.
+
+    This module does not own ``host_ip`` (tests and tooling patch it): the
+    install branches read this raw into f-strings (``f"http://{...}:8125"``)
+    *after* the install itself had already succeeded, so a raising provider —
+    or a ``__str__``/``__format__`` bomb riding the value — turned a finished
+    native install into a raw 500.  Junk degrades to "", which _resolve_url
+    and the f-string fallbacks render as the localhost / empty-host shapes a
+    legitimately empty probe already produced.
+    """
+    try:
+        host = host_ip()
+    except Exception:
+        return ""
+    if not _isinst(host, str):
+        return ""
+    try:
+        return str.encode(host, "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _app_url(app: dict) -> str:
