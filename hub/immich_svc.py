@@ -23,6 +23,8 @@ is deliberately not touched — reachability is probed at the socket level).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import urllib.error
@@ -89,9 +91,13 @@ def _utf8_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return str.encode(value, "utf-8", "replace").decode("utf-8")
 
@@ -134,7 +140,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -151,7 +159,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -170,7 +180,9 @@ def _jsonable(value, depth: int = 0):
             elif not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -182,18 +194,24 @@ def _jsonable(value, depth: int = 0):
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / ``__getattr__`` raising non-AttributeError past
         # getattr's default.
         iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -233,7 +251,9 @@ def _http(url: str, timeout: float = 3.0):
         return e.code, ""
     except RedirectRefused as e:
         return None, _utf8_text(e)
-    except Exception as e:  # URLError, socket.timeout, ...
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # URLError, socket.timeout, ...
         return None, _utf8_text(e)
 
 

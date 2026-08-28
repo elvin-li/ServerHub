@@ -6,6 +6,8 @@ patch operator-facing fields in config.json (names, album titles, URLs).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import re
@@ -118,9 +120,13 @@ def _utf8_text(value: Any) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return str.encode(value, "utf-8", "replace").decode("utf-8")
 
@@ -160,7 +166,9 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -180,7 +188,9 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -199,7 +209,9 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
             elif not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -211,18 +223,24 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / ``__getattr__`` raising non-AttributeError past
         # getattr's default.
         iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -438,7 +456,9 @@ def _handbook_name() -> str:
 def _log_relpath(path: Path) -> str:
     try:
         rel = str(path.resolve().relative_to(HUB.resolve()))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rel = path.name
     # An on-disk log whose name holds undecodable bytes reaches here as lone
     # surrogates (os surrogateescape); ``recent_logs`` returns this field raw
@@ -583,7 +603,9 @@ def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
             raw = resp.read(_THUMB_MAX + 1)
     except _ImmichRedirect:
         raise api_error("photoshub.bad_immich_url")
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.thumb_failed", detail=exc_detail(e, 160))
     if len(raw) > _THUMB_MAX or not raw:
         raise api_error("photoshub.thumb_failed", detail="empty or too large")
@@ -871,7 +893,9 @@ def _rc_int(rc: Any) -> Any:
         return rc
     try:
         return int(int.__index__(rc))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -1
 
 
@@ -975,6 +999,8 @@ def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
     rel = _log_relpath(path)
     try:
         content = tail_file_lines(path, lines)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"name": name, "path": rel, "lines": [exc_detail(e, 200)]}
     return {"name": name, "path": rel, "lines": content}

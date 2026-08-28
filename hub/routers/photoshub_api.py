@@ -1,6 +1,8 @@
 """PhotosHub API — family photo pipeline management (admin-only via whitelist)."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -67,7 +69,9 @@ def get_status():
         return photoshub_svc.status()
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.status_failed", detail=exc_detail(e))
 
 
@@ -81,7 +85,9 @@ def pending_delete(limit: int = 60):
         return photoshub_svc.pending_delete_assets(limit=cap)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.pending_failed", detail=exc_detail(e))
 
 
@@ -98,7 +104,9 @@ def pending_delete_thumb(asset_id: str):
         raw, ctype = photoshub_svc.asset_thumbnail(asset_id)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.thumb_failed", detail=exc_detail(e, 160))
     return Response(
         content=raw,
@@ -126,7 +134,9 @@ def pending_remove(body: IdsBody, request: Request):
         result = photoshub_svc.remove_from_pending(ids)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.remove_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.pending_remove",
@@ -147,7 +157,9 @@ def run_action(body: ActionBody, request: Request):
         result = photoshub_svc.run_action(action)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.action_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.action",
@@ -164,7 +176,9 @@ def get_config():
         return photoshub_svc.public_config()
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.config_failed", detail=exc_detail(e))
 
 
@@ -175,7 +189,9 @@ def patch_config(body: ConfigPatch, request: Request):
         result = photoshub_svc.update_config(patch)
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.config_failed", detail=exc_detail(e))
     audit.record(
         "photoshub.config",
