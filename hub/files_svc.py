@@ -9,6 +9,7 @@ import asyncio
 import errno
 import mimetypes
 import os
+import re
 import stat
 import subprocess
 import time
@@ -23,6 +24,13 @@ from hub.errors import api_error, exc_detail
 from hub.host_address import host_ip
 from hub.paths import AGENTS_DIR, BASE, STATE_ROOT, UID, user_home
 from hub.util import read_bytes_capped, sh, utf8_env
+
+
+# Ctrl-C and interpreter teardown are the only BaseExceptions the new broad
+# guards must not eat (the modules12 rule the sibling sanitizers follow);
+# everything else BaseException-shaped that a leftover raises out of its own
+# hooks is a bomb like any other.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 
 def _default_home() -> Path:
@@ -204,8 +212,20 @@ def _rc_int(rc) -> int:
     elif _isinst(rc, int):
         try:
             rc = int.__index__(rc)
-        except Exception:
-            return -255
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The int gate matches through a lying ``__class__`` too (the
+            # logs13 recover-the-real-storage rule): a genuine float rc
+            # claiming int was refused by the unbound read and dropped to
+            # the junk ``-255`` one arm early, although ``int(0.0)`` is the
+            # honest success the runner reported.  A total impostor raises
+            # out of the conversion the same way and keeps the -255 —
+            # never ``-1``, which is a real exit status.
+            try:
+                rc = int(rc)
+            except Exception:
+                return -255
     else:
         try:
             rc = int(rc)
@@ -227,27 +247,42 @@ def _sh3(value) -> tuple:
     own ``sh`` (tests and tooling patch it — the gateway5/brew rule): a
     tuple/list *subclass* whose bound ``__iter__`` bombs — or a lying
     ``__class__`` impostor claiming tuple/list over no real sequence
-    storage — raised straight out of ``rc, out, _ = sh(...)`` in
+    storage — raised straight out of     ``rc, out, _ = sh(...)`` in
     :func:`filebrowser_status`, and a wrong-arity answer (bare ``None``, a
     2-tuple) was a TypeError/ValueError the same way — each a raw 500 on
     GET /api/files.  The unbound base reads see the real C-level storage,
     so an honest answer in a subclass wrapper survives untouched, while
     junk degrades to ``(-255, "", "")``.
+
+    The tuple gate matches through a *lying* ``__class__`` too, so a genuine
+    list claiming tuple reached ``tuple.__iter__``, was refused for its real
+    layout, and its honest ``(0, out, err)`` degraded to the failure triple
+    one arm early — the sidecar read as not-running on a spawn that answered
+    success (the logs13/audit13 recover-the-real-storage rule).  The failed
+    claim now falls to the list arm, which reads the real storage unbound; a
+    total impostor (claims tuple, carries neither layout) keeps the junk
+    triple.
     """
     if type(value) is tuple:
         items = value
-    elif _isinst(value, tuple):
-        try:
-            items = tuple(tuple.__iter__(value))
-        except Exception:
-            return (-255, "", "")
-    elif _isinst(value, list):
-        try:
-            items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
-            return (-255, "", "")
     else:
-        return (-255, "", "")
+        items = None
+        if _isinst(value, tuple):
+            try:
+                items = tuple(tuple.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                items = None
+        if items is None and _isinst(value, list):
+            try:
+                items = tuple(list.__getitem__(value, slice(None)))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return (-255, "", "")
+        if items is None:
+            return (-255, "", "")
     if len(items) != 3:
         return (-255, "", "")
     return items
@@ -350,42 +385,100 @@ def _isinst(value, types) -> bool:
         return False
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never Files data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 Files JSON.
 
     Unbound base-type calls only (the config._env_text / audit._utf8_text
-    convention): ``str(value)`` answers *self* for a str subclass whose
-    ``__str__`` returns self, so the final scrub used to run the subclass's
-    own bound ``encode`` — and a leftover encode bomb riding a configured
-    root's ``id``/``name`` raised out of this launderer and dropped the whole
-    root row instead of degrading the one value.  Same for a bytes subclass
-    overriding ``decode``.  ``str.encode(value, ...)`` reads the C-level
-    storage, bypassing the override at no copy cost.
+    convention): a leftover encode bomb riding a configured root's
+    ``id``/``name`` used to raise out of this launderer and drop the whole
+    root row instead of degrading the one value.  ``str.encode(value, ...)``
+    and ``bytes.decode(value, ...)`` read the C-level storage, bypassing the
+    override at no copy cost.
+
+    The type gates match through a *lying* ``__class__`` too (isinstance
+    consults it once the real-MRO check misses), so each arm can be handed a
+    value whose real storage belongs to a different arm — and the old
+    unconditional drops degraded honest data at the wrong rank (the
+    logs13/audit13 recover-the-real-storage rule):
+
+    * the bytes arm picked its base off the *claim* (``_isinst(value,
+      bytes)``), so a genuine bytearray lying bytes was handed to
+      ``bytes.decode``, refused by the descriptor, and its perfectly
+      decodable content dropped to ``""`` — both bases now probe first-come;
+    * a genuine str lying bytes failed both base decodes and dropped the
+      same way, although the str arm below renders its real text verbatim —
+      it now falls through; a total impostor (claims bytes, carries neither
+      layout) still drops to ``""``.
+
+    The free-text coercion arm ran ``str()`` on any leftover shape, and for
+    a type that never overrode ``__str__``/``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+    address — which a junk root ``name``/``id`` carried verbatim into the
+    GET /api/files body (the bookmarks/assistant address-leak rule).  A slot
+    probe on the real ``type(value)`` refuses the shape, and the regex belt
+    catches what the probe cannot see (C-level ``__repr__`` overrides and
+    container renders embedding a default repr).  Only the coercion arm is
+    scrubbed — real str/bytes storage is data and stays verbatim.
     """
     if _isinst(value, (bytes, bytearray)):
-        base = bytes if _isinst(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
-            return ""
-    elif value is None:
-        return ""
-    else:
-        try:
-            value = str(value)
-        except RecursionError:
+        for base in (bytes, bytearray):
             try:
-                return type(value).__name__
-            except Exception:
+                value = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        else:
+            if not _isinst(value, str):
                 return ""
-        except Exception:
+            # Honest str storage behind a lying-bytes ``__class__`` falls
+            # through to the unbound str read below.
+    if value is None:
+        return ""
+    if _isinst(value, str):
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Claims str, carries no character storage: a total impostor.
             return ""
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     if not _isinst(value, str):
         return ""
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _finite_int(value, default: int = 0) -> int:
@@ -429,11 +522,15 @@ def _max_upload_mb() -> int:
     # ``__hash__`` collides with this literal ran its raising ``__eq__``
     # inside the hash-table probe and 500'd POST /api/files/upload.
     raw = _setting("max_upload_mb")
-    # ``_isinst``, not bare ``isinstance``: a leftover ``max_upload_mb`` whose
-    # ``__class__`` is a raising property read the operand's ``__class__`` on
-    # the real-type miss and 500'd POST /api/files/upload before the
-    # ``_finite_int`` scrub could reject it (the modules8/_isinst rule).
-    if raw is None or _isinst(raw, bool):
+    # ``type(raw) is bool``, not ``_isinst(raw, bool)`` (and never a bare
+    # ``isinstance``, whose ``__class__`` read a raising property used to
+    # 500): bool is final, so the exact-type check covers every honest bool
+    # — and the isinstance form also matched a *lying* ``__class__``
+    # claiming bool over real int storage, silently resetting the operator's
+    # configured cap to the 512 default (the wrong-rank rule).  The liar now
+    # falls to ``_finite_int``, which reads the honest number and drops
+    # total impostors to the same default.
+    if raw is None or type(raw) is bool:
         return 512
     max_mb = _finite_int(raw, 512)
     if max_mb <= 0:
@@ -455,10 +552,55 @@ def _root_label(value) -> str:
     lone surrogates before Starlette's UTF-8 encode); only ``None``/bool —
     YAML's ``id: yes`` footgun, junk everywhere else in this file — fall back
     to the basename.
+
+    ``type(value) is bool``, not ``_isinst(value, bool)``: bool is final, so
+    the exact-type check covers every honest bool, while the isinstance form
+    also matched a *lying* ``__class__`` claiming bool over real str storage
+    — and dropped the honest id the YAML author wrote to the basename
+    fallback, making the SPA's ``root_id`` answer ``files.unknown_root``
+    with the directory sitting right there (the wrong-rank rule).  The liar
+    now falls to ``_as_text``, which renders real storage and drops total
+    impostors to ``""`` the same as before.
     """
-    if value is None or _isinst(value, bool):
+    if value is None or type(value) is bool:
         return ""
     return _as_text(value).strip()
+
+
+def _cfg_path_text(value) -> str | None:
+    """Path text for a configured root, or None when nothing usable is stored.
+
+    ``_try_resolve`` ran the dispatching ``str()`` on whatever the settings
+    row carried, and the str gate ahead of it matches through a *lying*
+    ``__class__`` — so a genuine bytes root path claiming str was rendered
+    as its ``repr`` (``"b'/Volumes/media'"``), resolved to a nonexistent
+    cwd-relative path, and the root silently vanished from every Files route
+    although the directory it named was right there (the logs13 wrong-rank
+    rule).  Unbound reads recover the real storage: ``str.__str__`` answers
+    the character data of any real str (surrogates preserved — they are how
+    the OS spells undecodable filename bytes), and a failed str claim falls
+    to the base decodes, surrogateescape so the byte path round-trips into
+    the same os calls.  Anything else takes the ``_as_text`` coercion (a
+    Path-shaped leftover renders itself; junk and address shapes drop).
+    """
+    if _isinst(value, str):
+        try:
+            return str.__str__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass  # lying claim; the real storage is probed below
+    if _isinst(value, (bytes, bytearray)):
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "surrogateescape")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    if value is None or type(value) is bool:
+        return None
+    return _as_text(value) or None
 
 
 def _try_resolve(value) -> Path | None:
@@ -530,7 +672,14 @@ def default_roots() -> list[dict]:
         for r in custom:
             try:
                 if _isinst(r, str):
-                    p = _try_resolve(r)
+                    # _cfg_path_text, not the raw value: the gate above
+                    # matches through a lying ``__class__``, and a genuine
+                    # bytes path claiming str used to reach _try_resolve's
+                    # ``str()`` as its repr and drop the root (wrong rank).
+                    text = _cfg_path_text(r)
+                    if not text:
+                        continue
+                    p = _try_resolve(text)
                     if p is None:
                         continue
                     out.append({
@@ -550,7 +699,12 @@ def default_roots() -> list[dict]:
                     # the C-level storage, so the row now *serves* instead
                     # of dropping — its keys are real; only the override is
                     # hostile.
-                    raw_path = dict.get(r, "path")
+                    # _cfg_path_text before _try_resolve (same wrong-rank
+                    # rule as the string arm): a plain or lying-``__class__``
+                    # bytes path value used to be rendered as its repr and
+                    # the row dropped although the directory existed.  The
+                    # exact-str answer also makes the truthiness probe safe.
+                    raw_path = _cfg_path_text(dict.get(r, "path"))
                     if not raw_path:
                         continue
                     p = _try_resolve(raw_path)
