@@ -253,7 +253,9 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
                 timeout=10,
             )
             rows = _parse_lsof_listen(out) if rc == 0 else []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
         with _lsof_lock:
             if gen != _lsof_generation:
@@ -387,7 +389,9 @@ def _probe_protocol(port: int) -> tuple[str, bytes]:
             s.settimeout(_PROBE_TIMEOUT_S)
             s.sendall(req)
             head = s.recv(256)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "", b""
     return _classify_head(head), head
 
@@ -424,7 +428,9 @@ def guess_http_url(port: int) -> str | None:
     try:
         if not port_open(port, host="localhost", timeout=0.35):
             return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     proto, head = _probe_protocol(port)
     if not proto:
@@ -483,7 +489,9 @@ def _https_url(port: int, hip: str) -> str | None:
                 # cannot sit on the socket until the context manager closes.
                 try:
                     r.read(256)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
                 return f"https://{hip}:{port}"
     except urllib.error.HTTPError as e:
@@ -493,7 +501,9 @@ def _https_url(port: int, hip: str) -> str | None:
         # Peer spoke HTTPS and tried to 302.  That is enough to call it HTTPS
         # without fetching the Location (which may be metadata).
         return f"https://{hip}:{port}"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return None
 

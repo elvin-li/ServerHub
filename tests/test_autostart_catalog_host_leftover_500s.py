@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from hub import autostart_svc, catalog_remote, host_address
+from hub import autostart_svc, catalog_remote, host_address, adaptive
 from hub.app_factory import create_app
 from hub.auth import require_auth
 
@@ -74,6 +75,17 @@ class AutostartCatalogHostLeftoverTests(unittest.TestCase):
             catalog_remote._isinst(_Ki(), dict)
         with self.assertRaises(KeyboardInterrupt):
             host_address._isa(_Ki(), dict)
+
+    def test_template_variables_swallows_cfg_baseexception(self):
+        def boom():
+            raise LeftoverWatchdogTimeout("cfg watchdog")
+
+        with mock.patch("hub.config.cfg", boom):
+            values = host_address.template_variables()
+        self.assertIn("host", values)
+
+    def test_adaptive_utf8_does_not_leak_a_heap_address(self):
+        self.assertEqual(adaptive._utf8_text(object()), "")
 
 
 if __name__ == "__main__":

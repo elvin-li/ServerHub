@@ -256,7 +256,9 @@ def _read_plist(path: Path) -> dict:
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         return pl if isinstance(pl, dict) else {}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -378,7 +380,9 @@ def _brew_service_items() -> list[dict]:
     # into overview()'s _safe fallback and wipe every Homebrew row.
     try:
         data = brew_services_list()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     if not _isinstance(data, list):
         return []
@@ -389,7 +393,9 @@ def _brew_service_items() -> list[dict]:
     # from GET /api/apps/autostart instead of costing only the poisoned value.
     try:
         rows = [s for s in list.__iter__(data) if _isinstance(s, dict)]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     for s in rows:
         # _as_text yields an exact, surrogate-scrubbed str: a str-subclass
@@ -456,7 +462,9 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     except RecursionError:
         # leftover ``str(e)`` RecursionError is not OSError; PUT brew autostart used to 500.
         return {"ok": False, "message": "action failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e) or "action failed"}
     # Exact-type rc before the comparisons below: they run outside the try
     # (deliberately, so the coded 503 raise cannot be swallowed), which meant
@@ -503,7 +511,9 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     # this through ``fan_out``.
     try:
         script_plist, script_label = _resolve_script_agent()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         script_plist, script_label = None, None
 
     # Parse and filter the plists first — pure filesystem work — so the subprocess
@@ -752,7 +762,9 @@ def run_autostart_now() -> dict:
     except (OSError, ValueError, TypeError) as e:
         # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError.
         return {"ok": False, "message": _as_text(e) or "start failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e) or "start failed"}
 
 
@@ -771,7 +783,9 @@ def overview(force: bool = False) -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; a dead Docker socket must not

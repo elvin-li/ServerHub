@@ -96,11 +96,15 @@ def _cache_publish(cache: dict, **fields) -> None:
     """
     try:
         cache.update(fields)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             cache.clear()
             cache.update(fields)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
 
@@ -231,7 +235,9 @@ def configured_host() -> str:
         from hub.config import cfg
 
         return _as_text((cfg().get("settings") or {}).get("host_ip") or "auto").strip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "auto"
 
 
@@ -485,7 +491,9 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
             for key, value in address_book.items()
             if value is not None
         })
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if isinstance(extra, dict):
         values.update({
