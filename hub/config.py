@@ -491,13 +491,31 @@ def override(sid):
     # dict subclass with a bombing .get must not raise out of this reader
     # (services and bookmarks call it per row); the returned override is
     # laundered so the caller's own .get is safe too.
-    data = cfg()
+    #
+    # The cfg() call and both unbound reads sit inside a try (the
+    # settings_section rule this per-row sibling never got): a snapshot
+    # provider that raises escaped this reader bare, and ``dict.get``
+    # bypasses a subclass's own ``.get`` but still runs the hash lookup —
+    # a leftover *hash-shadowing* key (same hash as "overrides" or the
+    # sid, raising ``__eq__``) detonated the compare inside the C lookup
+    # itself and 500'd every services/bookmarks listing that reads
+    # overrides per row.
+    try:
+        data = cfg()
+    except Exception:
+        return {}
     if not isinstance(data, dict):
         return {}
-    ov = dict.get(data, "overrides")
+    try:
+        ov = dict.get(data, "overrides")
+    except Exception:
+        return {}
     if not isinstance(ov, dict):
         return {}
-    val = dict.get(ov, sid, {})
+    try:
+        val = dict.get(ov, sid, {})
+    except Exception:
+        return {}
     if not isinstance(val, dict):
         return {}
     try:
@@ -909,9 +927,20 @@ def panel_locale() -> str:
     # dict.get, not .get: a leftover cfg() root / settings map that is a dict
     # subclass with a bombing .get must not 500 the menu-bar locale probe
     # (GET /api/status reads this on a cold cache).
-    data = cfg()
-    settings = dict.get(data, "settings") if isinstance(data, dict) else None
-    ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
+    #
+    # The cfg() call and the settings/ui reads sit inside a try (the
+    # settings_section rule): a snapshot provider that raises escaped this
+    # probe bare, and a leftover *hash-shadowing* key (same hash as
+    # "settings"/"ui", raising ``__eq__``) survived the unbound read and
+    # detonated the C-level compare — the locale try below starts one read
+    # too late to catch either, so a cold GET /api/status answered a raw
+    # 500 instead of the default locale.
+    try:
+        data = cfg()
+        settings = dict.get(data, "settings") if isinstance(data, dict) else None
+        ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
+    except Exception:
+        return DEFAULT_UI_LOCALE
     ui = ui if isinstance(ui, dict) else {}
     try:
         _locale_raw = dict.get(ui, "locale")

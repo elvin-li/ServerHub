@@ -44,6 +44,79 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` probes in :func:`set_power_pref` — a raw 500 on
+    POST /api/settings/power after the pmset spawn had already run (the
+    identity_svc / health9 rule).  ``-255`` is no honest exit status, so a
+    bomb keeps the failure branch — and it is never the ``-1`` spawn
+    sentinel, so junk cannot forge the vanished-pmset 503 either.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except Exception:
+        return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The bare ``rc, out, err = sh(...)`` unpack in :func:`set_power_pref`
+    dispatched into the *answer's* own iteration: a tuple/list subclass
+    whose bound ``__iter__`` bombs, a lying-``__class__`` sequence
+    impostor, or a torn two-field answer each raised straight out of
+    POST /api/settings/power — a raw 500 one step before any rc probe
+    (the vms/system ``_sh3`` rule).  Junk degrades to ``(-255, "", "")``:
+    nonzero, and never the ``-1`` sentinel the vanished-pmset classifier
+    trusts.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    try:
+        if len(items) != 3:
+            return (-255, "", "")
+    except Exception:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises, but this module does not own it,
+    and :func:`set_power_pref` called it bare on the request path: a
+    leftover runner that raises instead of answering 500'd
+    POST /api/settings/power after validation had already passed (the
+    vms11 / identity runner-seam rule).  A raising runner reads as
+    ``(-255, "", "")`` — nonzero, never the ``-1`` spawn sentinel — so it
+    can neither claim success nor forge the vanished-pmset 503, which
+    stays reserved for an honest sentinel plus the on-disk confirm.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     # _isa, not a bare isinstance: a ``__class__``-property bomb riding a
@@ -197,6 +270,24 @@ def _as_map(value) -> dict:
         return dict(value)
     except Exception:
         return {}
+
+
+def _as_list(value) -> list:
+    """A plain-list copy of *value*, or ``[]``.
+
+    ``list.__iter__`` (unbound) reads CPython's C-level storage, bypassing
+    a leftover list-subclass's own ``__iter__``/``__len__``/``__getitem__``
+    overrides — so honest rows in a subclass wrapper survive while a bomb
+    costs only the copy, never the route.  A lying-``__class__`` impostor
+    (claims list over no real list storage) TypeErrors the unbound read and
+    degrades to empty the same way.
+    """
+    if not _isa(value, list):
+        return []
+    try:
+        return list(list.__iter__(value))
+    except Exception:
+        return []
 
 
 def _settings_map() -> dict:
@@ -647,8 +738,16 @@ def set_power_pref(key: str, value: int) -> dict:
         return soft_fail("power.bad_value")
     if value < 0 or value > 180:
         return soft_fail("power.value_range")
-    rc, out, err = sh([power_svc.PMSET, "-a", key, str(value)], timeout=8)
+    # _spawn + _rc_int on every probe: a raising or shape-junk sh answer
+    # used to blow the bare unpack, and an rc-subclass ``__ne__``/``__eq__``
+    # bomb detonated the bare ``rc != 0`` / ``rc == 0`` reads — each a raw
+    # 500 on POST /api/settings/power after the spawn had already run.
+    rc, out, err = _spawn([power_svc.PMSET, "-a", key, str(value)], 8)
+    rc = _rc_int(rc)
     if rc != 0:
+        # The laundered rc feeds the classifier: junk reads as -255, never
+        # the honest ``-1`` sentinel, so the coded 503 below still fires
+        # only after a real vanished-spawn answer plus the disk confirm.
         if power_svc._pmset_missing(rc, err):
             # A vanished pmset used to answer ok:false with a message telling
             # the operator to run ``sudo pmset -a`` by hand — blaming
@@ -657,7 +756,8 @@ def set_power_pref(key: str, value: int) -> dict:
             # like set_wol; the sentinel alone never classifies, and the disk
             # probe runs on this failure path only.
             raise api_error("power.pmset_missing")
-        rc, out, err = sh(["/usr/bin/sudo", "-n", power_svc.PMSET, "-a", key, str(value)], timeout=8)
+        rc, out, err = _spawn(["/usr/bin/sudo", "-n", power_svc.PMSET, "-a", key, str(value)], 8)
+        rc = _rc_int(rc)
     msg = _as_text(out) or _as_text(err)
     if rc != 0:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
@@ -707,14 +807,25 @@ def get_disk_settings() -> dict:
     # power snapshot with a bombing ``.get`` passed the gate and raised on
     # the disksleep read — a raw 500 on GET /api/settings/disk.
     power = _as_map(power)
-    if isinstance(storage, (tuple, list)) and len(storage) >= 2:
-        smart, disks = storage[0], storage[1]
-    else:
+    # _isa + guarded indexing: a class-bomb storage answer used to blow the
+    # bare isinstance itself, and a sequence subclass whose ``__len__`` /
+    # ``__getitem__`` bombs passed the gate and raised on the unpack.
+    try:
+        if _isa(storage, (tuple, list)) and len(storage) >= 2:
+            smart, disks = storage[0], storage[1]
+        else:
+            smart, disks = {}, []
+    except Exception:
         smart, disks = {}, []
-    if not isinstance(disks, list):
-        disks = []
-    if not isinstance(power_disks, list):
-        power_disks = []
+    # _as_list on both inventories: a list *subclass* answer passed the old
+    # isinstance gates whole, and its bombing ``__len__`` detonated the
+    # ``len(disks) or len(power_disks)`` count below while a bombing
+    # ``__getitem__``/``__iter__`` blew the ``power_disks[:20]`` slice —
+    # raw 500s on GET /api/settings/disk one step past the row laundering.
+    # The plain-list copy reads the C-level storage, so honest rows in a
+    # subclass wrapper survive untouched.
+    disks = _as_list(disks)
+    power_disks = _as_list(power_disks)
     rows = []
     for d in power_disks[:20]:
         # _isa: a class-bomb row used to blow the gate itself and 500
