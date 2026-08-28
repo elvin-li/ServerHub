@@ -129,12 +129,16 @@ def _disk_text(value) -> str | None:
         try:
             base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, str):
         try:
             return str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -158,7 +162,9 @@ def _home_path():
     """
     try:
         home = user_home()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if home is None:
         return None
@@ -169,14 +175,18 @@ def _home_path():
         # also flattens a Path subclass carrying bound method bombs.
         try:
             text = os.fspath(home)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         text = _disk_text(text)
     if not text:
         return None
     try:
         return Path(text)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -196,7 +206,9 @@ def _row_get(row, key):
         return None
     try:
         return dict.get(row, key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -216,14 +228,18 @@ def _find_stack(stack_id: str) -> dict:
     """
     try:
         rows = _stack_paths()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     if _isa(rows, (list, tuple)):
         try:
             # list() through the C storage: a list-subclass ``__iter__``
             # bomb cannot fire mid-loop.
             rows = list(rows)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     else:
         rows = []
@@ -282,7 +298,9 @@ def _spawnable_dir(text):
         return None
     try:
         text.encode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return text
 
@@ -313,7 +331,9 @@ def get_compose(stack_id: str) -> dict:
     # used to detonate one line outside the try above and 500 the read.
     try:
         raw_mtime = st.st_mtime
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw_mtime = 0
     mtime = _finite_mtime(raw_mtime)
     # _disk_text: the reader seam's return is laundered once, and both the
@@ -487,7 +507,9 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
             return {"ok": False, "message": "invalid working directory"}
         try:
             work = str(home / "Services")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {"ok": False, "message": "invalid working directory"}
     # NUL / control bytes never reach docker compose: Path() can store them
     # and unlink() then raises ValueError (not OSError) out of finally.
@@ -557,7 +579,9 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
             "ok": ok,
             "message": (text or ("valid" if ok else "invalid")).strip()[:800],
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": exc_detail(e, 800)}
     finally:
         try:

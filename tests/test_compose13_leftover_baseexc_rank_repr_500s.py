@@ -7,6 +7,7 @@ default-render objects through ``str()``.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from hub import compose_svc
 
@@ -51,6 +52,23 @@ class Compose13LeftoverTests(unittest.TestCase):
 
         with self.assertRaises(KeyboardInterrupt):
             compose_svc._finite_mtime(_Ki())
+
+    def test_row_get_swallows_eq_baseexception(self):
+        class _Key(str):
+            def __eq__(self, other):
+                raise LeftoverWatchdogTimeout("eq watchdog")
+
+            def __hash__(self):
+                return hash("id")
+
+        self.assertIsNone(compose_svc._row_get({_Key("id"): "x"}, "id"))
+
+    def test_home_path_swallows_provider_baseexception(self):
+        def boom():
+            raise LeftoverWatchdogTimeout("home watchdog")
+
+        with mock.patch.object(compose_svc, "user_home", boom):
+            self.assertIsNone(compose_svc._home_path())
 
 
 if __name__ == "__main__":
