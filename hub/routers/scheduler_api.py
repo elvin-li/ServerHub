@@ -181,9 +181,14 @@ def _audit_fields(record: dict) -> dict:
     # stored value's own ``__eq__``, and a leftover eq-bomb ``type`` on a
     # journalled job used to raise here and 500 the audited mutation
     # (delete / enable / run-now) after validation had already passed.
+    # BaseException too (the scheduler_svc._CONTROL_FLOW convention): a
+    # bomb raising a BaseException subclass sailed past the old
+    # ``except Exception`` out of the same routes.
     try:
         is_command = fields["job_type"] == "command"
-    except Exception:
+    except scheduler_svc._CONTROL_FLOW:
+        raise
+    except BaseException:
         is_command = False
     if is_command:
         # _plain_dict, not a bare isinstance: a leftover dict-subclass
@@ -221,7 +226,15 @@ def _bridged_smart_schedule() -> dict | None:
         period = smart_test_svc.SCHEDULE_INTERVALS.get(interval, 0)
         try:
             last = float(schedule.get("last_run") or 0)
-        except (TypeError, ValueError, OverflowError):
+        except scheduler_svc._CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The old net named only (TypeError, ValueError, OverflowError):
+            # a leftover ``last_run`` whose ``__float__``/``__bool__`` raised
+            # RuntimeError — let alone a BaseException subclass — fell to the
+            # blanket catch below and silently dropped the whole bridged row
+            # instead of degrading this one field (the nas13 percent-probe
+            # rule).
             last = 0.0
         if last != last or last in (float("inf"), float("-inf")):
             last = 0.0
@@ -255,7 +268,13 @@ def _bridged_smart_schedule() -> dict | None:
         # Starlette's allow_nan=False encoder.
         cleaned = scheduler_svc._jsonable(row)
         return cleaned if isinstance(cleaned, dict) else None
-    except Exception:
+    except scheduler_svc._CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A leftover smart_test_svc schedule provider (or a bomb field the
+        # probes above dispatch into) raising a BaseException subclass used
+        # to sail past the old ``except Exception`` and 500
+        # GET /api/scheduler/jobs; the read-only bridge row just drops.
         return None
 
 
