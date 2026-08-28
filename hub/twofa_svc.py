@@ -35,6 +35,8 @@ from hub import secure_io, totp
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: Module-level so tests can point it at a scratch directory, same pattern as
 #: notify_channels.SECRETS_FILE.
 STORE_FILE = DATA_DIR / "twofa.json"
@@ -57,7 +59,9 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -71,7 +75,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -89,10 +95,14 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -113,7 +123,9 @@ def _plain_dict(raw) -> dict:
         return {}
     try:
         return dict(dict.items(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -231,7 +243,9 @@ def _as_int(raw, default: int | None = 0) -> int | None:
             # value underneath the override.
             value = int(raw)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # An already-int leftover past the digit cap (plist/YAML hex loads
             # uncapped) cannot be JSON-encoded; passing it through used to
             # ValueError json.dumps — GET /api/auth/totp 500'd on confirmed_at
@@ -243,13 +257,17 @@ def _as_int(raw, default: int | None = 0) -> int | None:
             if raw != raw or raw in (float("inf"), float("-inf")):
                 return default
             return int(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A float-subclass ``__eq__`` / ``__int__`` bomb must not escape
             # the NaN/inf probe — the modules5 rule for the float rank.
             return default
     try:
         return int(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Broad, not (TypeError, ValueError, OverflowError): a leftover
         # ``__int__`` / ``__index__`` / ``__class__`` bomb here used to 500
         # status; ordinary junk still reads as the default.
@@ -265,9 +283,13 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return text.encode("utf-8", "replace").decode("utf-8")
 
@@ -313,7 +335,9 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 enroll / TOTP verify.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _utf8_text(value)
 
@@ -432,7 +456,9 @@ def _stored_recovery(rec) -> list[str]:
         return []
     try:
         rows = list(list.__iter__(rec))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     return [h for h in rows if isinstance(h, str)]
 

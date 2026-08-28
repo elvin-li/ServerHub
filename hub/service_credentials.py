@@ -6,6 +6,8 @@ generic-password item in the current user's login Keychain.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import errno
 import hashlib
 import json
@@ -71,9 +73,13 @@ def _as_text(val) -> str:
         except RecursionError:
             try:
                 return type(val).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return val.encode("utf-8", "replace").decode("utf-8")
 
@@ -105,7 +111,9 @@ def _json_safe(value, depth: int = 0):
         for k, v in value.items():
             try:
                 key = _as_text(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if not key:
                 continue
@@ -119,11 +127,15 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/apps/credentials.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -543,7 +555,9 @@ def apply_teslamate(username: str, password: str) -> dict:
             reloaded = nginx_svc.reload_nginx()
             if not reloaded.get("ok"):
                 raise RuntimeError(_as_text(reloaded.get("message") or "Nginx reload failed"))
-        except Exception as exc:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:
             if old is None:
                 TESLAMATE_HTPASSWD.unlink(missing_ok=True)
             else:

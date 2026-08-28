@@ -1,6 +1,8 @@
 """Public authentication endpoints (not behind the protected API router)."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
@@ -339,7 +341,9 @@ def auth_logout(request: Request, response: Response):
     if username:
         try:
             auth.bump_session_epoch(username)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     # Must match the flags used at login. Omitting ``secure`` leaves a Secure
     # cookie in place on HTTPS / tunneled deployments, so logout appeared to

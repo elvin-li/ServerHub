@@ -21,6 +21,8 @@ stays fresh for the management listing either way.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import fcntl
 import hashlib
 import hmac
@@ -144,9 +146,13 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return text.encode("utf-8", "replace").decode("utf-8")
 
@@ -191,7 +197,9 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 create / revoke / Bearer.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _utf8_text(value)
 
@@ -307,7 +315,9 @@ def _as_epoch(raw, default: int | None = 0) -> int | None:
     if isinstance(raw, (bytes, bytearray)):
         try:
             return _as_epoch(raw.decode("utf-8", "replace"), default)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
     if isinstance(raw, str):
         text = raw.strip()

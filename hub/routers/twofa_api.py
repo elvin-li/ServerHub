@@ -22,6 +22,8 @@ guessing passwords.  Replay of an already-spent code is refused inside
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
@@ -172,7 +174,9 @@ def totp_confirm(body: TotpCodeBody, request: Request, response: Response):
     # good — and the revocation had failed either way.
     try:
         auth.bump_session_epoch(username)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     _set_session(response, request, username)
     audit.record(
@@ -212,7 +216,9 @@ def totp_disable(body: TotpCodeBody, request: Request, response: Response):
     # would not revoke anything either — it only misreports the outcome.
     try:
         auth.bump_session_epoch(username)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     _set_session(response, request, username)
     audit.record(
@@ -270,7 +276,9 @@ def totp_admin_disable(body: TotpAdminDisableBody, request: Request, response: R
         raise api_error("auth.totp_not_enabled")
     try:
         auth.bump_session_epoch(target)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if target == operator:
         # Rescuing one's own account through the admin path still has to keep
