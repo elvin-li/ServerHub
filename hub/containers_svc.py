@@ -439,15 +439,112 @@ def _stats_cached() -> dict:
     key can only ever be a set that is already out of date.  One entry on a 15s
     TTL is also exactly what the dict this replaces did.
     """
-    engine_ok, items = _container_list_cached()
+    # The laundered view, not the raw memo: a leftover planted in the list
+    # store used to detonate this unpack (and the ``i["id"]`` subscript on a
+    # poisoned row) inside the stats refresh itself — a raw 500 on
+    # GET /api/containers one seam past the listing's own guard.
+    engine_ok, items = _cached_list_view()
     if not engine_ok:
         return {}
-    return _fetch_stats([i["id"] for i in items if i.get("raw_state") == "running"])
+    return _fetch_stats([i.get("id") for i in items if i.get("raw_state") == "running"])
 
 
 def invalidate_container_lists():
     _container_list_cached.invalidate()
     _stats_cached.invalidate()
+
+
+def _listing_pair(pair) -> tuple[bool, list] | None:
+    """The listing memo's ``(engine-up, rows)`` as plain data, or None if junk.
+
+    ``type(pair) is tuple`` / ``type(flag) is bool`` exact checks, the
+    ``_cache_view`` convention: a tuple *subclass* whose ``__getitem__`` /
+    ``__iter__`` raises, and a ``__bool__``-bomb flag, are junk — not
+    evidence of engine state or of containers.  Rows are re-founded through
+    ``_plain_job`` (C-level dict copy, laundered keys) and ``_jsonable``
+    (JSON-safe values), so a poisoned row costs itself, not the listing.
+    """
+    if type(pair) is not tuple or len(pair) != 2:
+        return None
+    flag, rows = pair
+    if type(flag) is not bool:
+        return None
+    if type(rows) is not list:
+        if not _isa(rows, list):
+            return None
+        try:
+            # list() through the C storage: a list-subclass ``__iter__``
+            # bomb cannot fire past the gate.
+            rows = list(rows)
+        except Exception:
+            return None
+    out = []
+    for row in rows:
+        row = _plain_job(row)
+        if row is None:
+            continue
+        cleaned = _jsonable(row)
+        if _isa(cleaned, dict):
+            out.append(cleaned)
+    return flag, out
+
+
+def _cached_list_view() -> tuple[bool, list]:
+    """``_container_list_cached()`` with a leftover in the memo store defused.
+
+    ``ttl_memo``'s cache dict is a module-lifetime store that outlives every
+    request (the docker11 ``_engine_cache`` class), and its answer went out
+    to a bare ``flag, rows = …`` unpack plus per-row ``dict(x)`` copies: a
+    leftover planted in the store — a junk stamp that detonates the
+    freshness probe, a non-tuple hit, a 2-tuple whose value is a scalar, a
+    ``__class__``-property-bomb row, a ``__bool__``-bomb flag — used to 500
+    GET /api/containers and GET /api/stacks until the TTL lapsed.  Junk is
+    evicted (``invalidate`` never compares keys, the health11 rule) and the
+    probe re-runs once; junk that survives eviction reads as engine-unknown
+    — the same coded ``engine_up: False`` answer as a stopped engine, never
+    a raw 500.
+    """
+    for attempt in (0, 1):
+        try:
+            pair = _container_list_cached()
+        except Exception:
+            # A poisoned KEY detonates inside the memo's own cache.get on
+            # hash collision; the raise carries no listing.
+            pair = None
+        view = _listing_pair(pair)
+        if view is not None:
+            return view
+        if attempt == 0:
+            try:
+                _container_list_cached.invalidate()
+            except Exception:
+                return False, []
+    return False, []
+
+
+def _cached_stats_view() -> dict:
+    """``_stats_cached()`` with a leftover in the memo store defused.
+
+    Same store class and same eviction as :func:`_cached_list_view`; junk
+    that survives eviction reads as "no stats" — rows list without their
+    cpu/mem columns instead of a raw 500 on GET /api/containers.
+    """
+    for attempt in (0, 1):
+        try:
+            raw = _stats_cached()
+        except Exception:
+            raw = None
+        row = _plain_job(raw)
+        if row is not None:
+            cleaned = _jsonable(row)
+            if _isa(cleaned, dict):
+                return cleaned
+        if attempt == 0:
+            try:
+                _stats_cached.invalidate()
+            except Exception:
+                return {}
+    return {}
 
 
 def _load_update_status() -> dict:
@@ -867,25 +964,33 @@ def _fetch_stats(running_names: list[str]) -> dict:
 
 
 def list_containers(with_stats: bool = True) -> dict:
-    engine_up_flag, cached_items = _container_list_cached()
-    # Shallow copy per item, as before: the cached list is now shared with every
-    # other reader of this TTL window, so a caller that edits a row -- or a
-    # serialiser that adds to it -- must not reach into the cache.
-    items = [dict(x) for x in cached_items]
+    # The laundered views rebuild fresh scrubbed rows per call, so a caller
+    # that edits a row -- or a serialiser that adds to it -- still cannot
+    # reach into the shared cache, and a leftover planted in either memo
+    # store degrades to the coded engine-down / no-stats answers instead of
+    # a raw 500 (the old per-item ``dict(x)`` copy was itself the detonator
+    # for a ``__class__``-property-bomb row).
+    engine_up_flag, items = _cached_list_view()
 
     if not engine_up_flag:
         return {"engine_up": False, "containers": [], "stats": {}, "projects": []}
 
     stats = {}
     if with_stats:
-        stats = dict(_stats_cached())
+        stats = _cached_stats_view()
 
     projects = {}
     for it in items:
-        key = it.get("project") or "_ungrouped"
+        key = it.get("project")
+        # Exact-str probe, not a bare ``or``: a junk row's cleaned project
+        # can be a list/dict — unhashable as a dict key one line down.
+        if type(key) is not str or not key:
+            key = "_ungrouped"
         projects.setdefault(key, {"name": key if key != "_ungrouped" else "other", "count": 0, "running": 0})
         projects[key]["count"] += 1
-        if it["raw_state"] == "running":
+        # .get: a junk row that survived the scrub may lack the column; a
+        # bare subscript KeyError'd the whole listing for one planted row.
+        if it.get("raw_state") == "running":
             projects[key]["running"] += 1
 
     return {
