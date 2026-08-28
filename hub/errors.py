@@ -16,6 +16,15 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one error body would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other — and this module is the *last*
+#: sanitizer between a coded error and Starlette's encoder, so a raise out
+#: of any guard here is a raw HTTP 500 for the coded body by definition.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 # code -> (http status, English fallback).  ``{name}`` placeholders are filled
 # from params.  Keep codes stable: they are part of the public API contract.
 CODES: dict[str, tuple[int, str]] = {
@@ -637,10 +646,21 @@ def _isinst(value, types) -> bool:
     error's own body.  Treat such an object as "none of these types" and let
     it fall through to the guarded ``str(value)`` tail, which launders it to a
     renderable string or drops it — the code/message beside it still answer.
+
+    ``except BaseException``: the json8 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    (the watchdog/timeout shape the modules12/logs12 sweeps sealed on their
+    own surfaces) sailed past this catch — and past every sibling guard in
+    this module, because each one stopped at ``Exception`` too — straight
+    out of the sanitizer while it was building a coded error's own body: a
+    raw HTTP 500 riding the very machinery that exists to prevent one.
+    Only genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -675,7 +695,9 @@ def _jsonable_param(value, depth: int = 0):
             # the same subclass rule every ``_jsonable`` sibling now follows.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render the
             # number at all — ``json.dumps`` raises the same ValueError.  A str
             # param is parse-capped before it can become an int, but YAML/plist
@@ -689,7 +711,9 @@ def _jsonable_param(value, depth: int = 0):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below (the modules5 rule).
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -706,7 +730,9 @@ def _jsonable_param(value, depth: int = 0):
         # drops to ``None`` like the lying numeric coercions above.
         try:
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinst(value, (bytes, bytearray)):
         # bytes(...) first: a bytes subclass whose decode() bombs (the
@@ -716,13 +742,17 @@ def _jsonable_param(value, depth: int = 0):
         # raise means "not really bytes", so the impostor drops to ``None``.
         try:
             return bytes(value).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinst(value, dict):
         out = {}
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A dict *subclass* whose items() raises (the json5 bomb class)
             # must not 500 the error body — drop the node like an unrenderable
             # scalar; the code/message beside it in ``detail`` still render.
@@ -730,7 +760,9 @@ def _jsonable_param(value, depth: int = 0):
         for entry in items:
             try:
                 k, v = entry
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # An items() that yields non-pairs (an overriding dict
                 # subclass, or a lying-``__class__`` impostor's own items()):
                 # the tuple unpack used to raise TypeError outside any try —
@@ -739,18 +771,24 @@ def _jsonable_param(value, depth: int = 0):
             if _isinst(k, (bytes, bytearray)):
                 try:
                     k = bytes(k).decode("utf-8", "replace")
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A lying-``__class__`` key claiming bytes rejects the
                     # copy — drop just this entry, keep the siblings.
                     continue
             elif not _isinst(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
                 key = str.encode(k, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A lying-``__class__`` key claiming str skipped the str(k)
                 # coercion above, and the unbound encode rejects the foreign
                 # operand — drop the entry rather than 500 the error body.
@@ -760,7 +798,9 @@ def _jsonable_param(value, depth: int = 0):
     if _isinst(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A list/set subclass whose __iter__ raises drops to null rather
             # than raising out of the encode; the error body survives.
             return None
@@ -772,14 +812,18 @@ def _jsonable_param(value, depth: int = 0):
         # body.  A raising descriptor is not AttributeError, so the getattr
         # default does not catch it; the try does.
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 a coded error body.
             return _jsonable_param(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         text = str(value)
@@ -787,13 +831,17 @@ def _jsonable_param(value, depth: int = 0):
         # Type name used to leak into params as ``"Recursing"`` and look like a
         # real stack id; drop the value instead.
         return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if not _isinst(text, str):
         return None
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -836,12 +884,16 @@ def _clean_code(code) -> str:
             # (dropping its __hash__/__eq__/encode overrides with it) and
             # rejects a lying-``__class__`` impostor with TypeError.
             return str.encode(code, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass  # not really a str — degrade through str() below
     try:
         text = str(code)
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "error.unrenderable"
 
 
@@ -858,20 +910,28 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     status, template = CODES.get(code, (500, code))
     try:
         message = template.format(**params) if params else template
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # RecursionError: leftover recursive ``__format__``/``__str__`` is not
         # ValueError; OverflowError: leftover inf width/precision.  A leftover
         # param referenced by a ``{placeholder}`` is formatted *raw*, before
         # the clean loop below sees it, so a subclass ``__format__``/``__str__``
         # bomb (RuntimeError, not one of the arithmetic errors) used to raise
         # straight out here — a raw 500 for the coded error's own body.
+        # ``except BaseException``: the json9 guard stopped at ``Exception``,
+        # so the same bomb raising a *BaseException* subclass kept 500'ing
+        # every coded route that formatted the poisoned param — the format
+        # step runs before ``_jsonable_param`` can drop the value.
         message = template
     # Leftover ``\\ud800`` in a formatted param used to 500 the error body
     # under Starlette's UTF-8 encode even after params themselves were cleaned.
     if not isinstance(message, str):
         try:
             message = str(message)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             message = template if isinstance(template, str) else code
     # Unbound str.encode: ``str.format`` yields an exact str, but the
     # ``str(message)`` fallback above keeps a str *subclass* whose ``__str__``
@@ -885,7 +945,9 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
             if not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             k = str.encode(k, "utf-8", "replace").decode("utf-8")
             clean[k] = _jsonable_param(v)
@@ -925,7 +987,9 @@ def exc_detail(exc, cap: int = 200) -> str:
         # ``detail`` is a *raising property* used to blow the unwrap itself
         # (and ``isinstance`` reads a raising ``__class__`` — the json8 rule).
         detail = exc.detail if _isinst(exc, HTTPException) else None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         detail = None
     if _isinst(detail, dict):
         # Unbound dict.get, each lookup in its own try: a detail dict
@@ -937,30 +1001,40 @@ def exc_detail(exc, cap: int = 200) -> str:
         # whole unwrap to the repr tail.
         try:
             params = dict.get(detail, "params")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             params = None
         try:
             has_params = bool(params)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A params value whose ``__bool__`` bombs is still params-bearing
             # — keep the already-formatted message like any coded error whose
             # params filled its {placeholders}.
             has_params = True
         try:
             picked = dict.get(detail, "message" if has_params else "code")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             picked = None
         if picked is None and has_params:
             # The message slot is missing or hash-shadowed by a bomb key —
             # a bare code still beats the dict-repr tail below.
             try:
                 picked = dict.get(detail, "code")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 picked = None
         if _isinst(picked, str):
             try:
                 text = str.encode(picked, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A lying-``__class__`` impostor claiming str rejects the
                 # unbound encode — fall through to the guarded str(exc) tail.
                 text = ""
@@ -970,12 +1044,16 @@ def exc_detail(exc, cap: int = 200) -> str:
                 return text[: max(0, cap)]
     try:
         text = str(exc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "error"
     if not isinstance(text, str):
         try:
             text = str(text)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return "error"
     # Unbound base encode: ``str(exc)`` hands back the exception's *message
     # object* when it is already a str — a str-subclass ``encode`` bomb riding
@@ -1020,10 +1098,19 @@ def api_error_from(exc) -> HTTPException:
     exact str and each unusable entry dropped alone.  Values stay raw here:
     ``error_payload`` already launders them, and pre-coercing would change
     the formatted message for healthy params.
+
+    ``except BaseException`` on every guard (the modules12/logs12 rule): the
+    json12 seam stopped at ``Exception``, so the *same four shapes* raising a
+    BaseException subclass out of their hooks sailed past every catch above
+    and 500'd the same converted routes all over again — the property read,
+    the items rebuild and the key laundering each re-opened one step of the
+    seam they had just sealed.  Only genuine control flow keeps propagating.
     """
     try:
         code = getattr(exc, "code", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raising ``code`` property is not AttributeError, so the getattr
         # default does not catch it; the try does.
         code = None
@@ -1031,29 +1118,39 @@ def api_error_from(exc) -> HTTPException:
         code = "error.unrenderable"
     try:
         raw = getattr(exc, "params", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = None
     params: dict = {}
     if _isinst(raw, dict):
         try:
             items = list(dict.items(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying-``__class__`` impostor claiming dict rejects the
             # unbound read — the code alone still answers its status.
             items = []
         for entry in items:
             try:
                 k, v = entry
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if not _isinst(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
                 key = str.encode(k, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             params[key] = v
     status, body = error_payload(code, **params)
