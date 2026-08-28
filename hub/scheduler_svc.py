@@ -551,6 +551,36 @@ def _plain_dict(value) -> dict | None:
     return None
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a leftover hash-shadowing mapping *key* cannot 500.
+
+    The hub.jobs._mapping_get seam this module never got: :func:`_plain_dict`
+    returns the row (or a ``dict()`` copy) with its *keys* intact, and even a
+    plain ``dict.get`` probe still compares the probe against every stored
+    key whose hash collides — dispatching into that key's own ``__eq__``.  A
+    leftover str-subclass key whose text shadows a real field name and whose
+    ``__eq__`` raises used to detonate ``job.get("id")`` in :func:`_job_id`
+    (500 on GET /api/scheduler/jobs and, via :func:`_matches_id`'s
+    :func:`get_job` scan, on DELETE / PUT / enable / run-now for *healthy*
+    sibling jobs), ``job.get("enabled")`` in :func:`job_enabled` (500 on the
+    list route), ``job.get("cron")`` in :func:`_tick_once` (a RuntimeError
+    past its (ValueError, TypeError) net aborted the whole tick — every
+    other job's matching minute lost), and ``job.get("type")`` in
+    :func:`_execute`'s entry builds (breaking its "never raises" contract).
+    Only the shadowed field degrades to its default; sibling fields and rows
+    keep their sane data.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        # A raise can only come from a poisoned stored key (or a liar whose
+        # ``__class__`` merely answers dict, which the unbound descriptor
+        # refuses): the field is junk-shadowed either way.
+        return default
+
+
 def list_jobs() -> list[dict]:
     # Guarded like storage_pool_svc._pool_config: a cfg() snapshot provider
     # that raises used to escape this reader and 500 GET /api/scheduler/jobs
@@ -879,16 +909,23 @@ def _finite_duration(ended, started) -> float:
 
 
 def _job_params(job: dict) -> dict:
-    # _plain_dict, not a bare isinstance: a leftover params dict-subclass
-    # (or a ``__class__`` bomb) degrades to {} instead of handing the
-    # runners a mapping whose ``.get`` raises.
-    p = _plain_dict(job.get("params"))
+    # _plain_dict over _mapping_get: a leftover params dict-subclass (or a
+    # ``__class__`` bomb) degrades to {}, and a hash-shadowing bomb key
+    # beside "params" degrades field-level ("!! no command configured")
+    # instead of costing the whole run an opaque "!! error".
+    p = _plain_dict(_mapping_get(job, "params"))
     return p if p is not None else {}
 
 
 def _job_id(job: dict) -> str:
-    """Stable job identity.  A missing/bool/mapping id must not become ``'None'``."""
-    raw = job.get("id")
+    """Stable job identity.  A missing/bool/mapping id must not become ``'None'``.
+
+    _mapping_get, not ``job.get``: a leftover hash-shadowing bomb key with
+    "id"'s text used to detonate the bare probe and 500
+    GET /api/scheduler/jobs, every mutation's get_job scan (healthy sibling
+    jobs included), and abort the engine tick.
+    """
+    raw = _mapping_get(job, "id")
     if type(raw) is bool or raw is None:
         return ""
     if _isinst(raw, int):
@@ -936,8 +973,14 @@ def _job_id(job: dict) -> str:
 
 
 def job_enabled(job: dict) -> bool:
-    """Whether *job* should fire.  YAML ``"false"`` / ``"0"`` are off, not on."""
-    raw = job.get("enabled")
+    """Whether *job* should fire.  YAML ``"false"`` / ``"0"`` are off, not on.
+
+    _mapping_get, not ``job.get``: a leftover hash-shadowing bomb key with
+    "enabled"'s text used to detonate the bare probe and 500
+    GET /api/scheduler/jobs (and abort the engine tick).  A junk-shadowed
+    flag fails closed — junk must not fire operator shell.
+    """
+    raw = _mapping_get(job, "enabled")
     if _isinst(raw, str):
         # Unbound str.strip: a str-subclass value whose ``strip()`` raised
         # used to 500 GET /api/scheduler/jobs (the unbound view returns an
@@ -1022,7 +1065,12 @@ def _command_text(raw) -> str:
 
 
 def _run_command(job: dict, log: list[str]) -> int:
-    command = _command_text(_job_params(job).get("command"))
+    # _mapping_get: a hash-shadowing bomb key beside "command" survives the
+    # _plain_dict copy, and the bare probe is caught by _execute's broad net
+    # either way — but degrading field-level keeps the "!! no command
+    # configured" diagnosis instead of an opaque "!! error" (the
+    # hub.jobs.start_job rule).
+    command = _command_text(_mapping_get(_job_params(job), "command"))
     if not command.strip():
         log.append("!! no command configured")
         return -1
@@ -1033,19 +1081,26 @@ def _run_command(job: dict, log: list[str]) -> int:
 
 def _run_rsync(job: dict, log: list[str]) -> int:
     from hub import rsync_svc
+    # _job_id, not ``str(job.get("id") or "")``: the bare probe dispatched a
+    # leftover hash-shadowing bomb key (and the ``or`` a ``__bool__`` bomb)
+    # into _execute's broad net, costing the run its rsync log for an
+    # opaque "!! error"; the laundered identity degrades field-level.
     return rsync_svc.run_job(_job_params(job), log=log,
-                             timeout=_job_timeout(job), job_id=str(job.get("id") or ""))
+                             timeout=_job_timeout(job), job_id=_job_id(job))
 
 
 def _run_stack_backup(job: dict, log: list[str]) -> int:
     from hub import backups
     params = _job_params(job)
-    stack_id = str(params.get("stack_id") or "")
+    # _mapping_get twice: shadow bomb keys beside "stack_id"/"retain" keep
+    # the "!! no stack configured" / default-retain degrades field-level
+    # instead of costing the run an opaque "!! error".
+    stack_id = str(_mapping_get(params, "stack_id") or "")
     if not stack_id:
         log.append("!! no stack configured")
         return -1
     try:
-        retain = int(params.get("retain") or backups.RETAIN)
+        retain = int(_mapping_get(params, "retain") or backups.RETAIN)
     except (TypeError, ValueError, OverflowError):
         retain = backups.RETAIN
     result = backups.backup_stack(stack_id, retain=retain, log=log)
@@ -1278,6 +1333,13 @@ def _execute(job: dict, trigger: str) -> dict:
     jid = _job_id(job)
     if not jid:
         return {"ok": False, "error": "no_id"}
+    # _mapping_get, read once: the entry builds below run *outside* the try
+    # (the skipped build before it, the final build after the finally), so a
+    # leftover hash-shadowing bomb key with "type"'s text used to raise out
+    # of the bare ``job.get("type")`` probes and break the "never raises"
+    # contract — after the runner had already finished, so the run was
+    # never journalled.
+    job_type = _mapping_get(job, "type")
     started = time.time()
     with _running_guard:
         # _running_has / _add_running, not bare set ops: a leftover bomb
@@ -1286,7 +1348,7 @@ def _execute(job: dict, trigger: str) -> dict:
         if _running_has(jid):
             entry = {
                 "ts": _epoch_int(started), "end": _epoch_int(started), "job": jid,
-                "name": _job_label(job, jid), "type": job.get("type"),
+                "name": _job_label(job, jid), "type": job_type,
                 "trigger": trigger, "status": "skipped", "rc": None,
                 "tail": "previous run still in progress", "duration": 0,
             }
@@ -1296,9 +1358,12 @@ def _execute(job: dict, trigger: str) -> dict:
     log: list[str] = []
     rc: int | None = -1
     try:
-        runner = _RUNNERS.get(str(job.get("type") or ""))
+        runner = _RUNNERS.get(str(job_type or ""))
         if runner is None:
-            log.append(f"!! unknown job type: {job.get('type')}")
+            # _utf8_text, not the raw value: a junk type's own
+            # ``__str__``/``__format__`` bomb in the f-string degrades
+            # field-level instead of costing the run its diagnosis.
+            log.append(f"!! unknown job type: {_utf8_text(job_type)}")
             rc = -1
         else:
             rc = runner(job, log)
@@ -1320,7 +1385,7 @@ def _execute(job: dict, trigger: str) -> dict:
         status = "failed"
     entry = {
         "ts": _epoch_int(started), "end": _epoch_int(ended), "job": jid,
-        "name": _job_label(job, jid), "type": job.get("type"),
+        "name": _job_label(job, jid), "type": job_type,
         "trigger": trigger, "status": status, "rc": rc,
         "tail": "\n".join(log)[-TAIL_CHARS:],
         "duration": _finite_duration(ended, started),
@@ -1435,7 +1500,12 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
         if not jid or not job_enabled(job):
             continue
         try:
-            if not cron_matches(job.get("cron"), now):
+            # _mapping_get, not ``job.get``: a leftover hash-shadowing bomb
+            # key with "cron"'s text raised RuntimeError past this
+            # (ValueError, TypeError) net and aborted the whole tick —
+            # every *other* job's matching minute was lost while _loop's
+            # broad except kept the thread alive.
+            if not cron_matches(_mapping_get(job, "cron"), now):
                 continue
         except (ValueError, TypeError):
             continue  # an unparsable expression can never fire

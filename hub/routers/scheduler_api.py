@@ -119,26 +119,44 @@ def _public_job(job: dict, last=_LAST_UNSET) -> dict:
 
     *last* lets the list endpoint pass a preloaded record (one journal read
     for all jobs) instead of re-reading the whole run journal per row.
+
+    The copy is laundered through ``_jsonable`` *before* the state fields
+    are written onto it, not after: the old ``dict(job)`` copy kept the
+    row's keys intact, and each ``out[...] =`` insert hash-probes the dict —
+    comparing the interned field name against every stored key whose hash
+    collides, which dispatches into that key's own ``__eq__``.  A leftover
+    hash-shadowing bomb key with "id"/"next_run"/"running"/"last"'s text
+    used to detonate the insert and 500 GET /api/scheduler/jobs (and the
+    create/update/enable echoes) before the trailing launder ever ran.
+    ``_jsonable`` rebuilds every key as an exact str, so the inserts below
+    only ever touch plain keys, and the values written are exact
+    primitives / already-laundered records — the result stays encodable.
     """
-    out = dict(job)
+    cleaned = scheduler_svc._jsonable(job)
+    out = cleaned if isinstance(cleaned, dict) else {}
     jid = scheduler_svc._job_id(job)
     if jid:
         # Serve the identity the mutation routes match: a numeric YAML id
         # is fired (and journalled) as its str() form, so the row must carry
         # that same string or the UI's enable/delete/run URLs 404.
         out["id"] = jid
+    # _mapping_get, not ``job.get``: a leftover hash-shadowing bomb key
+    # with "cron"'s text used to detonate the bare probe and 500 the list
+    # route for every job.
     out["next_run"] = (
-        scheduler_svc.next_run_ts(job.get("cron")) if scheduler_svc.job_enabled(job) else None
+        scheduler_svc.next_run_ts(scheduler_svc._mapping_get(job, "cron"))
+        if scheduler_svc.job_enabled(job) else None
     )
     out["running"] = scheduler_svc.is_running(jid)
     if last is _LAST_UNSET:
         last = scheduler_svc.last_run(jid)
+    # *last* is a _jsonable product (the journal readers launder every
+    # record), so its keys are exact strs and the bound ``.get`` is safe.
     out["last"] = (
         {k: last.get(k) for k in ("ts", "end", "status", "rc", "duration", "trigger")}
         if isinstance(last, dict) else None
     )
-    cleaned = scheduler_svc._jsonable(out)
-    return cleaned if isinstance(cleaned, dict) else {}
+    return out
 
 
 def _audit_fields(record: dict) -> dict:
@@ -147,28 +165,37 @@ def _audit_fields(record: dict) -> dict:
     The shell command is deliberately included: an audit line that says "a job
     changed" without saying what it now executes answers nothing.
     """
+    # _mapping_get throughout, not bound ``record.get``: the delete/enable/
+    # run-now routes pass the *stored* row (get_job's plain-dict copy keeps
+    # the row's keys intact), and a leftover hash-shadowing bomb key with
+    # any of these field names' text used to detonate the bare probe and
+    # 500 the audited mutation after validation had already passed.
     fields = {
-        "job_id": record.get("id"),
-        "job_name": record.get("name"),
-        "job_type": record.get("type"),
-        "cron": record.get("cron"),
-        "enabled": record.get("enabled"),
+        "job_id": scheduler_svc._mapping_get(record, "id"),
+        "job_name": scheduler_svc._mapping_get(record, "name"),
+        "job_type": scheduler_svc._mapping_get(record, "type"),
+        "cron": scheduler_svc._mapping_get(record, "cron"),
+        "enabled": scheduler_svc._mapping_get(record, "enabled"),
     }
     # Guarded equality, the _matches_id shape: ``==`` reflects into the
     # stored value's own ``__eq__``, and a leftover eq-bomb ``type`` on a
     # journalled job used to raise here and 500 the audited mutation
     # (delete / enable / run-now) after validation had already passed.
     try:
-        is_command = record.get("type") == "command"
+        is_command = fields["job_type"] == "command"
     except Exception:
         is_command = False
     if is_command:
         # _plain_dict, not a bare isinstance: a leftover dict-subclass
         # ``params`` whose ``.get()`` raised used to 500 the audited
         # mutation (delete / enable / run-now) after validation had
-        # already passed.
-        params = scheduler_svc._plain_dict(record.get("params"))
-        fields["command"] = params.get("command") if params else None
+        # already passed.  _mapping_get on the copy too: the plain-dict
+        # copy keeps a hash-shadowing bomb key beside "command".
+        params = scheduler_svc._plain_dict(
+            scheduler_svc._mapping_get(record, "params"))
+        fields["command"] = (
+            scheduler_svc._mapping_get(params, "command") if params else None
+        )
     return fields
 
 
