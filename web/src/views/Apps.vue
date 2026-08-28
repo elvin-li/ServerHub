@@ -967,12 +967,12 @@ const CAT_I18N = {
 
 const jobMap = computed(() => {
   const m = {}
-  for (const j of jobs.value) if (j.stack_id) m[j.stack_id] = j.job_id
+  for (const j of asArray(jobs.value)) if (j.stack_id) m[j.stack_id] = j.job_id
   return m
 })
 
 const filteredManaged = computed(() => {
-  let list = managed.value.items || []
+  let list = asArray(managed.value.items)
   if (mkind.value !== 'all') list = list.filter(x => x.kind === mkind.value)
   const s = mq.value.trim().toLowerCase()
   if (s) {
@@ -988,15 +988,15 @@ const filteredManaged = computed(() => {
 })
 
 const autostartGroups = computed(() => {
-  const g = autostart.value.groups || []
+  const g = asArray(autostart.value.groups)
   if (g.length) return g
-  const set = new Set((autostart.value.items || []).map(i => i.group || t('common.other')))
+  const set = new Set(asArray(autostart.value.items).map(i => i.group || t('common.other')))
   return [...set]
 })
 
 const autostartByGroup = computed(() => {
   const m = {}
-  for (const it of autostart.value.items || []) {
+  for (const it of asArray(autostart.value.items)) {
     const g = it.group || t('common.other')
     ;(m[g] || (m[g] = [])).push(it)
   }
@@ -1196,7 +1196,7 @@ function goManage(tpl) {
     const id = tpl.kind === 'native'
       ? `native:${tpl.id}`
       : `docker:${tpl.id}`
-    const hit = (managed.value.items || []).find(x => x.id === id || x.source_id === tpl.id)
+    const hit = asArray(managed.value.items).find(x => x.id === id || x.source_id === tpl.id)
     if (hit) openDetail(hit)
   }, 400)
 }
@@ -1789,12 +1789,12 @@ async function doManagedUninstall(it) {
 
 const quickCats = computed(() => {
   const prefer = ['all', 'native', 'docker', 'featured', 'network', 'remote', 'media', 'files', 'ops', 'monitor']
-  const map = Object.fromEntries((categories.value || []).map(c => [c.id, c]))
+  const map = Object.fromEntries(asArray(categories.value).map(c => [c.id, c]))
   return prefer.map(id => map[id] || { id, label: id }).filter(Boolean)
 })
 
 const filtered = computed(() => {
-  let list = catalog.value || []
+  let list = asArray(catalog.value)
   if (cat.value === 'featured') list = list.filter(x => x.featured)
   else if (cat.value === 'native') list = list.filter(x => x.kind === 'native')
   else if (cat.value === 'docker') list = list.filter(x => (x.kind || 'docker') === 'docker')
@@ -1808,7 +1808,7 @@ const filtered = computed(() => {
       || (x.desc || '').toLowerCase().includes(s)
       || (x.id || '').toLowerCase().includes(s)
       || (x.package || '').toLowerCase().includes(s)
-      || (x.tags || []).some(tg => String(tg).toLowerCase().includes(s))
+      || asArray(x.tags).some(tg => String(tg).toLowerCase().includes(s))
       || (x.category || '').toLowerCase().includes(s)
       || (x.kind || '').toLowerCase().includes(s)
     )
@@ -1853,8 +1853,8 @@ async function refresh(manual = false) {
   try {
     const d = await getStacks()
     if (generation !== appsDataGeneration) return
-    stacks.value = d.stacks || []
-    jobs.value = d.jobs || []
+    stacks.value = asArray(d.stacks)
+    jobs.value = asArray(d.jobs)
   } catch (e) {
     if (generation !== appsDataGeneration) return
     // The job-completion poll calls this in the background (the server, not
@@ -1871,9 +1871,9 @@ async function loadCatalog() {
   try {
     const d = await getCatalog()
     if (generation !== appsDataGeneration) return
-    catalog.value = d.templates || []
+    catalog.value = asArray(d.templates)
     overview.value = d
-    if (d.categories?.length) categories.value = d.categories
+    if (d.categories?.length) categories.value = asArray(d.categories)
     catalogError.value = ''
   } catch (e) {
     if (generation !== appsDataGeneration) return

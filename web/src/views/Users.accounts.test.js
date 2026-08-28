@@ -265,4 +265,18 @@ describe('panel accounts section', () => {
 
     expect(toast).not.toHaveBeenCalled()
   })
+
+  it('does not throw when groups leftover is a mapping', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.getUsers.mockResolvedValue({
+      users: { 0: { uid: 501, name: 'elvin', groups: { 0: 'staff' } } },
+      count: 1,
+      admins: 1,
+    })
+    api.getServices.mockResolvedValue({ groups: { 0: { services: { 0: { id: 'x', name: 'X' } } } } })
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('users.empty')
+    wrapper.unmount()
+  })
 })

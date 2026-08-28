@@ -171,4 +171,19 @@ describe('failed refresh over stale rows', () => {
     ).toBeTruthy()
     wrapper.unmount()
   })
+
+  it('does not throw when templates is a leftover mapping', async () => {
+    api.getCatalog.mockResolvedValue({
+      templates: { 0: TEMPLATE },
+      categories: { 0: { id: 'other', label: 'other' } },
+      counts: {},
+      total: 1,
+      installed: 0,
+    })
+    const wrapper = mountApps()
+    await flushPromises()
+    await openCatalog(wrapper)
+    expect(wrapper.findAll('.app-card').length).toBe(0)
+    wrapper.unmount()
+  })
 })

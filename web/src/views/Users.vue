@@ -232,7 +232,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="u in data?.users || []" :key="u.uid">
+          <tr v-for="u in asArray(data?.users)" :key="u.uid">
             <!-- aria-hidden: the LED repeats the Role badge's Admin/Standard
                  text in colour only (same as the Gateway and VMs LEDs). -->
             <td><span class="led" :class="u.admin ? 'on' : 'off'" aria-hidden="true"></span></td>
@@ -248,11 +248,11 @@
             <td>
               <span class="badge" :class="u.admin ? 'ok' : ''">{{ u.admin ? t('common.admin') : t('common.standard') }}</span>
             </td>
-            <td class="mono col-hide-m" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="(u.groups||[]).map(g => finiteText(g, '')).filter(Boolean).join(', ')">
-              {{ (u.groups || []).map(g => finiteText(g, '')).filter(Boolean).slice(0, 6).join(', ') }}{{ (u.groups||[]).length > 6 ? '…' : '' }}
+            <td class="mono col-hide-m" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="asArray(u.groups).map(g => finiteText(g, '')).filter(Boolean).join(', ')">
+              {{ asArray(u.groups).map(g => finiteText(g, '')).filter(Boolean).slice(0, 6).join(', ') }}{{ asArray(u.groups).length > 6 ? '…' : '' }}
             </td>
           </tr>
-          <tr v-if="!(data?.users||[]).length && !loadError">
+          <tr v-if="!asArray(data?.users).length && !loadError">
             <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('users.empty') }}</td>
           </tr>
         </tbody>
@@ -269,7 +269,7 @@ import {
   setPanelAccountResources,
 } from '../api/client'
 import { authState } from '../lib/authState'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -286,7 +286,7 @@ function finiteDiff(a, b) {
 }
 
 function resourceList(list) {
-  return (list || []).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
+  return asArray(list).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
 }
 
 const loading = ref(false)
@@ -338,7 +338,7 @@ const serviceOptionsLoaded = ref(false)
 async function loadAccounts() {
   const generation = loadGeneration
   try {
-    const next = (await listPanelAccounts()).accounts || []
+    const next = asArray((await listPanelAccounts()).accounts)
     if (generation !== loadGeneration || !pageAlive) return
     accounts.value = next
     accountsError.value = ''
@@ -355,8 +355,8 @@ async function loadServiceOptions() {
   try {
     const status = await getServices()
     if (generation !== loadGeneration || !pageAlive) return
-    serviceOptions.value = (status.groups || []).flatMap((group) =>
-      (group.services || []).map((svc) => ({ id: svc.id, name: finiteText(svc.name, '') || finiteText(svc.id) })),
+    serviceOptions.value = asArray(status.groups).flatMap((group) =>
+      asArray(group.services).map((svc) => ({ id: svc.id, name: finiteText(svc.name, '') || finiteText(svc.id) })),
     )
     serviceOptionsError.value = ''
   } catch (e) {
