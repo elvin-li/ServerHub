@@ -46,6 +46,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 import threading
 import time
@@ -53,6 +54,9 @@ import time
 from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 FILE_5M = DATA_DIR / "metrics-5m.jsonl"
 FILE_1H = DATA_DIR / "metrics-1h.jsonl"
@@ -169,35 +173,63 @@ def _finite_num(raw):
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        # _decode_bytes, not value.decode: a leftover bytes-subclass whose
-        # bound ``decode`` raised (modules5's bomb class) used to escape
-        # _jsonable entirely — as a value and as a mapping key.
-        return _decode_bytes(value)
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not isinstance(text, str):
         return ""
-    # Unbound ``str.encode`` (the modules6 rule sensors_svc already follows):
-    # ``str()`` of a subclass whose ``__str__`` answers *self* skips CPython's
-    # exact-str copy, so the bound ``encode`` tail ran the subclass override —
-    # a raise aborted the rollup pass / state save from inside _jsonable's
-    # dict walk; an override that *returned* a hostile buffer walked a lone
-    # surrogate past this scrub into Starlette's UTF-8 encode (a 500).
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
