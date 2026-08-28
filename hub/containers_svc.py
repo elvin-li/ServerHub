@@ -153,7 +153,9 @@ def _plain_job(value) -> dict | None:
     if type(value) is not dict:
         try:
             value = dict(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     # Iterating a plain dict's keys never dispatches into a subclass, so
     # this probe cannot raise; the common all-exact-str row returns as-is.
@@ -169,7 +171,9 @@ def _plain_job(value) -> dict | None:
             # the junk key drops like any other non-str.
             try:
                 out[str.__str__(k)] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -183,7 +187,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -211,7 +217,9 @@ def _plain_text(value) -> str | None:
     if _isa(value, str):
         try:
             return str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -488,7 +496,9 @@ def _listing_pair(pair) -> tuple[bool, list] | None:
             # list() through the C storage: a list-subclass ``__iter__``
             # bomb cannot fire past the gate.
             rows = list(rows)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     out = []
     for row in rows:
@@ -519,7 +529,9 @@ def _cached_list_view() -> tuple[bool, list]:
     for attempt in (0, 1):
         try:
             pair = _container_list_cached()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A poisoned KEY detonates inside the memo's own cache.get on
             # hash collision; the raise carries no listing.
             pair = None
@@ -529,7 +541,9 @@ def _cached_list_view() -> tuple[bool, list]:
         if attempt == 0:
             try:
                 _container_list_cached.invalidate()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return False, []
     return False, []
 
@@ -544,7 +558,9 @@ def _cached_stats_view() -> dict:
     for attempt in (0, 1):
         try:
             raw = _stats_cached()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raw = None
         row = _plain_job(raw)
         if row is not None:
@@ -554,7 +570,9 @@ def _cached_stats_view() -> dict:
         if attempt == 0:
             try:
                 _stats_cached.invalidate()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return {}
     return {}
 
@@ -619,7 +637,9 @@ def _field_text(value, fallback: str = "") -> str:
                 # used to blow the NaN/inf probes below and 500 GET /api/stacks
                 # and GET /api/compose/{id} (the docker_cli._jsonable convention).
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
@@ -631,7 +651,9 @@ def _field_text(value, fallback: str = "") -> str:
                 # / ``__index__`` bomb used to blow the digit-cap probe below
                 # (only ValueError was caught) and 500 the same routes.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return fallback
         try:
             return str(value)
@@ -653,14 +675,18 @@ def _field_text(value, fallback: str = "") -> str:
             # the unbound call TypeErrors and the impostor falls back.
             base = bytes if _isa(value, bytes) else bytearray
             text = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
     elif _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     else:
         try:
             text = str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
     # Exact-str copy through the C storage: ``str()`` of a subclass whose
     # ``__str__`` returns self keeps the subclass (and the str branch above
@@ -675,7 +701,9 @@ def _field_text(value, fallback: str = "") -> str:
         if not text:
             return fallback
         return text.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
 
 
@@ -697,7 +725,9 @@ def _str_list(raw) -> list[str]:
         # list() through the C storage: a leftover list-subclass whose
         # ``__iter__`` raises used to 500 GET /api/stacks past the gate.
         rows = list(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out = []
     for n in rows:
@@ -791,7 +821,9 @@ def _build_container_list() -> tuple[bool, list]:
             # was hand-edited.  A bombed override is junk; the row lists
             # without it.
             ov = resolve_value(override(name))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             ov = {}
         if not isinstance(ov, dict):
             ov = {}
@@ -946,7 +978,9 @@ def _build_container_list() -> tuple[bool, list]:
                     else:
                         it["update"] = st_u.get("update") if st_u else None
                     it["shell"] = "/bin/sh"
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
     return True, items
 
@@ -1058,7 +1092,9 @@ def batch_action(names: list[str], action: str) -> dict:
             if detail.get("code"):
                 entry["code"] = _as_text(detail["code"])
             results.append(entry)
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             results.append({"id": _as_text(n), "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
 
@@ -1167,14 +1203,18 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
                     }
                     flag = "update available" if r["update"] else ("up to date" if r["status"] == "false" else "unknown")
                     j["log"].append(f"  {flag}")
-                except Exception as e:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException as e:
                     j["log"].append(f"  !! {_as_text(e)}")
                     status[img] = {"status": "undef", "update": None, "error": _as_text(e)}
             status["_checked_at"] = strftime_now("%Y-%m-%d %H:%M:%S")
             _save_update_status(status)
             j["rc"] = 0
             j["log"].append("== check complete ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -1440,7 +1480,9 @@ def start_update_container_job(name: str) -> dict:
             if j.get("rc") is None:
                 j["rc"] = 0
             j["log"].append("== done ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -1850,11 +1892,15 @@ def _stack_paths() -> list[dict]:
     # GET /api/compose/{id} and POST /api/stacks/{id}/run.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         data = None
     try:
         raw = dict.get(data, "stacks") if isinstance(data, dict) else None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = None
     # _isa, not a bare isinstance: a ``stacks:`` value whose ``__class__``
     # is a raising property used to detonate this gate itself and 500
@@ -1865,7 +1911,9 @@ def _stack_paths() -> list[dict]:
             # ``__iter__`` raises used to 500 GET /api/stacks and every
             # stack-job start.
             rows = list(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     else:
         rows = []
@@ -1886,7 +1934,9 @@ def _stack_paths() -> list[dict]:
             # used to detonate the truthiness probe below.
             try:
                 path = str.__str__(path)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 path = None
         else:
             path = None
@@ -1899,7 +1949,9 @@ def _stack_paths() -> list[dict]:
                 if _isa(compose_name, str):
                     try:
                         compose_name = str.__str__(compose_name)
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         compose_name = None
                 if type(compose_name) is not str or not compose_name:
                     compose_name = "docker-compose.yml"
@@ -2129,7 +2181,9 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             else:
                 j["rc"] = 0
                 j["log"].append("== done ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -2170,7 +2224,9 @@ def _job_log_lines(raw) -> list:
         return []
     try:
         return list(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -2181,7 +2237,9 @@ def stack_job_log(job_id: str) -> dict:
     # _plain_job: a dict-subclass row whose .get() raised used to 500 here.
     try:
         j = _plain_job(_cjobs.get(job_id))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The lookup itself can detonate: a leftover str-subclass KEY whose
         # ``__eq__`` raises is compared against the queried id when their
         # hashes collide (same string content), and the bomb raised out of
