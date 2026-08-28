@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -13,6 +14,9 @@ from hub.paths import NGINX as NGINX_BIN
 from hub.paths import user_home
 from hub.status import invalidate_status
 from hub.util import sh
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _user_home() -> Path | None:
@@ -40,14 +44,18 @@ def _user_home() -> Path | None:
     """
     try:
         home = user_home()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     try:
         if isinstance(home, Path):
             return home
         if isinstance(home, (str, bytes)):
             return Path(os.fsdecode(home))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return None
 
@@ -80,58 +88,65 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str | None:
-    """Unbound base decode; ``None`` when *value* only lies about being bytes.
-
-    The unbound call bypasses a leftover subclass ``.decode`` bomb, but a
-    *lying* ``__class__`` impostor (claims bytes/bytearray over no real byte
-    storage — the vms10 class) passes ``_isinst`` and then TypeErrors the
-    descriptor itself; that blew out of ``_as_text`` on the ``sh`` seam and
-    out of ``_jsonable`` at value and key rank, and 500'd GET /api/nginx and
-    POST /api/nginx/test|reload.  Real bytes with ``errors="replace"`` never
-    raise, so ``None`` means "not really bytes" and the caller falls back to
-    the plain text probe.
-    """
-    base = bytes if _isinst(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        return None
+    """Unbound base decode; ``None`` when *value* only lies about being bytes."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
 
 
 def _as_text(value) -> str:
-    """Leftover ``\\ud800`` in ``nginx -t`` used to 500 Settings → Test/Reload.
-
-    Reads through unbound base-type calls (the modules5 convention this
-    module never got): a bytes-subclass ``.decode`` bomb arriving as an odd
-    ``sh`` answer or a site-row key used to 500 POST /api/nginx/test and
-    GET /api/nginx, and a str subclass whose ``__str__`` returns *itself*
-    kept the bound ``encode`` bomb live through the final scrub line.
-    """
+    """Leftover ``\\ud800`` in ``nginx -t`` used to 500 Settings → Test/Reload."""
     if value is None:
         return ""
-    if _isinst(value, (bytes, bytearray)):
-        decoded = _decode_bytes(value)
-        if decoded is not None:
-            return decoded
-        # A lying ``__class__`` impostor: no real byte storage behind the
-        # claim — fall through to the str() probe like any other object.
+    decoded = _decode_bytes(value)
+    if decoded is not None:
+        return decoded
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         value = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # ``str(x)`` on a subclass whose ``__str__`` answers self is still the
-    # subclass: the unbound base encode dodges its ``encode`` override.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _sh_message(err, out, fallback: str = "") -> str:
