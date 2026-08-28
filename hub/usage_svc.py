@@ -22,6 +22,8 @@ how a panel becomes the reason the machine is slow.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import hashlib
 import os
 import stat
@@ -105,7 +107,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -122,7 +126,9 @@ def _as_text(value) -> str:
         base = bytes if _isa(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     if value is None:
         return ""
@@ -132,9 +138,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the nas_common._utf8_text / modules6 rule):
     # ``str()`` of a subclass whose ``__str__`` answers *self* skips
@@ -151,7 +161,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -178,7 +190,9 @@ def _exact_str(value) -> str | None:
             str.encode(value, "utf-8", "surrogatepass"),
             "utf-8", "surrogatepass",
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -204,7 +218,9 @@ def _safe_bytes(value) -> int:
     try:
         n = int(value)
         float(n)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
     return n if n > 0 else 0
 
@@ -279,7 +295,9 @@ def scan_roots() -> list[dict]:
 
     try:
         incoming = files_svc.default_roots()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The guard below covered *iteration* but not the call: a
         # default_roots that raised outright (a seam replacement, a leftover
         # that slips its own guards) still 500'd GET /api/storage/usage,
@@ -293,7 +311,9 @@ def scan_roots() -> list[dict]:
         incoming = []
     try:
         incoming = list(incoming)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A roots listing that refuses *iteration* (odd list subclass passing
         # the isinstance gate above) used to raise out of this loop and 500
         # GET /api/storage/usage, /tree, /largest and /duplicates — the
@@ -324,7 +344,9 @@ def scan_roots() -> list[dict]:
             # their string form.
             rid = _as_text(entry.get("id") or "root") or "root"
             add(rid, _as_text(entry.get("name") or ""), path)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     volumes = Path("/Volumes")
@@ -349,14 +371,18 @@ def scan_roots() -> list[dict]:
         from hub import shares_svc
 
         listed = shares_svc.list_smb_shares(include_sizes=False) or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Share enumeration is a convenience here, never a hard dependency.
         listed = []
     if not _isa(listed, (list, tuple)):
         listed = []
     try:
         listed = list(listed)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Same class as the roots listing above: a share listing that passes
         # the isinstance gate but refuses iteration must cost the shares
         # section, never the request — the roots already gathered survive.
@@ -384,7 +410,9 @@ def scan_roots() -> list[dict]:
             # every share after it from the usage roots.
             name = _as_text(share.get("name"))
             add(f"share-{name or 'share'}", name or path, path)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     return roots
@@ -600,16 +628,22 @@ def _walk_parallel(target: Path, budget: _Budget, make_sink, on_file, *,
                                         subdirs.append(child)
                                 elif entry.is_file(follow_symlinks=False):
                                     on_file(entry, sink)
-                            except Exception:
+                            except _CONTROL_FLOW:
+                                raise
+                            except BaseException:
                                 # Total, not (OSError, ValueError, TypeError):
                                 # a poisoned entry whose stat fields raise
                                 # RuntimeError must cost its own row, never
                                 # the worker (and with it the request).
                                 continue
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
                 _push(subdirs)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             _stop()
             return sink
 
@@ -647,13 +681,17 @@ def _dir_size(path: Path, spender: _Spender) -> tuple[int, int]:
                         elif entry.is_file(follow_symlinks=False):
                             total += _safe_bytes(entry.stat(follow_symlinks=False).st_size)
                             files += 1
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         # Total, matching _walk_parallel: a poisoned entry
                         # raising RuntimeError out of a stat descriptor used
                         # to escape the old tuple, ride fan_out's re-raise
                         # and 500 GET /api/storage/usage/tree.
                         continue
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return total, files
 
@@ -681,7 +719,9 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
         raise api_error("files.not_a_dir")
     except OSError:
         raise api_error("files.permission_denied", path=str(target))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A scandir iterator dying mid-listing with a non-OSError (a
         # leftover FUSE seam raising RuntimeError) used to 500 the route
         # raw; an unlistable directory is the permission_denied class.
@@ -713,7 +753,9 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                     "gb": _gb(size),
                     "files": 1,
                 })
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Total, not (OSError, ValueError, TypeError): a poisoned entry
             # whose ``name``/``path``/stat fields raise RuntimeError used to
             # escape the tuple and 500 GET /api/storage/usage/tree; the
@@ -726,7 +768,9 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
         # one hostile subdir used to 500 the whole tree listing.
         try:
             return _dir_size(Path(e.path), budget.spender())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return 0, 0
 
     sizes = fan_out(_sized, subdirs, max_workers=_SCAN_WORKERS)
@@ -740,7 +784,9 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                 "gb": _gb(size),
                 "files": files,
             })
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class one loop later: the row build reads the entry's
             # properties again, and a raising descriptor here sat outside
             # any guard.
@@ -807,7 +853,9 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
             size = _safe_bytes(st.st_size)
             path = _exact_str(entry.path)
             mtime = st.st_mtime
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return
         if path is None:
             return
@@ -826,7 +874,9 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
     for size, p, mtime in found[:cap]:
         try:
             stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Corrupt mtimes (network FS, FAT) used to 500 this endpoint;
             # total, not a tuple: a poisoned mtime whose ``__float__``
             # raises RuntimeError rode the top tuple past the old catch.
@@ -839,7 +889,9 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
                 "gb": _gb(size),
                 "mtime": stamp,
             })
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # ``Path(p)`` on a junk path must cost its own row, not the
             # report the walk already finished.
             continue
@@ -915,7 +967,9 @@ def _hash_group(paths: list[str], budget: _Budget, *, partial: bool) -> list[str
             if budget.expired():
                 return None
             return _hash_file(Path(p), partial=partial)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
     return fan_out(_one, paths, max_workers=_SCAN_WORKERS)
@@ -951,7 +1005,9 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
         try:
             size = _safe_bytes(entry.stat(follow_symlinks=False).st_size)
             path = _exact_str(entry.path)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return
         if path is None:
             return
@@ -1034,7 +1090,9 @@ def _spotlight_query(volume: str) -> tuple[int, str]:
         # int subclass cannot bomb the ``rc == 0`` reads downstream.
         blob = (_as_text(text) or _as_text(err)).strip()
         return (int.__index__(rc) if isinstance(rc, int) else 1), blob
-    except Exception as exc:  # noqa: BLE001
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001
         return 1, _as_text(exc)
 
 
@@ -1134,7 +1192,9 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
     # so it stays toggleable while a hostile listing drops row by row.
     try:
         listing = spotlight_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         listing = []
     if not _isa(listing, (list, tuple)):
         listing = []
@@ -1146,7 +1206,9 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         # descriptor's TypeError raised raw — a 500 on
         # POST /api/storage/spotlight ahead of the coded ``bad_volume``.
         status_rows = list(base.__iter__(listing))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         status_rows = []
     for v in status_rows:
         # _isa on both reads: a ``__class__``-bomb status row (or volume
@@ -1158,7 +1220,9 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
             continue
         try:
             vol = dict.get(v, "volume")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if _isa(vol, str):
             known.add(_as_text(vol))
@@ -1166,7 +1230,9 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         return {"ok": False, "error": "bad_volume"}
     try:
         result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
-    except Exception as exc:  # noqa: BLE001
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001
         # Guarded call (the scan_roots default_roots / usage8 spotlight_status
         # rule, one seam later): run_admin answers coded dicts for everything
         # it anticipates, but a seam replacement or a leftover that slips its
@@ -1190,7 +1256,9 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
         # POST /api/storage/spotlight before the router funnel's own
         # laundering could run.  A subclass whose copy itself raises is junk.
         result = dict(result)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"ok": False, "error": "failed"}
     # Exact-str keys only (the wave-10 hash-shadowing rule): the plain copy
     # above still *carries* a hostile key — a leftover str-subclass whose
@@ -1213,14 +1281,20 @@ def set_spotlight(volume: str, enabled: bool) -> dict:
                 key = _exact_str(k)
                 if key is not None:
                     plain[key] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"ok": False, "error": "failed"}
     result = plain
     try:
         ok = bool(result.get("ok"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A ``__bool__``-bomb ok value reads as failure (nas_common._truthy
         # rule) instead of raising out of the service as a 500 — and the
         # unreadable flag must not ride along either: the route reads
