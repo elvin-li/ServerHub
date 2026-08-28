@@ -263,7 +263,10 @@ class SetUserAccessTests(unittest.TestCase):
         # Comments mention the old call; the implementation must not.
         self.assertNotIn("capture_output=True)", impl)
         self.assertNotIn("capture_output=True,", impl)
-        self.assertIn("sh(", src)
+        # The spawn rides ``sh`` — directly or through the guarded
+        # ``_sh_call`` wrapper (the users12 raising-runner seal), both of
+        # which stream to a tempfile instead of buffering in RAM.
+        self.assertTrue("sh(" in src or "_sh_call(" in src)
 
     def test_bad_level_is_refused_before_touching_anything(self):
         with self.assertRaises(share_acl_svc.ShareAclError) as raised:
