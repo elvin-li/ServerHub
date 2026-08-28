@@ -27,6 +27,9 @@ from hub.disk_snapshot import (
 from hub.paths import SMARTCTL
 from hub.util import fan_out, run_bytes, sh, ttl_memo
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 # Whole-disk identifiers only
 DISK_RE = re.compile(r"^disk\d+$")
 
@@ -80,7 +83,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -100,13 +105,15 @@ def _rc_int(rc) -> int:
     bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             rc = int.__index__(rc)
         else:
             rc = int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
     try:
         str(rc)
@@ -137,12 +144,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -165,7 +176,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -192,19 +205,23 @@ def _text(value) -> str:
     if _isa(value, (list, tuple)):
         try:
             value = value[0] if value else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(value, (bytes, bytearray)):
         try:
             value = bytes(value).decode("utf-8", "replace")
-        except Exception:
-            # A lying ``__class__`` property claiming bytes TypeErrors the
-            # base copy itself; the field degrades like any unreadable one.
-            return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
     elif _isa(value, float):
         try:
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if value != value or value in (float("inf"), float("-inf")):
             return ""
@@ -217,7 +234,9 @@ def _text(value) -> str:
         try:
             if value in (None, False, ""):
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # ``in`` reflects into the leftover's own ``__eq__``.
             return ""
         if _isa(value, (dict, set, frozenset)):
@@ -229,16 +248,29 @@ def _text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode: a subclass whose ``__str__`` returns *self* keeps
-    # its type through the str() coercion above, and its bound ``encode``
-    # bomb used to raise out of here — a bare 500 when the value rode the
-    # ``sh`` seam into the sleep/eject/wake log lines on
-    # POST /api/storage/disks/{id}/power.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _req_text(raw) -> str:

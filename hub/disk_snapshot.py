@@ -38,6 +38,9 @@ from typing import Any, Mapping
 
 from hub.util import cached_snapshot, fan_out, run_bytes, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: Short, and for the usual reason: these are dependency reads whose consumers
 #: already sit behind their own caches (the power-disk listing, the SMART snapshot).
 #: The window that matters is one request's worth of overlapping readers.
@@ -65,7 +68,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -79,12 +84,14 @@ def _rc_int(rc) -> int:
     failed read is the honest degrade (the system/health9 rule).
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -109,12 +116,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -136,7 +147,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -154,15 +167,19 @@ def _as_text(value) -> str:
         # still bare after storage7 sealed its encode tail.
         try:
             value = value[0] if value else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(value, (bytes, bytearray)):
         try:
             value = bytes(value).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` property claiming bytes TypeErrors the
-            # base copy itself; the token degrades like any unreadable one.
-            return ""
+            # base copy itself; fall through to the str probe.
+            pass
     elif _isa(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return ""
     elif value is None or value is False or value is True \
@@ -183,14 +200,29 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode: a str subclass whose ``__str__`` returns *self*
-    # keeps its bound ``encode`` bomb through the coercion above and used to
-    # raise out of the shared df/diskutil reads.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _disk_token(value) -> str:
@@ -218,12 +250,24 @@ def _disk_token(value) -> str:
         try:
             value = bytes(value).decode("utf-8", "replace")
         except Exception:
-            return ""
+            pass
     if not _isa(value, str):
         return ""
-    # Unbound base encode: same self-``__str__`` encode-bomb class as
-    # ``_as_text`` above — the token must scrub, never raise.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _whole_id(value) -> str:
