@@ -143,11 +143,20 @@ class JsonableParamBombPins(unittest.TestCase):
         self.assertEqual(out, "port")
         self._renderable(out)
 
-    def test_dict_items_bomb_drops_to_null(self):
-        self.assertIsNone(errors._jsonable_param(ItemsDict({"a": 1})))
+    def test_dict_items_bomb_recovers_its_real_entries(self):
+        # json14 (the maint14/bookmarks14 rule): the dict arm copies through
+        # the C-level storage, so a real subclass's ``items()`` bomb no
+        # longer vaporises perfectly walkable entries to null.
+        out = errors._jsonable_param(ItemsDict({"a": 1}))
+        self.assertEqual(out, {"a": 1})
+        self._renderable(out)
 
-    def test_list_iter_bomb_drops_to_null(self):
-        self.assertIsNone(errors._jsonable_param(IterList([1, 2])))
+    def test_list_iter_bomb_recovers_its_real_elements(self):
+        # json14: the sequence arm iterates through the unbound bases, so a
+        # real subclass's ``__iter__`` bomb cannot vaporise its storage.
+        out = errors._jsonable_param(IterList([1, 2]))
+        self.assertEqual(out, [1, 2])
+        self._renderable(out)
 
     def test_self_str_encode_bomb_as_dict_key_keeps_text(self):
         out = errors._jsonable_param({SelfStrEncode("k7"): "v"})
@@ -159,7 +168,9 @@ class JsonableParamBombPins(unittest.TestCase):
             {"ok": "fine", "bad": IterList([1]), "n": SelfStrEncode("keep")}
         )
         self.assertEqual(out["ok"], "fine")
-        self.assertIsNone(out["bad"])
+        # json14: the iter-bomb's real elements recover through the unbound
+        # bases instead of the old null drop.
+        self.assertEqual(out["bad"], [1])
         self.assertEqual(out["n"], "keep")
         self._renderable(out)
 

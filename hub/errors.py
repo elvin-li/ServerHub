@@ -14,6 +14,8 @@ originates in Python cannot be translated by the frontend, so handlers raise
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 
 #: Real control flow must keep propagating even through the bomb guards
@@ -664,147 +666,294 @@ def _isinst(value, types) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs below (the maint14/account14 rule): ``isinstance``
+    consults ``value.__class__`` only after the real-MRO check misses, so a
+    lying claim steered a leftover param into the arm of its claim, the
+    unbound descriptor there refused the real layout, and the old early
+    ``return None`` threw honest renderable storage away at the wrong rank.
+    After a claimed arm rejects the operand, only the arm the *real* layout
+    matches may pick the value up — the lie must not steer the walk a second
+    time.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never error-body data.
+#: Applied to the *coercion* arms only: real str storage is data (a param
+#: quoting a Python repr serves verbatim — the account14 rule).
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _default_repr(value) -> bool:
+    """True when rendering *value* can only answer ``object.__repr__``.
+
+    ``str()`` of a type that never overrode ``__str__``/``__repr__`` is the
+    default angle repr — ``<X object at 0x7f...>``, a raw heap address —
+    which the ``str(value)`` tail used to serve verbatim inside a coded
+    error's params (and ``str(k)`` as a JSON *key*).  The probe reads the
+    slots off the real ``type(value)``, which a flickering ``__class__``
+    property cannot swap.  Fail-closed: an unreadable slot is treated as
+    the leaking shape.
+    """
+    try:
+        cls = type(value)
+        return cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return True
+
+
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry.
+
+    Real-layout reads come first (the maint14 ``_key_text`` rule): a genuine
+    str key — even behind a lying ``__class__`` claiming bytes — keeps its
+    text through the unbound encode, and a genuine bytes/bytearray key —
+    even one claiming str — keeps its decode, instead of the old wrong-rank
+    entry drop.  A *total* lying impostor claiming str/bytes keeps the
+    established json9 drop.  Every other key is a coercion: the old path ran
+    bare ``str(k)``, and for a type that never overrode
+    ``__str__``/``__repr__`` the answer is the default ``object.__repr__`` —
+    ``<X object at 0x7f...>``, a raw heap address served verbatim as a JSON
+    key in the coded error's own body.  Slot probe + address belt drop just
+    that entry; an honestly-rendering key (an int, a date) keeps its text.
+    """
+    if _real(k, str):
+        try:
+            return str.encode(k, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _real(k, (bytes, bytearray)):
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(k, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
+    if _isinst(k, (str, bytes, bytearray)):
+        # A lying claim with no text storage underneath: filing its value
+        # under whatever the impostor renders would launder junk into a
+        # real-looking key — keep the json9 entry drop.
+        return None
+    if _default_repr(k):
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if not _isinst(text, str):
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
+
+
 def _jsonable_param(value, depth: int = 0):
     """Coerce leftover params so Starlette's allow_nan=False encoder cannot 500.
 
     A coded 409 whose ``port`` was YAML ``.inf`` used to become HTTP 500 while
     encoding the error body.  ``bytes`` / dates / ``!!set`` in params did the
     same via TypeError.
+
+    json14 (the maint14/account14 shape): ``isinstance`` consults
+    ``value.__class__`` only after the real-MRO check misses, so a lying
+    ``__class__`` steered a param into the arm of its *claim*, the unbound
+    base operation there rejected the real layout, and the old early return
+    threw honest renderable storage away at the wrong rank — a genuine str
+    claiming int wiped to ``None``, a genuine int claiming bool dropped, a
+    genuine bytes name claiming str went dark.  The rejected arms now fall
+    through to the arm the *real* storage matches, probed via ``_real`` so
+    the lie cannot steer the walk twice; a total impostor — a claim with no
+    usable layout underneath — keeps its established json9 ``None`` drop.
+    The dict walk copies through the C-level storage and snapshots
+    ``list(dict.items(...))`` first (a real subclass's ``items()`` bomb used
+    to vaporise perfectly walkable entries, and a nested value mutating the
+    mapping mid-walk must never blow the iteration), keys go through
+    ``_key_text`` (a plain-object key used to serve its default
+    ``object.__repr__`` — a raw heap address — as a JSON key), the sequence
+    arm iterates through the unbound bases so a real subclass's ``__iter__``
+    bomb cannot vaporise its storage, and the ``str(value)`` tail carries
+    the slot probe + address belt so a leftover with no honest text cannot
+    leak a heap address into the response body.
     """
     if depth > 8:
         return None
-    if value is None:
+    # ``type(value) is bool``, not isinstance: bool is final, so the exact
+    # check is complete and never reads a leftover's ``__class__``.  A liar
+    # whose ``__class__`` merely *answers* bool (the modules9 bool-liar, which
+    # the old arm dropped) falls to the int arm's unbound coercion — a
+    # genuine int claiming bool now renders its number instead of vanishing.
+    if value is None or type(value) is bool:
         return value
-    if _isinst(value, bool):
-        # ``bool`` is final, so a value that answers this gate while its real
-        # type is not ``bool`` is a *lying* ``__class__`` impostor, not a
-        # genuine bool.  The old arm returned it raw, handing Starlette's
-        # ``allow_nan=False`` encoder a non-serializable object that 500'd
-        # the coded error's own body (the modules9 bool-liar).  Only a real
-        # bool renders; the impostor drops to ``None`` like the lying
-        # numeric coercions below.
-        if type(value) is bool:
-            return value
-        return None
     if _isinst(value, int):
-        try:
-            # Base coercion to an exact int first: an int *subclass* whose
-            # ``__index__``/``__str__`` bombs (the settings8/modules5 class)
-            # used to raise past the ValueError-only digit-cap catch and turn
-            # the coded 4xx into a raw 500 while building its own error body —
-            # the same subclass rule every ``_jsonable`` sibling now follows.
-            value = int.__index__(value)
-            str(value)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # Past CPython's int->str digit cap the encoder cannot render the
-            # number at all — ``json.dumps`` raises the same ValueError.  A str
-            # param is parse-capped before it can become an int, but YAML/plist
-            # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
-            # so an already-int leftover reached Starlette untouched — the
-            # photoshub/immich ``_jsonable`` drop.
+        num = value if type(value) is int else None
+        if num is None:
+            try:
+                # Base coercion to an exact int first: an int *subclass* whose
+                # ``__index__``/``__str__`` bombs (the settings8/modules5
+                # class) used to raise past the ValueError-only digit-cap
+                # catch and turn the coded 4xx into a raw 500 while building
+                # its own error body.
+                num = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # Past CPython's int->str digit cap the encoder cannot render
+                # the number at all — ``json.dumps`` raises the same
+                # ValueError.  A str param is parse-capped before it can
+                # become an int, but YAML/plist hex text loads uncapped
+                # (``int(x, 16)`` is a power-of-two base), so an already-int
+                # leftover reached Starlette untouched.
+                return None
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the json9 None drop.
             return None
-        return value
+        # The descriptor refused the operand, so the claimed int/bool was a
+        # lie — but the real storage matches a later arm: fall through.
     if _isinst(value, float):
-        try:
-            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
-            # bomb used to blow the NaN/inf probes below (the modules5 rule).
-            value = float.__float__(value)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
+        num = value if type(value) is float else None
+        if num is None:
+            try:
+                # Base coercion to an exact float: a subclass
+                # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf probes
+                # below (the modules5 rule).
+                num = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
+                return None
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming float keeps the json9 None drop.
             return None
-        if value != value or value in (float("inf"), float("-inf")):
-            return None
-        return value
     if _isinst(value, str):
         # Unbound str.encode, not the bound ``.encode``: ``str(x)`` of a str
         # *subclass* whose ``__str__`` returns itself keeps the subclass, so a
         # bound ``.encode`` dispatched into a leftover override — the json6
         # self-``__str__`` encode bomb — and raised out of the error body.
-        # The unbound descriptor is bound to the real str layout, so a
-        # *lying* ``__class__`` claiming str (real type is not) rejected the
-        # foreign operand with a TypeError outside any try — a raw 500 for
-        # the coded body.  A raise means "not really a str"; the impostor
-        # drops to ``None`` like the lying numeric coercions above.
+        # The unbound descriptor is bound to the real str layout, so a raise
+        # means "not really a str": a genuine bytes/container behind the
+        # lying claim falls through to the arm its real storage matches, and
+        # a total impostor keeps the json9 ``None`` drop.
         try:
             return str.encode(value, "utf-8", "replace").decode("utf-8")
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            pass
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
     if _isinst(value, (bytes, bytearray)):
-        # bytes(...) first: a bytes subclass whose decode() bombs (the
-        # modules5 class) must not raise out of the sanitizer.  The copy
-        # itself rejects a *lying* ``__class__`` claiming bytes/bytearray
-        # (real type is neither) with a TypeError that used to escape — a
-        # raise means "not really bytes", so the impostor drops to ``None``.
-        try:
-            return bytes(value).decode("utf-8", "replace")
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
+        # Unbound base decode, both bases first-come (the jobs13/nas13 rule):
+        # the old ``bytes(value)`` copy accepted *any* iterable of ints, so a
+        # genuine list claiming bytes rendered as garbage text instead of its
+        # own elements, while a total impostor's TypeError already dropped it.
+        # The unbound descriptors read the real byte storage — a subclass
+        # ``decode`` bomb cannot fire — and reject every foreign layout, so
+        # genuine container storage falls through to its own arm.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            # A total impostor claiming bytes keeps the json9 None drop.
             return None
     if _isinst(value, dict):
-        out = {}
-        try:
-            items = list(value.items())
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # A dict *subclass* whose items() raises (the json5 bomb class)
-            # must not 500 the error body — drop the node like an unrenderable
-            # scalar; the code/message beside it in ``detail`` still render.
+        plain = value if type(value) is dict else None
+        if plain is None:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys(): a real subclass whose ``items()`` bombs used to
+            # vaporise its perfectly walkable entries to ``None`` even though
+            # the raise was absorbed (the json7 drop, recovered the maint14
+            # way), and one yielding non-pairs used to lose every entry.
+            try:
+                plain = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                plain = None
+        if plain is not None:
+            # Materialized (``list(...)``) before the walk: a nested value
+            # whose guarded hook mutates this mapping mid-walk must
+            # RuntimeError a live view iteration, never the snapshot.
+            try:
+                items = list(dict.items(plain))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
+                    # A key that cannot render (raising ``__str__``, a total
+                    # lying impostor, a default-repr heap address) drops just
+                    # this entry, keeps the rest of the mapping.
+                    continue
+                out[key] = _jsonable_param(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            # A total impostor claiming dict keeps the json9 None drop.
             return None
-        for entry in items:
-            try:
-                k, v = entry
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                # An items() that yields non-pairs (an overriding dict
-                # subclass, or a lying-``__class__`` impostor's own items()):
-                # the tuple unpack used to raise TypeError outside any try —
-                # drop the entry, keep the rest of the mapping.
-                continue
-            if _isinst(k, (bytes, bytearray)):
-                try:
-                    k = bytes(k).decode("utf-8", "replace")
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    # A lying-``__class__`` key claiming bytes rejects the
-                    # copy — drop just this entry, keep the siblings.
-                    continue
-            elif not _isinst(k, str):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
-            try:
-                key = str.encode(k, "utf-8", "replace").decode("utf-8")
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                # A lying-``__class__`` key claiming str skipped the str(k)
-                # coercion above, and the unbound encode rejects the foreign
-                # operand — drop the entry rather than 500 the error body.
-                continue
-            out[key] = _jsonable_param(v, depth + 1)
-        return out
+        # Genuine sequence storage behind a lying-dict ``__class__`` falls
+        # through: its elements render below instead of vanishing whole.
     if _isinst(value, (list, tuple, set, frozenset)):
-        try:
-            seq = list(value)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # A list/set subclass whose __iter__ raises drops to null rather
-            # than raising out of the encode; the error body survives.
-            return None
-        return [_jsonable_param(v, depth + 1) for v in seq]
+        # Unbound base iteration, real layout first-come (the jobs13/nas13
+        # decode rule at sequence rank): the bound ``list(value)`` dispatched
+        # a real subclass's overridden ``__iter__``, so an iter-bomb whose
+        # C-level storage was perfectly walkable vaporised to ``None`` even
+        # though the raise was absorbed.  Materialized inside the try: an
+        # element whose hook mutates the container mid-walk cannot blow the
+        # comprehension below.  A total impostor (every base descriptor
+        # refuses it) keeps the json9 None drop.
+        for base in (list, tuple, set, frozenset):
+            try:
+                seq = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable_param(v, depth + 1) for v in seq]
+        return None
     try:
         # getattr, not attribute access: a leftover whose ``isoformat`` is a
         # *property that raises* (not a method) blew this lookup out of the
@@ -825,6 +974,17 @@ def _jsonable_param(value, depth: int = 0):
             raise
         except BaseException:
             pass
+    # The free-text tail is a *coercion*: a type that never overrode
+    # ``__str__``/``__repr__`` can only answer the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which used to serve
+    # verbatim inside the coded error's params.  The slot probe reads the
+    # real ``type(value)`` (a flickering ``__class__`` property cannot swap
+    # it) and the address belt drops a rendered heap address the probe cannot
+    # see (function / bound-method C-level reprs, a custom ``__repr__``
+    # embedding one).  Real str storage never reaches here — the str arm
+    # already returned it — so data quoting a repr stays verbatim.
+    if _default_repr(value):
+        return None
     try:
         text = str(value)
     except RecursionError:
@@ -838,11 +998,12 @@ def _jsonable_param(value, depth: int = 0):
     if not _isinst(text, str):
         return None
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def jsonable_error_detail(value):
@@ -877,6 +1038,12 @@ def _clean_code(code) -> str:
     code still answers that code's status), an impostor degrades through
     ``str()``, and an unrenderable leftover drops to a stable placeholder —
     the unknown-code 500 contract, but as valid JSON instead of a crash.
+
+    The ``str()`` degrade is a *coercion*, so it carries the json14 slot
+    probe + address belt (the account14 rule): a plain-object code used to
+    render its default ``object.__repr__`` — ``<X object at 0x7f...>``, a
+    raw heap address — verbatim into *both* the ``code`` and ``message``
+    slots of the built 500 body.  Real str storage stays data.
     """
     if _isinst(code, str):
         try:
@@ -888,13 +1055,80 @@ def _clean_code(code) -> str:
             raise
         except BaseException:
             pass  # not really a str — degrade through str() below
+    if _default_repr(code):
+        return "error.unrenderable"
     try:
         text = str(code)
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return "error.unrenderable"
+    return "error.unrenderable" if _ADDR_REPR_RE.search(text) else text
+
+
+class _FmtParam:
+    """One raw param, wrapped for ``str.format``'s eyes only.
+
+    ``error_payload`` formats the message template with *raw* params — the
+    clean loop runs after, and pre-coercing every value would change the
+    formatted text for healthy params (a datetime's ``__format__`` is not
+    its ``isoformat``).  But the format step is a *coercion* of every
+    non-str param it touches, and it used to run unbelted: a plain-object
+    param referenced by a ``{placeholder}`` rendered its default
+    ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap address —
+    straight into the coded error's ``message`` (json14, the account14
+    convention).  The proxy keeps healthy formatting byte-identical: real
+    str storage passes verbatim (data — an address-shaped substring in a
+    genuine str param stays), every other rendered text takes the slot
+    probe + address belt, and an unrenderable param raises so the caller's
+    existing net falls the message back to the raw template — exactly the
+    ``__format__``-bomb degrade the json7/json13 pins already fix.  Hook
+    raises (including BaseException bombs) propagate to that same net;
+    control flow keeps propagating out of it.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value):
+        self._value = value
+
+    def __format__(self, spec):
+        value = self._value
+        # The slot probe must also require a default ``__format__``: a type
+        # carrying its own ``__format__`` hook does *not* render the default
+        # repr, and pre-empting it would swallow the control flow the hook
+        # is allowed to raise (the json13 pass-through pin).
+        try:
+            fmt_default = type(value).__format__ is object.__format__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            fmt_default = True
+        if fmt_default and _default_repr(value):
+            raise ValueError("param can only render a heap address")
+        # A hook raise (the json7 __format__ bomb, its json13 BaseException
+        # twin, or genuine control flow) propagates to error_payload's net.
+        text = format(value, spec)
+        if _real(value, str):
+            return text
+        if _ADDR_REPR_RE.search(text):
+            raise ValueError("param formatted to a heap address")
+        return text
+
+    def __str__(self):
+        # ``{name!s}`` converts before formatting — same probe + belt.
+        return self.__format__("")
+
+    def __repr__(self):
+        # ``{name!r}`` (no CODES template uses it, but a laundered unknown
+        # code carrying one must not render the proxy's own default repr —
+        # that would be a heap address too).  A repr is always a coercion,
+        # so the belt applies unconditionally.
+        text = repr(self._value)
+        if _ADDR_REPR_RE.search(text):
+            raise ValueError("param reprs to a heap address")
+        return text
 
 
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
@@ -909,7 +1143,16 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     code = _clean_code(code)
     status, template = CODES.get(code, (500, code))
     try:
-        message = template.format(**params) if params else template
+        # ``_FmtParam`` wrappers: the format step coerces every referenced
+        # non-str param, and used to serve a default ``object.__repr__``
+        # heap address verbatim in the message (json14).  Unreferenced
+        # params stay dormant, exactly as before — ``str.format`` only
+        # renders the fields the template names.
+        if params:
+            message = template.format(
+                **{k: _FmtParam(v) for k, v in params.items()})
+        else:
+            message = template
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -1059,7 +1302,19 @@ def exc_detail(exc, cap: int = 200) -> str:
     # object* when it is already a str — a str-subclass ``encode`` bomb riding
     # an exception message used to raise out of the coded-error path itself
     # and turn the coded response into an uncoded 500.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")[: max(0, cap)]
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    if _ADDR_REPR_RE.search(text):
+        # ``str(exc)`` renders the exception's *message objects*, so a
+        # leftover raising with a junk arg answered the default
+        # ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+        # address — verbatim inside a coded error's own params (json14; the
+        # belt belongs at the seam where the exception is coerced).  Degrade
+        # to the same ``"error"`` token every other unreadable-message arm
+        # answers — the bookmarks14 ``_error_text`` seam builds on exactly
+        # that token.  Real str storage picked from a coded ``detail`` dict
+        # returned above, untouched.
+        return "error"
+    return text[: max(0, cap)]
 
 
 def api_error(code: str, /, **params) -> HTTPException:

@@ -162,14 +162,21 @@ class JsonableParamPins(unittest.TestCase):
     def test_str_tail_base_bomb_drops_to_none(self):
         self.assertIsNone(errors.jsonable_error_detail(StrTailBaseBomb()))
 
-    def test_items_base_bomb_dict_drops_to_none(self):
-        # The json7 contract for the bound-items dict arm: drop the node to
-        # null; entry salvage is api_error_from's unbound-read job.
-        self.assertIsNone(errors.jsonable_error_detail(ItemsBaseBombDict(a=1)))
+    def test_items_base_bomb_dict_recovers_its_real_entries(self):
+        # json14 (the maint14/bookmarks14 rule): the dict arm copies through
+        # the C-level storage, so a real subclass's ``items()`` bomb — the
+        # BaseException twin included — no longer vaporises perfectly
+        # walkable entries to null.
+        out = errors.jsonable_error_detail(ItemsBaseBombDict(a=1))
+        self.assertEqual(out, {"a": 1})
+        _renderable(out)
 
-    def test_iter_base_bomb_list_drops_to_none(self):
-        self.assertIsNone(
-            errors.jsonable_error_detail(IterBaseBombList([1, 2])))
+    def test_iter_base_bomb_list_recovers_its_real_elements(self):
+        # json14: the sequence arm iterates through the unbound bases, so a
+        # real subclass's ``__iter__`` bomb cannot vaporise its storage.
+        out = errors.jsonable_error_detail(IterBaseBombList([1, 2]))
+        self.assertEqual(out, [1, 2])
+        _renderable(out)
 
     def test_isoformat_base_bomb_falls_to_the_str_tail(self):
         out = errors.jsonable_error_detail(IsoBaseBomb())
