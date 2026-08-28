@@ -350,15 +350,53 @@ def _account_rows(auth_cfg: dict) -> list[dict]:
     if not _isinst(rows, list):
         return []
     out: list[dict] = []
-    # Unbound iteration + a guarded dict() copy: a list-subclass __iter__
+    # Unbound iteration + a laundered rebuild: a list-subclass __iter__
     # bomb, or a row whose own keys()/__iter__ raises, costs itself only.
+    #
+    # Row *keys* are laundered to exact str, the :func:`_auth_cfg` rule this
+    # copy never got: ``dict(e)`` of an exact-dict row takes CPython's fast
+    # path — entries move over with their *cached* hashes, no ``__hash__`` /
+    # ``__eq__`` runs — so a leftover str-subclass key whose hash shadows
+    # ``"username"`` while its ``__eq__`` raises survived the copy intact.
+    # Every later plain ``row.get("username")`` probe that landed on its
+    # slot then detonated the comparison from inside the C-level lookup of
+    # an exact dict, with no method override left to bypass —
+    # ``set_account_password``'s accounts-list membership walk rode that
+    # raise straight out of POST /api/auth/change-password and the
+    # administrator reset endpoint as a raw 500.  ``str.__str__`` reads the
+    # real text underneath the override, so a bombed-but-clean key keeps
+    # its field; non-str keys (YAML int/bool spellings) pass through — they
+    # cannot shadow a string probe, and richcompare answers NotImplemented
+    # for them without consulting any override.
     for e in _iter_list(rows):
         if not _isinst(e, dict):
             continue
-        try:
-            out.append(dict(e))
-        except Exception:
+        pairs = _mapping_items(e)
+        if not pairs:
+            # No readable pairs: either a genuinely empty row (keep it,
+            # matching the old ``dict(e)`` copy) or junk that cannot even
+            # answer its items (drop it, matching the old failed copy).
+            try:
+                if dict.__len__(e) == 0:
+                    out.append({})
+            except Exception:
+                pass
             continue
+        row: dict = {}
+        for k, v in pairs:
+            try:
+                if type(k) is str:
+                    row[k] = v
+                elif _isinst(k, str):
+                    row[str.__str__(k)] = v
+                else:
+                    row[k] = v
+            except Exception:
+                # A lying ``__class__`` that answers str (the unbound copy
+                # TypeErrors) or a key whose re-hash bombs: that one field
+                # is unreadable either way — drop it, keep its siblings.
+                continue
+        out.append(row)
     return out
 
 
@@ -1307,6 +1345,10 @@ def set_account_password(username: str, password: str) -> None:
         raise ValueError("not_found")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError("password_too_short")
+    # The bare ``.get`` is sound only because ``_account_rows`` launders row
+    # keys to exact str: this walk reads the *snapshot* (``_auth_cfg()``),
+    # where a leftover hash-shadowing row key used to detonate the lookup
+    # and 500 the password-change routes (see the laundering note there).
     in_accounts_list = any(
         _cfg_text(_pick(raw.get("username"), "")).strip() == name
         for raw in _account_rows(_auth_cfg())
