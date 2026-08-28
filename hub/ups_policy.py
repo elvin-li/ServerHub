@@ -276,7 +276,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -291,7 +293,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -302,19 +306,25 @@ def _jsonable(value, depth: int = 0):
         try:
             value = str(value)
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims bytes, is not) TypeErrors the
             # unbound decode: junk drops like any other unrenderable.
             return None
     if _isa(value, dict):
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass): there is
             # nothing to salvage from it, but its *siblings* must survive —
             # the raise used to ride out of drill()'s scrub and 500 the
@@ -327,19 +337,25 @@ def _jsonable(value, depth: int = 0):
             # every sane sibling pair down with it.
             try:
                 k, v = pair
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A lying ``__class__`` key TypeErrors the unbound
                     # decode; it renders through str() below instead.
                     pass
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             # A str *key* skipped the string sanitizer below: a leftover JSON
             # ``"\ud800…"`` key in the state file's steps/last used to 500
@@ -351,20 +367,26 @@ def _jsonable(value, depth: int = 0):
             try:
                 k = str(k)
                 k = str.encode(k, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the row or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -373,11 +395,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/ups.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -398,10 +424,14 @@ def _row_get(row, key):
         return None
     try:
         return row.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             return dict.get(row, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -418,7 +448,9 @@ def _seam_eq(value, expected) -> bool:
     """
     try:
         return bool(value == expected)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -426,7 +458,9 @@ def _truthy(value) -> bool:
     """``bool()`` that a raw seam value's ``__bool__`` bomb cannot raise out of."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -449,7 +483,9 @@ def _below_floor(value, floor) -> bool:
         return False
     try:
         return float(value) <= float(floor)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -465,7 +501,9 @@ def _reason(template: str, *parts) -> str:
     """
     try:
         return template.format(*parts)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -479,7 +517,9 @@ def _service_states() -> dict[str, str]:
         # isinstance gate but one whose ``__iter__`` raises used to abort
         # this reader mid-scan and wipe every sibling's state with it.
         groups = list(groups) if isinstance(groups, list) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         groups = []
     for g in groups:
         # _isa: a ``__class__``-property bomb group used to raise out of
@@ -495,7 +535,9 @@ def _service_states() -> dict[str, str]:
             continue
         try:
             services = list(services)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # One group's services refusing iteration drops that group
             # alone; the states already collected keep their rows honest.
             continue
@@ -539,7 +581,9 @@ def _spawn(target) -> bool:
     def run():
         try:
             target()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A worker crash must not leave a stack half-handled *silently*;
             # the state file keeps whatever was recorded, and the next sweep
             # respawns from it.
@@ -710,7 +754,9 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     # every sane sibling stack out of the plan with it.
     try:
         stacks = [s for s in _list_stacks() if _isa(s, dict)]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stacks = []
     # _cfg_text probe, not a bare str(): an already-int over-cap id (YAML
     # hex, exempt from the digit cap) in one row used to ValueError here and
@@ -758,7 +804,9 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     if script_ids:
         try:
             states = _service_states()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             states = {}
         for sid in script_ids:
             state = states.get(sid)
@@ -809,19 +857,25 @@ def _cfg_text(value) -> str:
             # Unbound base coercion first, so the str() probe never runs a
             # subclass ``__str__``; past the digit cap it stays ValueError.
             return str(int.__index__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(value, str) and type(value) is str:
         return value
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if type(text) is str:
         return text
     try:
         return str.__str__(text)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -837,7 +891,9 @@ def _catalog() -> dict:
     # ``__class__``-property bomb row used to wipe its sane siblings.
     try:
         stacks = [s for s in _list_stacks() if _isa(s, dict)]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stacks = []
     from hub.config import cfg
     scripts = []
@@ -847,7 +903,9 @@ def _catalog() -> dict:
         # and 500'd the catalog the same way; an unreadable list means an
         # empty picker, never a dead settings form.
         raw_scripts = list(raw_scripts) if _isa(raw_scripts, list) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw_scripts = []
     for s in raw_scripts:
         # _isa: a ``__class__``-property bomb script row used to detonate
@@ -868,7 +926,9 @@ def _catalog() -> dict:
             # __bool__ bomb stop value used to 500 the whole catalog where
             # "no usable stop" is the honest reading.
             has_stop = bool(_row_get(s, "stop"))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             has_stop = False
         scripts.append({
             "id": sid,
@@ -907,7 +967,9 @@ def drill() -> dict:
     policy = shutdown_settings()
     try:
         status = _ups_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         status = {"present": False}
     # _row_get + _truthy on every status read: a dict-subclass ``.get`` or
     # ``__bool__`` bomb from the _ups_status seam used to 500 both
@@ -954,7 +1016,9 @@ def _sweep_locked(now: int) -> list[dict]:
 
     try:
         status = _ups_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         status = None
     # Sensor unreadable (pmset failed / empty output → present False): never
     # trigger on the unknown, and never *reset* on it either — leaving an
@@ -1072,7 +1136,9 @@ def _engage(now: int, reason: str, policy: dict) -> dict:
     try:
         audit.record(audit.UPS_POLICY_TRIGGERED, reason=reason,
                      targets=[p["id"] for p in planned])
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     _spawn(_run_stop_sequence)
     return alert
@@ -1113,7 +1179,9 @@ def _run_stop_sequence() -> None:
     try:
         from hub.containers_svc import _stack_paths
         compose_by_id = {str(s.get("id")): s.get("compose_path") for s in _stack_paths()}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         compose_by_id = {}
 
     for step in steps:
@@ -1148,14 +1216,18 @@ def _run_stop_sequence() -> None:
             _record_step(kind, sid, stop_issued=True)
             try:
                 rc, out, err = _svc_action(sid, "stop")
-            except Exception as e:  # unknown target etc. — record, keep going
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:  # unknown target etc. — record, keep going
                 rc, out, err = -1, "", _as_text(e)
             detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
             _record_step(kind, sid, done=True, stop_ok=rc == 0, detail=detail)
         try:
             audit.record(audit.UPS_POLICY_STEP, action="stop", kind=kind,
                          target=sid, ok=rc == 0, detail=detail)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     _mutate(lambda s: s.update(stop_done=True))
@@ -1198,7 +1270,9 @@ def _run_restore_sequence() -> None:
         else:
             try:
                 rc, out, err = _svc_action(sid, "start")
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 rc, out, err = -1, "", _as_text(e)
         detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
         _record_step(kind, sid, start_ok=rc == 0, start_detail=detail)
@@ -1206,7 +1280,9 @@ def _run_restore_sequence() -> None:
         try:
             audit.record(audit.UPS_POLICY_STEP, action="start", kind=kind,
                          target=sid, ok=rc == 0, detail=detail)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     def finish(s: dict) -> None:
@@ -1225,7 +1301,9 @@ def _run_restore_sequence() -> None:
     _mutate(finish)
     try:
         audit.record(audit.UPS_POLICY_RESET, restarted=started, failed=failures)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if failures:
         message = (
@@ -1246,5 +1324,7 @@ def _run_restore_sequence() -> None:
                           message=message, event="resolved")
     try:
         invalidate_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass

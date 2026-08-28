@@ -10,7 +10,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from hub import ups_svc
+from hub import ups_policy, ups_svc
 from hub.app_factory import create_app
 from hub.auth import require_auth
 
@@ -65,6 +65,13 @@ class Ups13LeftoverTests(unittest.TestCase):
 
         with self.assertRaises(KeyboardInterrupt):
             ups_svc._isa(_Ki(), dict)
+
+    def test_policy_jsonable_swallows_list_iter_baseexception(self):
+        class _IterBomb(list):
+            def __iter__(self):
+                raise LeftoverWatchdogTimeout("ups policy jsonable watchdog")
+
+        self.assertIsNone(ups_policy._jsonable(_IterBomb([1])))
 
 
 if __name__ == "__main__":
