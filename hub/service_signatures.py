@@ -18,6 +18,9 @@ from pathlib import Path
 
 from hub import cli_args
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: One signature per known service.
 #:   procs: lowercase process-name tokens.  Matched exact or by prefix in
 #:          either direction, because `lsof` truncates COMMAND (e.g. a
@@ -186,18 +189,49 @@ _RUNTIMES = {
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 #: lsof/ps encode a space in COMMAND as ``\x20`` (hex) or ``\040`` (octal)
@@ -209,7 +243,7 @@ _C_OCT_ESC = re.compile(r"\\([0-7]{3})")
 
 def unescape_proc_name(name: str) -> str:
     """Decode C-style byte escapes that lsof and ps leave in a process name."""
-    raw = str(name or "")
+    raw = _utf8_text(name)
     if "\\" not in raw:
         return raw
 

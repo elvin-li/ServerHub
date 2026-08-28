@@ -4,6 +4,10 @@ from __future__ import annotations
 import os
 import pwd
 import grp
+import re
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _isa(value, kinds) -> bool:
@@ -20,42 +24,57 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _pwd_text(value) -> str:
     """JSON-encodable pwd/grp field.  Leftover bytes / ``\\ud800`` used to 500 GET /api/users."""
-    if _isa(value, (bytes, bytearray)):
-        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
-        # field whose bound ``.decode`` raises used to escape mid-row and
-        # silently drop every healthy pwd row after it.  Try-wrapped: a
-        # *lying* ``__class__`` impostor passes the bytes gate but is no
-        # bytes underneath, and the unbound call's TypeError used to ride
-        # the same path out of the walk — fall through to the str() rank
-        # so a legible impostor still renders instead of costing the page.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
     if value is None:
-        value = ""
-    elif type(value) is not str:
+        return ""
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
-    # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
-    # bound ``encode`` bomb rode this line out of the row walk and cost every
-    # healthy row after the poisoned one.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _user_row(u, seen: set):
@@ -76,7 +95,9 @@ def _user_row(u, seen: set):
         # every healthy row.  The str() probe reuses this except.
         str(uid)
         str(gid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Broad, not (TypeError, ValueError, OverflowError,
         # AttributeError): a leftover int-subclass id whose
         # ``__int__``/``__index__`` raises something else used to
@@ -109,7 +130,9 @@ def _user_row(u, seen: set):
                 groups.append(gn)
                 if gn in ("admin", "wheel"):
                     is_admin = True
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Broad, not (KeyError, OSError, TypeError,
                 # OverflowError): a leftover Open Directory gid whose
                 # getgrgid lookup raises something else — a RuntimeError
@@ -122,7 +145,9 @@ def _user_row(u, seen: set):
                 # itself only" rule at group rank).  One unanswerable
                 # gid now costs only its own entry.
                 pass
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return {
         "name": name,
@@ -141,27 +166,35 @@ def list_users() -> list:
     admin_gids = set()
     try:
         admin_gids.add(grp.getgrnam("admin").gr_gid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Broad, not (KeyError, OSError, TypeError): a leftover int-subclass
         # gr_gid whose ``__hash__`` raises detonated ``set.add`` itself and
         # 500'd GET /api/users before the first pwd row was even read.
         pass
     try:
         admin_gids.add(grp.getgrnam("staff").gr_gid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # dscl for UniqueID >= 500 typically; macOS can emit duplicate root via OD
     users = []
     seen = set()
     try:
         entries = pwd.getpwall()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Open Directory leftover KeyError / TypeError / EIO used to 500
         # GET /api/users.  Same bar as getgrouplist below.
         return []
     try:
         iterator = iter(entries)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Not just TypeError: a directory-service handle that dies *at* the
         # start of the walk raises OSError(EIO) from __iter__ — one step
         # earlier than the mid-iteration death below — and used to 500
@@ -171,7 +204,9 @@ def list_users() -> list:
         for u in iterator:
             try:
                 row = _user_row(u, seen)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Per-row catch, one rank inside the mid-iteration one below:
                 # a poisoned Open Directory *field* — a getattr property
                 # raising EIO, anything ``_user_row``'s own nets miss — used
@@ -181,7 +216,9 @@ def list_users() -> list:
                 continue
             if row is not None:
                 users.append(row)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Directory Service dying mid-iteration used to 500 the page
         # instead of returning the rows already collected.
         pass
