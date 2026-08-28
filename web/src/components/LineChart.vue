@@ -112,7 +112,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 
 // refLabel formats the reference line, which is a localized string.  Without
 // this the component threw a ReferenceError the moment any caller passed a
@@ -158,9 +158,9 @@ const PAD = { t: 4, r: 2, b: 4, l: 2 }
 const isPercent = computed(() => props.percent || props.unit === '%')
 
 const cleaned = computed(() =>
-  (props.series || []).map(s => ({
+  asArray(props.series).map(s => ({
     ...s,
-    values: (s.values || []).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
+    values: asArray(s.values).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
   })).filter(s => s.values.some(v => v != null))
 )
 

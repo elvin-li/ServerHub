@@ -318,7 +318,7 @@
               <td>
                 <strong>{{ finiteText(i.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(i.mac) }}{{ finiteN(i.mtu, null) != null ? ' · MTU ' + finiteN(i.mtu) : '' }}</div>
-                <div v-if="(i.ipv6 || []).length" class="show-m sub mono">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(i.ipv6).length" class="show-m sub mono">{{ asArray(i.ipv6).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
               <td><span class="badge" :class="i.up ? 'ok' : ''">{{ finiteText(i.status, '') || (i.up ? 'up' : 'down') }}</span></td>
               <td class="mono">
@@ -328,7 +328,7 @@
               <td class="mono col-hide-m">
                 <div v-for="(a,idx) in i.ipv4 || []" :key="'m'+idx">{{ finiteText(a.netmask) }}</div>
               </td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ asArray(i.ipv6).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
@@ -360,14 +360,14 @@
                 <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.disabled') }}</span>
                 <div class="show-m sub">{{ finiteText(s.mode) }}{{ finiteText(s.device, '') ? ' · ' + finiteText(s.device) : '' }}{{ finiteText(s.router, '') ? ' · ' + finiteText(s.router) : '' }}</div>
-                <div v-if="(s.dns||[]).length" class="show-m sub mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(s.dns).length" class="show-m sub mono">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
               <td class="mono col-hide-m">{{ finiteText(s.device) }}</td>
               <td class="col-hide-m"><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ finiteText(s.mode) }}</span></td>
               <td class="mono">{{ finiteText(s.ip) }}</td>
               <td class="mono col-hide-m">{{ finiteText(s.subnet) }}</td>
               <td class="mono col-hide-m">{{ finiteText(s.router) }}</td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || s.disabled" @click="openManual(s)">{{ t('network.edit_ip') }}</button>
                 <button class="tiny" :disabled="busy || s.disabled" @click="setDhcp(s)">{{ t('network.act_dhcp') }}</button>
@@ -409,7 +409,7 @@
                 <strong>{{ finiteText(s.name) }}</strong>
                 <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
-              <td class="mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
+              <td class="mono">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
               <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -733,11 +733,11 @@ const filteredDockerPorts = computed(() => {
 
 const containerNames = computed(() => {
   const s = new Set()
-  for (const p of data.value?.docker_ports || []) {
+  for (const p of asArray(data.value?.docker_ports)) {
     if (p.container) s.add(p.container)
   }
-  for (const n of data.value?.docker_networks || []) {
-    for (const c of n.containers || []) {
+  for (const n of asArray(data.value?.docker_networks)) {
+    for (const c of asArray(n.containers)) {
       if (c.name) s.add(c.name)
     }
   }
@@ -745,7 +745,7 @@ const containerNames = computed(() => {
 })
 
 const deviceOptions = computed(() => {
-  return (data.value?.interface_addresses || []).map(i => i.device)
+  return asArray(data.value?.interface_addresses).map(i => i.device)
 })
 
 const failoverModeLabel = computed(() => {
@@ -785,7 +785,7 @@ function priorityStatusKey(s) {
 }
 
 function asServiceList(raw) {
-  return Array.isArray(raw) ? raw : []
+  return asArray(raw)
 }
 
 function cloneServiceOrder(raw) {
@@ -832,7 +832,7 @@ async function refresh(force = false) {
     const aa = data.value?.alias_auto
     if (aa?.config) {
       autoBindOn.value = !!aa.config.auto_bind
-      autoIpsText.value = (aa.config.ips || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
+      autoIpsText.value = asArray(aa.config.ips).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
     }
   } catch (e) {
     if (generation !== loadGeneration) return
@@ -1024,7 +1024,7 @@ async function removeAlias(device, ip) {
 
 function openPrimaryEdit(device, addr) {
   // open manual editor for matching service
-  const svc = (data.value?.services || []).find(s => s.device === device)
+  const svc = asServiceList(data.value?.services).find(s => s.device === device)
   if (svc) {
     openManual({
       ...svc,
@@ -1091,7 +1091,7 @@ async function applyManual() {
 
 function openDns(s) {
   dnsSvc.value = s
-  dnsServers.value = (s.dns || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n')
+  dnsServers.value = asArray(s.dns).map((n) => finiteText(n, '')).filter(Boolean).join('\n')
 }
 
 async function applyDns() {

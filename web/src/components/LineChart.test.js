@@ -499,3 +499,9 @@ describe('LineChart x-axis time labels', () => {
     expect(w.findAll('.y-lbl')).toHaveLength(0)
   })
 })
+
+describe('LineChart leftover series', () => {
+  it('does not throw when series is a leftover mapping', () => {
+    expect(() => chart({ series: { 0: { name: 'cpu', values: [1, 2] } }, unit: '%' })).not.toThrow()
+  })
+})

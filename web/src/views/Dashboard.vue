@@ -43,10 +43,10 @@
           <button class="tiny" @click="refresh" :disabled="loading">{{ t('common.refresh') }}</button>
         </div>
       </div>
-      <template v-for="g in status?.groups || []" :key="g.group">
+      <template v-for="g in asArray(status?.groups)" :key="g.group">
         <h2 class="member-group">{{ finiteText(g.group) }}</h2>
         <div class="dash-grid">
-          <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
+          <div v-for="s in asArray(g.services)" :key="s.id" class="tile span-4 member-svc">
             <div class="row">
               <!-- The LED is colour alone, and the sub line below prefers the
                    free-text detail over the state word, so a screen reader
@@ -68,7 +68,7 @@
       <div v-if="!status && !loadError" class="tile sub" role="status">
         {{ t('common.loading') }}
       </div>
-      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile sub">
+      <div v-else-if="!asArray(status?.groups).length && !loadError" class="tile sub">
         {{ t('dashboard.member_empty') }}
       </div>
     </template>
@@ -534,7 +534,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="v in (storage?.volumes || []).slice(0, 8)" :key="v.mount">
+            <tr v-for="v in asArray(storage?.volumes).slice(0, 8)" :key="v.mount">
               <td class="mono">
                 {{ shortMount(v) }}
                 <div class="show-m sub">{{ finiteText(v.kind) }} · {{ fmtGb(v.used_gb) }} / {{ fmtGb(v.avail_gb) }}</div>
@@ -555,7 +555,7 @@
             </tr>
             <!-- Column headings above nothing read as "still loading"; say
                  which of the two states this actually is. -->
-            <tr v-if="!(storage?.volumes || []).length">
+            <tr v-if="!asArray(storage?.volumes).length">
               <td colspan="6" class="empty-row">{{ storage ? t('main_extra.empty_volumes') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
             </tr>
           </tbody>
@@ -586,7 +586,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="c in (containers || []).slice(0, 10)" :key="c.id">
+            <tr v-for="c in asArray(containers).slice(0, 10)" :key="c.id">
               <!-- The visible Status column is col-hide-m, so on a phone this
                    LED is the row's only state and colour alone says nothing
                    to a screen reader: hide the paint, spell the state — same
@@ -665,7 +665,7 @@
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
         <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
         <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
-        <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
+        <div v-for="(a,i) in asArray(alerts).slice(0,5)" :key="i" class="alert-item">
           <!-- The alert's severity was its LED colour alone; the message text
                does not necessarily repeat it. -->
           <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')" aria-hidden="true"></span>
@@ -687,7 +687,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th class="col-hide-m">{{ t('dashboard.col_addr') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(p,i) in (ports || []).slice(0, 12)" :key="i">
+            <tr v-for="(p,i) in asArray(ports).slice(0, 12)" :key="i">
               <td>
                 {{ finiteText(p.process) }}
                 <div v-if="finiteText(p.address, '')" class="show-m sub mono">{{ finiteText(p.address) }}</div>
@@ -730,8 +730,8 @@
           {{ t('dashboard.adaptive_line', {
             auto: finiteN(status.adaptive.auto_labeled, 0),
             orphan: finiteN(status.adaptive.orphan_count, 0),
-            compose: (status.adaptive.compose_projects || []).length,
-            nginx: (status.adaptive.nginx_sites || []).length,
+            compose: asArray(status.adaptive.compose_projects).length,
+            nginx: asArray(status.adaptive.nginx_sites).length,
           }) }}
         </div>
         <div class="bm-grid" v-if="bookmarks.length" style="margin-top:10px">
@@ -1203,7 +1203,7 @@ function bmLabel(b) {
 // Shared x-axis for the three resource charts. Index-based x used to
 // squeeze omitted rollup windows together so a 30d hole looked like a
 // 90s gap; LineChart plots these as (t - tMin) / (tMax - tMin).
-const metricTimes = computed(() => (metrics.value || []).map(p => p.t ?? null))
+const metricTimes = computed(() => asArray(metrics.value).map(p => p.t ?? null))
 
 // The `*_max` peak series only exist on aggregated points (5m/1h tiers and
 // decimated raw): averaging a whole window would hide short spikes, so the
@@ -1213,17 +1213,17 @@ const metricTimes = computed(() => (metrics.value || []).map(p => p.t ?? null))
 const cpuChartSeries = computed(() => [
   {
     name: t('dashboard.chart_cpu'),
-    values: (metrics.value || []).map(p => p.cpu_used_pct ?? null),
+    values: asArray(metrics.value).map(p => p.cpu_used_pct ?? null),
     color: 'var(--accent)',
   },
   {
     name: `${t('dashboard.chart_cpu')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.cpu_used_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.cpu_used_pct_max ?? null),
     color: 'color-mix(in srgb, var(--accent) 38%, transparent)',
   },
   {
     name: t('dashboard.chart_load_cap'),
-    values: (metrics.value || []).map(p => {
+    values: asArray(metrics.value).map(p => {
       if (p.load_pct != null) return Math.min(100, p.load_pct)
       if (p.load1 != null) return Math.min(100, (p.load1 / (p.ncpu || ncpu.value || 1)) * 100)
       return null
@@ -1241,7 +1241,7 @@ const cpuAppleChartSeries = computed(() => {
   const busy = u + s
   const sysR = busy > 0 ? s / busy : 0.35
   const userR = busy > 0 ? u / busy : 0.65
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   return [
     {
       name: t('dashboard.cpu_system'),
@@ -1259,7 +1259,7 @@ const cpuAppleChartSeries = computed(() => {
 const memChartSeries = computed(() => [
   {
     name: t('dashboard.chart_mem_pressure'),
-    values: (metrics.value || []).map(p => {
+    values: asArray(metrics.value).map(p => {
       if (p.mem_used_pct != null) return p.mem_used_pct
       if (p.mem_free_pct != null) return 100 - p.mem_free_pct
       return null
@@ -1270,7 +1270,7 @@ const memChartSeries = computed(() => [
     // No mem_free_pct fallback here: 100 - max(free) would be the window's
     // *minimum* pressure, not its peak.
     name: `${t('dashboard.chart_mem_pressure')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.mem_used_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.mem_used_pct_max ?? null),
     color: 'color-mix(in srgb, var(--ok) 38%, transparent)',
   },
 ])
@@ -1278,12 +1278,12 @@ const memChartSeries = computed(() => [
 const diskChartSeries = computed(() => [
   {
     name: t('dashboard.chart_disk'),
-    values: (metrics.value || []).map(p => p.disk_pct ?? null),
+    values: asArray(metrics.value).map(p => p.disk_pct ?? null),
     color: 'var(--warn)',
   },
   {
     name: `${t('dashboard.chart_disk')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.disk_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.disk_pct_max ?? null),
     color: 'color-mix(in srgb, var(--warn) 38%, transparent)',
   },
 ])
@@ -1303,7 +1303,7 @@ const gpuChartTitle = computed(() => {
   return `${label} ${fmtN(gpuUtilPct.value)}%`
 })
 const gpuChartSeries = computed(() => {
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   const live = gpuUtilPct.value
   return [
     {
@@ -1341,7 +1341,7 @@ const historyHint = computed(() => {
   if (!meta || meta.since == null || meta.until == null) return ''
   const span = meta.until - meta.since
   if (span <= 0) return ''
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   if (!pts.length) return t('dashboard.chart_accumulating')
   const first = pts[0]?.t
   if (first == null || first - meta.since <= span * 0.1) return ''

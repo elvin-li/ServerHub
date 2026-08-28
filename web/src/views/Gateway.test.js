@@ -102,6 +102,18 @@ describe('Gateway leftover payloads', () => {
     expect(region.text()).toBe('syntax ok')
     wrapper.unmount()
   })
+
+  it('does not throw when listens is a leftover mapping', async () => {
+    api.getNginx.mockResolvedValue({
+      running: true,
+      pid: '1',
+      sites: [{ file: 'nas.conf', listens: { 0: 8080 }, server_names: { 0: 'x' }, upstreams: { 0: 'y' } }],
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('nas.conf')
+    wrapper.unmount()
+  })
 })
 
 describe('Gateway page', () => {
