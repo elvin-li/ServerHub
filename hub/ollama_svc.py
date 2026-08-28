@@ -465,7 +465,15 @@ def configured_url() -> str:
     text and is then *visibly* rejected by :func:`base_url` (url_rejected
     warns in the UI) instead of silently reading as unconfigured.
     """
-    return settings_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
+    # _mapping_get, not a bare ``.get``: ``_settings()`` launders the *block*
+    # but keeps its stored keys, and even a plain-dict ``.get`` probe runs a
+    # colliding stored key's own ``__eq__`` inside the C-level lookup.  A
+    # leftover str-subclass key whose text shadows ``url`` and whose
+    # ``__eq__`` raises (the host10 hash-shadow class) used to escape every
+    # ``base_url()`` caller: the coded 500 on GET /api/ollama/status, a raw
+    # 500 on POST /api/ollama/models/delete (``_cli_env``), and a lying 502
+    # on the daemon POSTs.  The shadowed field reads as unconfigured.
+    return settings_text(_mapping_get(_settings(), "url")).strip().rstrip("/") or DEFAULT_URL
 
 
 def base_url() -> str:
@@ -831,7 +839,11 @@ def discover_label(
     # settings_text, not _as_text: a hand-edited numeric YAML label
     # (``label: 2023``) used to be silently ignored here, so discovery fell
     # through to the plist scan and Start/Stop targeted a different agent.
-    configured = settings_text(_settings().get("label")).strip()
+    # _mapping_get, not a bare ``.get``: a leftover hash-shadowing ``label``
+    # key used to detonate the lookup's own ``__eq__`` out of every caller —
+    # the same coded 500 on GET /api/ollama/status the shadowed ``url`` key
+    # caused through configured_url().
+    configured = settings_text(_mapping_get(_settings(), "label")).strip()
     if configured:
         return configured
     candidates = _candidate_labels()
@@ -957,6 +969,42 @@ _pull = {
 _pull_lock = threading.Lock()
 
 
+def _row_get(key, default=None):
+    """``_pull`` field read that a leftover hash-shadowing row *key* cannot 500.
+
+    The ``hub.jobs._mapping_get`` rule the pull store never got: even a
+    plain-dict ``.get`` probe compares the probe against every stored key
+    whose hash collides, dispatching into that key's own ``__eq__``.  A
+    leftover str-subclass key whose text shadows ``running`` / ``model`` /
+    ``rc`` / ``log`` and whose ``__eq__`` raises used to 500
+    GET /api/ollama/pull/log raw, take GET /api/ollama/status to the coded
+    500, and 500 POST /api/ollama/pull and /api/ollama/models/delete out of
+    the single-pull mutex scan.  Only the shadowed field degrades to its
+    default; sibling fields keep their sane data.
+    """
+    try:
+        return _pull.get(key, default)
+    except Exception:
+        return default
+
+
+def _reset_pull_row(row: dict) -> None:
+    """Publish *row* into ``_pull``; a hash-shadowing stored key cannot 500.
+
+    ``dict.update`` probes every inserted key against colliding stored keys
+    (their own ``__eq__`` runs inside the C-level insert), so a leftover
+    shadow key used to 500 POST /api/ollama/pull before the pull ever
+    started.  A row the insert cannot probe is junk, not a live pull: it is
+    dropped whole and the real row published into the emptied store — the
+    module-level dict keeps its identity for the tailing thread.
+    """
+    try:
+        _pull.update(row)
+    except Exception:
+        _pull.clear()
+        _pull.update(row)
+
+
 def pull_state() -> dict:
     """Pull-job state as the UI polls it.  Never raises.
 
@@ -969,11 +1017,13 @@ def pull_state() -> dict:
     state = _jsonable({
         # _truthy, not bool(): a __bool__-bomb leftover used to 500 this
         # route (and take GET /api/ollama/status to a coded 500) raw.
-        "running": _truthy(_pull.get("running")),
-        "rc": _pull.get("rc"),
-        "model": _pull.get("model"),
-        "started": _pull.get("started"),
-        "finished": _pull.get("finished"),
+        # _row_get, not ``_pull.get``: a hash-shadowing row *key* used to
+        # detonate the plain lookup itself the same way.
+        "running": _truthy(_row_get("running")),
+        "rc": _row_get("rc"),
+        "model": _row_get("model"),
+        "started": _row_get("started"),
+        "finished": _row_get("finished"),
     })
     return state if isinstance(state, dict) else {
         "running": False, "rc": None, "model": None,
@@ -1043,7 +1093,7 @@ def pull_log() -> dict:
     ``_utf8_text`` on the joined tail: a leftover lone surrogate in one line
     used to 500 Starlette's strict UTF-8 encode of the response body.
     """
-    return {**pull_state(), "log": _utf8_text("\n".join(_pull_log_lines(_pull.get("log"))))}
+    return {**pull_state(), "log": _utf8_text("\n".join(_pull_log_lines(_row_get("log"))))}
 
 
 def start_pull(name: str) -> dict:
@@ -1060,18 +1110,19 @@ def start_pull(name: str) -> dict:
     with _pull_lock:
         # _truthy + is-None probe: a leftover __bool__-bomb ``running`` (or
         # ``model``, via the truth test hidden in ``or``) used to 500 this
-        # POST raw instead of starting/refusing the pull.
-        if _truthy(_pull.get("running")):
-            busy = _pull.get("model")
+        # POST raw instead of starting/refusing the pull.  _row_get: a
+        # hash-shadowing row key used to detonate the mutex scan itself.
+        if _truthy(_row_get("running")):
+            busy = _row_get("model")
             raise api_error(
                 "ollama.pull_running",
                 model=_utf8_text(busy) if busy is not None else "",
             )
-        _pull.update(
+        _reset_pull_row(dict(
             running=True, rc=None, model=name,
             started=strftime_now("%H:%M:%S"), finished=None,
             log=[f"$ ollama pull {name}"],
-        )
+        ))
 
     def run():
         try:
@@ -1097,12 +1148,14 @@ def delete_model(name: str) -> dict:
     if not binary:
         raise api_error("ollama.not_installed")
     with _pull_lock:
-        if _truthy(_pull.get("running")):
+        if _truthy(_row_get("running")):
             # rm during a pull of the same blob corrupts neither, but the
             # combination has no legitimate use; keep the story simple.
             # _truthy + is-None probe: the same __bool__-bomb leftovers that
             # 500'd POST /api/ollama/pull used to 500 this route too.
-            busy = _pull.get("model")
+            # _row_get: the same hash-shadowing row keys that 500'd the pull
+            # mutex scan used to 500 this one too.
+            busy = _row_get("model")
             raise api_error(
                 "ollama.pull_running",
                 model=_utf8_text(busy) if busy is not None else "",
