@@ -66,6 +66,13 @@ class Wg13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             wireguard_svc._isa(_Ki(), dict)
 
+    def test_truthy_swallows_a_bool_baseexception(self):
+        class _BoolBomb:
+            def __bool__(self):
+                raise LeftoverWatchdogTimeout("wg bool watchdog")
+
+        self.assertFalse(wireguard_svc._truthy(_BoolBomb()))
+
 
 if __name__ == "__main__":
     unittest.main()

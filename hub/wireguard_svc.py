@@ -386,7 +386,9 @@ def _nonfinite(value) -> bool:
         # bomb used to raise out of the NaN/inf probes below and 500 the
         # caller instead of costing only the poisoned value.
         value = float.__float__(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return True
     return value != value or value in (float("inf"), float("-inf"))
 
@@ -423,12 +425,16 @@ def _plain_int(value):
             # ValueErrors past it, one layer after the range checks passed.
             str(value)
             return value
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, float):
         try:
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -553,7 +559,9 @@ def settings() -> dict:
     # read (GET /api/wireguard, /settings, /readiness, /next-ip).
     try:
         stored = settings_section("wireguard")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stored = {}
     merged = dict(DEFAULTS)
     # _isa, not bare isinstance: a patched section whose ``__class__`` is a
@@ -569,7 +577,9 @@ def settings() -> dict:
     if _isa(stored, dict):
         try:
             items = dict.items(stored)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = ()
     for key, value in items:
         # Per-item try (the mapping-key lesson): ``key not in merged`` and
@@ -613,7 +623,9 @@ def settings() -> dict:
                 continue
             # Numeric keys: kept raw here, coerced and range-checked below.
             merged[key] = value
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     iface = str(merged["interface"])
     if not _IFACE_RE.match(iface):
@@ -674,14 +686,18 @@ def save_settings(patch: dict) -> dict:
     if _isa(stored, dict):
         try:
             items = list(dict.items(stored))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = ()
     for pair in items:
         try:
             key, value = pair
             if type(key) is str:
                 current[key] = value
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     for key, value in (patch or {}).items():
         if key not in DEFAULTS:
@@ -780,18 +796,24 @@ def _sh_answer(runner, argv, *, timeout):
     """
     try:
         answer = runner(argv, timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
     fields = None
     if _isa(answer, tuple):
         try:
             fields = list(tuple.__iter__(answer))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             fields = None
     elif _isa(answer, list):
         try:
             fields = list(list.__iter__(answer))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             fields = None
     if fields is None or len(fields) != 3:
         return -255, "", ""
@@ -848,7 +870,9 @@ def installation() -> dict:
             # version, not leak a repr into the snapshot.
             tools = _as_text(answers[0]) if _isa(answers[0], str) else ""
             userspace = _as_text(answers[1]) if _isa(answers[1], str) else ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         tools = userspace = ""
     # Presence is decided by the binaries being on disk, not by a subprocess
     # succeeding.  Deriving it from `wg --version` meant any transient failure of
@@ -1047,13 +1071,17 @@ def _conf_interface(parsed) -> dict:
     if _isa(parsed, dict):
         try:
             block = dict.get(parsed, "interface")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             block = None
     if not _isa(block, dict):
         return {}
     try:
         return dict(block)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -1085,17 +1113,23 @@ def _plain_rows(value) -> list[dict]:
     if _isa(value, list):
         try:
             rows = list.__iter__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
     elif _isa(value, tuple):
         try:
             rows = tuple.__iter__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
     if rows is None:
         try:
             rows = iter(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     out: list[dict] = []
     try:
@@ -1104,9 +1138,13 @@ def _plain_rows(value) -> list[dict]:
                 continue
             try:
                 out.append(dict(row))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An iterator whose __next__ bombs mid-walk keeps the rows walked so far.
         pass
     return out
@@ -1120,7 +1158,9 @@ def _conf_peers(parsed) -> list[dict]:
             # In a try for the same lying-``__class__`` impostor
             # :func:`_conf_interface` absorbs: the descriptor itself raises.
             peers = dict.get(parsed, "peers")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             peers = None
     return _plain_rows(peers)
 
@@ -1323,7 +1363,9 @@ def peer_records() -> list[dict]:
             # the C-level copy; it reads as no metadata, not a 500.
             try:
                 meta = dict(meta)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 meta = {}
         else:
             meta = {}
@@ -1647,18 +1689,24 @@ def _live_answer(interface) -> tuple[str, list, str]:
     """
     try:
         answer = live_interface(interface)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "", [], ""
     fields = None
     if _isa(answer, tuple):
         try:
             fields = list(tuple.__iter__(answer))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             fields = None
     elif _isa(answer, list):
         try:
             fields = list(list.__iter__(answer))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             fields = None
     if fields is None or len(fields) != 3:
         return "", [], ""
@@ -1667,12 +1715,16 @@ def _live_answer(interface) -> tuple[str, list, str]:
     if _isa(raw_rows, list):
         try:
             entries = list(list.__iter__(raw_rows))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             entries = None
     elif _isa(raw_rows, tuple):
         try:
             entries = list(tuple.__iter__(raw_rows))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             entries = None
     rows: list[list] = []
     for row in entries or []:
@@ -1680,7 +1732,9 @@ def _live_answer(interface) -> tuple[str, list, str]:
             continue
         try:
             row = list(list.__iter__(row) if _isa(row, list) else tuple.__iter__(row))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         rows.append(row)
     return _as_text(fields[0]).strip(), rows, _as_text(fields[2])
@@ -1728,12 +1782,16 @@ def status(force: bool = False) -> dict:
     # poll.  A junk snapshot reads as not-installed with the shape intact.
     try:
         install = installation()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         install = None
     if _isa(install, dict):
         try:
             install = dict(install)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             install = {}
     else:
         install = {}
@@ -1743,7 +1801,9 @@ def status(force: bool = False) -> dict:
     # cost only itself, never the whole status poll.
     try:
         records = _plain_rows(peer_records())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         records = []
 
     up, rows, error = _dump(interface)
@@ -2037,7 +2097,9 @@ def _peers_for_write() -> list[dict]:
     """
     try:
         rows = _plain_rows(peer_records())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     peers = []
     for record in rows:
@@ -2147,7 +2209,9 @@ def _apply_after_write() -> bool:
     """
     try:
         result = apply_live()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     return _truthy(_mapping_get(result, "ok"))
 
@@ -2476,7 +2540,9 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     if _isa(meta, dict):
         try:
             meta = dict(meta)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             meta = {}
     else:
         meta = {}
@@ -2491,7 +2557,9 @@ def peer_conf(pubkey: str, fmt: str = "wg") -> dict:
     # key must read as "not configured", never a raw 500.
     try:
         rows = _plain_rows(peer_records())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     configured = next(
         (
@@ -2544,7 +2612,9 @@ def export_all(fmt: str = "wg") -> dict:
     # in ``skipped``.
     try:
         rows = _plain_rows(peer_records())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     for record in rows:
         public = _as_text(_mapping_get(record, "public_key"))
@@ -2623,7 +2693,9 @@ def apply_live() -> dict:
     # leaves laundered so the route's JSON body cannot detonate either.
     try:
         result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         result = None
     if _truthy(_mapping_get(result, "ok")):
         return {"ok": True, "applied": True, "device": device}
@@ -2693,7 +2765,9 @@ def _runtime_view(state) -> tuple[bool, bool, str]:
     if _isa(state, dict):
         try:
             state = dict(state)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             state = {}
     else:
         state = {}
@@ -2719,7 +2793,9 @@ def _admin_sequence_answer(commands, *, timeout: int) -> dict:
     """
     try:
         answer = run_admin_sequence(commands, timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         answer = None
     result: dict = {"ok": _truthy(_mapping_get(answer, "ok"))}
     for field in ("error", "message"):
@@ -2757,7 +2833,9 @@ def interface_action(action: str) -> dict:
     # never enqueue an ``rm -f`` with nothing behind it.
     try:
         snapshot = runtime_state(settings()["interface"])
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         snapshot = None
     stale, live_now, name_file = _runtime_view(snapshot)
     if verb in ("up", "restart") and stale and name_file:
@@ -2804,7 +2882,9 @@ def interface_action(action: str) -> dict:
             # bare ``fresh[...]`` pulls, one repair attempt later.
             try:
                 fresh = runtime_state(settings()["interface"])
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 fresh = None
             _, fresh_live, fresh_name = _runtime_view(fresh)
             if fresh_live:
@@ -2947,7 +3027,9 @@ def _ping_once(host: str, deadline_ms: int) -> tuple[bool, float | None, bool]:
         rc, out, err = _sh_answer(
             sh, [PING, "-c", "1", "-W", str(deadline_ms), "-n", host], timeout=8
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False, None, False
     # _ping_rc before any comparison: an rc-subclass ``__eq__`` bomb from a
     # patched/odd sh detonated the sentinel probe below, past this
@@ -2986,7 +3068,9 @@ def _ping_deadline(timeout_ms) -> int:
         elif isinstance(timeout_ms, float):
             timeout_ms = float.__float__(timeout_ms)
         return max(200, min(int(timeout_ms or 800), 5000))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 800
 
 
@@ -3003,7 +3087,9 @@ def _ping_targets() -> list[tuple[dict, str]]:
     """
     try:
         records = peer_records()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     # _isa on both gates: a listing (or row) whose ``__class__`` is a
     # raising property used to detonate the bare isinstance itself — the
@@ -3017,7 +3103,9 @@ def _ping_targets() -> list[tuple[dict, str]]:
     if _isa(records, list):
         try:
             rows = list.__iter__(records)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
     if rows is None:
         # Guarded pull loop (the worker_health.problems rule): a generic
@@ -3026,7 +3114,9 @@ def _ping_targets() -> list[tuple[dict, str]]:
         # survive, the bomb costs only its own tail.
         try:
             it = iter(records or [])
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
         pulled = []
         while True:
@@ -3034,7 +3124,9 @@ def _ping_targets() -> list[tuple[dict, str]]:
                 pulled.append(next(it))
             except StopIteration:
                 break
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 break
         rows = pulled
     targets: list[tuple[dict, str]] = []
@@ -3051,7 +3143,9 @@ def _ping_targets() -> list[tuple[dict, str]]:
         # (:func:`ping_peers`'s result build) then reads exact dicts only.
         try:
             record = dict(record)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         # _mapping_get (the smart_test_svc._schedule_cfg rule, plus the
         # hash-shadow launder): a dict-subclass row whose ``.get`` raises,
