@@ -301,13 +301,18 @@ class MethodBombRowsHttpTests(_DiskYamlSandbox):
             self.assertEqual(response.status_code, 200, response.text[:300])
             _clean(response)
 
-    def test_iter_bomb_log_list_degrades_to_the_waiting_placeholder(self):
+    def test_iter_bomb_log_list_survives_without_a_500(self):
+        # maint5 pinned the guarded drop ("(waiting for output…)");
+        # maint14's unbound ``list.__iter__`` snapshot now reads the
+        # perfectly walkable real lines underneath the bomb (the
+        # bookmarks14 recovered-shape rule) — and the raise still never
+        # escapes the route.
         jobs._jobs["plain"] = {
             "running": False, "rc": 0, "log": _IterBombList(["a"]),
         }
         response = _client().get("/api/maintenance/plain/log")
         self.assertEqual(response.status_code, 200, response.text[:300])
-        self.assertEqual(response.json()["log"], "(waiting for output…)")
+        self.assertEqual(response.json()["log"], "a")
 
     def test_property_bomb_isoformat_stays_served(self):
         jobs._jobs["plain"] = {

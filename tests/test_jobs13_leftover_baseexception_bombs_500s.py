@@ -274,9 +274,15 @@ class GuardContractTests(unittest.TestCase):
                 self.assertIsNone(module._plain_dict(_ClassPropBaseBomb()))
 
     def test_jsonable_launders_base_bomb_shapes(self):
+        # The guard contract is the same for both modules: the bomb is
+        # laundered, never re-raised.  hub.jobs additionally recovers the
+        # perfectly walkable real storage underneath the override since the
+        # maint14 unbound-snapshot sweep (the bookmarks14 recovered-shape
+        # rule); scheduler_svc keeps the guarded drop.
+        self.assertEqual(jobs._jsonable(_IterBaseBombList([1])), [1])
+        self.assertIsNone(scheduler_svc._jsonable(_IterBaseBombList([1])))
         for module in (jobs, scheduler_svc):
             with self.subTest(module=module.__name__):
-                self.assertIsNone(module._jsonable(_IterBaseBombList([1])))
                 self.assertEqual(module._jsonable(_StrBaseBomb()), "")
 
     def test_in_field_reads_a_member_eq_base_bomb_as_no_match(self):

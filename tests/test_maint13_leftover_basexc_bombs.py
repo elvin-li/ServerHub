@@ -164,12 +164,18 @@ class BaseExceptionBombListingTests(_DiskYamlSandbox):
         _clean(response)
         self.assertEqual([r["id"] for r in response.json()], ["plain"])
 
-    def test_iter_bomb_task_list_degrades_to_empty_listing(self):
+    def test_iter_bomb_task_list_survives_without_a_500(self):
+        # maint13 pinned the guarded drop ([]); maint14's unbound
+        # ``list.__iter__`` snapshot now reads the perfectly walkable real
+        # storage underneath the bomb (the bookmarks14 recovered-shape
+        # rule), so the honest row lists — and the raise still never
+        # escapes the route.
         raw = _IterBombList([{"id": "plain", "command": "true"}])
         with mock.patch.object(jobs, "cfg", return_value={"maintenance": raw}):
             response = _client().get("/api/maintenance")
         self.assertEqual(response.status_code, 200, response.text[:300])
-        self.assertEqual(response.json(), [])
+        _clean(response)
+        self.assertEqual([r["id"] for r in response.json()], ["plain"])
 
     def test_shadow_key_eq_bomb_costs_only_its_row(self):
         rows = [
