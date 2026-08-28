@@ -43,6 +43,15 @@ _CACHE_TTL = 15.0
 #: constant in disk_manage_svc; kept local so neither module reaches into the other.
 _INFO_WORKERS = 8
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12/json13 convention): swallowing a Ctrl-C or an
+#: interpreter shutdown to save one plist field would turn the sanitizer
+#: into a hang.  Everything else BaseException-shaped that a leftover
+#: raises out of its own hooks is a bomb like any other — the nas12
+#: guards all stopped at ``except Exception``, so one such leftover
+#: sailed past every catch in the module at once.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 class RaidError(ValueError):
     """Carries a stable ``code`` for the router to translate."""
@@ -73,7 +82,9 @@ def _rc_int(rc) -> int:
         value = int.__index__(rc) if isinstance(rc, int) else int(rc)
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -96,7 +107,9 @@ def _sh_triple(argv, *, timeout: int) -> tuple:
     try:
         rc, out, err = sh(argv, timeout=timeout)
         return rc, out, err
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
 
 
@@ -111,17 +124,32 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
         # with a TypeError — outside any try, a raw 500 on every
         # POST /api/raid/* through the mutation walks (the read page hides
         # behind ``_listing``).  Output that cannot decode is no plist.
-        base = bytes if _isa(out, bytes) else bytearray
-        try:
-            out = base.decode(out, "utf-8", "replace")
-        except Exception:
+        # Both bases are tried, real layout first-come (the modules12 /
+        # logs12 ``_decode_bytes`` rule): the old arm picked the base off
+        # the *claimed* ``__class__``, so a genuine ``bytearray`` whose
+        # ``__class__`` lied ``bytes`` was handed to ``bytes.decode``,
+        # rejected by the descriptor, and its perfectly decodable plist
+        # vanished to the empty document — degrade at the wrong rank.
+        decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(out, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if decoded is None:
             return {}
+        out = decoded
     elif not _isa(out, str):
         try:
             out = str(out)
         except RecursionError:
             return {}
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {}
     # Exact-str copy before any probe: the old bare ``not out`` asked a
     # leftover str-subclass ``__bool__`` bomb for truth, and the bound
@@ -131,7 +159,9 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
     # reads as the empty document.
     try:
         out = bytes.decode(str.encode(out, "utf-8", "replace"), "utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if not out:
         return {}
@@ -140,7 +170,9 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
         return {}
     try:
         parsed = plistlib.loads(out[start:].encode())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Torn XML (``sh`` cap, diagnostics ahead of a truncated plist)
         # raises xml.parsers.expat.ExpatError, which is not ValueError —
         # that used to 500 /api/raid.
@@ -166,10 +198,20 @@ def _isa(value, kinds) -> bool:
     and ``_listing``'s list gate blew GET /api/raid outside its own try.
     A real subclass still matches through the C-level type check; only a
     value that cannot answer what it is takes the non-matching branch.
+
+    ``except BaseException``: the nas9 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    (the watchdog/timeout shape the modules12/logs12/json13 sweeps sealed
+    on their own surfaces) sailed past this catch — and past every sibling
+    guard in this module, because each one stopped at ``Exception`` too —
+    a raw 500 on GET /api/raid and every POST /api/raid/* mutation.  Only
+    genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -186,7 +228,9 @@ def _ident(value) -> str:
             # A leftover subclass ``__bool__``/``__getitem__`` bomb must
             # cost this field, never the page.
             value = value[0] if value else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode in a try (the modules9 rule): the old bound
@@ -195,11 +239,23 @@ def _ident(value) -> str:
         # TypeError outside any try — a raw 500 on the raid mutations
         # through _jsonable/_req_text.  An impostor that cannot decode
         # reads as an empty field like any other junk ident.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
+        # Both bases, real layout first-come (the modules12/logs12 rule):
+        # picking the base off the *claimed* ``__class__`` handed a genuine
+        # bytearray lying ``bytes`` to ``bytes.decode``, and its perfectly
+        # decodable device id vanished to "" — the store silently dropped
+        # from the boot-disk union again.
+        decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if decoded is None:
             return ""
+        value = decoded
     if not _isa(value, str):
         return ""
     # Leftover ``\\ud800`` in a plist Name used to 500 GET /api/raid.
@@ -209,7 +265,9 @@ def _ident(value) -> str:
     # escape this line raw.
     try:
         return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -244,7 +302,9 @@ def _jsonable(value, depth: int = 0):
             if type(value) is not int:
                 value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
@@ -255,7 +315,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -266,11 +328,17 @@ def _jsonable(value, depth: int = 0):
         # Unbound base decode in a try (the modules9 rule): a bytes-liar
         # impostor rejects both the old ``bytes(value)`` copy and the
         # descriptor — it drops instead of 500ing the mutation.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except Exception:
-            return None
+        # Both bases, real layout first-come (the modules12/logs12 rule):
+        # a genuine bytearray lying ``bytes`` used to fail the claimed
+        # base's descriptor and drop its decodable message to null.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
     if _isa(value, dict):
         # Unbound base view (the nas_common rule): the old bound
         # ``value.items()`` guarded its own raise but unpacked *outside*
@@ -282,7 +350,9 @@ def _jsonable(value, depth: int = 0):
         # like a lying int (the modules9 rule).
         try:
             items = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -292,19 +362,25 @@ def _jsonable(value, depth: int = 0):
                 if not _isa(k, (str, bytes, bytearray)):
                     k = str(k)
                 out[_ident(k)] = _jsonable(v, depth + 1)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a leftover whose
         # ``isoformat`` is a *raising property* (or a ``__getattr__`` bomb)
         # still raised out of the probe itself and 500'd POST /api/raid/*
@@ -315,16 +391,22 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/raid.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _ident(value) or str(value).encode("utf-8", "replace").decode("utf-8")
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -349,15 +431,23 @@ def _req_text(raw) -> str:
         # descriptor with a raise outside any try — a raw 500 on the raid
         # mutations where every junk argument earns its coded refusal.  An
         # impostor that cannot decode falls through to the str() probe.
-        base = bytes if _isa(raw, bytes) else bytearray
-        try:
-            return base.decode(raw, "utf-8", "replace")
-        except Exception:
-            pass
+        # Both bases, real layout first-come (the modules12/logs12 rule):
+        # a genuine bytearray lying ``bytes`` used to fail the claimed
+        # base's descriptor and fall to the str() probe, which handed the
+        # ``bytearray(b'…')`` repr to the validators instead of the text.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(raw, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     if type(raw) is not str:
         try:
             raw = str(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # The digit-cap ValueError, or a leftover whose __str__ raises.
             return ""
     # Unbound ``str.encode`` in a try: a subclass whose ``__str__`` answers
@@ -366,7 +456,9 @@ def _req_text(raw) -> str:
     # refusal path instead of raising.
     try:
         return bytes.decode(str.encode(raw, "utf-8", "replace"), "utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -389,7 +481,9 @@ def _plain_map(value) -> dict | None:
         return None
     try:
         return dict(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -407,7 +501,9 @@ def _row_list(value) -> list:
         return []
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -453,6 +549,28 @@ def _admin_result(result) -> dict:
     return cleaned
 
 
+def _run_admin(argv, *, timeout) -> dict:
+    """The privileged-runner *call* itself guarded (the users12 rule).
+
+    ``_admin_result`` launders ``run_admin``'s junk *answers*, but every
+    mutation seam ran the call bare — and this module does not own the
+    runner (tests and tooling patch it; the share_acl_svc ``_sh_call`` /
+    ``_admin_sequence`` guarded-call rule).  A leftover stub that *raises*
+    instead of answering blew every POST /api/raid/* mutation one seam
+    ahead of the launder built for its answers.  A raising runner reads as
+    the generic coded failure — with no message text it can never mint the
+    disk-confirmed vanished-CLI 503 — while an honest answer keeps riding
+    ``_admin_result`` untouched, cancelled / password_required shapes
+    included.
+    """
+    try:
+        return run_admin(argv, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+
+
 def _whole_disk(device: str) -> str:
     """``disk0s2`` → ``disk0``; a whole-disk id passes through unchanged."""
     m = re.match(r"^(disk\d{1,3})", _ident(device))
@@ -476,7 +594,9 @@ def _size_fields(raw) -> tuple:
         if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return None, None
         n = int(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None, None
     try:
         str(n)
@@ -502,7 +622,9 @@ def _finite_float(raw):
         if _isa(raw, bool) or raw in (None, ""):
             return None
         value = float(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if value != value or value in (float("inf"), float("-inf")):
         return None
@@ -743,7 +865,9 @@ def _listing(provider) -> list:
     """
     try:
         rows = provider()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     # _isa: a ``__class__``-bomb listing detonated this gate *outside* the
     # trys on either side of it and 500'd GET /api/raid.
@@ -751,7 +875,9 @@ def _listing(provider) -> list:
         return []
     try:
         return [r for r in list.__iter__(rows) if _isa(r, dict)]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -762,7 +888,9 @@ def _flagged(rows: list, key: str) -> int:
         try:
             if bool(dict.get(row, key)):
                 total += 1
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return total
 
@@ -814,7 +942,9 @@ def _check_devices(devices: list[str], *, minimum: int) -> list[str]:
             rows = tuple.__iter__(devices)
         else:
             rows = iter(())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     for device in rows:
         # _req_text, not str(): a leftover int already past CPython's
@@ -868,7 +998,7 @@ def create_set(
     # concat set is meaningful from two upward.
     members = _check_devices(devices, minimum=2)
 
-    result = run_admin(
+    result = _run_admin(
         [DISKUTIL, "appleRAID", "create", level, name, filesystem, *members],
         timeout=900,
     )
@@ -882,7 +1012,9 @@ def create_set(
             if enriched.get("ok"):
                 enriched.update(level=level, name=name, members=members)
                 result = enriched
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return _admin_result(result)
 
@@ -894,7 +1026,7 @@ def delete_set(*, set_uuid: str, confirm: bool, confirm_phrase: str) -> dict:
         raise RaidError("raid.confirm_required")
     if _req_text(confirm_phrase).strip() != target["name"]:
         raise RaidError("raid.confirm_name_mismatch", name=target["name"])
-    result = run_admin([DISKUTIL, "appleRAID", "delete", target["uuid"]], timeout=600)
+    result = _run_admin([DISKUTIL, "appleRAID", "delete", target["uuid"]], timeout=600)
     invalidate()
     return _admin_result(result)
 
@@ -920,7 +1052,7 @@ def repair_mirror(*, set_uuid: str, device: str, confirm: bool) -> dict:
     if not confirm:
         raise RaidError("raid.confirm_required")
     members = _check_devices([device], minimum=1)
-    result = run_admin(
+    result = _run_admin(
         [DISKUTIL, "appleRAID", "repairMirror", target["uuid"], members[0]],
         timeout=900,
     )
@@ -936,7 +1068,7 @@ def add_member(*, set_uuid: str, device: str, confirm: bool) -> dict:
     if not confirm:
         raise RaidError("raid.confirm_required")
     members = _check_devices([device], minimum=1)
-    result = run_admin(
+    result = _run_admin(
         [DISKUTIL, "appleRAID", "add", "member", members[0], target["uuid"]],
         timeout=900,
     )
@@ -957,7 +1089,7 @@ def remove_member(*, set_uuid: str, member_uuid: str, confirm: bool) -> dict:
         raise RaidError("raid.confirm_required")
     if target["level"] == "mirror" and target["member_count"] <= 2:
         raise RaidError("raid.last_redundant_member")
-    result = run_admin(
+    result = _run_admin(
         [DISKUTIL, "appleRAID", "remove", value, target["uuid"]],
         timeout=600,
     )

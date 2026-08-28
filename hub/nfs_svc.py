@@ -56,6 +56,15 @@ _PROTECTED_ROOTS = (
 
 _CACHE_TTL = 15.0
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12/json13 convention): swallowing a Ctrl-C or an
+#: interpreter shutdown to save one page field would turn the sanitizer
+#: into a hang.  Everything else BaseException-shaped that a leftover
+#: raises out of its own hooks is a bomb like any other — the nas12
+#: guards all stopped at ``except Exception``, so one such leftover
+#: sailed past every catch in the module at once.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 class NfsConfigError(ValueError):
     """Raised with a stable ``code`` the router maps to an API error."""
@@ -77,10 +86,20 @@ def _isa(value, kinds) -> bool:
     entry gate raised raw past the router's NfsConfigError catch.  A real
     subclass still matches through the C-level type check; only a value
     that cannot answer what it is takes the non-matching branch.
+
+    ``except BaseException``: the nas9 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    (the watchdog/timeout shape the modules12/logs12/json13 sweeps sealed
+    on their own surfaces) sailed past this catch — and past every sibling
+    guard in this module, because each one stopped at ``Exception`` too —
+    a raw 500 on GET /api/nfs and both POST routes.  Only genuine control
+    flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -94,11 +113,21 @@ def _as_text(value) -> str:
         # POST /api/nfs/exports and /api/nfs/server.  A decode that cannot
         # answer falls through to the str() probe so a legible impostor
         # still renders instead of costing the route.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
+        # Both bases are tried, real layout first-come (the modules12 /
+        # logs12 ``_decode_bytes`` rule): the old arm picked the base off
+        # the *claimed* ``__class__``, so a genuine ``bytearray`` whose
+        # ``__class__`` lied ``bytes`` was handed to ``bytes.decode``,
+        # rejected by the descriptor, and its perfectly decodable content
+        # fell to the str() probe — which rendered the ``bytearray(b'…')``
+        # repr into the page instead of the text.
+        for base in (bytes, bytearray):
+            try:
+                value = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     if value is None:
         return ""
     if type(value) is not str:
@@ -107,9 +136,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the nas_common._utf8_text / modules6 rule):
     # ``str()`` of a subclass whose ``__str__`` answers *self* skips
@@ -117,7 +150,9 @@ def _as_text(value) -> str:
     # the subclass override — a leftover encode bomb 500'd the same routes.
     try:
         return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -125,7 +160,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -153,7 +190,9 @@ def _rc_int(rc) -> int:
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -176,7 +215,9 @@ def _sh_triple(argv, *, timeout: int) -> tuple:
     try:
         rc, out, err = sh(argv, timeout=timeout)
         return rc, out, err
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
 
 
@@ -201,12 +242,37 @@ def _admin_result(result) -> dict:
     if _isa(result, dict):
         try:
             plain = dict(result)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {"ok": False, "error": "failed"}
     else:
         return {"ok": False, "error": "failed"}
     plain["ok"] = _truthy(plain.get("ok"))
     return plain
+
+
+def _admin_sequence(commands, *, timeout) -> dict:
+    """The privileged-helper *call* itself guarded (the users12 rule).
+
+    ``_admin_result`` launders ``run_admin_sequence``'s junk *answers*, but
+    both mutation seams ran the call bare — and this module does not own
+    the helper (tests and tooling patch it; the share_acl_svc
+    ``_admin_sequence`` guarded-call rule).  A leftover stub that *raises*
+    instead of answering blew POST /api/nfs/exports and /api/nfs/server one
+    seam ahead of the launder built for its answers.  A raising helper
+    reads as the generic coded failure — with no message text it can never
+    mint the disk-confirmed vanished-CLI 503 — while an honest answer keeps
+    riding ``_admin_result`` untouched, cancelled / password_required
+    shapes included.
+    """
+    try:
+        answer = run_admin_sequence(commands, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+    return _admin_result(answer)
 
 
 def _nfsd_on_disk() -> bool:
@@ -256,7 +322,9 @@ def _classify_admin_failure(result: dict) -> dict:
             message = _as_text(dict.get(result, "message")).lower()
             if any(marker in message for marker in _VANISH_MARKERS) and not _nfsd_on_disk():
                 return {"ok": False, "error": "nfsd_missing"}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"ok": False, "error": "failed"}
     return result
 
@@ -369,7 +437,9 @@ def _validate_entry(entry: dict) -> dict:
         # ValueError a bare str() raises past the router.
         raw_path = dict.get(entry, "path")
         path = str(raw_path).strip() if _truthy(raw_path) else ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The digit-cap ValueError, or a leftover ``__str__`` bomb raising
         # something else: neither may escape past the coded refusal.
         raise NfsConfigError("nfs.bad_path")
@@ -424,14 +494,18 @@ def _validate_entry(entry: dict) -> dict:
         # its coded refusal.  An unreadable table means "no clients".
         try:
             clients_raw = [c for c in re.split(r"[\s,]+", clients_raw) if c]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             clients_raw = []
     elif _isa(clients_raw, list):
         # Materialized under the unbound base walk: a list-subclass client
         # table whose ``__iter__`` raises used to blow the loop below raw.
         try:
             clients_raw = list(list.__iter__(clients_raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             clients_raw = []
     else:
         clients_raw = []
@@ -440,7 +514,9 @@ def _validate_entry(entry: dict) -> dict:
     for client in clients_raw:
         try:
             value = str(client).strip()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # An already-int hex leftover past the digit cap can never be a
             # host spec — and a ``__str__`` bomb raising a non-ValueError is
             # the same junk; refuse it like any other bad client, not a 500.
@@ -461,7 +537,9 @@ def _validate_entry(entry: dict) -> dict:
         raw_mapall = dict.get(entry, "mapall")
         maproot = str(raw_maproot).strip() if _truthy(raw_maproot) else ""
         mapall = str(raw_mapall).strip() if _truthy(raw_mapall) else ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The digit-cap ValueError of a huge already-int leftover — or a
         # ``__str__`` bomb raising past it; the value could never match
         # _MAP_RE anyway.
@@ -586,7 +664,9 @@ def _entry_rows(raw) -> list:
         return []
     try:
         return list(list.__iter__(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -594,7 +674,9 @@ def _entry_rows(raw) -> list:
 def overview(force: bool = False) -> dict:
     try:
         entries = _entry_rows(read_exports())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The guard above covers iteration but not the call itself: a
         # read_exports that raises outright must cost the table, never
         # the page.
@@ -641,7 +723,9 @@ def save_exports(entries: list[dict]) -> dict:
             rows = tuple.__iter__(entries)
         else:
             rows = iter(())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     validated = [_validate_entry(e) for e in rows]
     seen: set[str] = set()
@@ -662,9 +746,11 @@ def save_exports(entries: list[dict]) -> dict:
         # is also what the panel displays, so the two must not disagree.
         return {"ok": False, "error": "failed", "message": _as_text(exc)[:200]}
 
-    # _admin_result before any read: the raw run_admin_sequence payload used
-    # to 500 this route at ``result.get("ok")`` — see _admin_result.
-    result = _admin_result(run_admin_sequence(
+    # _admin_sequence (_admin_result inside): the raw run_admin_sequence
+    # payload used to 500 this route at ``result.get("ok")`` — and a
+    # patched helper that *raises* blew the call one seam earlier — see
+    # _admin_result / _admin_sequence.
+    result = _admin_sequence(
         [
             [CP, str(_STAGE_PATH), str(EXPORTS_PATH)],
             [CHOWN, "root:wheel", str(EXPORTS_PATH)],
@@ -674,7 +760,7 @@ def save_exports(entries: list[dict]) -> dict:
             [NFSD, "update"],
         ],
         timeout=180,
-    ))
+    )
     invalidate()
     if not result["ok"]:
         return _classify_admin_failure(result)
@@ -702,10 +788,12 @@ def server_action(action: str) -> dict:
     commands = _SERVER_ACTIONS.get(_as_text(action).strip().lower())
     if not commands:
         return {"ok": False, "error": "bad_action"}
-    # _admin_result before any read: the raw run_admin_sequence payload used
-    # to 500 this route at ``result.get("ok")`` (and the ``result["server"]``
-    # write ran a subclass ``__setitem__``) — see _admin_result.
-    result = _admin_result(run_admin_sequence(commands, timeout=120))
+    # _admin_sequence (_admin_result inside): the raw run_admin_sequence
+    # payload used to 500 this route at ``result.get("ok")`` (and the
+    # ``result["server"]`` write ran a subclass ``__setitem__``) — and a
+    # patched helper that *raises* blew the call one seam earlier — see
+    # _admin_result / _admin_sequence.
+    result = _admin_sequence(commands, timeout=120)
     invalidate()
     if result["ok"]:
         result["server"] = _nfsd_status()

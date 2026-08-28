@@ -36,6 +36,15 @@ _SYSTEM_SNAPSHOT_PREFIXES = ("com.apple.os.update-", "com.apple.installer")
 
 _CACHE_TTL = 20.0
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12/json13 convention): swallowing a Ctrl-C or an
+#: interpreter shutdown to save one snapshot row would turn the sanitizer
+#: into a hang.  Everything else BaseException-shaped that a leftover
+#: raises out of its own hooks is a bomb like any other — the nas12
+#: guards all stopped at ``except Exception``, so one such leftover
+#: sailed past every catch in the module at once.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that survives a leftover ``__class__``-property bomb.
@@ -50,10 +59,20 @@ def _isa(value, kinds) -> bool:
     poisoned plist row.  A real subclass still matches through the C-level
     type check; only a value that cannot answer what it is takes the
     non-matching branch.
+
+    ``except BaseException``: the nas9 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    (the watchdog/timeout shape the modules12/logs12/json13 sweeps sealed
+    on their own surfaces) sailed past this catch — and past every sibling
+    guard in this module, because each one stopped at ``Exception`` too —
+    a raw 500 on GET /api/snapshots and the mutation routes.  Only genuine
+    control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -69,11 +88,21 @@ def _as_text(value) -> str:
         # bytes underneath, and the descriptor's TypeError used to 500 the
         # same routes — it falls through to the str() probe so a legible
         # impostor still renders.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
+        # Both bases are tried, real layout first-come (the modules12 /
+        # logs12 ``_decode_bytes`` rule): the old arm picked the base off
+        # the *claimed* ``__class__``, so a genuine ``bytearray`` whose
+        # ``__class__`` lied ``bytes`` was handed to ``bytes.decode``,
+        # rejected by the descriptor, and its perfectly decodable content
+        # fell to the str() probe — which rendered the ``bytearray(b'…')``
+        # repr into the page instead of the text.
+        for base in (bytes, bytearray):
+            try:
+                value = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     if value is None:
         return ""
     if type(value) is not str:
@@ -82,9 +111,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the nas_common._utf8_text / modules6 rule):
     # ``str()`` of a subclass whose ``__str__`` answers *self* skips
@@ -101,7 +134,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -127,7 +162,9 @@ def _rc_int(rc) -> int:
         value = int.__index__(rc) if isinstance(rc, int) else int(rc)
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -151,7 +188,9 @@ def _sh_triple(argv, *, timeout: int) -> tuple:
     try:
         rc, out, err = sh(argv, timeout=timeout)
         return rc, out, err
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255, "", ""
 
 
@@ -202,7 +241,9 @@ def _jsonable(value, depth: int = 0):
                 # below and 500'd POST /api/snapshots/* and
                 # /api/timemachine/action.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -218,7 +259,9 @@ def _jsonable(value, depth: int = 0):
                 # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf probes
                 # below and 500 the same mutation routes.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -231,15 +274,23 @@ def _jsonable(value, depth: int = 0):
         # In a try (the modules9 rule): a *lying* ``__class__`` claiming
         # bytes made the descriptor raise outside any try — the impostor
         # drops like a lying int instead of 500ing the mutation.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except Exception:
-            return None
+        # Both bases, real layout first-come (the modules12/logs12 rule):
+        # a genuine bytearray lying ``bytes`` used to fail the claimed
+        # base's descriptor and drop its decodable message to null.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
     if _isa(value, dict):
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass in a
             # run_admin result): nothing to salvage, but its *siblings* must
             # survive — pre-fix this raised out of _admin_result and 500'd
@@ -249,7 +300,9 @@ def _jsonable(value, depth: int = 0):
         for pair in items:
             try:
                 k, v = pair
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # An items() that yields non-pairs: the two-target unpack
                 # used to happen outside the guard above and 500 the same
                 # routes — the torn row drops, its sibling pairs survive.
@@ -261,19 +314,25 @@ def _jsonable(value, depth: int = 0):
                 if not _isa(k, (str, bytes, bytearray)):
                     k = str(k)
                 out[_as_text(k)] = _jsonable(v, depth + 1)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a leftover whose
         # ``isoformat`` is a *raising property* (or a ``__getattr__`` bomb)
         # still raised out of the probe itself and 500'd
@@ -285,11 +344,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/snapshots.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -335,6 +398,44 @@ def _admin_result(result) -> dict:
     return cleaned
 
 
+def _run_admin(argv, *, timeout) -> dict:
+    """The privileged-runner *call* itself guarded (the users12 rule).
+
+    ``_admin_result`` launders ``run_admin``'s junk *answers*, but every
+    mutation seam ran the call bare — and this module does not own the
+    runner (tests and tooling patch it; the share_acl_svc ``_sh_call`` /
+    ``_admin_sequence`` guarded-call rule).  A leftover stub that *raises*
+    instead of answering blew POST /api/snapshots/delete, /thin and
+    /api/timemachine/action one seam ahead of the launder built for its
+    answers.  A raising runner reads as the generic coded failure — with
+    no message text it can never mint the disk-confirmed vanished-CLI 503
+    — while an honest answer keeps riding ``_admin_result`` untouched,
+    cancelled / password_required shapes included.
+    """
+    try:
+        return run_admin(argv, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+
+
+def _admin_sequence(commands, *, timeout) -> dict:
+    """The privileged-helper sequence call guarded the same way.
+
+    ``delete_all_snapshots`` ran ``run_admin_sequence`` bare; a leftover
+    stub that raises instead of answering 500'd POST /api/snapshots/delete
+    one seam ahead of ``_admin_result``.
+    """
+    try:
+        answer = run_admin_sequence(commands, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+    return _admin_result(answer)
+
+
 def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
     """Run *argv* and parse its stdout as a plist, or None when unusable.
 
@@ -351,7 +452,9 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
         return None
     try:
         parsed = plistlib.loads(out[start:].encode())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Same ExpatError leftover as raid_svc._plist: a torn tmutil plist
         # used to 500 /api/snapshots instead of rendering an empty page.
         return None
@@ -379,7 +482,9 @@ def _xid(raw):
             # a float-subclass ``__eq__``/``__ne__`` bomb XID used to
             # detonate the probes themselves and 500 GET /api/snapshots.
             raw = float.__float__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if raw != raw or raw in (float("inf"), float("-inf")):
             return None
@@ -389,7 +494,9 @@ def _xid(raw):
             # a non-ValueError past the digit-cap probe below.
             raw = int.__index__(raw)
             str(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A >4300-digit leftover XID is past CPython's int->str digit
             # cap and ValueError'd json.dumps on GET /api/snapshots.
             return None
@@ -460,13 +567,17 @@ def list_snapshots(mount: str = "/") -> list[dict]:
     if _isa(data, dict):
         try:
             raw = dict.get(data, "Snapshots")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raw = None
     if not _isa(raw, list):
         raw = []
     try:
         rows = list(list.__iter__(raw))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     items: list[dict] = []
     for entry in rows:
@@ -493,7 +604,9 @@ def list_snapshots(mount: str = "/") -> list[dict]:
                 # backup state.  Deleting one is legal but rarely intended.
                 "deletable": bool(token) and not system,
             })
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A dict-liar row rejects the unbound read; it drops alone and
             # its sibling rows survive.
             continue
@@ -543,7 +656,9 @@ def time_machine_overview() -> dict:
             return None
         try:
             return dict(mapping)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
     dest = _plain(dest) or {}
@@ -557,7 +672,9 @@ def time_machine_overview() -> dict:
         # destination table passed the gate and the loop header 500'd
         # GET /api/snapshots; the real rows of a genuine subclass still walk.
         dest_rows = list(list.__iter__(raw_dest))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         dest_rows = []
     for entry in dest_rows:
         # _isa, same as the list_snapshots walk: a ``__class__``-bomb
@@ -604,7 +721,15 @@ def time_machine_overview() -> dict:
     if percent is not None:
         try:
             raw_pct = float(percent)
-        except (TypeError, ValueError, OverflowError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The old catch named only the arithmetic trio (TypeError,
+            # ValueError, OverflowError), so a leftover ``__float__`` bomb
+            # raising anything else — RuntimeError or a BaseException
+            # subclass alike — rode out of the probe raw and 500'd
+            # GET /api/snapshots through fan_out, which re-raises a
+            # probe's error.  An unreadable percent reads as no percent.
             raw_pct = None
         if raw_pct is not None and raw_pct == raw_pct and raw_pct not in (
             float("inf"), float("-inf"),
@@ -650,7 +775,9 @@ def overview(force: bool = False) -> dict:
     # page still renders while a hostile listing drops.
     try:
         mounts = [m for m in list(snapshot_mounts()) if isinstance(m, str)]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         mounts = []
     if "/" not in mounts:
         mounts.insert(0, "/")
@@ -694,7 +821,9 @@ def overview(force: bool = False) -> dict:
                     if isinstance(s, dict) and _truthy(dict.get(s, "deletable"))
                 ),
             })
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     data = {
@@ -742,7 +871,7 @@ def delete_snapshot(mount: str, date_token: str) -> dict:
     token = _as_text(date_token)
     if not _SNAP_DATE.fullmatch(token):
         return {"ok": False, "error": "bad_token"}
-    result = run_admin(
+    result = _run_admin(
         [TMUTIL, "deletelocalsnapshots", token],
         timeout=180,
     )
@@ -767,11 +896,15 @@ def delete_all_snapshots(mount: str) -> dict:
     tokens = []
     try:
         listed = list_snapshots(mount)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         listed = []
     try:
         rows = list.__iter__(listed) if isinstance(listed, list) else iter(())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     try:
         for s in rows:
@@ -780,7 +913,9 @@ def delete_all_snapshots(mount: str) -> dict:
             token = _as_text(dict.get(s, "date_token"))
             if _SNAP_DATE.fullmatch(token):
                 tokens.append(token)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A walk dying mid-iteration keeps the tokens already collected.
         pass
     if not tokens:
@@ -789,8 +924,9 @@ def delete_all_snapshots(mount: str) -> dict:
     # Launder *before* the ok read: ``result.get("ok")`` on the raw
     # run_admin_sequence payload used to fire a dict-subclass ``.get`` bomb
     # (and the ``if`` a ``__bool__``-bomb ok) and 500 POST /api/snapshots/delete
-    # ahead of the scrub — _admin_result always answers a plain dict.
-    result = _admin_result(run_admin_sequence(commands, timeout=600))
+    # ahead of the scrub — _admin_sequence guards the call itself and
+    # _admin_result inside it always answers a plain dict.
+    result = _admin_sequence(commands, timeout=600)
     invalidate()
     if result.get("ok"):
         result["deleted"] = len(tokens)
@@ -813,16 +949,20 @@ def thin_snapshots(mount: str, urgency: int = 1) -> dict:
     if _isa(urgency, int) and not _isa(urgency, bool):
         try:
             urgency = int.__index__(urgency)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {"ok": False, "error": "bad_urgency"}
     try:
         valid = urgency in (1, 2, 3, 4)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         valid = False
     if not valid:
         return {"ok": False, "error": "bad_urgency"}
     target = str(10 * 1024 * 1024 * 1024)  # 10 GiB request; macOS frees what it can
-    result = run_admin(
+    result = _run_admin(
         [TMUTIL, "thinlocalsnapshots", mount, target, str(urgency)],
         timeout=300,
     )
@@ -851,6 +991,6 @@ def time_machine_action(action: str) -> dict:
     argv = _TM_ACTIONS.get(_as_text(action).strip().lower())
     if not argv:
         return {"ok": False, "error": "bad_action"}
-    result = run_admin(argv, timeout=180)
+    result = _run_admin(argv, timeout=180)
     invalidate()
     return _admin_result(result)
