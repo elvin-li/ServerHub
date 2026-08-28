@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -34,6 +35,9 @@ from hub.docker_cli import engine_up, looks_engine_down
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.util import iter_capped_lines, safe_json_loads, tail_file_lines, utf8_env
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 AUDIT_PATH = DATA_DIR / "terminal-audit.jsonl"
 
@@ -206,7 +210,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -222,9 +228,13 @@ def _mapping_get(mapping, key, default=None):
     ups_svc/storage_pool rule).  Only the shadowed field degrades to its
     default.
     """
+    if not _isa(mapping, dict):
+        return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -235,7 +245,9 @@ def _terminal_cfg() -> dict:
     # copy — the same union guard config.settings_section applies.
     try:
         return dict(settings_section("terminal"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -253,7 +265,9 @@ def _cfg_truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -291,13 +305,17 @@ def _config_text(value) -> str:
                 return value
             # Unbound base copy: drops the subclass (and its method bombs).
             return str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims str, is not) TypeErrors the
             # unbound copy: unreadable, same "" as any unrenderable scalar.
             return ""
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ValueError past the digit cap; RecursionError from a leftover
         # self-referencing __str__.  Either way the scalar is unusable.
         return ""
@@ -396,12 +414,18 @@ def _duration_ms(started, ended) -> int:
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        # A lying ``__class__`` (claims bytes, is not) TypeErrors the unbound
-        # decode: unreadable, same "" as any undecodable leftover.
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -416,15 +440,36 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if type(text) is not str:
-        # A subclass ``__str__`` may hand back another subclass whose bound
-        # ``.encode`` bombs; the unbound base copy drops the override.
-        text = str.__str__(text)
-    return text.encode("utf-8", "replace").decode("utf-8")
+        try:
+            text = str.__str__(text)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -460,7 +505,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -475,7 +522,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -490,7 +539,9 @@ def _jsonable(value, depth: int = 0):
         # dict, is not) TypeErrors the unbound view — the node is unreadable.
         try:
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in items:
@@ -499,7 +550,9 @@ def _jsonable(value, depth: int = 0):
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -511,12 +564,16 @@ def _jsonable(value, depth: int = 0):
                 # try: a lying ``__class__`` TypeErrors the unbound call.
                 try:
                     members = list(base.__iter__(value))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in members]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -525,11 +582,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 POST /api/terminal/run.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -999,7 +1060,9 @@ def _rc_int(rc) -> int:
     try:
         # Unbound base read: bypasses subclass ``__eq__``/``__index__`` bombs.
         return int.__index__(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
