@@ -93,8 +93,30 @@ def _isa(value, types) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs below (the modules14/files16 rule): after a
+    claimed arm's unbound descriptor rejects the operand, only the arm the
+    *real* layout matches may pick the value up — the lie must not steer
+    the walk a second time.  Fail-closed like ``_isa``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _safe_int(raw, default: int = 0) -> int:
-    if _isa(raw, bool) or raw is None:
+    # ``type(raw) is bool``, not the ``_isa`` gate: ``bool`` is final, so
+    # only a real bool may take this drop.  A lying ``__class__`` claiming
+    # bool over genuine int storage used to wipe a live count to the
+    # default at the wrong rank even though the number was right there.
+    if type(raw) is bool or raw is None:
         return default
     if _isa(raw, int) and type(raw) is not int:
         # Base coercion to an exact int: a subclass ``__int__``/``__str__``
@@ -105,19 +127,29 @@ def _safe_int(raw, default: int = 0) -> int:
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return default
+            # A *lying* ``__class__`` claiming int: the descriptor refused
+            # the foreign layout.  Fall through to the arm the real storage
+            # matches (the modules14/files16 recover-the-real-storage rule)
+            # instead of dropping an honest float / numeric-str count to
+            # the default at the wrong rank.
+            pass
     if _isa(raw, float):
-        if type(raw) is not float:
+        coerced = raw if type(raw) is float else None
+        if coerced is None:
             # Base coercion first: a float-subclass ``__eq__`` bomb used to
             # blow the NaN/inf probes below, outside every catch.
             try:
-                raw = float.__float__(raw)
+                coerced = float.__float__(raw)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                # Not really float storage either — the generic tail below
+                # still reads genuine str/int storage behind the lie.
+                coerced = None
+        if coerced is not None:
+            if coerced != coerced or coerced in (float("inf"), float("-inf")):
                 return default
-        if raw != raw or raw in (float("inf"), float("-inf")):
-            return default
+            raw = coerced
     try:
         value = int(raw)
         # An *already-int* leftover past CPython's int->str digit cap (YAML /
@@ -202,9 +234,17 @@ def _utf8_text(value) -> str:
     if _isa(value, str):
         # Unbound base read, not the dispatching ``str()``: real str storage
         # keeps its text even when the subclass ``__str__`` raises, and a
-        # lying ``__class__`` claiming str drops to "" instead of leaking
-        # its ``repr`` (a memory address) into the response body.
-        return _str_text(value) or ""
+        # lying ``__class__`` claiming str never leaks its ``repr`` (a
+        # memory address) into the response body.
+        text = _str_text(value)
+        if text is not None:
+            return text
+        # A *lying* ``__class__`` that only claims str refused the unbound
+        # read.  Fall through to the coercion arm instead of the old ""
+        # wipe (the modules14/files16 recover-the-real-storage rule):
+        # genuine renderable storage behind the lie — a numeric panel id
+        # claiming str — keeps its text, while plain junk still drops on
+        # the slot probe / address belt below and never leaks its repr.
     # Only a type that renders *itself* may coerce.  This free-text arm ran
     # ``str()`` on any leftover shape, and for a type that never overrode
     # ``__str__``/``__repr__`` the answer is the default ``object.__repr__``
@@ -296,14 +336,21 @@ def _dget(mapping, key):
         # BaseException too: a shadow key whose ``__eq__`` raises one used
         # to sail past the old ``except Exception`` and out of both routes.
         pass
+    # Materialized (``list(...)``), not the live view: probing a stored
+    # key's ``__class__`` dispatches a leftover property, and one that
+    # *mutates the mapping mid-walk* used to RuntimeError the live
+    # ``dict.items`` iteration and wipe the whole section to ``None`` even
+    # though the sane entry sat right behind it.  The snapshot list keeps
+    # walking; the probes below cannot raise.
     try:
-        for k, v in dict.items(mapping):
-            if _isa(k, str) and str.__eq__(key, k) is True:
-                return v
+        items = list(dict.items(mapping))
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        pass
+        return None
+    for k, v in items:
+        if _isa(k, str) and str.__eq__(key, k) is True:
+            return v
     return None
 
 
@@ -317,15 +364,24 @@ def _list_rows(value) -> list:
     degraded every find to the brief, an impostor problems / resident list
     dropped the snapshot section, and ``fallback_brief`` walks problems
     inside the router's own error fallback.
+
+    Both bases, real layout first-come (the jobs13/nas13 decode rule at
+    sequence rank): the old single ``list.__iter__`` read stopped at the
+    *claimed* base, so a genuine tuple whose ``__class__`` lied ``list``
+    was refused by the descriptor and its perfectly walkable rows — a
+    problems section, an aliases cell, a resident list — dropped to ``[]``
+    at the wrong rank.  A total liar (real type is neither) still drops.
     """
     if not _isa(value, list):
         return []
-    try:
-        return list(list.__iter__(value))
-    except _CONTROL_FLOW:
-        raise
-    except BaseException:
-        return []
+    for base in (list, tuple):
+        try:
+            return list(base.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return []
 
 
 def _dict_len(mapping) -> int:
@@ -348,8 +404,10 @@ def _reply_text(value) -> str:
     the whole turn then fell to the router's rebuilt fallback, losing the
     answer this call already had.  The exact-str coercion keeps its real
     text; non-text junk (0, False, []) keeps the old falsy-drop semantics.
+    ``type(value) is bool``: only a real bool takes the drop — a lying
+    ``__class__`` claiming final bool falls to the arms its storage matches.
     """
-    if value is None or _isa(value, bool):
+    if value is None or type(value) is bool:
         return ""
     if _isa(value, (str, bytes, bytearray)):
         return _utf8_text(value)
@@ -359,17 +417,21 @@ def _reply_text(value) -> str:
 def _exact_number(raw):
     """Exact ``int``/``float`` or ``None`` — a numeric-subclass comparison
     bomb (``__ge__``/``__eq__``) cannot ride a threshold check."""
-    if _isa(raw, bool) or raw is None:
+    # ``type``, not ``_isa``: only a real (final) bool takes this drop.
+    if type(raw) is bool or raw is None:
         return None
     if _isa(raw, int):
-        if type(raw) is not int:
-            try:
-                raw = int.__index__(raw)
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                return None
-        return raw
+        if type(raw) is int:
+            return raw
+        try:
+            return int.__index__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A *lying* ``__class__`` claiming int: a genuine float behind
+            # the lie used to drop its threshold value to ``None`` at the
+            # wrong rank — the float arm below reads the real storage.
+            pass
     if _isa(raw, float):
         if type(raw) is not float:
             try:
@@ -384,6 +446,52 @@ def _exact_number(raw):
     return None
 
 
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry.
+
+    The old key path ran bare ``str(k)`` on any non-str/bytes key, and for
+    a type that never overrode ``__str__``/``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+    address — which a junk key in a nested snapshot cell / chat duration
+    carried verbatim as a JSON *key* on both assistant routes.  Same slot
+    probe + address belt as ``_utf8_text``'s coercion arm; real str/bytes
+    key storage (behind a lying ``__class__`` too) keeps its text.
+    """
+    if _isa(k, (bytes, bytearray)):
+        text = _decode_bytes(k)
+        if text is not None:
+            return text
+        # A total lying-``__class__`` key claiming bytes keeps dropping its
+        # entry; genuine str storage was already salvaged inside the decode.
+    if _isa(k, str):
+        text = _str_text(k)
+        if text is not None:
+            return text
+        # A lying-str claim — coerce off whatever the real storage renders.
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``__str__`` key keeps dropping its entry, like before.
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
 
@@ -392,116 +500,149 @@ def _jsonable(value, depth: int = 0):
     POST /api/assistant/ask body and failed the encoder. A leftover ``\\ud800``
     in the snapshot, the find-query echo, or a catalog title still 500'd the
     same body (``ensure_ascii=False`` then UTF-8).
+
+    ``isinstance`` consults ``value.__class__`` only after the real-MRO
+    check misses, so a lying ``__class__`` steered a leftover into the arm
+    of its *claim*, the unbound descriptor there rejected the real layout,
+    and an early return threw honest renderable storage away at the wrong
+    rank (the modules14/files16 shape): a genuine float disk threshold
+    claiming int, a bytes uptime claiming str, a tuple problems cell
+    claiming list and a list claiming dict all dropped to ``None`` while
+    their values rendered fine one arm below.  The rejected arms now fall
+    through to the arm the *real* storage matches, probed via ``_real`` so
+    the lie cannot steer the walk twice; a total impostor — a claim with no
+    usable layout underneath — keeps the established ``None`` drop.
     """
     if depth > 32:
         return None
     if value is None:
         return value
-    if _isa(value, bool):
-        # ``bool`` is final, so a value that answers this gate while its
-        # real type is not ``bool`` is a lying-``__class__`` impostor, not a
-        # genuine bool.  The old arm returned it raw, handing the response
-        # encoder a non-serializable object: a leftover engine_up / uptime /
-        # problem-state / ups-percent cell 500'd POST /api/assistant/ask on
-        # every action at once.  Only a real bool renders; the impostor
-        # drops to None like its lying int/float siblings.
-        return value if type(value) is bool else None
+    # ``type(value) is bool``, not the ``_isa`` gate: ``bool`` is final, so
+    # only a real bool may render raw — the old arm handed the encoder a
+    # non-serializable impostor and 500'd POST /api/assistant/ask.  A lying
+    # ``__class__`` claiming bool now falls through: ``bool`` subtypes
+    # ``int``, so the int arm's unbound coercion recovers genuine int
+    # storage behind the lie (the old arm dropped it to ``None`` at the
+    # wrong rank) and still drops a total impostor exactly as before.
+    if type(value) is bool:
+        return value
     if _isa(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
                 # Base coercion to an exact int: an int-subclass truthiness /
                 # comparison bomb used to survive this walk untouched, then
                 # 500 fallback_brief and suggest_panels *inside the router's
                 # own error fallback* — twice, with nothing above to catch it.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
+                # Past CPython's int->str digit cap the encoder cannot render
+                # the number at all — same drop as its inf float sibling.
                 return None
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the old None drop.
             return None
-        return value
+        # The descriptor refused the operand, so the claimed ``int`` was a
+        # lie — but the real storage matches a later arm: fall through.
     if _isa(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
                 # Base coercion to an exact float: a subclass ``__ge__`` bomb
                 # used to survive the NaN/inf probes, then 500 the disk
                 # threshold in suggest_panels on both raises of the turn.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming float keeps the old None drop.
             return None
-        return value
+        # Genuine text / container behind a lying-float claim falls through.
     if _isa(value, str):
         # ``_str_text``, not ``_utf8_text``: a lying ``__class__`` claiming
         # str used to render its ``repr`` — a raw memory address — into the
-        # response.  ``None`` drops the impostor like its int/float siblings;
-        # real str storage (any subclass) keeps its scrubbed text.
-        return _str_text(value)
+        # response.  Real str storage (any subclass) keeps its scrubbed text.
+        text = _str_text(value)
+        if text is not None:
+            return text
+        if not _real(value, (bytes, bytearray, dict, list, tuple, set, frozenset)):
+            # A total impostor claiming str keeps the old None drop.
+            return None
+        # Genuine bytes / container behind a lying-str claim falls through:
+        # a bytes uptime cell claiming str used to vanish to ``None`` even
+        # though the decode one arm below renders its text verbatim.
     if _isa(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        decoded = _decode_bytes(value)
+        if decoded is not None:
+            return decoded
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            # A total impostor claiming bytes keeps the old None drop.
+            return None
+        # Genuine mapping / sequence behind a lying-bytes claim falls
+        # through to the arm that reads its real storage.
     if _isa(value, dict):
         # Unbound base view: a nested dict-subclass ``items()`` bomb used to
-        # wipe the whole snapshot to the minimal brief.  The descriptor is
-        # bound to the real dict layout, so a lying ``__class__`` claiming
-        # ``dict`` blew the call itself outside every try — drop the
-        # impostor like a lying int.  Materialized (``list(...)``), because
-        # a nested cell whose ``__str__``/property mutates this mapping
-        # mid-walk used to RuntimeError the live view iteration below —
-        # outside this try — and degrade the whole turn to the minimal brief.
+        # wipe the whole snapshot to the minimal brief.  Materialized
+        # (``list(...)``), because a nested cell whose ``__str__``/property
+        # mutates this mapping mid-walk used to RuntimeError the live view
+        # iteration below — outside this try — and degrade the whole turn
+        # to the minimal brief.
         try:
             items = list(dict.items(value))
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            items = None
+        if items is not None:
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
+                    # A key that cannot render (raising ``__str__``, a total
+                    # lying-bytes impostor, a default-repr heap address)
+                    # drops just this entry, keeps the rest of the mapping.
+                    continue
+                out[key] = _jsonable(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            # A total impostor claiming dict keeps the old None drop.
             return None
-        out = {}
-        for k, v in items:
-            if _isa(k, (bytes, bytearray)):
-                k = _decode_bytes(k)
-                if k is None:
-                    # A lying-``__class__`` key claiming bytes: drop just
-                    # this entry, keep the rest of the mapping.
-                    continue
-            elif not _isa(k, str):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
+        # Genuine sequence storage behind a lying-dict ``__class__`` falls
+        # through: its elements render below instead of vanishing whole.
+    if _isa(value, (list, tuple, set, frozenset)):
+        # Unbound base iteration, both bases real-layout first-come (the
+        # jobs13/nas13 decode rule at sequence rank): the old pick stopped
+        # at the *claimed* base, so a genuine tuple whose ``__class__``
+        # lied ``list`` was refused by the descriptor and its perfectly
+        # walkable rows dropped to ``None`` at the wrong rank.  A subclass
+        # ``__iter__`` bomb cannot raise and the real elements survive;
+        # a total impostor still drops.  Materialized inside the try: a
+        # set element whose property mutates the set mid-walk used to
+        # RuntimeError the lazy comprehension below, outside every catch.
+        for base in (list, tuple, set, frozenset):
             try:
-                k = _utf8_text(k)
+                rows = list(base.__iter__(value))
             except _CONTROL_FLOW:
                 raise
             except BaseException:
                 continue
-            out[k] = _jsonable(v, depth + 1)
-        return out
-    if _isa(value, (list, tuple, set, frozenset)):
-        for base in (list, tuple, set, frozenset):
-            if _isa(value, base):
-                # Unbound base iteration: a subclass ``__iter__`` bomb
-                # cannot raise and the real elements still survive.  A
-                # lying ``__class__`` claiming this base rejects the
-                # descriptor — drop the impostor, never the response.
-                # Materialized inside the try: a set element whose property
-                # mutates the set mid-walk used to RuntimeError the lazy
-                # comprehension below, outside every catch.
-                try:
-                    rows = list(base.__iter__(value))
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    return None
-                return [_jsonable(v, depth + 1) for v in rows]
+            return [_jsonable(v, depth + 1) for v in rows]
         return None
     try:
         iso = getattr(value, "isoformat", None)
@@ -538,8 +679,13 @@ def _panel_id(raw) -> str:
     passes ``isinstance(int)`` and must not become ``"True"``.
     """
     if _isa(raw, str):
+        # ``_utf8_text`` now recovers genuine renderable storage behind a
+        # lying-str ``__class__`` (a numeric id claiming str used to wipe
+        # its row) and still drops plain junk to "" without a repr leak.
         return _utf8_text(raw).strip()
-    if _isa(raw, bool) or not _isa(raw, int):
+    # ``type``, not ``_isa``: only a real (final) bool takes the drop — an
+    # int-subclass id lying bool used to vanish its row at the wrong rank.
+    if type(raw) is bool or not _isa(raw, int):
         return ""
     try:
         # int.__index__ first: an int-subclass ``__str__`` bomb that raised
@@ -606,16 +752,22 @@ def _panel_rows() -> list:
     iteration keeps the real rows of a subclass whose bound ``__iter__`` is
     the bomb; junk shapes fail closed to an empty catalog, which every
     caller's existing no-rows branch already handles.
+
+    Both bases, real layout first-come: the old pick stopped at the
+    *claimed* base, so a genuine list container whose ``__class__`` lied
+    ``tuple`` was refused by the descriptor and the whole Cmd+K catalog
+    wiped to ``[]`` at the wrong rank even though every row was walkable.
     """
     rows = PANELS
+    if not _isa(rows, (tuple, list)):
+        return []
     for base in (tuple, list):
-        if _isa(rows, base):
-            try:
-                return list(base.__iter__(rows))
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                return []
+        try:
+            return list(base.__iter__(rows))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     return []
 
 
