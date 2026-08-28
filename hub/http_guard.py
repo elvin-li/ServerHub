@@ -33,6 +33,17 @@ _BLOCKED_IPS = frozenset({
 })
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 _HEX_HOST = re.compile(r"^0x[0-9a-f]+$")
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _isa(value, kinds) -> bool:
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
 
 def _ip_from_host(host: str):
@@ -42,7 +53,7 @@ def _ip_from_host(host: str):
     decimal dword.  ``ipaddress`` rejects that spelling, so the hostname
     branch used to treat it as a single-label LAN name and allow it.
     """
-    if not isinstance(host, str):
+    if not _isa(host, str):
         return None
     try:
         ip = ipaddress.ip_address(host)
@@ -120,24 +131,50 @@ def _coerce_text(value) -> str | None:
     """
     if value is None:
         return ""
-    if isinstance(value, str):
-        if type(value) is str:
-            return value
+    if type(value) is str:
+        return value
+    for base in (bytes, bytearray):
         try:
-            # Base copy through the C-level storage so a subclass
-            # ``__str__``/``encode`` override cannot fire downstream.
-            return str.__str__(value)
-        except Exception:
-            return None
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return bytes(value).decode("utf-8", "replace")
-        except Exception:
-            return None
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        return str(value)
-    except Exception:
+        text = str.__str__(value)
+        return None if _ADDR_REPR_RE.search(text) else text
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def _utf8_host(host: str) -> str | None:
