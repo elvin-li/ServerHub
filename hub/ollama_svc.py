@@ -58,6 +58,9 @@ from hub.jobs import run_watchdog
 from hub.paths import AGENTS_DIR
 from hub.util import cached_snapshot, read_bytes_capped, safe_json_loads, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _OPENER = no_redirect_opener()
 
 _TTL = 30.0
@@ -142,14 +145,27 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if _isa(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _truthy(value) -> bool:
@@ -164,7 +180,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -178,23 +196,43 @@ def _utf8_text(value) -> str:
             # Unbound base decode: a bytes-subclass ``.decode`` bomb used to
             # escape here and 500 GET /api/ollama/pull/log via _jsonable.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Unbound str.encode, not text.encode (the jobs6/json6 convention):
     # ``str(x)`` of a str subclass whose ``__str__`` returns itself keeps the
     # subclass, so the bound ``.encode`` dispatched into a leftover override
     # — the old catch answered "" and silently dropped the real model name /
     # log tail out of GET /api/ollama/pull/log and the pull_running 409.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -231,7 +269,9 @@ def _jsonable(value, depth: int = 0):
                 # the digit-cap probe below (only ValueError was caught) and
                 # 500 GET /api/ollama/pull/log raw.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             # A >4300-digit int (a hex plist/YAML leftover dodges the
@@ -247,7 +287,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``/
                 # ``__ne__`` bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -259,7 +301,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound decode TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
@@ -270,7 +314,9 @@ def _jsonable(value, depth: int = 0):
         # unbound view itself.
         try:
             entries = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         for k, v in entries:
             # _isa on the key gates too: a ``__class__``-property bomb
@@ -279,12 +325,16 @@ def _jsonable(value, depth: int = 0):
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -297,12 +347,16 @@ def _jsonable(value, depth: int = 0):
                 # TypeErrors the unbound iteration itself.
                 try:
                     items = list(base.__iter__(value))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property /
         # ``__getattr__`` bomb still raised out of the probe itself and
         # 500'd GET /api/ollama/pull/log raw.
@@ -310,11 +364,15 @@ def _jsonable(value, depth: int = 0):
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -345,7 +403,9 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         try:
             value = _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     elif not _isa(value, str):
         return ""
@@ -359,9 +419,12 @@ def _as_text(value) -> str:
     # ``settings_text``/``configured_url`` and lying a 502 onto the daemon
     # POSTs.  An impostor is junk text, not a URL or label: it drops to "".
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def settings_text(value) -> str:
