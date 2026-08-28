@@ -157,6 +157,31 @@ def _match_policy(policy):
     return None
 
 
+def _wants_refresh(force) -> bool:
+    """Truthiness of the overview's refresh flag that a leftover cannot 500.
+
+    ``pool_overview`` opened with ``if not force:``, and ``not`` reflects
+    into the flag's own ``__bool__`` (or ``__len__``) — the one public
+    parameter this module never laundered after mounts / policy / name /
+    min_free_gb were sealed.  The route hands over a FastAPI-exact ``bool``,
+    but the overview is also called in-process, and a leftover flag whose
+    ``__bool__`` raises detonated the reader itself — the same reader
+    ``save_pool`` / ``clear_pool`` re-enter after their config writes.
+
+    A flag that cannot answer whether it is truthy degrades to *refresh*:
+    rebuilding from ``df`` costs one sweep and can never lie, while serving
+    the cache would answer a caller whose intent is unknowable with data it
+    may have been trying to bypass (the invalidate-on-doubt rule the disk
+    routes already follow).
+    """
+    if type(force) is bool:
+        return force
+    try:
+        return bool(force)
+    except Exception:
+        return True
+
+
 def _pool_config() -> dict:
     """Pool definitions from services.yaml, or an empty default.
 
@@ -443,10 +468,28 @@ def _pick_target(members: list[dict], policy: str, counter: int = 0) -> str | No
     usable = [m for m in members if m.get("avail_gb", 0) > 0]
     if not usable:
         return None
+    # _match_policy, not bare ``policy == ...`` compares: the string compare
+    # dispatches into the left operand's ``__eq__`` first, so a leftover
+    # policy (a str-subclass ``__eq__`` bomb) detonated the placement pick
+    # for a direct in-process caller — the routes reach here only through
+    # ``_build`` / ``plan_pool``, which already canonicalized.  An unknown
+    # policy keeps falling through to most-free, exactly as before.
+    policy = _match_policy(policy) or DEFAULT_POLICY
     if policy == "least-used-pct":
         return min(usable, key=lambda m: m["pct"])["mount"]
     if policy == "round-robin":
-        return usable[counter % len(usable)]["mount"]
+        # Guarded unbound ``int.__index__``: ``counter % len(usable)``
+        # reflects into the counter's own ``__mod__`` (and a plain int()
+        # would reflect into ``__int__``), so the one leftover an advancing
+        # round-robin caller could hand this — an int-subclass whose
+        # arithmetic raises, a bool, a non-number — detonated the pick
+        # where every other junk placement input degrades.  Step 0 (the
+        # first usable member) is the same answer a fresh counter gives.
+        try:
+            step = int.__index__(counter)
+        except Exception:
+            step = 0
+        return usable[step % len(usable)]["mount"]
     return max(usable, key=lambda m: m["avail_gb"])["mount"]
 
 
@@ -564,6 +607,11 @@ def _build() -> dict:
 
 def pool_overview(force: bool = False) -> dict:
     """Cached pool view.  Single-flight so a polling page cannot stack `df`."""
+    # _wants_refresh, not a bare ``not force``: the reflected ``__bool__``
+    # used to detonate the reader itself for in-process callers (see the
+    # helper).  The route's FastAPI-exact bool takes the type-is-bool fast
+    # path unchanged.
+    force = _wants_refresh(force)
     if not force:
         with _lock:
             hit = _cache["v"]
