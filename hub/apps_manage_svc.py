@@ -169,6 +169,28 @@ def _truthy(value) -> bool:
         return False
 
 
+def _run_capped_pair(argv, *, cwd, timeout, env, cap):
+    """``run_capped``'s ``(rc, text)``, fail-closed for a leftover shape.
+
+    ``_compose_cmd`` unpacked the return bare and probed the rc bare
+    (``rc == -1`` / ``rc != 0`` / ``rc == 0``): a leftover 3-tuple blew the
+    unpack with ValueError and an rc-subclass whose ``__eq__``/``__ne__``
+    raises detonated the probes — the try around the runner absorbed both
+    into ``ok: false``, but the compose output already in hand was folded
+    into the bomb's own message with it (the apps11 ``run_action`` story,
+    one seam over).  A *raising* run_capped still propagates to the
+    caller's except and keeps its honest failure text; only a junk shape
+    reads as the ``-255`` no-exit-status failure with no output (the
+    ``_sh_triple`` convention).
+    """
+    ret = run_capped(argv, cwd=cwd, timeout=timeout, env=env, cap=cap)
+    try:
+        rc, msg = ret
+    except Exception:
+        return -255, ""
+    return _rc_int(rc), msg
+
+
 def _sh_triple(argv, timeout):
     """``sh()``'s ``(rc, out, err)``, fail-closed for a leftover shape.
 
@@ -609,7 +631,11 @@ def _compose_cmd(compose_path: str, *args: str, timeout: int = 180) -> dict:
     if not _exists(p):
         return soft_fail("compose.file_missing", path=str(p))
     try:
-        rc, msg = run_capped(
+        # _run_capped_pair, not a bare unpack: a leftover runner shape (a
+        # wrong-arity tuple, an rc-subclass ``__eq__``/``__ne__`` bomb) used
+        # to detonate the unpack or the rc probes below — absorbed by this
+        # try into ``ok: false``, but with the compose output text lost.
+        rc, msg = _run_capped_pair(
             [DOCKER, "compose", "-f", str(p), *args],
             cwd=str(p.parent),
             timeout=timeout,
@@ -739,7 +765,13 @@ def _docker_detail(source_id: str) -> dict:
 
     for c, (rc, out) in zip(related, inspected):
         name = c.get("id") or c.get("name")
-        if rc != 0:
+        # _rc_int, not a bare ``rc != 0``: ``_inspect`` guards the docker()
+        # *call* and unpack but hands the rc slot back verbatim, and an
+        # rc-*subclass* whose ``__ne__`` raises rode through its try and
+        # detonated this probe — a raw 500 on
+        # GET /api/apps/managed/detail?id=docker:* where apps11 already
+        # sealed the same bomb on the ``sh()`` seam of the native logs.
+        if _rc_int(rc) != 0:
             # fall back to list fields
             if c.get("ports"):
                 ports.append({"container": name, "published": c.get("ports"), "target": ""})
