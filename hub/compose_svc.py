@@ -20,44 +20,60 @@ from hub.util import read_text_capped, run_capped
 
 #: Leftover multi-MB junk occupying docker-compose.yml used to OOM GET /api/compose.
 _COMPOSE_CAP = 1024 * 1024
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _utf8_text(value) -> str:
     """Drop leftover ``\\ud800`` so compose writes and Starlette cannot 500.
 
-    Every gate is ``_isa``, not a bare isinstance: a leftover reader-seam
-    value whose ``__class__`` is a *raising property* used to detonate the
-    bytes gate itself and 500 GET /api/compose/{id} and the validate/save
-    twins one step ahead of every scrub in this funnel (the nas8 rule).
-    The bytes decode is unbound through the base type, so a bytes-subclass
-    ``.decode`` bomb cannot fire and a lying-``__class__`` impostor
-    TypeErrors into the ``str()`` fallback instead of raising out.
+    catalog14/docker13 rule: both bases first-come, BaseException nets with
+    control-flow passthrough, recover honest str behind a lying bytes claim,
+    and scrub default ``object.__repr__`` heap addresses off the coercion arm.
     """
     if value is None:
         return ""
-    if _isa(value, (bytes, bytearray)):
+    for base in (bytes, bytearray):
         try:
-            base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
-    # returns self keeps the subclass, so a bound ``.encode`` bomb used to
-    # degrade the whole field to "" — and a lying-``__class__`` str impostor
-    # lands here as a non-str and drops (the modules5 unbound convention).
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _finite_mtime(value) -> int:
@@ -85,7 +101,9 @@ def _finite_mtime(value) -> int:
         if type(value) is not int:
             value = int.__index__(value)
         float(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
     return value
 
