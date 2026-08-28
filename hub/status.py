@@ -73,6 +73,63 @@ def _decode_bytes(value) -> str:
     return base.decode(value, "utf-8", "replace")
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 / ups / vms rule, which this module's cache subscripts and
+    the settings ``.get`` never got: even a plain-dict lookup still runs the
+    *stored keys'* own ``__eq__`` during the hash probe, so a leftover
+    str-subclass key whose hash shadows the real key and whose ``__eq__``
+    raises used to detonate the bare ``_status_cache["v"]`` /
+    ``_status_cache["t"]`` reads in ``full_status`` (a raw 500 on every
+    GET /api/status), the ``raw_settings.get("adaptive")`` read one line
+    past the plain-dict copy in ``_build_status`` (a 500 on the cold
+    build), and ``_stamp_locale``'s snapshot reads on every cache hit.
+    Only the shadowed field degrades to its default; siblings survive.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _cache_age(now, stamp) -> float:
+    """Age of a cache stamp; an unreadable leftover stamp reads as expired.
+
+    The host_address._cached_detection rule: a leftover planted in the
+    ``t`` slot whose ``__float__`` / ``__rsub__`` / comparison raises used
+    to detonate the bare ``now - _status_cache["t"]`` arithmetic in
+    ``full_status`` and the ``_adaptive_cache`` probe — a raw 500 on every
+    GET /api/status.  Junk reads as infinitely old and re-builds.
+    """
+    try:
+        return now - float(stamp)
+    except Exception:
+        return float("inf")
+
+
+def _cache_publish(cache: dict, **fields) -> None:
+    """Cache write that a hash-shadowing planted key cannot 500.
+
+    ``dict.update`` with an exact-str keyword still runs the *stored*
+    poison key's ``__eq__`` during the insert compare, so a shadow key
+    planted in the module cache used to raise at the very end of a
+    successful build — the health11 ``_collect_checks`` write, on the
+    status surface.  ``clear()`` never compares keys, so evicting the
+    poison and rewriting always lands.
+    """
+    try:
+        cache.update(fields)
+    except Exception:
+        try:
+            cache.clear()
+            cache.update(fields)
+        except Exception:
+            pass
+
+
 def _cfg_value(key, default=None):
     """One top-level config read that a leftover cfg() bomb cannot 500.
 
@@ -309,7 +366,13 @@ def invalidate_status():
         # `v` is kept: /api/health serves it through cached_status() without
         # triggering a build, and a liveness probe must not start returning
         # "no snapshot" because a container was restarted.
-        _status_cache["t"] = 0
+        try:
+            _status_cache["t"] = 0
+        except Exception:
+            # A hash-shadowing key planted over ``t`` raises out of the
+            # C-level insert compare; clear() never compares keys, so evict
+            # the poison while keeping the snapshot /api/health serves.
+            _cache_publish(_status_cache, t=0, v=_mapping_get(_status_cache, "v"))
     # Related discovery caches so next full_status sees fresh data
     try:
         from hub.discovery.containers import invalidate_containers
@@ -343,19 +406,28 @@ def invalidate_status():
         # `_status_generation` was bumped above, under this same lock, and it
         # covers this cache too -- so a scan already running is dropped rather
         # than allowed to restore the pre-action project list for a minute.
-        _adaptive_cache["t"] = 0
+        try:
+            _adaptive_cache["t"] = 0
+        except Exception:
+            # Same shadow-key insert-compare class as the status cache above.
+            _cache_publish(_adaptive_cache, t=0.0, compose=None, nginx=None)
 
 
 def _adaptive_info() -> dict:
     now = time.time()
+    # _mapping_get / _cache_age throughout: a hash-shadowing key planted
+    # over ``compose`` / ``t`` / ``nginx``, or a clock bomb in the ``t``
+    # slot, used to detonate these bare subscripts and raise out of a cold
+    # ``_build_status`` — a raw 500 on cold GET /api/status.
     with _lock:
+        compose_hit = _mapping_get(_adaptive_cache, "compose")
         if (
-            _adaptive_cache["compose"] is not None
-            and now - _adaptive_cache["t"] < _ADAPTIVE_TTL
+            compose_hit is not None
+            and _cache_age(now, _mapping_get(_adaptive_cache, "t")) < _ADAPTIVE_TTL
         ):
             return {
-                "compose_projects": _adaptive_cache["compose"],
-                "nginx_sites": _adaptive_cache["nginx"],
+                "compose_projects": compose_hit,
+                "nginx_sites": _mapping_get(_adaptive_cache, "nginx"),
             }
     # Single-flight, matching `full_status` below.  /api/status is the most polled
     # endpoint in the panel, so on a cold cache several requests arrive together, all
@@ -363,13 +435,14 @@ def _adaptive_info() -> dict:
     # scans this cache exists to avoid.
     with _adaptive_refresh_lock:
         with _lock:
+            compose_hit = _mapping_get(_adaptive_cache, "compose")
             if (
-                _adaptive_cache["compose"] is not None
-                and time.time() - _adaptive_cache["t"] < _ADAPTIVE_TTL
+                compose_hit is not None
+                and _cache_age(time.time(), _mapping_get(_adaptive_cache, "t")) < _ADAPTIVE_TTL
             ):
                 return {
-                    "compose_projects": _adaptive_cache["compose"],
-                    "nginx_sites": _adaptive_cache["nginx"],
+                    "compose_projects": compose_hit,
+                    "nginx_sites": _mapping_get(_adaptive_cache, "nginx"),
                 }
             began = _status_generation
         # Two unrelated filesystem scans (compose project tree, nginx sites dir).
@@ -385,7 +458,9 @@ def _adaptive_info() -> dict:
             nginx = []
         with _lock:
             if _status_generation == began:
-                _adaptive_cache.update(t=time.time(), compose=compose, nginx=nginx)
+                # _cache_publish: a shadow key planted in the cache used to
+                # raise out of the insert compare after a successful scan.
+                _cache_publish(_adaptive_cache, t=time.time(), compose=compose, nginx=nginx)
         return {"compose_projects": compose, "nginx_sites": nginx}
 
 
@@ -453,7 +528,12 @@ def _build_status() -> dict:
             raw_settings = {}
     else:
         raw_settings = {}
-    adaptive_on = raw_settings.get("adaptive", True)
+    # _mapping_get, not the bound ``.get``: the plain-dict copy above keeps
+    # a leftover hash-shadowing key (str subclass, same hash as
+    # ``adaptive``, raising ``__eq__``), and the C-level probe then ran the
+    # stored bomb's compare — a raw 500 on the very first read of a cold
+    # GET /api/status.  The shadowed flag degrades to its default alone.
+    adaptive_on = _mapping_get(raw_settings, "adaptive", True)
     # Guarded truthiness: a leftover ``adaptive`` value whose ``__bool__``
     # raises must not 500 the cold build; junk reads as "off" (the
     # jobs._truthy fail-closed rule).
@@ -707,7 +787,10 @@ def cached_status() -> dict | None:
     the encoder).
     """
     with _lock:
-        hit = _status_cache["v"]
+        # _mapping_get: a hash-shadowing key planted over ``v`` used to
+        # detonate this bare subscript and 500 GET /api/health — the one
+        # cache poisoning the _jsonable re-sanitize below could never reach.
+        hit = _mapping_get(_status_cache, "v")
     if hit is None:
         return None
     cleaned = _jsonable(hit)
@@ -715,30 +798,42 @@ def cached_status() -> dict | None:
 
 
 def full_status(force=False):
-    """Return aggregated status. Cached for _STATUS_TTL; single-flight refresh."""
+    """Return aggregated status. Cached for _STATUS_TTL; single-flight refresh.
+
+    _mapping_get / _cache_age on every cache touch: a leftover
+    hash-shadowing key planted over ``v`` / ``t`` used to detonate the bare
+    subscripts here (the C-level probe runs the stored bomb's ``__eq__``),
+    and a clock bomb in the ``t`` slot blew the bare age arithmetic — each
+    a raw 500 on every GET /api/status, cache hit and cold build alike.
+    An unreadable cache reads as a miss and rebuilds; the final write
+    falls back to clear+rewrite, which never compares keys.
+    """
     now = time.time()
     with _lock:
-        if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
-            return _stamp_locale(_status_cache["v"])
+        hit = _mapping_get(_status_cache, "v")
+        if not force and hit is not None and _cache_age(now, _mapping_get(_status_cache, "t")) < _status_ttl():
+            return _stamp_locale(hit)
 
     with _refresh_lock:
         # Double-check after acquiring single-flight lock
         now = time.time()
         with _lock:
-            if not force and _status_cache["v"] is not None and now - _status_cache["t"] < _status_ttl():
-                return _stamp_locale(_status_cache["v"])
+            hit = _mapping_get(_status_cache, "v")
+            if not force and hit is not None and _cache_age(now, _mapping_get(_status_cache, "t")) < _status_ttl():
+                return _stamp_locale(hit)
             began = _status_generation
         try:
             v = _build_status()
         except Exception:
             # On failure, serve last good snapshot if available
             with _lock:
-                if _status_cache["v"] is not None:
-                    return _stamp_locale(_status_cache["v"])
+                hit = _mapping_get(_status_cache, "v")
+            if hit is not None:
+                return _stamp_locale(hit)
             raise
         with _lock:
             if _status_generation == began:
-                _status_cache.update(t=time.time(), v=v)
+                _cache_publish(_status_cache, t=time.time(), v=v)
         # Returned either way: this caller asked before the invalidate landed.
         return _stamp_locale(v)
 
@@ -770,15 +865,30 @@ def _stamp_locale(status: dict) -> dict:
     try:
         loc = panel_locale()
     except Exception:
-        try:
-            loc = status.get("locale") or "zh-CN"
-        except Exception:
+        loc = _mapping_get(status, "locale")
+        if type(loc) is not str or not loc:
             loc = "zh-CN"
-        if not isinstance(loc, str):
-            loc = "zh-CN"
-    current = status.get("locale")
+    if type(loc) is not str:
+        # A patched/odd panel_locale can answer a str-subclass whose
+        # reflected ``__ne__`` bomb detonated the compare below; launder
+        # to an exact str so neither the compare nor the write can ask it.
+        loc = _utf8_text(loc) or "zh-CN"
+    # _mapping_get, not the bound ``.get``: a leftover hash-shadowing
+    # ``locale`` key planted in the cached snapshot ran the stored bomb's
+    # ``__eq__`` inside the C-level probe — a raw 500 on every cache-hit
+    # GET /api/status, one seam ahead of every scrub.
+    current = _mapping_get(status, "locale")
     # Type-gated compare: a leftover planted in the cache whose ``__ne__``
     # raises must restamp and scrub, not 500 the cache-hit path.
     if type(current) is not str or current != loc:
-        status["locale"] = loc
+        try:
+            status["locale"] = loc
+        except Exception:
+            # The same shadow key raises out of the insert compare too.
+            # Stamp the laundered copy instead: _jsonable rebuilds with
+            # exact-str keys, so this write always lands.
+            cleaned = _jsonable(status)
+            if _isa(cleaned, dict):
+                cleaned["locale"] = loc
+            return cleaned
     return _jsonable(status)

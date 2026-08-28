@@ -40,6 +40,25 @@ def _decode_bytes(value) -> str:
     return base.decode(value, "utf-8", "replace")
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 rule on the system tile: even a plain-dict lookup runs the
+    *stored keys'* own ``__eq__`` during the hash probe, so a leftover
+    str-subclass key whose hash shadows ``v`` / ``t`` planted in the SMART
+    cache used to detonate the bare ``_smart_cache["v"]`` subscript and the
+    due-probe arithmetic — raising out of ``collect_system`` and silently
+    wiping the whole ``system`` tile (load, disk, uptime and SMART
+    together) from GET /api/status.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     # _isa on the bytes gate, try on the decode: a ``__class__``-property
@@ -221,6 +240,36 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The nginx/docker11 guarded-shape rule: this module does not own ``sh``
+    (tests and tooling patch it), and a leftover riding the *shape* of the
+    return — a 2-tuple, a scalar, a tuple subclass whose ``__iter__``
+    raises, a lying-``__class__`` tuple impostor — used to detonate the
+    bare ``rc, out, _ = …`` unpacks in ``collect_system``'s main body and
+    wipe the whole system tile from GET /api/status.  Junk degrades to
+    ``(-255, "", "")``: nonzero, never a success rc.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
 def _sysctl_int(value) -> int | None:
     """int from a sysctl `-n` payload that may be str, bytes, or already int."""
     if _isa(value, bool) or value is None:
@@ -326,7 +375,15 @@ def collect_system():
     # reads below are independent, and two of them are the slow ones:
     # `memory_pressure -Q` and — once every 10 minutes — a `sudo -n smartctl`.
     # Running them in sequence made the whole status refresh wait for their sum.
-    smart_due = time.time() - _smart_cache["t"] > 600
+    # Guarded stamp read: a hash-shadowing ``t`` key (the C-level probe
+    # runs the stored bomb's ``__eq__``) or a clock bomb planted in the
+    # slot (``__float__`` / ``__rsub__`` / ``__gt__`` raising) used to
+    # detonate this bare arithmetic and wipe the whole system tile.  An
+    # unreadable stamp reads as due and re-probes.
+    try:
+        smart_due = time.time() - float(_mapping_get(_smart_cache, "t", 0.0)) > 600
+    except Exception:
+        smart_due = True
     def _ncpu_and_memsize():
         # One worker, two cheap integer sysctls: ctypes first, shell fallback.
         # The pool is already full with boot / memory_pressure / (sometimes)
@@ -353,7 +410,9 @@ def collect_system():
             return fallback
 
     # `.result()` re-raises; memory_pressure must not drop load/disk from /api/status.
-    rc, out, _ = _result(f_boot, (1, "", ""))
+    # _sh3 on every unpack: an sh answer-shape bomb used to detonate the
+    # bare tuple unpack itself and wipe the whole tile.
+    rc, out, _ = _sh3(_result(f_boot, (1, "", "")))
     out = _as_text(out)
     uptime_h = 0.0
     # _rc_int on every probe below: an rc-``__eq__`` bomb from a patched/odd
@@ -372,7 +431,7 @@ def collect_system():
                 n = _finite_float(uptime_h)
                 uptime_h = n if n is not None else 0.0
 
-    rc, out, _ = _result(f_mem, (1, "", ""))
+    rc, out, _ = _sh3(_result(f_mem, (1, "", "")))
     mem_free = _mem_free_pct(out)
 
     ncpu_i, mem_n = _result(f_hw, (None, None))
@@ -382,7 +441,9 @@ def collect_system():
         mem_n = _sysctl_int(mem_n)
     mem_total_gb = _bytes_to_gb(mem_n, 1) if mem_n is not None else None
 
-    smart = _smart_cache["v"]
+    # _mapping_get: a hash-shadowing ``v`` key planted in the cache used to
+    # detonate this bare subscript the same way as the stamp above.
+    smart = _mapping_get(_smart_cache, "v")
     # _isa: the cache normally only ever holds the plain dict this function
     # writes, but a leftover non-dict (a ``__class__``-property bomb, a
     # scalar) planted as the whole value is junk — degrade the SMART field
@@ -390,7 +451,7 @@ def collect_system():
     if smart is not None and not _isa(smart, dict):
         smart = None
     if f_smart is not None:
-        rc, out, _ = _result(f_smart, (1, "", ""))
+        rc, out, _ = _sh3(_result(f_smart, (1, "", "")))
         if _rc_int(rc) in (0, 4):
             smart = {}
             for line in _as_text(out).splitlines():
@@ -412,7 +473,16 @@ def collect_system():
                     parts = line.split()
                     if len(parts) >= 10:
                         smart.setdefault("temp", f"{parts[9]} Celsius")
-            _smart_cache.update(t=time.time(), v=smart)
+            try:
+                _smart_cache.update(t=time.time(), v=smart)
+            except Exception:
+                # A shadow key raises out of the insert compare at the end
+                # of a successful probe; clear() never compares keys.
+                try:
+                    _smart_cache.clear()
+                    _smart_cache.update(t=time.time(), v=smart)
+                except Exception:
+                    pass
     n = ncpu_i or 1
     load_pct = None
     if load1 is not None:

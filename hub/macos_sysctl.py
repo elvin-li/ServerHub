@@ -110,8 +110,14 @@ def sysctl_int(name: str, *, timeout: int = 2, sh=None) -> int | None:
         from hub.util import sh as run
     try:
         rc, out, _ = run([_SYSCTL, "-n", name], timeout=timeout)
+        # Inside the guard, not one line past it: this helper does not own
+        # the runner, and an rc-subclass ``__ne__`` bomb from a patched/odd
+        # ``sh`` used to detonate this bare probe — through sensors_svc's
+        # ``_static_hw`` that ran on the request thread of the light
+        # GET /api/system/sensors tick.  An unreadable status reads as
+        # failure, same as a raising spawn.
+        if rc != 0:
+            return None
     except Exception:
-        return None
-    if rc != 0:
         return None
     return parse_int(out)
