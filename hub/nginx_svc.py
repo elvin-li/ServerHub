@@ -15,9 +15,47 @@ from hub.status import invalidate_status
 from hub.util import sh
 
 
+def _user_home() -> Path | None:
+    """Guard the ``user_home`` provider seam so a leftover cannot 500 the import.
+
+    ``hub.paths.user_home`` guards ``Path.home()`` and answers a ``Path`` or
+    ``None`` today, but the call was joined *bare* here — ``home / "Services"
+    / "nginx"`` assumed the answer was a Path.  A provider that raises outside
+    that helper's caught ``(OSError, RuntimeError, ValueError)`` trio (a
+    ``KeyError`` from a ``pwd`` lookup on a uid with no passwd entry — the
+    container/sandbox "leftover HOME" this module's docstring already names),
+    or one that answers text / bytes / junk instead of a Path (the seam tests
+    and tooling patch), detonated :func:`_default_root` at
+    ``NGINX_ROOT = _default_root()`` import time — a raise, or a ``TypeError``
+    on ``str.__truediv__`` — and took the whole module down with it, so
+    GET /api/nginx and POST /api/nginx/test|reload answered HTTP 500 (the
+    router never mounted) instead of the sentinel root's coded shapes.  This
+    runs *before* ``_isinst`` / ``_as_text`` are defined, so it launders
+    self-contained (the backups12 ``_user_home`` rule): a real Path passes; a
+    textual answer still names a real directory and is kept as a Path
+    (surrogates via ``surrogateescape``); a raise or junk degrades to ``None``
+    and the caller takes the ``/var/empty`` sentinel.  A leftover whose
+    ``__class__`` is a raising property blows the ``isinstance`` gate too —
+    that also degrades to ``None`` rather than escaping.
+    """
+    try:
+        home = user_home()
+    except Exception:
+        return None
+    try:
+        if isinstance(home, Path):
+            return home
+        if isinstance(home, (str, bytes)):
+            return Path(os.fsdecode(home))
+    except Exception:
+        return None
+    return None
+
+
 def _default_root() -> Path:
-    """Nginx tree under ``~/Services/nginx``.  ``Path.home()`` leftover must not 500 import."""
-    home = user_home()
+    """Nginx tree under ``~/Services/nginx``.  A leftover ``user_home`` provider
+    must not 500 the import (see :func:`_user_home`); junk takes the sentinel."""
+    home = _user_home()
     return (home / "Services" / "nginx") if home is not None else Path("/var/empty/serverhub-nginx")
 
 
