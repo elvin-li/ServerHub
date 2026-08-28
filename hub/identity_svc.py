@@ -86,6 +86,65 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh``, and the bare ``rc, out, err = sh(...)`` unpack dispatched
+    into the *answer's* own iteration: a tuple/list subclass whose bound
+    ``__iter__`` bombs, a lying-``__class__`` sequence impostor, or a torn
+    two-field answer each raised straight out of :func:`get_identity`'s
+    future reads and :func:`set_identity`'s scutil spawn — raw 500s on
+    GET and PUT /api/identity that ``_rc_int`` alone never saw, because
+    the crash happened one step before any rc probe (the vms/system
+    ``_sh3`` rule).  The unbound base reads see the real C-level storage,
+    so an honest answer in a subclass wrapper survives untouched — the
+    vanished-spawn sentinel included — while junk degrades to
+    ``(-255, "", "")``: nonzero (an unusable answer is not consent to
+    claim success) and never the ``-1`` sentinel, so shape junk cannot
+    forge the vanished-scutil 503 in :func:`_scutil_missing` either.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    try:
+        if len(items) != 3:
+            return (-255, "", "")
+    except Exception:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and :func:`set_identity` called it
+    bare: a leftover runner that raises instead of answering 500'd
+    PUT /api/identity after validation had already passed, and blew the
+    fire-and-forget LocalHostName follow-up after ComputerName had already
+    been set (the vms11 runner-seam rule).  A raising runner reads as
+    ``(-255, "", "")`` — nonzero, and never the ``-1`` spawn *sentinel*,
+    so it cannot forge the vanished-scutil 503: that stays reserved for an
+    honest sentinel plus the on-disk confirm.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _as_text(value) -> str:
     """JSON-encodable scutil/sysctl field.  Leftover ``\\ud800`` used to 500 GET /api/identity."""
     decoded = None
@@ -207,13 +266,24 @@ def get_identity() -> dict:
             return fallback
 
     # `.result()` re-raises; one scutil/sysctl miss must not 500 Settings.
-    rc, hostname, _ = _result(f_host, (1, "", ""))
-    rc2, comp, _ = _result(f_comp, (1, "", ""))
-    rc3, local, _ = _result(f_local, (1, "", ""))
-    rc4, model, _ = _result(f_model, (1, "", ""))
-    tz = _result(f_tz, "") or ""
-    platform_name = _result(f_platform, "") or ""
-    host_ip = _result(f_ip, "") or ""
+    # _sh3 on every triple: the futures absorb a *raising* sh, but a patched
+    # sh that *answers* junk — a torn two-field tuple, a scalar, a sequence
+    # subclass whose ``__iter__`` bombs — used to detonate these bare
+    # unpacks themselves and 500 GET /api/identity one step ahead of the
+    # _rc_int probes.
+    rc, hostname, _ = _sh3(_result(f_host, (1, "", "")))
+    rc2, comp, _ = _sh3(_result(f_comp, (1, "", "")))
+    rc3, local, _ = _sh3(_result(f_local, (1, "", "")))
+    rc4, model, _ = _sh3(_result(f_model, (1, "", "")))
+    # _pick, not ``or``: these three answers come from seams this module
+    # does not own (time_zone rides a patched sh; platform_string and
+    # effective_host_ip are patched by tests and tooling), and a leftover
+    # ``__bool__`` bomb answered into the bare ``or`` used to detonate the
+    # truth test itself — a raw 500 on GET /api/identity before _as_text
+    # ever saw the value.
+    tz = _pick(_result(f_tz, ""), "")
+    platform_name = _pick(_result(f_platform, ""), "")
+    host_ip = _pick(_result(f_ip, ""), "")
     # dict.get + a laundered copy (the config.settings_section rule): a
     # leftover dict-*subclass* planted as the config root or the settings
     # block passes ``isinstance`` and its bound ``.get`` bomb used to raise
@@ -242,6 +312,14 @@ def get_identity() -> dict:
     # `_as_text`; leftover ``\ud800`` there 500'd GET /api/identity.
     # _rc_int on every probe: an rc-subclass ``__eq__`` bomb from a
     # patched/odd ``sh`` used to detonate the bare ``rc == 0`` reads here.
+    # configured_host() under its own try: this module does not own the
+    # host_address seam, and a raising provider ran bare inside the return
+    # dict — the one identity field whose failure still 500'd the route
+    # while its host_ip sibling (pool + _result) already degraded.
+    try:
+        host_cfg = configured_host()
+    except Exception:
+        host_cfg = ""
     return {
         "hostname": _as_text(hostname if _rc_int(rc) == 0 else platform.node()),
         "computer_name": _as_text(comp) if _rc_int(rc2) == 0 else "",
@@ -250,7 +328,7 @@ def get_identity() -> dict:
         "platform": _as_text(platform_name),
         "arch": _as_text(platform.machine()),
         "host_ip": _as_text(host_ip),
-        "host_ip_config": _as_text(configured_host()),
+        "host_ip_config": _as_text(host_cfg),
         # _pick, not ``or``: a leftover ``__bool__``-bomb comment value used
         # to detonate the truth test itself and 500 GET /api/identity.
         # _mapping_get, not the laundered ``.get``: a hash-shadowing key in
@@ -281,11 +359,14 @@ def time_zone() -> str:
     because it works when /etc/localtime is a regular file, and `readlink` covers the
     symlink case. Only one of them runs on a given host.
     """
-    rc, out, _ = sh(["/bin/ls", "-l", "/etc/localtime"], timeout=3)
+    # _spawn + _rc_int (the get_identity seam rule): a raising or
+    # shape-junk sh answer used to blow the unpack / the bare ``rc == 0``
+    # out of this memoised probe instead of degrading to "unknown zone".
+    rc, out, _ = _spawn(["/bin/ls", "-l", "/etc/localtime"], 3)
     text = _as_text(out)
-    if rc == 0 and "zoneinfo/" in text:
+    if _rc_int(rc) == 0 and "zoneinfo/" in text:
         return text.split("zoneinfo/")[-1].strip()
-    rc, out, _ = sh(["/usr/bin/readlink", "/etc/localtime"], timeout=3)
+    rc, out, _ = _spawn(["/usr/bin/readlink", "/etc/localtime"], 3)
     text = _as_text(out)
     if "zoneinfo/" in text:
         return text.split("zoneinfo/")[-1].strip()
@@ -323,8 +404,11 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             or not _encodable(name)
         ):
             raise api_error("identity.bad_name")
-        # Try without sudo first
-        rc, out, err = sh([SCUTIL, "--set", "ComputerName", name], timeout=5)
+        # Try without sudo first.  _spawn, not bare sh: a leftover runner
+        # that raises — or answers a torn shape the unpack cannot take —
+        # used to 500 PUT /api/identity here, after the panel settings
+        # above had already been persisted.
+        rc, out, err = _spawn([SCUTIL, "--set", "ComputerName", name], 5)
         # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh``
         # used to detonate this bare probe and 500 PUT /api/identity; a bomb
         # reads as failure and takes the privileges-message branch.
@@ -343,7 +427,10 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             )
         else:
             msgs.append("ComputerName set")
-            sh([SCUTIL, "--set", "LocalHostName", name.replace(" ", "-")[:63]], timeout=5)
+            # _spawn even though the answer is discarded: a raising runner
+            # used to 500 the request here, after ComputerName had already
+            # been renamed through the guarded spawn above.
+            _spawn([SCUTIL, "--set", "LocalHostName", name.replace(" ", "-")[:63]], 5)
     try:
         identity = get_identity()
     except Exception:
