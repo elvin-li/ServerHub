@@ -411,8 +411,29 @@ def _jsonable(value, depth: int = 0):
             # (anything, not just ValueError) used to escape this probe and
             # 500 the request record() was auditing.  ``int.__index__`` is the
             # unbound base slot, so an override cannot reach it.
-            value = int.__index__(value)
-            str(value)
+            coerced = int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The unbound slot refused the operand, so the *claimed* ``int``
+            # was a lie — but the real storage may still be numeric.  The old
+            # arm returned None here, so a genuine finite float whose
+            # ``__class__`` property answered ``int`` vanished at the wrong
+            # rank while its value rendered fine one gate below (the
+            # modules13 claimed-base rule, mirrored from the audit12 decode
+            # fix).  Try the float base against the real layout; a total
+            # impostor fails that too and drops exactly as before.
+            try:
+                recovered = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+            if recovered != recovered or recovered in (float("inf"), float("-inf")):
+                return None
+            return recovered
+        try:
+            str(coerced)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -425,7 +446,7 @@ def _jsonable(value, depth: int = 0):
             # field keeps the event — the same probe as terminal_svc._jsonable
             # and hub.errors._jsonable_param.
             return None
-        return value
+        return coerced
     if _isa(value, float):
         try:
             # Base coercion before the finite probes: a float subclass whose
@@ -449,6 +470,20 @@ def _jsonable(value, depth: int = 0):
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            # The descriptor is bound to the real dict layout, so a refusal
+            # means the claimed ``dict`` was a lie.  A genuine sequence
+            # behind that lie used to degrade to ``{}`` — its perfectly
+            # renderable elements gone at the wrong rank — so try the
+            # sequence bases against the real storage first; a total
+            # impostor fails those too and keeps the old empty shape.
+            for base in (list, tuple, set, frozenset):
+                try:
+                    seq = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                return [_jsonable(v, depth + 1) for v in seq]
             return out
         for k, v in items:
             if not _isa(k, (str, bytes, bytearray)):
@@ -460,17 +495,27 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    for base in (list, tuple, set, frozenset):
-        if _isa(value, base):
+    if _isa(value, (list, tuple, set, frozenset)):
+        # ``continue`` on rejection, not ``return []``: the old arm picked
+        # the iteration base off the *claimed* ``__class__``, so a genuine
+        # tuple whose ``__class__`` property lied ``list`` was handed to
+        # ``list.__iter__``, rejected by the descriptor, and its perfectly
+        # renderable elements vanished to ``[]`` — the wrong-rank degrade
+        # the audit12 decode fix (and hub.modules' sweep-13 arm) already
+        # shed.  Every base is tried against the real storage; the honest
+        # layout wins, a total impostor fails all four and keeps the old
+        # empty-list shape.  ``list(base.__iter__(...))`` snapshots pure C
+        # elements without running any leftover code, so a hook that
+        # resizes its parent container mid-walk cannot tear the walk.
+        for base in (list, tuple, set, frozenset):
             try:
-                # Same shape as the dict read: subclass ``__iter__`` bombs
-                # bypass the base slot, so the real elements still list.
                 seq = list(base.__iter__(value))
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                return []
+                continue
             return [_jsonable(v, depth + 1) for v in seq]
+        return []
     try:
         # getattr, guarded: a leftover object whose ``__getattr__`` (or an
         # ``isoformat`` property) raises non-AttributeError used to escape
@@ -561,6 +606,19 @@ def redact(value: Any, _depth: int = 0) -> Any:
         except _CONTROL_FLOW:
             raise
         except BaseException:
+            # A refusal means the claimed ``dict`` was a lie; a genuine
+            # sequence behind it still holds entries worth redacting rather
+            # than dropping wholesale (the wrong-rank rule, as in
+            # _jsonable).  A total impostor fails the bases too and drops
+            # to None exactly as before.
+            for base in (list, tuple, set, frozenset):
+                try:
+                    seq = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                return [redact(v, _depth + 1) for v in seq]
             return None
         out = {}
         for k, v in items:
@@ -575,15 +633,24 @@ def redact(value: Any, _depth: int = 0) -> Any:
                 # itself, never the sibling fields.
                 continue
         return out
-    for base in (list, tuple):
-        if _isa(value, base):
+    if _isa(value, (list, tuple, set, frozenset)):
+        # set/frozenset joined the bases: the old (list, tuple)-only walk
+        # passed a set field through the ``return value`` fallthrough
+        # untouched, and a hashable dict-subclass hiding inside it carried
+        # its secret-named fields past redaction entirely — _jsonable later
+        # expanded the set into a rendered list, so the plaintext landed on
+        # the 0600 disk trail under its secret name (the audit12 classifier
+        # slip's severity, through a different door).  Every base is tried
+        # against the real storage, same wrong-rank rule as _jsonable's arm.
+        for base in (list, tuple, set, frozenset):
             try:
                 seq = list(base.__iter__(value))
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                return []
+                continue
             return [redact(v, _depth + 1) for v in seq]
+        return []
     return value
 
 
@@ -625,7 +692,20 @@ def record(event: str, /, **fields: Any) -> dict:
         # the whole line to the minimal shape.  _jsonable rebuilds every
         # key as an exact str first, so the dict operations here only ever
         # touch plain keys.
-        extra = _jsonable(redact(fields))
+        #
+        # Redact *again* after shaping, not instead of before: _jsonable
+        # expands structures the first pass never walked — a leftover
+        # ``isoformat()`` answering a mapping, a set element rendered into
+        # a list — and a secret-named field born in that expansion used to
+        # land on the disk trail (and in the returned entry) in plaintext.
+        # The route's read-side re-redact kept it off the wire, but the
+        # on-disk copy — the one an operator or an older build reads
+        # directly — carried the value, breaking this module's first
+        # guarantee.  The post pass walks the exact-typed shaped tree, so
+        # classifier and writer see the same key text by construction; the
+        # pre pass stays because dropping a secret subtree before any
+        # rendering hook runs is the stronger order.
+        extra = redact(_jsonable(redact(fields)))
         if not isinstance(extra, dict):
             extra = {}
         # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
