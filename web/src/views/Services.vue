@@ -3,7 +3,7 @@
     <!-- No visible page title on this layout; see Dashboard.vue. -->
     <h1 class="sr-only">{{ t('services.title') }}</h1>
     <!-- Problems banner -->
-    <div v-if="(status?.problems || []).length" class="problems-bar">
+    <div v-if="asArray(status?.problems).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
       <!-- LEDs: warn vs down reached a sighted reader in colour alone, so
            hide the paint and spell the state — same treatment as the
@@ -23,7 +23,7 @@
     </div>
 
     <!-- Quick links -->
-    <div v-if="(status?.links || []).length" class="quick-links">
+    <div v-if="asArray(status?.links).length" class="quick-links">
       <a v-for="l in status.links" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
     </div>
 
@@ -356,8 +356,8 @@ function later(fn, ms) {
 
 const flat = computed(() => {
   const list = []
-  for (const g of status.value?.groups || []) {
-    for (const s of g.services || []) list.push(s)
+  for (const g of asArray(status.value?.groups)) {
+    for (const s of asArray(g.services)) list.push(s)
   }
   return list
 })

@@ -513,7 +513,7 @@ const activeGroup = computed(() => {
   return null
 })
 
-const activeChildren = computed(() => activeGroup.value?.children || [])
+const activeChildren = computed(() => asArray(activeGroup.value?.children))
 
 function isActive(item) {
   const path = route.path
@@ -912,7 +912,7 @@ function loadAssistCatalog() {
   getAssistantCatalog(locale.value)
     .then((body) => {
       if (!stillOnShell(generation) || !authState.canManage) return
-      assistCatalog.value = body.panels || []
+      assistCatalog.value = asArray(body.panels)
     })
     .catch(() => {
       if (!stillOnShell(generation)) return

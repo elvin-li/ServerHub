@@ -56,9 +56,9 @@
            with no name is announced as an anonymous "navigation". -->
       <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
         <button type="button" class="crumb" @click="goPath(listing.root)">{{ finiteText(listing.root_id, 'root') }}</button>
-        <template v-for="(c, i) in listing.crumbs || []" :key="c.path">
+        <template v-for="(c, i) in asArray(listing.crumbs)" :key="c.path">
           <span class="sep">/</span>
-          <button type="button" class="crumb" :class="{ current: i === (listing.crumbs || []).length - 1 }" @click="goPath(c.path)">
+          <button type="button" class="crumb" :class="{ current: i === asArray(listing.crumbs).length - 1 }" @click="goPath(c.path)">
             {{ finiteText(c.name, '/') }}
           </button>
         </template>
@@ -116,7 +116,7 @@
             <!-- A failed reload keeps the previous listing on screen; the row
                  must not claim the folder is empty when the read that would
                  prove it just failed (the banner above carries the reason). -->
-            <tr v-if="!(listing.items || []).length">
+            <tr v-if="!asArray(listing.items).length">
               <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
@@ -166,7 +166,7 @@ let listRequest = 0
 let pageAlive = true
 
 const allSelected = computed(() => {
-  const items = listing.value?.items || []
+  const items = asArray(listing.value?.items)
   return items.length > 0 && items.every(i => selected.value.includes(i.path))
 })
 
@@ -365,7 +365,7 @@ async function doDeleteOne(it) {
 
 async function doDeleteSelected() {
   if (!selected.value.length) return
-  const items = listing.value?.items || []
+  const items = asArray(listing.value?.items)
   const hasDir = selected.value.some((path) => items.find((it) => it.path === path)?.is_dir)
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
   if (!confirm(t(key, { n: selected.value.length }))) return

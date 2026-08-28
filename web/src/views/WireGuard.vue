@@ -300,7 +300,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in data?.peers || []" :key="p.pubkey">
+            <tr v-for="p in asArray(data?.peers)" :key="p.pubkey">
               <td><span class="led" :class="p.active ? 'on' : (p.stale ? 'warn' : 'off')"></span></td>
               <td>
                 <strong>{{ finiteText(p.name, '') || t('wg.unnamed') }}</strong>
@@ -343,7 +343,7 @@
                 <button class="tiny danger" @click="removePeer(p)" :disabled="busy">{{ t('common.delete') }}</button>
               </td>
             </tr>
-            <tr v-if="!(data?.peers || []).length">
+            <tr v-if="!asArray(data?.peers).length">
               <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
             </tr>
           </tbody>

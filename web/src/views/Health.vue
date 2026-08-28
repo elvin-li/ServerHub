@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ filtered.length }} / {{ (data?.checks || []).length }}
+        {{ filtered.length }} / {{ asArray(data?.checks).length }}
       </span>
     </div>
 
@@ -62,7 +62,7 @@
          (the empty-row is loadError-suppressed), claiming a scan that never
          arrived.  Stale rows still stay on screen under the banner when a
          later rescan fails (the LoadFailure contract — Services pattern). -->
-    <div v-else-if="(data?.checks || []).length || !loadError" class="table-wrap">
+    <div v-else-if="asArray(data?.checks).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -93,7 +93,7 @@
             <!-- A level tab that misses and a scan that produced no checks
                  are different answers: "no matching items" on an empty scan
                  hid that there is nothing to filter (Logs/Services split). -->
-            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : ((data?.checks || []).length ? t('common.no_match') : t('health.empty')) }}</td>
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(data?.checks).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>
@@ -105,7 +105,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -120,7 +120,7 @@ let pageAlive = true
 let loadGeneration = 0
 
 const filtered = computed(() => {
-  const list = data.value?.checks || []
+  const list = asArray(data.value?.checks)
   if (filter.value === 'all') return list
   if (filter.value === 'issues') return list.filter(c => !c.ok)
   if (filter.value === 'error') return list.filter(c => !c.ok && c.level === 'error')

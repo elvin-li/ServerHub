@@ -44,7 +44,7 @@
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_listening') }}</span>
-        <span class="net-summary-value">{{ t('network.sum_ports_n', { n: (data.listening || []).length }) }}</span>
+        <span class="net-summary-value">{{ t('network.sum_ports_n', { n: asArray(data.listening).length }) }}</span>
       </div>
     </div>
 
@@ -428,7 +428,7 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ (data?.listening || []).length }}</span>
+        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ asArray(data?.listening).length }}</span>
       </div>
       <div class="table-wrap">
         <table class="dense fit-m">
@@ -485,7 +485,7 @@
           <!-- role=status: the count is the only feedback the filter box gives,
                and it changed silently for a screen reader. Same pattern as the
                Services filter count. -->
-          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ (data?.docker_ports || []).length }}</span>
+          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ asArray(data?.docker_ports).length }}</span>
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">
@@ -711,7 +711,7 @@ function stillOnNetwork(generation) {
 
 const filteredListen = computed(() => {
   const q = portQ.value.trim().toLowerCase()
-  const list = data.value?.listening || []
+  const list = asArray(data.value?.listening)
   if (!q) return list
   return list.filter(p =>
     (p.process || '').toLowerCase().includes(q)
@@ -722,7 +722,7 @@ const filteredListen = computed(() => {
 
 const filteredDockerPorts = computed(() => {
   const q = dockerPortQ.value.trim().toLowerCase()
-  const list = data.value?.docker_ports || []
+  const list = asArray(data.value?.docker_ports)
   if (!q) return list
   return list.filter(p =>
     (p.container || '').toLowerCase().includes(q)
@@ -1158,7 +1158,7 @@ async function doLookup() {
 function openPortEdit(container) {
   portEdit.value = container || ''
   if (container) {
-    const maps = (data.value?.docker_ports || [])
+    const maps = asArray(data.value?.docker_ports)
       .filter(p => p.container === container && finiteN(p.host_port, null) != null)
       .map(p => `${finiteN(p.host_port)}:${finiteN(p.container_port)}`)
     portEditText.value = [...new Set(maps)].join('\n')
@@ -1206,7 +1206,7 @@ function openConnect(n) {
 function openDisconnect(n) {
   connectNet.value = n
   connectMode.value = 'disconnect'
-  connectContainer.value = (n.containers || [])[0]?.name || ''
+  connectContainer.value = asArray(n.containers)[0]?.name || ''
 }
 
 async function applyConnect() {

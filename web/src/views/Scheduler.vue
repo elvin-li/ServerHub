@@ -150,7 +150,7 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ (data?.timers || []).length }}</span>
+        <span class="meta-count" role="status">{{ filtered.length }} / {{ asArray(data?.timers).length }}</span>
       </div>
 
       <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
@@ -185,7 +185,7 @@
                  table; a host full of timers appeared to have none. -->
             <tr v-if="!filtered.length && !loadError">
               <td colspan="5" class="empty-row">
-                {{ loading ? t('common.loading') : (q.trim() && (data?.timers || []).length ? t('common.no_match') : t('common.none')) }}
+                {{ loading ? t('common.loading') : (q.trim() && asArray(data?.timers).length ? t('common.no_match') : t('common.none')) }}
               </td>
             </tr>
           </tbody>

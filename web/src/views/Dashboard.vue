@@ -883,8 +883,8 @@ const cpu = computed(() => sensors.value?.cpu || {})
 const mem = computed(() => sensors.value?.memory || {})
 const net = computed(() => sensors.value?.network || {})
 const thermal = computed(() => cpu.value?.thermal || sensors.value?.thermal || {})
-const smartDisks = computed(() => storage.value?.disks || [])
-const topProcs = computed(() => sensors.value?.top_processes || [])
+const smartDisks = computed(() => asArray(storage.value?.disks))
+const topProcs = computed(() => asArray(sensors.value?.top_processes))
 const engineUp = computed(() => !!status.value?.engine_up)
 const ss = computed(() => powerData.value?.screen_sharing || {})
 const ncpu = computed(() => finiteN(cpu.value.ncpu || sys.value.ncpu || host.value?.ncpu, 1))
@@ -1090,7 +1090,7 @@ const ollamaChipVisible = computed(() => {
   return Boolean(o && (o.installed || o.reachable || o.service?.label))
 })
 const ollamaResidentName = computed(() => {
-  const first = (ollama.value?.resident || [])[0]
+  const first = asArray(ollama.value?.resident)[0]
   return finiteText(first?.name, '')
 })
 const ollamaChipClass = computed(() => {
@@ -1538,7 +1538,7 @@ async function loadMetrics() {
   try {
     const m = await getMetricsRange(wanted)
     if (generation !== metricsGeneration || !dashAlive) return
-    metrics.value = m.points || []
+    metrics.value = asArray(m.points)
     metricsMeta.value = m.since != null && m.until != null
       ? { since: m.since, until: m.until }
       : null
@@ -1561,7 +1561,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // list call queued behind it and put the 3s wait back on first paint.
   void getContainers(withDockerStats).then(c => {
     if (!stillHere()) return
-    containers.value = c.containers || []
+    containers.value = asArray(c.containers)
     if (c.stats && Object.keys(c.stats).length) {
       cstats.value = c.stats
       cstatsAt.value = Date.now()
@@ -1572,7 +1572,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // top_processes / proc counts, so first paint and idle 90s ticks showed "—".
   // The 20s admin tick stays light and merges last full extras.
   void loadSensors(forceSensors, { light: false })
-  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = b.bookmarks || [] }).catch(() => {})
+  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = asArray(b.bookmarks) }).catch(() => {})
   await Promise.all([
     loadMetrics(),
     getStorage(true).then(s => { if (stillHere()) storage.value = s }).catch(() => {}),
@@ -1588,8 +1588,8 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     // Ports say "None" and Recent alerts say "None" as if that were verified.
     // Null keeps the placeholder row, which reads load_failed once loadError
     // (the host probe, the canonical liveness signal) reports the tick failed.
-    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => {}),
-    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => {}),
+    getAlerts(12).then(a => { if (stillHere()) alerts.value = asArray(a.alerts) }).catch(() => {}),
+    getListeningPorts(40).then(p => { if (stillHere()) ports.value = asArray(p.ports) }).catch(() => {}),
     getUps().then(u => { if (stillHere()) ups.value = u }).catch(() => {}),
     getOllamaStatus().then(o => { if (stillHere()) ollama.value = o }).catch(() => {}),
     loadPower(),
