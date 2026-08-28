@@ -131,6 +131,45 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh_triple(argv, *, timeout: int) -> tuple:
+    """The ``sh`` seam laundered to an exact ``(rc, out, err)`` shape.
+
+    nas11's ``_rc_int`` laundered the rc *value*, but the answer's *shape*
+    stayed bare: ``rc, out, err = sh(...)`` iterates whatever the seam
+    handed back, and this module does not own ``sh`` (tests and tooling
+    patch it).  A leftover sequence subclass whose ``__iter__`` raises, a
+    torn two-field answer, or a patched ``sh`` that raises outright each
+    used to blow the unpack itself — inside ``_plist`` /
+    ``_tm_latest_backup`` (a raw 500 on GET /api/snapshots through
+    ``overview``'s fan-out, which re-raises a probe's error) and
+    ``create_snapshot`` (a raw 500 on POST /api/snapshots/create) — one
+    step ahead of the ``_rc_int`` / ``_as_text`` guards on the fields
+    themselves (the ups/vms/storage ``_sh3`` rule).  An unreadable answer
+    reads as spawn failure: ``-255`` is nonzero and never ``sh``'s ``-1``
+    sentinel.
+    """
+    try:
+        rc, out, err = sh(argv, timeout=timeout)
+        return rc, out, err
+    except Exception:
+        return -255, "", ""
+
+
+def _opt_text(value) -> str:
+    """``_as_text(value or "")`` without asking the raw value for truth.
+
+    ``time_machine_overview`` read its plist fields through the bare
+    ``entry.get(...) or ""`` — but this module does not own the plist
+    providers (tests and tooling patch them), and a leftover ``__bool__``
+    bomb detonated the ``or`` itself, one step ahead of ``_as_text``'s
+    laundering.  The old MountPoint probe was worse: ``str(...)`` caught
+    only the digit-cap ValueError, so a ``__str__`` bomb raising anything
+    else escaped raw.  Each was a raw 500 on GET /api/snapshots through
+    fan_out; a field that cannot even answer for its truth reads as empty.
+    """
+    return _as_text(value) if _truthy(value) else ""
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's ``allow_nan=False`` encoder cannot 500.
 
@@ -303,7 +342,7 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
     so the payload is located by its declaration rather than assumed to start at
     byte zero.
     """
-    rc, out, _ = sh(argv, timeout=timeout)
+    rc, out, _ = _sh_triple(argv, timeout=timeout)
     out = _as_text(out)
     if _rc_int(rc) != 0 or not out:
         return None
@@ -380,7 +419,7 @@ def snapshot_mounts() -> list[str]:
     Read-only mounts are skipped because a snapshot cannot be created there.
     """
     mounts = ["/"]
-    rc, out, _ = sh([DISKUTIL, "list", "-plist"], timeout=10)
+    rc, out, _ = _sh_triple([DISKUTIL, "list", "-plist"], timeout=10)
     seen = set(mounts)
     try:
         volumes = Path("/Volumes")
@@ -471,7 +510,7 @@ def _tm_status() -> dict | None:
 
 
 def _tm_latest_backup() -> str:
-    rc, latest, _ = sh([TMUTIL, "latestbackup"], timeout=12)
+    rc, latest, _ = _sh_triple([TMUTIL, "latestbackup"], timeout=12)
     return _as_text(latest).strip() if _rc_int(rc) == 0 else ""
 
 
@@ -528,16 +567,16 @@ def time_machine_overview() -> dict:
         entry = _plain(entry)
         if entry is None:
             continue
-        try:
-            mount_point = str(entry.get("MountPoint") or "")
-        except ValueError:
-            # A leftover plist-hex MountPoint arrives *already-int*
-            # (plistlib parses ``<integer>0xF…</integer>`` through
-            # ``int(x, 16)``, exempt from CPython's 4300-digit parse cap),
-            # so the bare str() raised the int->str digit-cap ValueError out
-            # of fan_out and 500'd GET /api/snapshots.  An unrenderable
-            # mount can never name a directory; treat it as unmounted.
-            mount_point = ""
+        # _opt_text, not ``str(entry.get(...) or "")``: the bare ``or``
+        # asked a leftover ``__bool__``-bomb field for truth and the old
+        # str() caught only the digit-cap ValueError, so a ``__str__``
+        # bomb raising anything else escaped raw — each a raw 500 on
+        # GET /api/snapshots through fan_out.  An over-cap plist-hex
+        # MountPoint (plistlib parses ``<integer>0xF…</integer>`` through
+        # ``int(x, 16)``, exempt from CPython's 4300-digit parse cap)
+        # still scrubs to "" inside _as_text: an unrenderable mount can
+        # never name a directory, so it reads as unmounted.
+        mount_point = _opt_text(entry.get("MountPoint"))
         mounted = False
         if mount_point and "\x00" not in mount_point:
             try:
@@ -545,16 +584,20 @@ def time_machine_overview() -> dict:
             except (OSError, ValueError):
                 mounted = False
         destinations.append({
-            "id": _as_text(entry.get("ID") or ""),
-            "name": _as_text(entry.get("Name") or ""),
-            "kind": _as_text(entry.get("Kind") or ""),
-            "mount": _as_text(mount_point),
-            "url": _as_text(entry.get("URL") or ""),
-            "last_used": bool(entry.get("LastDestination")),
+            "id": _opt_text(entry.get("ID")),
+            "name": _opt_text(entry.get("Name")),
+            "kind": _opt_text(entry.get("Kind")),
+            "mount": mount_point,
+            "url": _opt_text(entry.get("URL")),
+            # _truthy: a leftover ``__bool__``-bomb flag detonated the bare
+            # bool() itself — a raw 500 on GET /api/snapshots.
+            "last_used": _truthy(entry.get("LastDestination")),
             "mounted": mounted,
         })
 
-    running = bool(status.get("Running"))
+    # _truthy, not bool(): a ``__bool__``-bomb Running value in a poisoned
+    # status plist used to detonate the truth test raw under fan_out.
+    running = _truthy(status.get("Running"))
     progress = _plain(status.get("Progress")) or {}
     percent = progress.get("Percent")
     percent_val = None
@@ -581,7 +624,8 @@ def time_machine_overview() -> dict:
         "configured": bool(destinations),
         "destinations": destinations,
         "running": running,
-        "phase": _as_text(status.get("BackupPhase") or ""),
+        # _opt_text: the bare ``or ""`` ran a leftover ``__bool__`` bomb.
+        "phase": _opt_text(status.get("BackupPhase")),
         "percent": percent_val,
         "latest_backup": latest_path,
         "latest_backup_date": _human_date(_snapshot_date(latest_path)),
@@ -675,7 +719,7 @@ def create_snapshot() -> dict:
     mounted volumes in one pass, which is also how macOS itself does it before
     a system update.
     """
-    rc, out, err = sh([TMUTIL, "localsnapshot"], timeout=120)
+    rc, out, err = _sh_triple([TMUTIL, "localsnapshot"], timeout=120)
     invalidate()
     message = (_as_text(out) or _as_text(err)).strip()
     if _rc_int(rc) != 0:
