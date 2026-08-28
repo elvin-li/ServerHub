@@ -22,10 +22,10 @@
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="8" />
     <!-- Empty state: the grid is a bare v-for, so with no bookmarks the page
          showed only the static hint below and read as broken rather than empty. -->
-    <div v-else-if="!loadError && !(data?.bookmarks || []).length" class="placeholder">{{ t('common.none') }}</div>
+    <div v-else-if="!loadError && !asArray(data?.bookmarks).length" class="placeholder">{{ t('common.none') }}</div>
     <div v-else class="bm-page-grid">
       <a
-        v-for="(b, i) in data?.bookmarks || []"
+        v-for="(b, i) in asArray(data?.bookmarks)"
         :key="b.id || b.url || i"
         class="bm-page-card"
         :class="cardClass(b)"
@@ -58,7 +58,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 

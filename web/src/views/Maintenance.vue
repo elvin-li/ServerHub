@@ -91,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -135,7 +135,7 @@ async function refresh() {
   try {
     const list = await getMaintenance()
     if (generation !== listGeneration || !pageAlive) return false
-    tasks.value = Array.isArray(list) ? list : (list?.tasks || [])
+    tasks.value = Array.isArray(list) ? list : asArray(list?.tasks)
     loadError.value = ''
     return true
   } catch (e) {

@@ -24,7 +24,7 @@
           </div>
           <div class="detail" style="white-space:normal;min-height:36px">{{ finiteText(m.description) }}</div>
           <div class="sub" style="margin-bottom:6px">
-            <span v-for="r in m.ui_routes || []" :key="r" style="margin-right:6px">
+            <span v-for="r in asArray(m.ui_routes)" :key="r" style="margin-right:6px">
               <router-link v-if="typeof r === 'string' && r.startsWith('/')" :to="finiteText(r)" class="btn tiny">{{ finiteText(r) }}</router-link>
             </span>
           </div>
@@ -36,7 +36,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'

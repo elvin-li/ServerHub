@@ -532,7 +532,7 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const containers = computed(() => data.value?.containers || [])
+const containers = computed(() => asArray(data.value?.containers))
 const stats = computed(() => data.value?.stats || {})
 const engineMem = computed(() => {
   const n = Number(engineInfo.value?.info?.MemTotal)
@@ -877,7 +877,7 @@ async function openInspect(c) {
 async function loadImages() {
   const generation = listGeneration
   try {
-    const next = (await getImages()).images || []
+    const next = asArray((await getImages()).images)
     if (generation !== listGeneration) return
     images.value = next
     subError.value.images = ''
@@ -892,7 +892,7 @@ async function loadImages() {
 async function loadVolumes() {
   const generation = listGeneration
   try {
-    const next = (await getVolumes()).volumes || []
+    const next = asArray((await getVolumes()).volumes)
     if (generation !== listGeneration) return
     volumes.value = next
     subError.value.volumes = ''
@@ -907,7 +907,7 @@ async function loadVolumes() {
 async function loadNetworks() {
   const generation = listGeneration
   try {
-    const next = (await getNetworks()).networks || []
+    const next = asArray((await getNetworks()).networks)
     if (generation !== listGeneration) return
     networks.value = next
     subError.value.networks = ''

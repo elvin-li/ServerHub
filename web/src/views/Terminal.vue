@@ -99,7 +99,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -167,7 +167,7 @@ async function load() {
   try {
     const response = await getContainers(false)
     if (!pageAlive) return
-    containers.value = (response.containers || [])
+    containers.value = asArray(response.containers)
       .filter(c => c.state === 'ok' || (c.status || '').startsWith('Up'))
       .map(c => ({
         id: c.raw_name || c.id || c.name,

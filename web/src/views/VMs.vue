@@ -207,7 +207,7 @@ const labels = computed(() => ({
   rename: t('vms.rename'), kill: t('vms.kill'),
 }))
 
-const vms = computed(() => data.value?.vms || [])
+const vms = computed(() => asArray(data.value?.vms))
 
 function led(state) {
   if (state === 'ok') return 'on'

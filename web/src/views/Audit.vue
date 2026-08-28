@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -144,7 +144,7 @@ async function refresh(manual = false) {
   try {
     const d = await getAuthAudit(200)
     if (generation !== loadGeneration || !pageAlive) return
-    entries.value = d.entries || []
+    entries.value = asArray(d.entries)
     const retained = Number(d.retained_lines)
     maxRetained.value = Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''

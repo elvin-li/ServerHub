@@ -6,7 +6,7 @@
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <button @click="openSmart" :disabled="smartLoading">{{ t('main.smart_btn') }}</button>
       <span class="meta" style="color:var(--sub)">
-        {{ t('main_extra.summary_counts', { disks: (data?.power_disks || []).length, vols: data?.volumes?.length || 0 }) }}
+        {{ t('main_extra.summary_counts', { disks: asArray(data?.power_disks).length, vols: asArray(data?.volumes).length }) }}
       </span>
       <span v-if="data?.array" class="badge" :class="data.array.status === 'started' ? 'ok' : 'warn'">
         {{ t('main_extra.array_state', { state: finiteText(data.array.status) }) }}
@@ -43,7 +43,7 @@
       </div>
       <div class="tile span-3">
         <h2>{{ t('main.physical') }}</h2>
-        <div class="v">{{ finiteN(data?.array?.disk_count, (data?.disks || []).length) }}</div>
+        <div class="v">{{ finiteN(data?.array?.disk_count, asArray(data?.disks).length) }}</div>
         <div class="sub">SMART</div>
       </div>
       <div class="tile span-3">
@@ -126,15 +126,15 @@
             <td>
               <strong>{{ finiteText(d.name) }}</strong>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
-              <div v-if="(d.volumes||[]).length" class="show-m sub mono">
-                <div v-for="v in d.volumes || []" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-if="asArray(d.volumes).length" class="show-m sub mono">
+                <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m"><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
             <td class="col-hide-m"><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <span v-if="!(d.volumes||[]).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
-              <div v-for="v in d.volumes || []" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <span v-if="!asArray(d.volumes).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
+              <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
             </td>
             <td class="ops">
               <button v-if="(d.actions||[]).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
@@ -186,8 +186,8 @@
               <strong>{{ finiteText(d.name) }}</strong>
               <div class="sub" style="font-size:11px">{{ finiteText(d.hint) }}</div>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(d.protocol) }}{{ sizeGb(d.size_gb) ? ' · ' + sizeGb(d.size_gb) : '' }}</div>
-              <div v-if="(d.volumes||[]).length" class="show-m sub mono">
-                <div v-for="v in d.volumes || []" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-if="asArray(d.volumes).length" class="show-m sub mono">
+                <div v-for="v in asArray(d.volumes)" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m">
@@ -199,8 +199,8 @@
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <div v-for="v in d.volumes || []" :key="v.mount">{{ finiteText(v.mount) }}</div>
-              <span v-if="!(d.volumes||[]).length" style="color:var(--sub)">—</span>
+              <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <span v-if="!asArray(d.volumes).length" style="color:var(--sub)">—</span>
             </td>
             <td class="ops">
               <button
@@ -292,7 +292,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in data?.disks || []" :key="d.id">
+          <tr v-for="d in asArray(data?.disks)" :key="d.id">
             <!-- Was `d.smart ? 'on' : (d.error ? 'err' : 'off')`, which lit green for
                  a drive reporting FAILED (it has a smart dict) and red for a healthy
                  external disk macOS cannot read (it has an error) -- both backwards.
@@ -319,7 +319,7 @@
             <td class="mono col-hide-m">{{ finiteText(d.smart?.power_on) }}</td>
             <td class="col-hide-m">{{ finiteText(d.size) }}</td>
           </tr>
-          <tr v-if="!(data?.disks || []).length && !loadError">
+          <tr v-if="!asArray(data?.disks).length && !loadError">
             <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
@@ -342,7 +342,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in data?.volumes || []" :key="v.mount">
+          <tr v-for="v in asArray(data?.volumes)" :key="v.mount">
             <td class="mono">
               <strong>{{ finiteText(v.mount) }}</strong>
               <div class="show-m sub">{{ finiteText(v.kind) }} · {{ finiteText(v.filesystem) }}{{ finiteText(v.disk_id, '') ? ' · ' + finiteText(v.disk_id) : '' }}</div>
@@ -364,7 +364,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!(data?.volumes || []).length && !loadError">
+          <tr v-if="!asArray(data?.volumes).length && !loadError">
             <td colspan="8" class="empty-row">{{ t('main_extra.empty_volumes') }}</td>
           </tr>
         </tbody>
@@ -432,7 +432,7 @@
                claimed the disk had no volumes at all — say the filter missed
                instead, like every other filtered table. -->
           <tr v-if="!managedVols.length && !loadError && !pendingFull">
-            <td colspan="6" class="empty-row">{{ (data?.managed?.volumes || []).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ asArray(data?.managed?.volumes).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -720,7 +720,7 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const powerDisks = computed(() => data.value?.power_disks || [])
+const powerDisks = computed(() => asArray(data.value?.power_disks))
 const arrayDevices = computed(() => {
   const devices = data.value?.array?.devices
   if (Array.isArray(devices)) return devices
@@ -736,7 +736,7 @@ const sharedDiskIds = computed(() => {
   return s
 })
 const managedVols = computed(() => {
-  const list = data.value?.managed?.volumes || []
+  const list = asArray(data.value?.managed?.volumes)
   if (showSystemVols.value) return list
   return list.filter(v => !v.system)
 })
@@ -751,7 +751,7 @@ const canFormat = computed(() => {
 const unassigned = computed(() => {
   return asArray(powerDisks.value).filter(d => {
     if (d.system) return false
-    const vols = d.volumes || []
+    const vols = asArray(d.volumes)
     if (!vols.length) return true
     if (d.power_state === 'spun_down' || d.power_state === 'offline' || d.power_state === 'idle') return true
     return false

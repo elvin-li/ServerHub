@@ -282,7 +282,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtTs } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -306,7 +306,7 @@ const postgresTargets = ref([])
 const immich = ref({ available: false, last: null, layers: null })
 const layers = computed(() => immich.value.layers || null)
 const generatedSummary = computed(() => {
-  const dirs = layers.value?.generated?.dirs || []
+  const dirs = asArray(layers.value?.generated?.dirs)
   if (!dirs.length) return finiteText(layers.value?.generated?.path)
   return dirs.map((d) => `${finiteText(d.name)}${d.present ? '' : '?'}`).join(' · ')
 })
@@ -371,13 +371,13 @@ async function refresh(manual = false) {
   try {
     const d = await getBackups()
     if (generation !== backupsGeneration || !pageAlive) return
-    backups.value = d.backups || []
+    backups.value = asArray(d.backups)
     root.value = d.root || ''
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
     const reported = finiteN(d.total, null)
-    total.value = reported == null ? (d.backups || []).length : reported
-    postgresTargets.value = d.postgres_targets || []
+    total.value = reported == null ? asArray(d.backups).length : reported
+    postgresTargets.value = asArray(d.postgres_targets)
     immich.value = d.immich || { available: false, last: null, layers: null }
     loadError.value = ''
   } catch (e) {

@@ -58,7 +58,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -105,7 +105,7 @@ async function loadSources() {
   try {
     const d = await getLogSources()
     if (generation !== loadGeneration || !pageAlive) return false
-    sources.value = d.sources || []
+    sources.value = asArray(d.sources)
     if (!sourceId.value && sources.value.length) sourceId.value = sources.value[0].id
     loadError.value = ''
     return true

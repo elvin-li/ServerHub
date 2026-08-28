@@ -47,7 +47,7 @@
             <td class="mono col-hide-m">{{ finiteText(s.user) }}</td>
             <td class="ops">
               <button
-                v-for="a in s.actions || []"
+                v-for="a in asArray(s.actions)"
                 :key="a"
                 class="tiny"
                 :class="{ primary: a==='start', danger: a==='stop', 'hide-m': a==='restart' }"
@@ -73,7 +73,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -124,7 +124,7 @@ async function refresh() {
   try {
     const j = await getBrewServices()
     if (generation !== loadGeneration || !pageAlive) return
-    services.value = j.services || []
+    services.value = asArray(j.services)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
