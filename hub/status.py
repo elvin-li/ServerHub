@@ -283,7 +283,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -298,7 +300,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -310,7 +314,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound decode TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
@@ -320,18 +326,24 @@ def _jsonable(value, depth: int = 0):
         # the unbound view itself.
         try:
             entries = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         for k, v in entries:
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -343,13 +355,17 @@ def _jsonable(value, depth: int = 0):
                 # is for a lying-``__class__`` impostor, which TypeErrors.
                 try:
                     items = base.__iter__(value)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
                 return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -358,11 +374,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 the encoder.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -378,7 +398,9 @@ def _status_quick_links() -> list:
     # so this no longer RecursionError's; still absorb any leftover raise.
     try:
         links = resolve_value(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     return links if _isa(links, list) else []
 
@@ -412,7 +434,9 @@ def invalidate_status():
         # "no snapshot" because a container was restarted.
         try:
             _status_cache["t"] = 0
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A hash-shadowing key planted over ``t`` raises out of the
             # C-level insert compare; clear() never compares keys, so evict
             # the poison while keeping the snapshot /api/health serves.
@@ -422,19 +446,25 @@ def invalidate_status():
         from hub.discovery.containers import invalidate_containers
 
         invalidate_containers()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.containers_svc import invalidate_container_lists
 
         invalidate_container_lists()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub import vms_svc
 
         vms_svc.invalidate_vm_lists()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.adaptive import invalidate_lsof_snapshot
@@ -444,7 +474,9 @@ def invalidate_status():
         # reports, so it has to go with the rest of them or the next refresh
         # reports ports from before the action.
         invalidate_lsof_snapshot()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     with _lock:
         # `_status_generation` was bumped above, under this same lock, and it
@@ -452,7 +484,9 @@ def invalidate_status():
         # than allowed to restore the pre-action project list for a minute.
         try:
             _adaptive_cache["t"] = 0
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same shadow-key insert-compare class as the status cache above.
             _cache_publish(_adaptive_cache, t=0.0, compose=None, nginx=None)
 
@@ -494,11 +528,15 @@ def _adaptive_info() -> dict:
         f_nginx = _pool.submit(nginx_sites)
         try:
             compose = f_compose.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             compose = []
         try:
             nginx = f_nginx.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             nginx = []
         with _lock:
             if _status_generation == began:
@@ -512,7 +550,9 @@ def _future_result(fut, fallback):
     """``.result()`` re-raises; one collector must not 500 /api/status."""
     try:
         return fut.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
 
 
@@ -531,7 +571,9 @@ def _rows(value) -> list:
     # (subclass rows survive) and a liar drops here, not on the route.
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -544,10 +586,14 @@ def _container_pair(value):
             # is junk and reads as engine-down, not as a 500.
             try:
                 up = bool(up)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 up = False
             return _rows(items), up
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return [], False
 
@@ -568,7 +614,9 @@ def _build_status() -> dict:
         # and 500'd the very first read of a cold build.
         try:
             raw_settings = dict(raw_settings)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raw_settings = {}
     else:
         raw_settings = {}
@@ -583,7 +631,9 @@ def _build_status() -> dict:
     # jobs._truthy fail-closed rule).
     try:
         adaptive_on = bool(adaptive_on)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         adaptive_on = False
     f_l = _pool.submit(discover_launchd)
     f_d = _pool.submit(discover_containers)
@@ -598,7 +648,9 @@ def _build_status() -> dict:
     scripts = _rows(_future_result(f_sc, []))
     try:
         apps = collect_apps(engine_up)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         apps = []
     services = _rows(apps) + scripts + launchd + containers + vms
     # Scrub each collector row up front, not only in the final payload
@@ -636,7 +688,9 @@ def _build_status() -> dict:
         # 500'd a cold /api/status when lsof raised.
         try:
             orphans = discover_orphan_listeners(known_ports, known_names)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             orphans = []
         # _rows, not a bare ``isinstance`` + ``list.__iter__``: a scan
         # answering a ``__class__``-property bomb detonated the isinstance
@@ -672,7 +726,9 @@ def _build_status() -> dict:
     if _isa(raw_order, list):
         try:
             raw_names = list.__iter__(raw_order)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raw_names = ()
         order = [name for name in (_name_text(g) for g in raw_names) if name]
     else:
@@ -706,7 +762,9 @@ def _build_status() -> dict:
     try:
         from hub.tools_svc import github_update_status
         panel_update = github_update_status(fetch=False, checkout=False)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         panel_update = {}
     if not isinstance(panel_update, dict):
         panel_update = {}
@@ -868,7 +926,9 @@ def full_status(force=False):
             began = _status_generation
         try:
             v = _build_status()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # On failure, serve last good snapshot if available
             with _lock:
                 hit = _mapping_get(_status_cache, "v")
@@ -904,11 +964,15 @@ def _stamp_locale(status: dict) -> dict:
         # the empty snapshot rather than the route.
         try:
             status = dict(status)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _jsonable({})
     try:
         loc = panel_locale()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         loc = _mapping_get(status, "locale")
         if type(loc) is not str or not loc:
             loc = "zh-CN"
@@ -927,7 +991,9 @@ def _stamp_locale(status: dict) -> dict:
     if type(current) is not str or current != loc:
         try:
             status["locale"] = loc
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # The same shadow key raises out of the insert compare too.
             # Stamp the laundered copy instead: _jsonable rebuilds with
             # exact-str keys, so this write always lands.
