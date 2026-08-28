@@ -373,7 +373,9 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             yield f"data: !! could not start log stream: {_as_text(e)}\n\n"
             return
         try:
@@ -397,7 +399,9 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                             chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=5)
                             if not chunk or b"\n" in chunk:
                                 break
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         pass
                     yield "data: …[line truncated]\n\n"
                     continue
@@ -414,11 +418,15 @@ async def logs_sse(name: str, tail: int = Query(200, ge=1, le=5000), follow: boo
                     proc.kill()
                 except ProcessLookupError:
                     pass
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
             try:
                 await proc.wait()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
     return StreamingResponse(

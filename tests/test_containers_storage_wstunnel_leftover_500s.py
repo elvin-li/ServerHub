@@ -84,6 +84,10 @@ class ContainersStorageWstunnelLeftoverTests(unittest.TestCase):
                 {"listen": "", "restrict_to": ""},
             )
 
+    def test_storage_router_text_does_not_leak_a_heap_address(self):
+        self.assertEqual(storage._as_text(object()), "")
+        self.assertEqual(containers._as_text(object()), "")
+
 
 if __name__ == "__main__":
     unittest.main()

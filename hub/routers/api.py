@@ -177,7 +177,9 @@ def api_action(a: Action, request: Request):
     invalidate_status()
     try:
         ok = rc == 0
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An int-subclass ``__eq__`` bomb rc from an action seam reads as
         # failure — the bulk route's per-id contract — never a 500.
         ok = False
@@ -206,7 +208,9 @@ def api_action(a: Action, request: Request):
         if not message:
             try:
                 message = f"exit {rc}"
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 message = "exit (unrenderable code)"
     return JSONResponse(
         {"ok": bool(ok), "message": message},

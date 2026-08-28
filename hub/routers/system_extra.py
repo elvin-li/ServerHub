@@ -333,7 +333,9 @@ def _host_snapshot() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; one sysctl/docker timeout must not 500 /api/system/host.
@@ -666,7 +668,9 @@ def tools_updates(force: bool = False):
     # First Tools visit pays the probe; later visits and the warmer share it.
     try:
         tools_svc.start_updates_warmer()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return tools_svc.check_updates(force=force)
 

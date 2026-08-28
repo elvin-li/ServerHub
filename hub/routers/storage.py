@@ -128,7 +128,9 @@ def storage(light: bool = False):
     f_managed = _PAGE_POOL.submit(disk_manage_svc.overview)
     try:
         data = f_overview.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data = {"volumes": [], "disks": [], "error": _as_text(e)}
     # _isa, not bare isinstance: an overview return whose ``__class__`` is a
     # raising property used to detonate this gate itself — a raw 500 where
@@ -137,7 +139,9 @@ def storage(light: bool = False):
         data = {"volumes": [], "disks": [], "error": _as_text(data)}
     try:
         data["power_disks"] = _rendered(f_power.result())
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data["power_disks"] = []
         data["power_error"] = _as_text(e)
     # Shape gates behind the sanitizer: ``_rendered`` no longer raises on a
@@ -149,7 +153,9 @@ def storage(light: bool = False):
         data.setdefault("power_error", "power listing returned a non-list")
     try:
         data["managed"] = _rendered(f_managed.result())
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data["managed"] = {"volumes": [], "error": _as_text(e)}
     if not _isa(data.get("managed"), dict):
         data["managed"] = {"volumes": [], "error": "manage overview returned a non-dict"}
@@ -166,7 +172,9 @@ def storage_disks():
         disks = _rendered(disk_power_svc.list_power_disks())
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"disks": [], "error": _as_text(e)}
     if not _isa(disks, list):
         # The sanitizer salvages a junk listing return as text rather than
@@ -186,7 +194,9 @@ def storage_manage():
         managed = _rendered(disk_manage_svc.overview())
     except HTTPException:
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"volumes": [], "count": 0, "error": _as_text(e)}
     if not _isa(managed, dict):
         return {"volumes": [], "count": 0,
