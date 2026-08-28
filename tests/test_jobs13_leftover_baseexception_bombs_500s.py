@@ -274,9 +274,13 @@ class GuardContractTests(unittest.TestCase):
                 self.assertIsNone(module._plain_dict(_ClassPropBaseBomb()))
 
     def test_jsonable_launders_base_bomb_shapes(self):
+        # jobs14 recovers the renderable C-level storage underneath an
+        # ``__iter__`` bomb through the unbound ``list.__iter__`` snapshot
+        # (the bookmarks14 rule) — the raise is still absorbed, never a 500.
+        self.assertEqual(jobs._jsonable(_IterBaseBombList([1])), [1])
+        self.assertIsNone(scheduler_svc._jsonable(_IterBaseBombList([1])))
         for module in (jobs, scheduler_svc):
             with self.subTest(module=module.__name__):
-                self.assertIsNone(module._jsonable(_IterBaseBombList([1])))
                 self.assertEqual(module._jsonable(_StrBaseBomb()), "")
 
     def test_in_field_reads_a_member_eq_base_bomb_as_no_match(self):
@@ -451,8 +455,12 @@ class MaintenanceDecodeFidelityTests(unittest.TestCase):
                 self.assertEqual(module._decode_bytes(b"plain"), "plain")
                 self.assertEqual(
                     module._decode_bytes(bytearray(b"plain")), "plain")
-                # A total liar (real type is neither base) still degrades.
-                self.assertEqual(module._decode_bytes("not bytes"), "")
+        # jobs14 recovers genuine *str* storage lying bytes through the
+        # unbound ``_str_text`` read (the bookmarks14 rule); a liar with no
+        # decodable storage at all still degrades in both modules.
+        self.assertEqual(jobs._decode_bytes("not bytes"), "not bytes")
+        self.assertEqual(scheduler_svc._decode_bytes("not bytes"), "")
+        self.assertEqual(jobs._decode_bytes(12.5), "")
 
     def test_task_name_survives_the_lie_into_the_listing(self):
         rows = [{"id": "t1", "command": "true",
