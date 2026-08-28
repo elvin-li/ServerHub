@@ -433,7 +433,9 @@ def configured_signatures() -> list[dict]:
         from hub.config import cfg
 
         raw = cfg().get("service_signatures") or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     if not isinstance(raw, list):
         return []
@@ -475,7 +477,9 @@ def control_commands(formula: str | None) -> dict:
         from hub.paths import BREW
 
         brew = BREW if Path(BREW).is_file() else "brew"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         brew = "brew"
     return {
         "via": "brew",

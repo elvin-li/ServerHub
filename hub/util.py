@@ -194,7 +194,9 @@ class LazyPool:
             fut = Future()
             try:
                 fut.set_result(fn(*args, **kwargs))
-            except Exception as exc:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as exc:
                 fut.set_exception(exc)
             return fut
 

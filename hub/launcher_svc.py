@@ -223,7 +223,9 @@ def status() -> dict:
             # GET /api/launcher from 500-ing while workers drain.
             try:
                 return None, fn(*args), True
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None, default, True
 
     def finish(future, default, done):
@@ -231,7 +233,9 @@ def status() -> dict:
             return default
         try:
             return future.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
     app_running = submit(_app_running, app, default=False, skip=app is None)
@@ -264,7 +268,9 @@ def _atomic_plist(path: Path, payload: dict) -> None:
     try:
         try:
             handle = os.fdopen(fd, "wb")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             os.close(fd)
             raise
         with handle:

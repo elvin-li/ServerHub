@@ -123,7 +123,9 @@ def _orb_version() -> str:
 def engine_info() -> dict:
     try:
         up = bool(engine_up())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         up = False
     if not up:
         return _payload({
@@ -142,7 +144,9 @@ def engine_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     slim, version, orb_v = fan_out(

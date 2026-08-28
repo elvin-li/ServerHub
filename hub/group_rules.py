@@ -495,11 +495,15 @@ def match_group(
         interval = bool(launchd_interval) or bool(service.get("launchd_interval"))
     except RecursionError:
         interval = bool(launchd_interval)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         interval = bool(launchd_interval)
     try:
         rows = list(rules) if rules is not None else configured_group_rules()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = []
     for rule in rows:
         if isinstance(rule, dict) and rule.get("has_matcher") is not None and "_launchd_re" in rule:
@@ -515,7 +519,9 @@ def match_group(
                     return group
         except RecursionError:
             continue
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return None
 

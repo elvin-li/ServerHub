@@ -88,6 +88,11 @@ class ConfigSysctlAlertsProcLeftoverTests(unittest.TestCase):
 
         self.assertFalse(alerts._truthy(_BoolBomb()))
 
+    def test_group_rules_utf8_does_not_leak_a_heap_address(self):
+        from hub import group_rules
+
+        self.assertEqual(group_rules._utf8_text(object()), "")
+
 
 if __name__ == "__main__":
     unittest.main()

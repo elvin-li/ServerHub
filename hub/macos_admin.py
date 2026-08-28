@@ -142,7 +142,9 @@ def _validate(commands: Sequence[Sequence[str]]) -> str | None:
         return None
     try:
         rendered = [[str(part) for part in command] for command in commands]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A leftover argv part whose str() raises — an *already-int* past
         # CPython's int->str digit cap (YAML/plist hex loads uncapped through
         # ``int(x, 16)``), or a hostile __str__ — can never be a valid argv.

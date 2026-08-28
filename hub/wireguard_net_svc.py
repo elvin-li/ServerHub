@@ -411,7 +411,9 @@ def _daemon_defects(text: str) -> list[str]:
         return []
     try:
         payload = plistlib.loads(text.encode("utf-8", "replace"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # launchd will not load what plistlib cannot read, so this is a real fault
         # rather than a parsing inconvenience -- but fall back to the old substring
         # test first, so a plist that is merely unusual is not mislabelled.
@@ -704,7 +706,9 @@ def peer_origin_conflict() -> dict:
     # /api/wireguard/readiness where a junk row already dropped silently.
     try:
         raw = wireguard_svc.peer_records()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = []
     records = wireguard_svc._plain_rows(raw)
     if not records:
