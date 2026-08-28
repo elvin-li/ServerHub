@@ -34,6 +34,9 @@ from hub.paths import DATA_DIR, SMARTCTL
 from hub.secure_io import file_lock, replace_bytes
 from hub.util import cached_snapshot, fan_out, read_text_capped, safe_json_loads, sh, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 HISTORY_PATH = DATA_DIR / "smart-tests.json"
 #: Leftover multi-MB smart-tests.json used to OOM GET /api/smart.
 _HISTORY_CAP = 256 * 1024
@@ -161,12 +164,14 @@ def _rc_int(rc) -> int:
     spawn sentinel, so a bomb keeps each caller's existing failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -194,12 +199,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -222,7 +231,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -716,25 +727,22 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value):
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
-
-    Returns ``None`` for a *lying* ``__class__`` that answers ``bytes`` /
-    ``bytearray`` while the real type is neither (the modules9 rule): the
-    descriptor is bound to the real bytes layout, so it rejects the foreign
-    operand with a TypeError outside any try — a raw 500 on the SMART
-    routes through ``_as_text`` / ``_jsonable`` / ``_schedule_text``.  A
-    raise means "not really this type"; callers drop or re-probe.
-    """
-    base = bytes if _isa(value, bytes) else bytearray
-    try:
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
-        return None
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
 
 
 def _utf8_text(value) -> str:
@@ -748,15 +756,29 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
-    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
-    # leftover bound ``encode`` bomb in a history row / run_admin result
-    # rode this line out of ``_jsonable`` and 500'd the SMART routes.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _as_text(value) -> str:
@@ -775,12 +797,29 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
-    return str.encode(value, "utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -815,7 +854,9 @@ def _jsonable(value, depth: int = 0):
                 # patched-loader history row used to blow the digit-cap
                 # probe below and 500 the SMART routes.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -830,7 +871,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -847,7 +890,9 @@ def _jsonable(value, depth: int = 0):
             # header below — past the guard — and 500 POST /api/smart/abort
             # exactly like the items bomb this try already absorbed.
             items = [(k, v) for k, v in value.items()]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass in a
             # run_admin result or a poisoned history row): nothing to
             # salvage, but its *siblings* must survive — pre-fix this raised
@@ -868,19 +913,25 @@ def _jsonable(value, depth: int = 0):
                 elif not _isa(k, str):
                     k = str(k)
                 out[_utf8_text(k)] = _jsonable(v, depth + 1)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: only this
             # field drops, never the payload or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself and
         # 500'd GET /api/smart.
@@ -890,11 +941,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/smart.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
