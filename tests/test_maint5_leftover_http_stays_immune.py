@@ -301,13 +301,17 @@ class MethodBombRowsHttpTests(_DiskYamlSandbox):
             self.assertEqual(response.status_code, 200, response.text[:300])
             _clean(response)
 
-    def test_iter_bomb_log_list_degrades_to_the_waiting_placeholder(self):
+    def test_iter_bomb_log_list_recovers_its_readable_lines(self):
+        # jobs14: the unbound ``list.__iter__`` snapshot reads the real
+        # C-level storage underneath the subclass's ``__iter__`` bomb, so
+        # the readable lines survive instead of degrading to the waiting
+        # placeholder — the raise is still absorbed, never a 500.
         jobs._jobs["plain"] = {
             "running": False, "rc": 0, "log": _IterBombList(["a"]),
         }
         response = _client().get("/api/maintenance/plain/log")
         self.assertEqual(response.status_code, 200, response.text[:300])
-        self.assertEqual(response.json()["log"], "(waiting for output…)")
+        self.assertEqual(response.json()["log"], "a")
 
     def test_property_bomb_isoformat_stays_served(self):
         jobs._jobs["plain"] = {
