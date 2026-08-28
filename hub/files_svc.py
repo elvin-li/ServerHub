@@ -275,6 +275,61 @@ def _sh_triple(cmd, timeout: int) -> tuple:
     return _rc_int(rc), out, err
 
 
+def _host_text() -> str:
+    """The advertised host as exact text; a raising/odd provider reads as localhost.
+
+    This module does not own ``host_ip`` (tests and tooling patch it — the
+    same rule the runner seam earned in :func:`_sh_triple`), and
+    :func:`filebrowser_status` interpolated its answer into an f-string
+    *before* the ``_as_text`` scrub could run: ``f"http://{host}:…"`` calls
+    the answer's own ``__format__``, so a provider raising outright — or
+    answering a str subclass whose ``__format__`` bombs — detonated one seam
+    ahead of the launderer.  Confirmed live before the fix: each shape was a
+    raw HTTP 500 on GET /api/files (the Files page's first request:
+    ``overview()`` embeds this status beside the roots), GET
+    /api/files/filebrowser, POST /api/files/filebrowser/ensure and /stop.
+    ``_as_text`` reduces every honest answer (bytes, surrogates, subclass
+    wrappers) to an exact str the f-string cannot detonate on; junk and a
+    raising provider degrade to ``localhost`` — the sidecar URL is a hint,
+    not a gate, so a wrong-but-renderable host is strictly better than
+    taking down the roots payload beside it.
+    """
+    try:
+        host = host_ip()
+    except Exception:
+        return "localhost"
+    return _as_text(host).strip() or "localhost"
+
+
+def _spawn_env() -> dict:
+    """A real dict for ``subprocess.Popen(env=…)``; junk degrades to ``{}``.
+
+    This module does not own ``utf8_env`` either, and the direct-spawn
+    branch of :func:`ensure_filebrowser` evaluated it *inside* a try whose
+    except arm is typed ``(OSError, ValueError, TypeError)`` — a patched or
+    odd provider raising anything else (RuntimeError from a leftover
+    ``str(e)`` chain, RecursionError) escaped the arm and 500'd POST
+    /api/files/filebrowser/ensure raw, after the log/media directories were
+    already created.  A dict *subclass* answer is materialised through the
+    unbound ``dict.items`` so a hostile bound ``items``/``keys`` cannot
+    raise later inside ``Popen``'s own env walk, past the typed arm the
+    same way.  ``{}`` is the safe floor: FileBrowser needs no inherited
+    variables to start, and a spawn with an empty env still serves.
+    """
+    try:
+        env = utf8_env()
+    except Exception:
+        return {}
+    if type(env) is dict:
+        return env
+    if _isinst(env, dict):
+        try:
+            return dict(dict.items(env))
+        except Exception:
+            return {}
+    return {}
+
+
 def _isinst(value, types) -> bool:
     """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
 
@@ -1246,7 +1301,12 @@ def filebrowser_status() -> dict:
                 pid = int(out2.splitlines()[0].strip())
             except (TypeError, ValueError, OverflowError):
                 pass
-    host = host_ip()
+    # _host_text, not a bare host_ip(): this module does not own the host
+    # provider, and a raising one — or a str-subclass answer whose
+    # ``__format__`` bombs — used to detonate the f-string below one seam
+    # ahead of _as_text and 500 GET /api/files, GET /api/files/filebrowser,
+    # POST ensure and POST stop.
+    host = _host_text()
     # _as_text, not str: these paths derive from the home directory, and a
     # home whose on-disk name holds undecodable bytes reaches here as lone
     # surrogates (os surrogateescape).  The listing fields are sanitized in
@@ -1343,7 +1403,10 @@ def ensure_filebrowser() -> dict:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     close_fds=True,
-                    env=utf8_env(),
+                    # _spawn_env, not a bare utf8_env(): a patched/odd env
+                    # provider raising outside the typed arm below used to
+                    # 500 POST /api/files/filebrowser/ensure raw.
+                    env=_spawn_env(),
                 )
         except (OSError, ValueError, TypeError):
             # Leftover ``\\ud800`` env/path UnicodeEncodeError is ValueError, not OSError.
