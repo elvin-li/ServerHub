@@ -12,6 +12,8 @@ from hub.paths import DOCKER
 from hub.util import safe_json_loads, sh
 
 SENSITIVE = re.compile(r"(PASSWORD|SECRET|TOKEN|API_KEY|KEY|PASS|CREDENTIAL)", re.I)
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _isa(value, kinds) -> bool:
@@ -28,44 +30,76 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
 def _decode_bytes(value) -> str:
-    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
-    base = bytes if isinstance(value, bytes) else bytearray
-    return base.decode(value, "utf-8", "replace")
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Both bases, real layout first-come. A lying ``__class__`` that only
+    claims bytes no longer wipes genuine str storage.
+    """
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if _isa(value, (bytes, bytearray)):
+    for base in (bytes, bytearray):
         try:
-            # The try is for a *lying* ``__class__`` (claims bytes, is not):
-            # the unbound decode TypeErrors and the value falls to the str()
-            # scrub below like any other junk leftover.
-            return _decode_bytes(value)
-        except Exception:
-            pass
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
-    # returns self keeps the subclass, so a bound ``.encode`` bomb in a
-    # poisoned job-row field used to raise here and 500 GET /api/stacks
-    # (the modules5 unbound convention, like hub.audit._utf8_text).
     try:
-        return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # A lying-``__class__`` str impostor reaches here as a non-str; junk.
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _as_text(value) -> str:
@@ -76,8 +110,9 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         try:
             decoded = _decode_bytes(value)
-        except Exception:
-            # Lying ``__class__``: not really bytes; render like any object.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             decoded = None
     if decoded is not None:
         value = decoded
@@ -91,16 +126,21 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    # Unbound base encode — same subclass ``.encode`` bomb note as _utf8_text.
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor lands here: junk.
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
