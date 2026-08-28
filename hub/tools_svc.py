@@ -28,6 +28,7 @@ from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import (
+    _jsonable,
     cli_on_disk,
     docker,
     engine_up,
@@ -370,7 +371,7 @@ def _docker_gone(rc: int, out: str, err: str) -> bool:
 
 
 @ttl_memo(_DOCKER_DF_TTL)
-def docker_disk_usage() -> dict:
+def _docker_df_cached() -> dict:
     # _safe_flag: ``engine_up()`` is a cross-module read and these three
     # docker views trusted its bool contract wholesale — a leftover
     # ``__bool__`` bomb answer used to raise out of the bare ``if not`` and
@@ -406,6 +407,69 @@ def docker_disk_usage() -> dict:
                 "reclaimable": m.group(5).strip(),
             })
     return {"engine_up": True, "raw": out or err, "lines": lines}
+
+
+def _df_payload(value) -> dict | None:
+    """The df memo's answer as a plain JSON-safe payload, or None if junk.
+
+    ``type(engine_up-slot) is bool`` exact check, the docker_cli
+    ``_cache_view`` convention: bool cannot be subclassed, so the check is
+    complete, and a payload whose flag is a liar or a bomb is junk — not
+    evidence of engine state.  ``_jsonable`` re-founds the mapping (C-level
+    key launder, JSON-safe values), so a planted bomb value cannot ride out
+    to Starlette's encoder.
+    """
+    if not _isinst(value, dict):
+        return None
+    if type(value) is not dict:
+        try:
+            # dict() through the C storage: a dict-subclass method bomb
+            # cannot fire; a lying-``__class__`` impostor TypeErrors here.
+            value = dict(value)
+        except Exception:
+            return None
+    cleaned = _jsonable(value)
+    if not _isinst(cleaned, dict) or type(cleaned.get("engine_up")) is not bool:
+        return None
+    return cleaned
+
+
+def docker_disk_usage() -> dict:
+    """``docker system df`` totals with a leftover in the memo store defused.
+
+    ``ttl_memo``'s cache dict is a module-lifetime store that outlives every
+    request (the docker11 ``_engine_cache`` class), and GET /api/docker/df
+    returned its hit raw: a junk stamp detonated the freshness probe, a
+    non-tuple hit detonated the wrapper's own subscript, and a junk value —
+    a ``__class__``-property bomb, a bare scalar — rode straight into
+    Starlette's encoder (or out to the client as the wrong shape entirely).
+    Junk is evicted (``invalidate`` never compares keys, the health11 rule)
+    and the probe re-runs once; junk that survives eviction reads as
+    engine-down — the same coded shape as a stopped engine, never a raw 500.
+    """
+    for attempt in (0, 1):
+        try:
+            raw = _docker_df_cached()
+        except Exception:
+            # A poisoned KEY detonates inside the memo's own cache.get on
+            # hash collision; the raise carries no totals.
+            raw = None
+        cleaned = _df_payload(raw)
+        if cleaned is not None:
+            return cleaned
+        if attempt == 0:
+            try:
+                _docker_df_cached.invalidate()
+            except Exception:
+                break
+    return {"engine_up": False, "raw": "", "lines": []}
+
+
+#: Callers (prune, tests) invalidate through the public name; keep the memo
+#: contract intact across the launder funnel.
+docker_disk_usage.invalidate = _docker_df_cached.invalidate  # type: ignore[attr-defined]
+docker_disk_usage.cache_clear = _docker_df_cached.invalidate  # type: ignore[attr-defined]
+docker_disk_usage._cache = _docker_df_cached._cache  # type: ignore[attr-defined]
 
 
 def container_sizes() -> list:
