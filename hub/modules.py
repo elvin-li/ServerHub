@@ -328,8 +328,20 @@ def _jsonable(value, depth: int = 0):
         # is itself a descriptor bound to the real dict layout, so a *lying*
         # ``__class__`` claiming ``dict`` (real type is neither) blew the
         # call outside any try — drop the impostor like a lying ``int``.
+        #
+        # Snapshot the entries (``list(...)``) before walking: the walk
+        # below runs each value's own hooks (``__class__`` probes, key
+        # ``__str__`` coercion), and a leftover hook that resizes its
+        # parent mapping mid-walk made the live ``dict_items`` view raise
+        # ``RuntimeError: dictionary changed size during iteration`` —
+        # outside every try, straight out of GET /api/modules as a raw
+        # 500, at row and nested rank alike, in exact dicts as much as
+        # subclasses.  ``list()`` of the view copies pure C 2-tuples off
+        # the real storage without running any leftover code, so the walk
+        # is immune to whatever the hooks do to the original afterwards
+        # and every entry captured at snapshot time still renders.
         try:
-            items = dict.items(value)
+            items = list(dict.items(value))
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -358,13 +370,32 @@ def _jsonable(value, depth: int = 0):
                 # cannot 500 and the real elements still survive.  The
                 # unbound ``__iter__`` is bound to the real sequence layout,
                 # so a *lying* ``__class__`` claiming this base (real type is
-                # not) makes it reject the operand — drop the impostor.
+                # not) makes it reject the operand.
+                #
+                # Snapshot before walking, same seam as the dict arm: the
+                # element walk runs each element's own hooks, and a
+                # leftover hook that resizes its parent *set* mid-walk
+                # made the live set iterator raise ``RuntimeError: Set
+                # changed size during iteration`` outside every try — a
+                # raw 500 out of GET /api/modules.  ``list()`` of the
+                # genuine base iterator copies the elements without
+                # running any of their code, so the walk is stable.
+                #
+                # ``continue`` on rejection, not ``return None``: the old
+                # arm picked the base off the *claimed* ``__class__``, so
+                # a genuine tuple whose ``__class__`` lied ``list`` was
+                # handed to ``list.__iter__``, rejected, and its perfectly
+                # renderable elements vanished — the same wrong-rank
+                # degrade the decode arm shed in the previous sweep.  The
+                # descriptor matching the real storage wins on a later
+                # pass; a total impostor (real type is none of the four)
+                # fails every base and drops exactly as before.
                 try:
-                    items = base.__iter__(value)
+                    items = list(base.__iter__(value))
                 except _CONTROL_FLOW:
                     raise
                 except BaseException:
-                    return None
+                    continue
                 return [_jsonable(v, depth + 1) for v in items]
         return None
     try:
