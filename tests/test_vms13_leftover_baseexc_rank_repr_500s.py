@@ -66,6 +66,14 @@ class Vms13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             vms_svc._isa(_Ki(), dict)
 
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("vms isoformat watchdog")
+
+        self.assertIsNone(vms_svc._jsonable(_IsoBomb()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,9 @@ def _invalidate():
     try:
         from hub.status import invalidate_status
         invalidate_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 # Common OrbStack distros for create UI
@@ -678,7 +680,9 @@ def _probe_port(port) -> bool | None:
     """
     try:
         return port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -728,7 +732,9 @@ def _list_utm_vms_uncached() -> list[dict]:
             lambda port: _probe_port(port) if _truthy(port) else None,
             [_mapping_get(row["ov"], "port") for row in rows],
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         probes = []
     probes = _rows_list(probes)
     if len(probes) != len(rows):
@@ -828,7 +834,9 @@ def _list_orb_machines_uncached() -> list[dict]:
             # RecursionError: leftover deeply-nested ``orbctl list -f json``
             # is not ValueError; GET /api/vms used to 500.
             data = None
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # This module does not own the loader either (the _spawn /
             # _listing_pair seam rule): one that raises outside the typed
             # set above used to skip the degraded ``orbctl list`` text
@@ -866,7 +874,9 @@ def _list_orb_machines_uncached() -> list[dict]:
                         items.append(item)
                 if items:
                     return items
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     rc, out, err = _spawn([ORBCTL, "list"], 15)
     if _rc_int(rc) != 0:
@@ -958,7 +968,9 @@ def list_all_vms() -> dict:
         answers = fan_out(
             _listing_rows, [list_utm_vms, list_orb_machines], max_workers=2
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         answers = ([], [])
     utm, orb = _listing_pair(answers)
     return _jsonable({
@@ -1051,7 +1063,9 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
         # mutate() already answers coded refusals (settings.config_unreadable
         # for an unparseable services.yaml) — keep them.
         raise
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # The write funnels through cfg()/mutate(); a leftover snapshot
         # provider bomb or an unwritable services.yaml used to answer a
         # raw 500.  Nothing was persisted, so report the same coded 503
@@ -1110,14 +1124,18 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
     # check orb first by listing
     try:
         machines = list_orb_machines()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         machines = []
     # _isa: a listing return whose ``__class__`` is a raising property
     # detonated the bare gate and 500'd the action ahead of the walk below.
     if _isa(machines, list):
         try:
             machines = [m for m in list.__iter__(machines)]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             machines = []
     else:
         machines = []
@@ -1143,7 +1161,9 @@ def _parse_id(vm_id: str) -> tuple[str, str]:
             if _isa(orb_name, str):
                 try:
                     name_text = _as_text(str.__str__(orb_name))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     name_text = ""
             return "orb", _argv_name(name_text or raw)
     return "utm", _argv_name(raw)
@@ -1241,7 +1261,9 @@ def utm_vm_running(vm_uuid: str) -> bool:
         return False
     try:
         vms = list_utm_vms(force=True)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     # _isa: a listing return whose ``__class__`` is a raising property
     # detonated this bare gate and 500'd the console-session mint (and the
@@ -1249,7 +1271,9 @@ def utm_vm_running(vm_uuid: str) -> bool:
     if _isa(vms, list):
         try:
             vms = [vm for vm in list.__iter__(vms)]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return False
     else:
         return False
