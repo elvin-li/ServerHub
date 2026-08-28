@@ -127,6 +127,21 @@ class Catalog14LeftoverTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 catalog._register_stack("demo", "Demo", catalog.SERVICES_ROOT / "demo")
 
+    def test_native_installed_set_swallows_iter_baseexception(self):
+        class _IterBomb(list):
+            def __iter__(self):
+                raise LeftoverWatchdogTimeout("native list watchdog")
+
+        self.assertEqual(native_catalog._installed_set(_IterBomb(["pkg"])), set())
+
+    def test_native_installed_set_still_propagates_keyboardinterrupt(self):
+        class _Ki(list):
+            def __iter__(self):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            native_catalog._installed_set(_Ki(["pkg"]))
+
 
 if __name__ == "__main__":
     unittest.main()

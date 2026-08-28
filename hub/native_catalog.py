@@ -340,7 +340,9 @@ def _brew_list_installed() -> set[str]:
         try:
             rc, out, _ = sh([BREW, "list", flag, "-1"], timeout=30)
             return set(out.split()) if rc == 0 else set()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     formulas, casks = fan_out(listing, ["--formula", "--cask"], max_workers=2)
@@ -365,7 +367,9 @@ def _installed_set(raw) -> set[str]:
         return set()
     try:
         items = list(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A lying ``__class__`` claiming a container it is not.
         return set()
     out: set[str] = set()
@@ -393,7 +397,9 @@ def _service_states(rows) -> dict[str, str]:
         return states
     try:
         items = list(rows)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A rows object whose ``__iter__`` bombs, or a lying ``__class__``.
         return states
     for s in items:
@@ -404,7 +410,9 @@ def _service_states(rows) -> dict[str, str]:
             # subclass ``.get`` override, and rejects a lying dict impostor.
             name = _as_text(dict.get(s, "name"))
             status = _as_text(dict.get(s, "status"))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if not name:
             continue
@@ -959,7 +967,9 @@ def list_native_apps(force: bool = False) -> list[dict]:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; a dead brew must not empty the Apps catalog.
@@ -1055,7 +1065,9 @@ def _process_running(process_substr: str) -> bool:
     """
     try:
         return bool(process_matches(process_substr))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -1091,7 +1103,9 @@ class _LaunchdSnapshot:
         # native half of GET /api/catalog.
         try:
             return launchd_running_labels()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return frozenset()
 
 
@@ -1105,7 +1119,9 @@ def _launchd_or_process_running(
             try:
                 if label in launchd.running_labels():
                     return True
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A *hash-shadowing* member planted in the shared listing
                 # (same hash as this label, raising ``__eq__``) detonates
                 # the C-level compare inside ``in`` itself; junk reads as
@@ -1132,13 +1148,17 @@ def _port_list(raw) -> list:
             # Base copy first: a lying ``__class__`` claiming list is not
             # actually iterable, and must cost only itself.
             items = list(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     elif _isinst(raw, (int, str)):
         try:
             if not str(raw).strip():
                 return []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Over-digit-cap int (str() is ValueError) or a lying impostor.
             return []
         items = [raw]
@@ -1164,7 +1184,9 @@ def _port_list(raw) -> list:
                     # row's url resolver and the store's JSON encoder both
                     # render these (the catalog._plain_ports convention).
                     p = int.__index__(p)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
                 # Digit-cap probe: a leftover >4300-digit port renders
@@ -1180,7 +1202,9 @@ def _port_list(raw) -> list:
                 # ``__str__``/``encode`` bomb cannot ride into _resolve_url),
                 # and a lying ``__class__`` claiming str drops alone.
                 text = str.encode(p, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if text:
                 out.append(text)
@@ -1190,7 +1214,9 @@ def _port_list(raw) -> list:
             base = bytes if _isinst(p, bytes) else bytearray
             try:
                 text = base.decode(p, "utf-8", "replace").strip()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if text:
                 out.append(text)
@@ -1209,7 +1235,9 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
     if _isinst(host, str):
         try:
             host = str.encode(host, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             host = ""
     else:
         host = ""
@@ -1219,7 +1247,9 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
             # Launders a str subclass to an exact str, so a bound
             # ``.replace``/``.encode`` bomb cannot ride into the chain below.
             hint = str.encode(hint, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             hint = ""
     else:
         # A mapping leftover used to raise on hint.replace and 500 the store.
@@ -1244,7 +1274,9 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
             # int (str() is the digit-cap ValueError) or a ``__str__`` bomb
             # costs only its own entry, never the whole URL.
             ps = str(p).split("/")[0]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if ps in webish or ps.isdigit():
             # skip pure protocol ports without UI
@@ -1277,7 +1309,9 @@ def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
         if rc == -1 and not msg.strip():
             msg = "command timed out"
         return {"ok": rc == 0, "message": (msg or f"exit {rc}").strip(), "rc": rc}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e), "rc": -1}
 
 
@@ -1424,13 +1458,17 @@ def _host_for_url() -> str:
     """
     try:
         host = host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not _isinst(host, str):
         return ""
     try:
         return str.encode(host, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -2203,7 +2241,9 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                     "kind": "native",
                     "stack_id": app_id,
                 }
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
         return {
             "ok": True,
@@ -2222,7 +2262,9 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                 # keep config backup safety: only remove if remove_data
                 shutil.rmtree(ha_dir)
                 logs.append(f"removed {ha_dir}")
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
             # leave plist so reinstall can rewrite; or remove
             home = user_home()
