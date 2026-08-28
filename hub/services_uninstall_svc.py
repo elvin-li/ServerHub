@@ -28,6 +28,8 @@ from hub.launchd_cache import invalidate_launchd
 from hub.paths import AGENTS_DIR, DATA_DIR, UID, user_home
 from hub.util import read_bytes_capped, sh, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; leftover ``str(exc)`` RecursionError must not 500 uninstall."""
@@ -41,9 +43,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return value.encode("utf-8", "replace").decode("utf-8")
 
@@ -130,7 +136,9 @@ def _forget_override(label: str) -> None:
     try:
         from hub.config import drop_override
         drop_override(label)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -174,7 +182,9 @@ def _agent_paths(path: Path) -> tuple[str, str, str]:
     """``(label, program, workdir)`` from one plist, tolerating a broken file."""
     try:
         data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return path.stem, "", ""
     if not isinstance(data, dict):
         return path.stem, "", ""
@@ -395,12 +405,16 @@ def uninstall(label: str, *, remove_data: bool = False) -> dict[str, Any]:
     try:
         from hub.status import invalidate_status
         invalidate_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.apps_manage_svc import invalidate_inventory
         invalidate_inventory()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
     return {

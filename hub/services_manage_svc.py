@@ -1,6 +1,8 @@
 """Per-service management for the Services page: detail, logs, overrides."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import glob
 import os
 import plistlib
@@ -42,9 +44,13 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -134,7 +140,9 @@ _PLIST_CAP = 256 * 1024
 def _plist_dict(path: Path) -> dict | None:
     try:
         data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return data if isinstance(data, dict) else None
 
@@ -415,13 +423,17 @@ def service_detail(sid: str) -> dict:
                             v = next((x for x in arr if x.get("id") == sid or x.get("name") == sid), None)
                             if v:
                                 break
-                        except Exception:
+                        except _CONTROL_FLOW:
+                            raise
+                        except BaseException:
                             pass
             if v:
                 detail.update({k: v.get(k) for k in ("backend", "uuid", "ips", "cpu", "memory", "path") if v.get(k) is not None})
                 if v.get("url") and not detail.get("url"):
                     detail["url"] = v["url"]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     elif kind in ("app", "app-engine"):
@@ -579,7 +591,9 @@ def service_logs(sid: str, lines: int = 150) -> dict:
             else:
                 log = "(no script log source configured; add one under settings / log_sources)"
                 source = "none"
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             log = _as_text(e)
             source = "error"
 
@@ -1160,7 +1174,9 @@ def _bust_group_rule_views() -> None:
         from hub.discovery.containers import invalidate_containers
 
         invalidate_containers()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
