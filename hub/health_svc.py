@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import threading
 import time
@@ -23,6 +24,8 @@ _PLIST_CAP = 256 * 1024
 #: One lock, not per-key: there is a single snapshot, so a reader arriving mid-collection
 #: should wait for that result rather than starting a second seven-way fan-out.
 _refresh_lock = threading.Lock()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _isa(value, kinds) -> bool:
@@ -40,7 +43,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -61,7 +66,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -82,7 +89,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -96,59 +105,81 @@ def _rc_int(rc) -> int:
     honest smartctl exit, so a bomb keeps the empty-row fallback.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
 
-    Guarded, because callers reach here on the ``_isa(value, (bytes,
-    bytearray))`` gate and that gate answers True for a *lying*-``__class__``
-    impostor (the docker10/json9 shape — ``isinstance`` says bytes, the real
-    object is not one).  The unbound ``bytes.decode`` descriptor then raises
-    ``TypeError`` on the impostor; fall through to a plain ``str()`` so the
-    liar drops to its own text instead of 500ing GET /api/health/checks.
+    Both bases, real layout first-come. A lying ``__class__`` that only
+    claims bytes no longer wipes genuine str storage via ``str()``.
     """
-    try:
-        base = bytes if isinstance(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
+    for base in (bytes, bytearray):
         try:
-            return str(value)
-        except Exception:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    # _isa: a ``__class__``-property bomb planted in the cache snapshot used
-    # to detonate this very gate on every TTL hit.
-    if _isa(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    # Unbound ``str.encode`` (the modules6 rule): ``str(x)`` of a subclass
-    # whose ``__str__`` answers *self* skips CPython's exact-str copy, so a
-    # leftover bound ``encode`` bomb planted in the cache snapshot rode this
-    # line out of ``_serve_cached`` and 500'd GET /api/health/checks on
-    # every TTL hit.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _as_text(value) -> str:
