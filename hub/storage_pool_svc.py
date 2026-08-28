@@ -131,6 +131,32 @@ def _mapping_get(mapping, key):
         return None
 
 
+def _match_policy(policy):
+    """The canonical ``PLACEMENT_POLICIES`` entry equal to *policy*, or ``None``.
+
+    ``policy in PLACEMENT_POLICIES`` compares each known entry against the
+    caller's value, and when that value is a leftover the reflected
+    ``__eq__`` dispatches into it first — a str-subclass ``__eq__`` bomb, or
+    a bare object whose ``__eq__`` raises, detonated the membership gate in
+    ``_validate`` with a RuntimeError *outside* every try.  The routes hand
+    over a Pydantic-exact ``str``, but ``plan_pool`` / ``save_pool`` are also
+    called in-process, and there the bomb 500'd the service where every other
+    junk policy earns the coded ``storage_pool.bad_policy`` refusal.
+
+    Comparing under a per-entry try both absorbs the bomb and hands back the
+    *exact* known string, so a genuine str-subclass that merely equals a
+    policy is never echoed into the response or persisted into services.yaml
+    wearing its own ``__eq__`` / ``encode`` overrides.
+    """
+    for known in PLACEMENT_POLICIES:
+        try:
+            if known == policy:
+                return known
+        except Exception:
+            continue
+    return None
+
+
 def _pool_config() -> dict:
     """Pool definitions from services.yaml, or an empty default.
 
@@ -171,9 +197,11 @@ def _pool_config() -> dict:
         text = _text(m).strip()
         if text:
             members.append(text)
-    policy = _text(_mapping_get(raw, "policy")) or DEFAULT_POLICY
-    if policy not in PLACEMENT_POLICIES:
-        policy = DEFAULT_POLICY
+    # _match_policy, not a bare ``not in`` gate: ``_text`` hands back an exact
+    # str here so the membership test itself is safe, but routing the read
+    # through the same guarded matcher the mutations use keeps one policy gate
+    # and returns the canonical entry rather than the parsed scalar.
+    policy = _match_policy(_text(_mapping_get(raw, "policy"))) or DEFAULT_POLICY
     try:
         # ``except Exception``, not the (TypeError, ValueError, OverflowError)
         # tuple: ``float()`` reflects into the stored value's own
@@ -572,7 +600,13 @@ def _validate(mounts: list[str], policy: str) -> tuple[list[str], list[dict]]:
 
     Returns the de-duplicated mount list and the resolved member records.
     """
-    if policy not in PLACEMENT_POLICIES:
+    # _match_policy, not a bare ``policy not in PLACEMENT_POLICIES``: the
+    # tuple membership test runs the caller value's ``__eq__``, and a leftover
+    # policy (a str-subclass ``__eq__`` bomb, or a bare object that raises from
+    # ``__eq__``) detonated it with a RuntimeError one line outside every try,
+    # 500ing plan/save for in-process callers where junk policies already earn
+    # the coded refusal.
+    if _match_policy(policy) is None:
         raise api_error("storage_pool.bad_policy", policy=policy)
 
     wanted: list[str] = []
@@ -615,6 +649,10 @@ def plan_pool(mounts: list[str], policy: str = DEFAULT_POLICY) -> dict:
     configuration.
     """
     _, members = _validate(mounts, policy)
+    # _validate accepted it, so the match is guaranteed; take the canonical
+    # exact string so the echoed policy and the placement pick below are never
+    # the caller's lying str-subclass.
+    policy = _match_policy(policy) or DEFAULT_POLICY
     return {
         "policy": policy,
         "members": members,
@@ -646,6 +684,10 @@ def save_pool(mounts: list[str], policy: str = DEFAULT_POLICY, name: str = "",
     # Members are re-resolved by the overview below; here _validate is called
     # purely for its rejections.
     wanted, _ = _validate(mounts, policy)
+    # Canonical exact string for the same reason as plan_pool: a genuine
+    # str-subclass that merely equals a policy must not be persisted into
+    # services.yaml carrying its own ``__eq__`` / ``encode`` overrides.
+    policy = _match_policy(policy) or DEFAULT_POLICY
 
     # _text for the same reason as _validate: a leftover over-digit-cap int
     # name made ``str()`` ValueError, and a leftover ``\ud800`` name would be
