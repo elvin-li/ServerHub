@@ -133,12 +133,31 @@ def _split_cwd(stdout: str, fallback: str) -> tuple[str, str]:
 
 
 def _home_dir() -> str:
-    """Best-effort home.  ``Path.home()`` RuntimeError must not 500 the terminal."""
-    home = user_home()
+    """Best-effort home.  ``Path.home()`` RuntimeError must not 500 the terminal.
+
+    ``user_home`` already guards ``Path.home()`` — but the *seam* is a
+    provider tests and tooling patch (the backups12 rule), and this module
+    ran it bare and ``str()``'d its answer bare.  A provider that raises, or
+    one answering a leftover whose ``__str__`` bombs (or renders past the
+    digit cap), used to detonate here — a 500 on GET /api/terminal and on
+    POST /api/terminal/run (``_resolve_cwd`` builds its candidate tuple
+    eagerly, so this ran even when the requested cwd was perfectly fine),
+    and an unhandled exception out of the PTY handshake.  An unusable
+    answer degrades to the HOME/"/" fallback the no-home case already took.
+    """
+    try:
+        home = user_home()
+    except Exception:
+        home = None
     if home is not None:
-        return str(home)
+        if _isa(home, (bytes, bytearray)):
+            text = _decode_bytes(home).strip()
+        else:
+            text = _config_text(home).strip()
+        if text:
+            return text
     # HOME unset: expanduser raises RuntimeError, not OSError.
-    return (os.environ.get("HOME") or "").strip() or "/"
+    return _config_text(os.environ.get("HOME")).strip() or "/"
 
 
 def _resolve_cwd(requested: str | None) -> str:
@@ -667,9 +686,18 @@ def _audit(entry: dict[str, Any]) -> None:
                     secure_io.replace_secret_text(
                         AUDIT_PATH, "\n".join(lines) + "\n"
                     )
-    except (OSError, ValueError, TypeError, OverflowError, UnicodeError, RecursionError):
-        # RecursionError: leftover nested terminal audit after _jsonable is not
-        # ValueError; POST /api/terminal/run used to 500 after the command ran.
+    except Exception:
+        # Exception, not the old (OSError, ValueError, TypeError,
+        # OverflowError, UnicodeError, RecursionError) shortlist — the
+        # hub.audit.record() rule: the write path crosses the lock, the
+        # secure_io writers, stat, chmod and the tail-trim, every one a seam
+        # tests and tooling patch, and a patched writer raises whatever it
+        # likes.  A RuntimeError out of ``file_lock``/``append_text`` used
+        # to unwind through here as a raw 500 on POST /api/terminal/run
+        # *after* the command had already executed.  This function's one
+        # guarantee is that logging never breaks the request being audited.
+        # (RecursionError: leftover nested terminal audit after _jsonable is
+        # not ValueError; that case is inside the wider net too.)
         pass
 
 
@@ -998,10 +1026,23 @@ def _docker_vanished(result: dict) -> bool:
     # raises, used to detonate the probe read itself the same way.
     if _rc_int(_mapping_get(result, "rc")) != 127:
         return False
-    if _config_text(_mapping_get(result, "stderr")).strip() != f"not found: {DOCKER}":
+    # _config_text on the constant, not the bare f-string/Path probe: DOCKER
+    # is a patched seam (the gateway11 bin-constant rule), and rc 127 is
+    # also what a shell answers for a command missing *inside* the container
+    # — so this probe runs on honest receipts.  A leftover constant whose
+    # ``__format__``/``__str__`` bombs used to detonate the interpolation,
+    # and ``Path()`` of a non-str constant TypeError'd outside the
+    # (OSError, ValueError) net below — each a raw 500 on
+    # POST /api/terminal/run *after* the command had already executed.  An
+    # unrenderable constant names no sentinel and confirms nothing: the
+    # receipt stays the command's own answer.
+    docker = _config_text(DOCKER)
+    if not docker:
+        return False
+    if _config_text(_mapping_get(result, "stderr")).strip() != f"not found: {docker}":
         return False
     try:
-        return not Path(DOCKER).exists()
+        return not Path(docker).exists()
     except (OSError, ValueError):
         # exists() raises EIO/ESTALE on a dying mount: the CLI is not
         # spawnable from there either way.
@@ -1121,8 +1162,14 @@ def execute(
     if tgt == "host":
         return run_host(command, timeout=timeout, who=who, cwd=cwd)
     if tgt == "container":
+        # ``shell=shell``, not the old ``shell or "/bin/sh"``: the bare
+        # ``or`` ran a caller-supplied value's own ``__bool__`` one line
+        # ahead of run_container's ``_isa``/``_config_text`` launder, so a
+        # leftover str-subclass shell whose ``__bool__`` bombs detonated the
+        # dispatcher itself.  run_container already degrades empty and
+        # unreadable shells to ``/bin/sh``, so the default is unchanged.
         return run_container(
-            container, command, shell=shell or "/bin/sh", timeout=timeout,
+            container, command, shell=shell, timeout=timeout,
             who=who, cwd=cwd,
         )
     raise api_error("terminal.bad_target", target=tgt)
@@ -1170,13 +1217,35 @@ def recent_audit(limit: int = 50) -> list[dict]:
         # 500 rows of ~1 KB each need ~500 KB.  hub/audit.recent fixed the
         # identical mismatch for the auth trail.
         lines = tail_file_lines(AUDIT_PATH, n, max_bytes=_AUDIT_MAX_BYTES)
-    except OSError:
+    except Exception:
+        # Exception, not the old ``except OSError``: this reader does not
+        # own the tailer (tests and tooling patch ``tail_file_lines`` — the
+        # storage12 provider-seam rule), and a patched tailer that raises
+        # any other type used to unwind out of GET /api/terminal/history as
+        # a raw 500.  An unreadable trail answers the same empty pane a
+        # missing file does.
+        return []
+    try:
+        # Materialise through the guard: a tailer answering a non-iterable
+        # (or a generator that raises mid-walk) used to TypeError the row
+        # loop itself — the ollama12 answer-shape rule.
+        rows = list(lines)
+    except Exception:
         return []
     out: list[dict] = []
-    for raw in lines:
+    for raw in rows:
+        # Only text can hold a JSON row: ``json.loads`` of a non-str/bytes
+        # row from a patched tailer is TypeError, which the old
+        # (ValueError, RecursionError) net let straight out as a raw 500.
+        # A junk element costs itself; the honest rows beside it survive.
+        if not _isa(raw, (str, bytes, bytearray)):
+            continue
         try:
             parsed = safe_json_loads(raw, parse_int=_capped_json_int)
-        except (ValueError, RecursionError):
+        except Exception:
+            # ValueError (bad JSON) and RecursionError (over-deep nest) as
+            # before, plus whatever a subclass row's own hooks raise while
+            # the decoder walks it: the row is unreadable either way.
             continue
         if isinstance(parsed, dict):
             cleaned = _jsonable(parsed)
