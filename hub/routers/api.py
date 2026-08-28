@@ -181,16 +181,13 @@ def api_action(a: Action, request: Request):
 
 @router.get("/api/maintenance")
 def api_maintenance():
-    return [
-        {
-            "id": t["id"],
-            "name": t.get("name") or t["id"],
-            "desc": t.get("desc", ""),
-            "confirm": bool(t.get("confirm")),
-            **jobs.job_state(t["id"]),
-        }
-        for t in jobs.maintenance_tasks().values()
-    ]
+    # The row the SPA reads is shaped in hub.jobs under the module's union
+    # guards (``_mapping_get`` / ``_truthy`` / ``_jsonable``): the old inline
+    # ``t["id"]`` / ``bool(t.get("confirm"))`` / ``**job_state(...)`` build ran
+    # one step outside every sanitizer, so a ``__bool__``-bomb ``confirm`` or a
+    # hash-shadowing bomb key on ``id`` / ``name`` / ``confirm`` 500'd this
+    # route from the surface itself.  ``maintenance_view`` never raises.
+    return jobs.maintenance_view()
 
 
 # ``{tid:path}``, not ``{tid}``: task ids come straight from services.yaml and

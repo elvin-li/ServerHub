@@ -643,6 +643,64 @@ def job_log(tid):
     return cleaned if _isinst(cleaned, dict) else missing
 
 
+def maintenance_view() -> list:
+    """Fully-laundered list rows for GET /api/maintenance.  Never raises.
+
+    maint11 laundered what :func:`maintenance_tasks` *returns*, but the list
+    route re-derived the row it actually *emits* with bare reads on that
+    output — ``t["id"]``, ``t.get("name") or t["id"]``, ``t.get("desc", "")``,
+    ``bool(t.get("confirm"))`` and ``**job_state(...)`` — one step outside
+    every sanitizer this module carries.  A row reaching that shaping with a
+    ``__bool__``-bomb ``confirm`` value, or a hash-shadowing bomb key riding
+    ``id`` / ``name`` / ``confirm`` (same text, ``__eq__`` raising), detonated
+    the route's own ``bool(...)`` / ``.get(...)`` / ``[...]`` probes and 500'd
+    GET /api/maintenance from the surface the SPA reads — the exact
+    ``_mapping_get`` / ``_truthy`` seam maint11 sealed *inside*
+    ``maintenance_tasks``, left bare at the emitted-view rank.
+
+    Owning the shape here keeps the union guards in one place: ``_plain_dict``
+    absorbs a subclass row, ``_mapping_get`` degrades a shadowed field to its
+    default, ``_truthy`` fails a ``__bool__``-bomb closed, and ``_jsonable``
+    launders the whole entry before it reaches Starlette's encoder.  A row
+    that cannot answer anything but its id still lists under that id.
+    """
+    out: list = []
+    try:
+        tasks = maintenance_tasks()
+    except Exception:
+        return out
+    try:
+        items = list(dict.items(tasks)) if _isinst(tasks, dict) else []
+    except Exception:
+        items = []
+    for tid, task in items:
+        if not _isinst(tid, str):
+            continue
+        row = _plain_dict(task)
+        if row is None:
+            row = {}
+        # ``name or id`` through the fail-closed truthy guard: a leftover
+        # ``name`` whose ``__bool__`` bombs used to blow the route's ``or``.
+        name = _mapping_get(row, "name")
+        if not _truthy(name):
+            name = tid
+        entry = {
+            "id": tid,
+            "name": name,
+            "desc": _mapping_get(row, "desc", ""),
+            # ``bool(...)`` at the route dispatched a leftover ``confirm``'s
+            # ``__bool__`` bomb; ``_truthy`` fails it closed instead.
+            "confirm": _truthy(_mapping_get(row, "confirm")),
+        }
+        state = job_state(tid)
+        if _isinst(state, dict):
+            for field in ("running", "rc", "finished"):
+                entry[field] = _mapping_get(state, field)
+        cleaned = _jsonable(entry)
+        out.append(cleaned if _isinst(cleaned, dict) else {"id": tid})
+    return out
+
+
 def _jobs_values() -> list:
     """Snapshot of the table's rows through the unbound builtin.
 
