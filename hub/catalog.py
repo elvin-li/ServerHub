@@ -378,7 +378,9 @@ def _plain_str_list(raw) -> list[str]:
             # Base copy first: a lying ``__class__`` claiming list is not
             # actually iterable, so the loop below used to TypeError on it.
             items = list(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
     else:
         try:
@@ -388,7 +390,9 @@ def _plain_str_list(raw) -> list[str]:
             # _plain_str like every other junk scalar.
             if raw in (None, "", False):
                 return []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         items = [raw]
     out: list[str] = []
@@ -406,7 +410,9 @@ def _plain_ports(raw) -> list:
         # Base copy first (the _plain_str_list convention): a lying
         # ``__class__`` claiming list is not actually iterable.
         ports = list(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out: list = []
     for port in ports:
@@ -419,7 +425,9 @@ def _plain_ports(raw) -> list:
                     # bomb used to blow the digit-cap probe below (only
                     # ValueError was caught).
                     port = int.__index__(port)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             # YAML hex/octal ints dodge CPython's int(str) digit cap, so a
             # leftover ``ports: [0xfff…]`` arrives as a >4300-digit int that
@@ -439,7 +447,9 @@ def _plain_ports(raw) -> list:
                         # Base coercion: a subclass ``__eq__`` bomb used to
                         # blow the NaN/inf probes below.
                         port = float.__float__(port)
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         continue
                 if port != port or port in (float("inf"), float("-inf")):
                     continue
@@ -556,7 +566,9 @@ def host_languages() -> tuple[str, ...]:
         blob = read_bytes_capped(_GLOBAL_PREFS, _PREFS_CAP)
         prefs = plistlib.loads(blob)
         raw = prefs.get("AppleLanguages") if isinstance(prefs, dict) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = []
     if not isinstance(raw, list):
         # A scalar leftover used to raise on `for tag in 3` and 500 the store.
@@ -937,7 +949,9 @@ def _build_listing(now: float, sig: str) -> list:
         if meta.get("url_template"):
             try:
                 url_hint = _suggest_url(meta, values_for_url) or ""
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 url_hint = ""
         if not url_hint and meta.get("ports"):
             # first numeric web-ish port as fallback.  _safe_host_ip, not the
@@ -1001,7 +1015,9 @@ def catalog_overview() -> dict:
     def docker_templates() -> list:
         try:
             return list_templates()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     def native_apps() -> list:
@@ -1009,7 +1025,9 @@ def catalog_overview() -> dict:
             from hub import native_catalog
             # Always re-check brew/bin for store badges (install just finished)
             return native_catalog.list_native_apps(force=True)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     docker, native = fan_out(
@@ -1132,7 +1150,9 @@ def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
             })
 
         mutate(apply)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -1218,7 +1238,9 @@ def _port_is_bound(port: int) -> bool:
         except OSError as e:
             if e.errno == errno.EADDRINUSE:
                 return True
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         finally:
             s.close()
@@ -1321,7 +1343,9 @@ def _rollback_install(
     notes: list[str] = []
     try:
         _unregister_stack(template_id, dest_dir)
-    except Exception as e:  # never let cleanup mask the original failure
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # never let cleanup mask the original failure
         notes.append(
             "stack registration left behind: " + (_plain_str(e) or "error")
         )
@@ -1703,7 +1727,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "notes": _plain_str(meta.get("notes")),
             "stack_id": None,
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         detail = _rollback_install(template_id, dest_dir, created_dir)
         msg = _plain_str(e) or "install failed"
         return {
@@ -1743,7 +1769,9 @@ def _unregister_stack(template_id: str, dest_dir: Path | None = None) -> None:
             data["stacks"] = kept
 
         mutate(apply)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -1787,7 +1815,9 @@ def uninstall_template(
         rc = _rc_int(rc)
         logs.append((_plain_str(text) or f"down exit {rc}").strip())
         down_ok = rc == 0
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         logs.append(_plain_str(e) or "error")
         down_ok = False
 
@@ -1826,7 +1856,9 @@ def uninstall_template(
             _shutil.rmtree(dest_dir)
             removed_path = True
             logs.append(f"Removed directory {dest_dir}")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             logs.append(f"Failed to remove directory: {_plain_str(e) or 'error'}")
     else:
         # keep files; user can re-up later

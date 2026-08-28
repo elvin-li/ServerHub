@@ -105,6 +105,28 @@ class Catalog14LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             catalog._isinst(_Ki(), str)
 
+    def test_register_stack_swallows_mutate_baseexception(self):
+        def boom(_apply):
+            raise LeftoverWatchdogTimeout("mutate watchdog")
+
+        with mock.patch("hub.config.mutate", boom):
+            catalog._register_stack("demo", "Demo", catalog.SERVICES_ROOT / "demo")
+
+    def test_unregister_stack_swallows_mutate_baseexception(self):
+        def boom(_apply):
+            raise LeftoverWatchdogTimeout("mutate watchdog")
+
+        with mock.patch("hub.config.mutate", boom):
+            catalog._unregister_stack("demo", catalog.SERVICES_ROOT / "demo")
+
+    def test_register_stack_still_propagates_keyboardinterrupt(self):
+        def boom(_apply):
+            raise KeyboardInterrupt
+
+        with mock.patch("hub.config.mutate", boom):
+            with self.assertRaises(KeyboardInterrupt):
+                catalog._register_stack("demo", "Demo", catalog.SERVICES_ROOT / "demo")
+
 
 if __name__ == "__main__":
     unittest.main()
