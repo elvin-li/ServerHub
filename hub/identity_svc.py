@@ -296,7 +296,9 @@ def get_identity() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; one scutil/sysctl miss must not 500 Settings.
@@ -327,18 +329,24 @@ def get_identity() -> dict:
     # the root used to 500 the route before the laundering ever ran.
     try:
         root = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         root = None
     raw = None
     if _isa(root, dict):
         try:
             raw = dict.get(root, "settings")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raw = None
     if _isa(raw, dict):
         try:
             s = dict(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             s = {}
     else:
         s = {}
@@ -352,7 +360,9 @@ def get_identity() -> dict:
     # while its host_ip sibling (pool + _result) already degraded.
     try:
         host_cfg = configured_host()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         host_cfg = ""
     # platform.node()/machine() under their own try (the configured_host
     # rule one block up): these are module-level seams tests and tooling
@@ -363,11 +373,15 @@ def get_identity() -> dict:
     # field, like every sibling above.
     try:
         node_name = platform.node()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         node_name = ""
     try:
         machine = platform.machine()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         machine = ""
     return {
         "hostname": _as_text(hostname if _rc_int(rc) == 0 else node_name),
@@ -454,7 +468,9 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             update_settings(patch)
         except HTTPException:
             raise
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raise api_error("settings.save_failed")
         msgs.append("Panel settings updated")
     if computer_name:
@@ -496,7 +512,9 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
             _spawn([SCUTIL, "--set", "LocalHostName", name.replace(" ", "-")[:63]], 5)
     try:
         identity = get_identity()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         identity = {}
     if not isinstance(identity, dict):
         identity = {}
