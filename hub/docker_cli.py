@@ -176,7 +176,9 @@ def _jsonable(value, depth: int = 0):
                 # GET /api/stacks and GET /api/stacks/jobs/{id} — the
                 # modules5 unbound convention (hub.status/_modules twins).
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -191,7 +193,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``/
                 # ``__ne__`` bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -204,7 +208,9 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not):
             # the unbound call TypeErrors and the impostor drops.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         if type(value) is not dict:
@@ -213,7 +219,9 @@ def _jsonable(value, depth: int = 0):
             # cannot fire (same guard as hub.jobs._jsonable).
             try:
                 value = dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         out = {}
         for k, v in value.items():
@@ -222,36 +230,48 @@ def _jsonable(value, depth: int = 0):
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Leftover nested sequence subclass whose __iter__ raises.
             return None
         return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -293,7 +313,9 @@ def _rc_int(rc) -> int:
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -311,7 +333,9 @@ def docker(*args, timeout=30) -> tuple[int, str, str]:
     # never success — so the routes degrade to their coded answers.
     try:
         rc, out, err = sh([DOCKER, *args], timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rc, out, err = -255, "", ""
     return _rc_int(rc), _as_text(out), _as_text(err)
 
@@ -526,7 +550,9 @@ def _cache_view() -> tuple[bool | None, bool]:
         # bool() inside the try: a poisoned ``t`` whose reflected subtraction
         # or comparison answers junk must not hand a ``__bool__`` bomb out.
         fresh = bool(time.time() - _engine_cache.get("t") < _ENGINE_TTL)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         fresh = False
     return v, fresh
 
@@ -549,7 +575,9 @@ def _timeouts_int(value) -> int:
     try:
         if not _isa(value, bool) and _isa(value, int):
             return int.__index__(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return _TIMEOUT_TOLERANCE
 

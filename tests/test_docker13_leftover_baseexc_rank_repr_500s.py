@@ -49,6 +49,21 @@ class Docker13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             docker_cli._isa(_Ki(), dict)
 
+    def test_jsonable_swallows_list_iter_baseexception(self):
+        class _IterBomb(list):
+            def __iter__(self):
+                raise LeftoverWatchdogTimeout("jsonable iter watchdog")
+
+        self.assertIsNone(docker_cli._jsonable(_IterBomb([1])))
+
+    def test_jsonable_still_propagates_keyboardinterrupt_from_iter(self):
+        class _Ki(list):
+            def __iter__(self):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            docker_cli._jsonable(_Ki([1]))
+
 
 if __name__ == "__main__":
     unittest.main()
