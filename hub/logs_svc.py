@@ -12,6 +12,13 @@ from hub.errors import api_error
 from hub.paths import user_home
 from hub.util import tail_file_lines
 
+# Real control flow must keep propagating even through the bomb guards
+# (the modules12 convention): swallowing a Ctrl-C or an interpreter
+# shutdown to save one log row would turn the sanitizer into a hang.
+# Everything else BaseException-shaped that a leftover raises out of its
+# own hooks is a bomb like any other.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
@@ -27,10 +34,19 @@ def _isa(value, kinds) -> bool:
     smart_test_svc rule).  A real subclass still matches through the
     C-level type check; only a value that cannot answer what it is takes
     the non-matching branch.
+
+    ``except BaseException``: the logs9 guard stopped at ``Exception``, so
+    a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (a watchdog/timeout-style leftover, the shape modules12 just
+    sealed) sailed past this catch — and past every sibling guard below —
+    straight out of GET /api/logs and GET /api/logs/{id} raw.  Only
+    genuine control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -41,25 +57,44 @@ def _utf8_text(value) -> str:
     subclass whose ``__str__`` returns *itself* keeps the subclass, so the
     bound ``.encode`` used to dispatch into a leftover override and 500 both
     logs routes; the same held for a bytes/bytearray-subclass ``.decode``.
+
+    Both decode bases are tried, real layout first-come (the modules12
+    ``_decode_bytes`` rule): the old arm picked the base off the *claimed*
+    ``__class__``, so a genuine ``bytearray`` whose ``__class__`` lied
+    ``bytes`` was handed to ``bytes.decode``, rejected by the descriptor,
+    and its perfectly decodable content vanished to ``""`` — degrade at
+    the wrong rank.  The descriptor that matches the real storage wins; a
+    total impostor still fails both and falls to the ``str()`` probe.
     """
     if _isa(value, (bytes, bytearray)):
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except Exception:
-            return ""
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here.
         return ""
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -83,7 +118,9 @@ def _exact_str(text) -> str | None:
         return None
     try:
         return str.__str__(text)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -104,10 +141,18 @@ def _mapping_get(mapping, key):
         return None
     try:
         return mapping.get(key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``.get`` bomb raising a *BaseException* subclass used to sail
+        # past the ``except Exception`` here — one such leftover as a
+        # ``log_sources`` entry 500'd both logs routes raw, one line ahead
+        # of the dict.get salvage below.
         try:
             return dict.get(mapping, key)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
 
@@ -119,7 +164,9 @@ def _truthy(value) -> bool:
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -154,7 +201,9 @@ def _stat_size(path: Path) -> int:
         else:
             size = int(raw)
         float(size)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
     return size if size >= 0 else 0
 
@@ -188,17 +237,26 @@ def _config_text(value) -> str | None:
         # unbound base ``__str__`` copies the carried text to an exact str.
         try:
             return str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, (bytes, bytearray)):
         # Unbound decode: ``bytes(value)`` dispatches into a subclass
         # ``__bytes__`` override, and one such bomb as an id used to 500
-        # both logs routes before anything was listed.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except Exception:
-            return None
+        # both logs routes before anything was listed.  Both bases are
+        # tried, real layout first-come (the modules12 rule): picking the
+        # base off the *claimed* ``__class__`` handed a genuine bytearray
+        # lying ``bytes`` to ``bytes.decode``, and its perfectly decodable
+        # id/name vanished to None — the source silently unlisted.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
     if _isa(value, (datetime.date, datetime.datetime)):
         # _exact_str: ``str(...)`` keeps a str-*subclass* isoformat result
         # verbatim when its ``__str__`` returns itself (the json6 self-str
@@ -207,7 +265,9 @@ def _config_text(value) -> str | None:
         # truthiness probe in _entries — 500ing both logs routes.
         try:
             return _exact_str(str(value.isoformat()))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, bool) or not _isa(value, int):
         # ``_isa`` for the bool head too, not ``type(x) is bool``: a
@@ -224,11 +284,14 @@ def _config_text(value) -> str | None:
         # in _entries — 500ing both logs routes after this catch had
         # already passed.
         return _exact_str(str(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ValueError is the >4300-digit cap; anything else is an
-        # int-subclass ``__str__`` bomb, which used to raise past the
-        # narrow catch and 500 both logs routes.  Either way the field
-        # cannot be rendered — drop it, not the page.
+        # int-subclass ``__str__`` bomb — including one raising a
+        # *BaseException* subclass, which used to sail past the old
+        # ``except Exception`` and 500 both logs routes.  Either way the
+        # field cannot be rendered — drop it, not the page.
         return None
 
 
@@ -284,9 +347,14 @@ def _entries() -> list[tuple[Path, dict]]:
     # _mapping_get below and 500'd GET /api/logs and GET /api/logs/{id}
     # at once.  No config degrades to the unconfigured defaults, the same
     # answer an empty services.yaml gets.
+    # ``except BaseException``: a provider raising a *BaseException*
+    # subclass (the watchdog/timeout shape) used to sail past the logs11
+    # ``except Exception`` and 500 both routes raw all over again.
     try:
         root = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         root = None
     # _mapping_get / unbound list reads throughout: cfg() normally hands out
     # plain parsed YAML, but a leftover cache poisoned with dict/list
@@ -306,7 +374,9 @@ def _entries() -> list[tuple[Path, dict]]:
             # GET /api/logs/{id} together.  Only a real list (or subclass,
             # its poisoned ``__iter__``/``__len__`` bypassed) snapshots.
             rows = list(list.__iter__(sources))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
     if not rows:
         home = user_home()
@@ -331,16 +401,28 @@ def _entries() -> list[tuple[Path, dict]]:
             # keeps the surrogateescape text that names the real on-disk
             # file.  Unbound, because ``os.fsdecode(bytes(raw_path))``
             # dispatched into a subclass ``__bytes__`` override — one such
-            # bomb as a path used to 500 both logs routes.
-            base = bytes if _isa(raw_path, bytes) else bytearray
-            try:
-                raw_path = base.decode(
-                    raw_path,
-                    sys.getfilesystemencoding(),
-                    sys.getfilesystemencodeerrors(),
-                )
-            except Exception:
+            # bomb as a path used to 500 both logs routes.  Both bases are
+            # tried, real layout first-come (the modules12 rule): picking
+            # the base off the *claimed* ``__class__`` handed a genuine
+            # bytearray lying ``bytes`` to ``bytes.decode``, and a source
+            # whose on-disk path was perfectly decodable silently vanished
+            # from the listing — degrade at the wrong rank.
+            decoded = None
+            for base in (bytes, bytearray):
+                try:
+                    decoded = base.decode(
+                        raw_path,
+                        sys.getfilesystemencoding(),
+                        sys.getfilesystemencodeerrors(),
+                    )
+                    break
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            if decoded is None:
                 continue
+            raw_path = decoded
         if _isa(raw_path, str):
             # Exact-str launder (the json6 ``str.__str__`` convention, the
             # same one ``_config_text`` gives the id/name fields): a str
@@ -354,7 +436,9 @@ def _entries() -> list[tuple[Path, dict]]:
             # override, so the source keeps listing and tailing its real file.
             try:
                 raw_path = str.__str__(raw_path)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         try:
             # _exact_str before Path(): ``str(raw_path)`` of a non-str
@@ -369,13 +453,16 @@ def _entries() -> list[tuple[Path, dict]]:
             if path_text is None:
                 continue
             p = Path(os.path.expanduser(path_text))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # RuntimeError: leftover HOME unset on a ``~/…`` log path.
             # ValueError: an over-cap int path is the digit-cap ``str()``.
             # Broad, like ``_stat_size`` / ``_config_text``: a non-str
             # ``path`` leftover whose own ``str()`` bombs (a poisoned
-            # ``__str__`` on an arbitrary object) drops the one entry rather
-            # than the whole page.
+            # ``__str__`` on an arbitrary object — including one raising a
+            # *BaseException* subclass past the old ``except Exception``)
+            # drops the one entry rather than the whole page.
             continue
         if not _log_path_allowed(p):
             continue
@@ -409,8 +496,17 @@ def _clamp_lines(raw, default: int = 200) -> int:
         value = default
     else:
         try:
-            value = int(raw)
-        except (TypeError, ValueError, OverflowError):
+            # Unbound base read for int subclasses (the _stat_size rule):
+            # ``int(raw)`` dispatches into a subclass ``__int__``/
+            # ``__index__`` override, and one raising anything outside the
+            # old narrow (TypeError, ValueError, OverflowError) catch —
+            # the Services script-log fallback hands ``tail_log`` its
+            # caller's raw ``lines`` — used to 500 the tail instead of
+            # falling back to the default.
+            value = int.__index__(raw) if _isa(raw, int) else int(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             value = default
     return max(10, min(value, 2000))
 
@@ -450,7 +546,9 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
             # back a path whose ``str()`` is a poisoned str subclass, and
             # Path parses its stored text lazily — outside this guard.
             p = Path(_exact_str(str(meta_path or "")) or "")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             raise api_error("logs.read_failed")
     if not _log_path_allowed(p):
         raise api_error("logs.protected")
@@ -515,5 +613,10 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         if not still_there:
             return _missing(p)
         raise api_error("logs.read_failed")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A read-path bomb raising a *BaseException* subclass used to sail
+        # past the ``except Exception`` here and escape the route raw
+        # instead of taking the coded read_failed answer.
         raise api_error("logs.read_failed")
