@@ -194,7 +194,9 @@ def _coerce_interval(interval) -> float:
         elif isinstance(interval, float):
             interval = float.__float__(interval)
         n = float(interval)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         n = 60.0
     if n != n or n in (float("inf"), float("-inf")) or n <= 0:
         n = 60.0
@@ -229,7 +231,9 @@ def loop_interval(raw, default: int = 90, *, minimum: int = 30, maximum: int = 8
         if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         n = int(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
     if n <= 0 or n > maximum:
         return default
@@ -266,7 +270,9 @@ def _finite_beat(raw) -> float:
         elif isinstance(raw, float):
             raw = float.__float__(raw)
         beat = float(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0.0
     if beat != beat or beat in (float("inf"), float("-inf")):
         return 0.0
@@ -288,7 +294,9 @@ def _coerce_now(now) -> float:
         elif isinstance(now, float):
             now = float.__float__(now)
         n = float(now)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return _wall_now()
     if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
         return _wall_now()
@@ -317,16 +325,22 @@ def _name_key(name) -> str:
     """
     try:
         text = str(name)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             text = type(name).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return "?"
     if type(text) is str:
         return text
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "?"
 
 
@@ -350,11 +364,15 @@ def register(name: str, interval: float, thread: threading.Thread | None = None)
         # poison and retry so the honest registration still lands.
         try:
             _workers[_name_key(name)] = entry
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             try:
                 _evict_unusable_keys()
                 _workers[_name_key(name)] = entry
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
 
@@ -368,7 +386,9 @@ def beat(name: str) -> None:
         # one call later.  An unreadable slot reads as unregistered.
         try:
             entry = _workers.get(_name_key(name))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             entry = None
         # _isa + unbound ``dict.__setitem__``: a planted entry whose
         # ``__class__`` is a raising property (or a dict subclass with a
@@ -377,7 +397,9 @@ def beat(name: str) -> None:
         if _isa(entry, dict):
             try:
                 dict.__setitem__(entry, "beat", _wall_now())
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
 
@@ -389,11 +411,15 @@ def unregister(name: str) -> None:
         # worker cannot linger as a false "thread died" health row.
         try:
             _workers.pop(_name_key(name), None)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             try:
                 _evict_unusable_keys()
                 _workers.pop(_name_key(name), None)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
 
@@ -414,7 +440,9 @@ def snapshot(now: float | None = None) -> list[dict]:
                 # drops alone; its siblings keep their rows.
                 try:
                     items.append((name, dict(entry)))
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
     out = []
     # _name_key, not bare str(): a planted name key that is an over-cap int
@@ -426,7 +454,9 @@ def snapshot(now: float | None = None) -> list[dict]:
     # future key shape can re-detonate the same wipe.
     try:
         ordered = sorted(items, key=lambda kv: _name_key(kv[0]))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ordered = items
     for name, entry in ordered:
         # _mapping_get, not bound ``.get``: a hash-shadowing junk key riding
@@ -437,7 +467,9 @@ def snapshot(now: float | None = None) -> list[dict]:
         thread = _mapping_get(entry, "thread")
         try:
             alive = bool(thread is not None and thread.is_alive())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             alive = False
         beat = _finite_beat(_mapping_get(entry, "beat"))
         interval = _coerce_interval(_mapping_get(entry, "interval"))
@@ -472,7 +504,9 @@ def _pull_guarded(rows) -> list:
     """
     try:
         it = iter(rows)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     collected = []
     while True:
@@ -480,7 +514,9 @@ def _pull_guarded(rows) -> list:
             collected.append(next(it))
         except StopIteration:
             break
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             break
     return collected
 
@@ -506,7 +542,9 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
         # ``TypeError``; it falls through to the generic guarded pull loop.
         try:
             rows = list.__iter__(rows)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = _pull_guarded(rows)
     else:
         # Materialize with a guarded pull loop: a generic iterable that
@@ -546,6 +584,8 @@ def problems(now: float | None = None, rows: list[dict] | None = None) -> list[s
                 age = int(_finite_beat(_mapping_get(w, "age_sec")))
                 interval = int(_finite_beat(_mapping_get(w, "interval")))
                 out.append(f"{name}: last tick {age}s ago (interval {interval}s)")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return out

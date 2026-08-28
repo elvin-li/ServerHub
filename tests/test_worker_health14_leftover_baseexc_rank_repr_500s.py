@@ -53,6 +53,14 @@ class WorkerHealth14LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             worker_health._isa(_Ki(), dict)
 
+    def test_truthy_still_propagates_keyboardinterrupt(self):
+        class _Ki:
+            def __bool__(self):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            worker_health._truthy(_Ki())
+
 
 if __name__ == "__main__":
     unittest.main()
