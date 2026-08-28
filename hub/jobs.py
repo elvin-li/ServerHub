@@ -375,7 +375,12 @@ def _decode_bytes(value) -> str:
     _jsonable's bytes arm and 500 GET /api/maintenance.
     """
     decoded = _decode_or_none(value)
-    return "" if decoded is None else decoded
+    if decoded is not None:
+        return decoded
+    # A total liar of the byte layouts: recover genuine str storage
+    # (jobs13/jobs14 — a str name claiming bytes used to wipe to "").
+    text = _str_text(value)
+    return text if text is not None else ""
 
 
 #: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
