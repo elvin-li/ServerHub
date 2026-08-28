@@ -6,6 +6,8 @@ from hub.config import cfg
 ALLOWED = ("low", "high")
 DEFAULT = "low"
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def resource_mode() -> str:
     # ``settings: []`` / a scalar used to AttributeError ``.get`` and 500
@@ -14,7 +16,9 @@ def resource_mode() -> str:
     # this still has to tolerate a leftover in-memory mapping.
     try:
         settings = cfg().get("settings")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         settings = {}
     if not isinstance(settings, dict):
         settings = {}
@@ -25,17 +29,23 @@ def resource_mode() -> str:
     # used to 500 GET /api/status and POST /api/alerts/check unconditionally.
     try:
         v = settings.get("resource_mode")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         try:
             v = dict.get(settings, "resource_mode")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             v = None
     if isinstance(v, str) and type(v) is not str:
         # Exact-str copy: a str-subclass value whose ``__eq__`` raises used
         # to detonate the ``v in ALLOWED`` membership below.
         try:
             v = str.__str__(v)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             v = None
     if not isinstance(v, str) or not v:
         return DEFAULT

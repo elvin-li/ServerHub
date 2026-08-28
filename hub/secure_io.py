@@ -152,7 +152,7 @@ def replace_secret_text(
             fh.write(content)
         os.replace(tmp, p)
         os.chmod(p, SECRET_MODE)
-    except Exception:
+    except BaseException:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -179,7 +179,7 @@ def replace_bytes(path: Path | str, data: bytes, *, mode: int = 0o644) -> Path:
             os.fsync(fh.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, p)
-    except Exception:
+    except BaseException:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -251,7 +251,7 @@ def append_text(
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, "not a regular file", str(p))
-    except Exception:
+    except BaseException:
         os.close(fd)
         raise
     with os.fdopen(fd, "a", encoding=encoding) as fh:

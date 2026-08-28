@@ -830,7 +830,9 @@ class SpawnCounts:
     def record(self, cmd, *, shell: bool = False) -> None:
         try:
             key = spawn_key(cmd, shell=shell)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return
         if not key:
             return
@@ -883,7 +885,9 @@ def run_capped(cmd, timeout=10, env=None, cwd=None, cap=2048):
         return -1, "invalid argv"
     try:
         spawn_counts.record(argv)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     with tempfile.TemporaryFile() as out:
         try:
@@ -995,7 +999,9 @@ def sh(cmd, timeout=10, shell=False, env=None):
         cmd = argv
     try:
         spawn_counts.record(cmd, shell=shell)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
