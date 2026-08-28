@@ -88,6 +88,58 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and the bare
+    ``rc, out, _ = sh(...)`` unpack dispatched into the answer's own
+    iteration: a tuple *subclass* whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple over no real sequence
+    storage — raised out of ``_df_table`` into all three consumer modules
+    at once and emptied the volume table, the power rows' volume lists and
+    the mount-table arm of the boot-disk safety union in one throw (the
+    vms11/network10 ``_sh3`` rule).  The unbound base reads see the real
+    C-level storage, so an honest answer in a subclass wrapper survives
+    untouched; junk degrades to ``(-255, "", "")`` — nonzero, and never
+    ``sh``'s ``-1`` sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering used to unwind out of the shared reads into every
+    consumer at once, where a failed read (empty table, cache forgotten,
+    next reader retries) is the honest degrade this module already ships
+    (the vms11 runner-seam rule).  A raising runner reads as
+    ``(-255, "", "")``: nonzero, and never the ``-1`` spawn sentinel.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _as_text(value) -> str:
     """diskutil / df leftovers arrive as bytes / int / inf, not str.
 
@@ -198,7 +250,7 @@ def _forget_if_empty(cached, value):
 
 @cached_snapshot(_TTL)
 def _df_table() -> tuple[str, ...]:
-    rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
+    rc, out, _ = _spawn(["/bin/df", "-P", "-k"], 8)
     return tuple(_as_text(out).splitlines()) if _rc_int(rc) == 0 else ()
 
 
@@ -266,7 +318,7 @@ def _physical_whole_disks() -> tuple[str, ...]:
                 return tuple(t for x in wholes if (t := _disk_token(x)))
         except Exception:
             pass
-    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
+    rc, out, _ = _spawn(["/usr/sbin/diskutil", "list", "physical"], _DISKUTIL_TIMEOUT)
     if _rc_int(rc) != 0:
         return ()
     ids: list[str] = []
@@ -344,8 +396,11 @@ def root_whole_disks() -> frozenset[str]:
     """
     def from_text() -> set[str]:
         try:
-            rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
-            return set(_DISK_RE.findall(_as_text(out))) if rc == 0 else set()
+            # _spawn / _rc_int: an honest answer in a subclass wrapper (or
+            # an rc-subclass zero) keeps this arm contributing instead of
+            # collapsing to the empty set through the except.
+            rc, out, _ = _spawn(["/usr/sbin/diskutil", "info", "/"], _DISKUTIL_TIMEOUT)
+            return set(_DISK_RE.findall(_as_text(out))) if _rc_int(rc) == 0 else set()
         except Exception:
             return set()
 

@@ -168,6 +168,62 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and every spawn unpacked the
+    answer bare: a tuple *subclass* whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple over no real sequence
+    storage, or a wrong-arity answer — detonated ``passwordless_available``
+    inside ``overview``'s fan-out (a raw 500 on GET /api/smart) and the
+    spawns in ``start_test`` / ``abort_test`` (raw 500s on
+    POST /api/smart/test and /api/smart/abort) one seam before the
+    ``_rc_int`` guards storage10 built (the vms11/network10 ``_sh3``
+    rule).  The unbound base reads see the real C-level storage, so an
+    honest answer in a subclass wrapper survives untouched — the
+    vanished-spawn sentinel included; junk degrades to ``(-255, "", "")``
+    — nonzero, and never ``sh``'s ``-1`` sentinel, so an unusable answer
+    cannot forge the confirmed-vanished ``smartctl_missing`` refusal in
+    :func:`_spawn_missing` either.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering used to 500 the same three routes ``_sh3``
+    launders the answer shape for, plus the scheduler tick's own spawn in
+    ``run_due_tests`` (the vms11 runner-seam rule).  A raising runner
+    reads as ``(-255, "", "")``: nonzero — a runner that cannot answer is
+    not consent to claim a self-test started — with empty streams, so it
+    can match no vanished-CLI marker.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     """Run smartctl unprivileged, retrying under ``sudo -n`` on a denial.
 
@@ -176,13 +232,13 @@ def _raw_smartctl(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     the returned data is still usable.  Only a permission complaint justifies the
     privileged retry.
     """
-    rc, out, err = sh([SMARTCTL, *argv], timeout=timeout)
+    rc, out, err = _spawn([SMARTCTL, *argv], timeout)
     rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     blob = f"{out}\n{err}".lower()
     if rc not in (0, 4) and any(
         token in blob for token in ("permission", "operation not permitted", "access denied")
     ):
-        rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, *argv], timeout=timeout)
+        rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, *argv], timeout)
         rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     return rc, out, err
 
@@ -262,15 +318,16 @@ def _spawn_missing(rc: int, out, err) -> bool:
 
 def passwordless_available() -> bool:
     """Whether ``sudo -n smartctl`` works, i.e. scheduled tests can run headless."""
-    rc, _, _ = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-V"], timeout=6)
-    # _rc_int: this runs unguarded inside overview()'s fan-out, and an
-    # rc-subclass ``__eq__`` bomb was a raw 500 on GET /api/smart.
+    # _spawn as well as _rc_int: this runs unguarded inside overview()'s
+    # fan-out, and an rc-subclass ``__eq__`` bomb — or a runner that raises
+    # / answers a wrong shape — was a raw 500 on GET /api/smart.
+    rc, _, _ = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-V"], 6)
     return _rc_int(rc) == 0
 
 
 def _device_nodes() -> list[str]:
     """Physical whole disks, as ``/dev/diskN``."""
-    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
+    rc, out, _ = _spawn(["/usr/sbin/diskutil", "list", "physical"], 10)
     # _rc_int: overview() reads this listing before any guard, and an
     # rc-subclass ``__eq__`` bomb was a raw 500 on GET /api/smart.
     rc, out = _rc_int(rc), _as_text(out)
@@ -833,7 +890,28 @@ def _schedule_cfg() -> dict:
         stored = dict.get(settings, "smart_schedule")
         if not _isa(stored, dict):
             return {}
-        return dict(stored)
+        # Exact base-str keys, not a bare ``dict(stored)`` copy: the plain
+        # copy kept a str-*subclass* key whose ``__eq__`` raises, and every
+        # later ``stored.get("interval")`` / ``_mark_ran``'s
+        # ``stored["last_run"] = ...`` probe that hashes to its slot ran
+        # the *stored* key's own comparison — a raw 500 on GET /api/smart
+        # and PUT /api/smart/schedule, and the same raise escaped
+        # ``schedule_due()`` inside the scheduler tick (the storage9
+        # hash-shadowing rule at the copy seam).  ``str.__str__`` base
+        # copies keep an honest subclass key's text, so its field still
+        # reads; a non-str key cannot name a schedule field and drops.
+        entries = list(dict.items(stored))
+        out: dict = {}
+        for k, v in entries:
+            if type(k) is not str:
+                if not _isa(k, str):
+                    continue
+                try:
+                    k = str.__str__(k)
+                except Exception:
+                    continue
+            out[k] = v
+        return out
     except Exception:
         return {}
 
@@ -1034,11 +1112,11 @@ def run_due_tests() -> dict:
             })
             continue
         flags = list(device_type(device))
-        rc, out, err = sh(
-            ["/usr/bin/sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], timeout=60
+        rc, out, err = _spawn(
+            ["/usr/bin/sudo", "-n", SMARTCTL, "-t", schedule["kind"], *flags, device], 60
         )
-        # _rc_int — same rc-subclass ``__eq__``-bomb note as _raw_smartctl,
-        # on the scheduler tick.
+        # _spawn + _rc_int — same rc-subclass ``__eq__``-bomb /
+        # raising-runner note as _raw_smartctl, on the scheduler tick.
         ok = _rc_int(rc) in (0, 4)
         started += 1 if ok else 0
         _append_history({
@@ -1135,7 +1213,9 @@ def start_test(device: str, kind: str) -> dict:
         return {"ok": False, "error": "kind_unsupported", "supported": caps["supported"], "device": node}
 
     flags = list(device_type(node))
-    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], timeout=60)
+    # _spawn: a runner that raises — or answers a wrong shape — used to
+    # blow this unpack bare, a raw 500 on POST /api/smart/test.
+    rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-t", test, *flags, node], 60)
     # _rc_int: an rc-subclass ``__eq__`` bomb detonated this membership
     # probe — a raw 500 on POST /api/smart/test.
     rc = _rc_int(rc)
@@ -1203,9 +1283,9 @@ def abort_test(device: str) -> dict:
     if not _DEV_RE.match(node) or node not in _known_nodes():
         return {"ok": False, "error": "bad_device"}
     flags = list(device_type(node))
-    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], timeout=30)
-    # _rc_int — same rc-subclass ``__eq__``-bomb note as start_test, on
-    # POST /api/smart/abort.
+    # _spawn + _rc_int — same rc-subclass ``__eq__``-bomb / raising-runner
+    # note as start_test, on POST /api/smart/abort.
+    rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-X", *flags, node], 30)
     rc = _rc_int(rc)
     if rc not in (0, 4):
         # Same fresh-probe rule as start_test: only a vanished-looking spawn

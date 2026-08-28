@@ -93,6 +93,58 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and the bare
+    ``rc, out, err = sh(...)`` unpack dispatched into the answer's own
+    iteration: a tuple/list *subclass* whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple over no real sequence
+    storage — raised out of ``smart_devices`` (every disk row wiped from
+    GET /api/storage while the volumes sat healthy) and degraded each
+    ``_probe_disk`` to an exception-text row where the honest failure
+    branch was available (the vms11/network10 ``_sh3`` rule).  The unbound
+    base reads see the real C-level storage, so an honest answer in a
+    subclass wrapper survives untouched; junk degrades to
+    ``(-255, "", "")`` — nonzero, and never ``sh``'s ``-1`` sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering used to blow ``smart_devices`` before its
+    ``_rc_int`` guard even ran, and rode ``_probe_disk_uncached`` into the
+    exception-text row (the vms11 runner-seam rule).  A raising runner
+    reads as ``(-255, "", "")``: nonzero — a runner that cannot answer is
+    not consent to claim success — and never the ``-1`` spawn sentinel.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
     base = bytes if _isa(value, bytes) else bytearray
@@ -491,16 +543,57 @@ def _json_int(raw, default: int = 0) -> int:
     return value
 
 
+def _exact_str_keys(mapping) -> dict:
+    """*mapping* re-keyed to exact base strs, unreadable entries dropped alone.
+
+    The storage9 hash-shadowing rule at the *copy* seam: ``dict(raw)`` keeps
+    a str-*subclass* key whose ``__eq__`` raises, and every later
+    ``row["mount"] = ...`` / ``dict.get`` probe that hashes to its slot runs
+    the *stored* key's own comparison — one shadow key used to raise out of
+    ``_volume_row`` and cost the whole volume row (guarded collateral)
+    where only its own field is unreadable.  ``str.__str__`` base copies
+    keep the honest subclass key's text, so the field still reads; a key
+    that is not str at all cannot name a volume field and drops.
+    """
+    try:
+        entries = list(dict.items(mapping))
+    except Exception:
+        return {}
+    out: dict = {}
+    for k, v in entries:
+        if type(k) is not str:
+            # Same key salvage as the final ``_jsonable`` pass (which used
+            # to be the only launderer these keys met): bytes decode, str
+            # subclasses base-copy, everything else takes the str() probe —
+            # so no previously-surviving entry drops here.
+            try:
+                if _isa(k, (bytes, bytearray)):
+                    k = _decode_bytes(k)
+                elif _isa(k, str):
+                    k = str.__str__(k)
+                else:
+                    k = str(k)
+            except Exception:
+                continue
+            k = _as_text(k)
+            if not k:
+                continue
+        out[k] = v
+    return out
+
+
 def _volume_row(raw) -> dict | None:
     """JSON-safe volume. Leftover incomplete dicts / inf / ``\\ud800`` used
     to KeyError or 500 GET /api/storage after non-dict rows were skipped.
     """
     if not _isa(raw, dict):
         return None
-    mount = _as_text(_mapping_get(raw, "mount"))
+    # Exact-str keys before any read or assignment: the bare ``dict(raw)``
+    # copy this replaces carried shadow keys into every probe below.
+    row = _exact_str_keys(raw)
+    mount = _as_text(_mapping_get(row, "mount"))
     if not mount:
         return None
-    row = dict(raw)
     row["mount"] = mount
     row["kind"] = _as_text(_mapping_get(row, "kind")) or "other"
     disk_id = _mapping_get(row, "disk_id")
@@ -684,7 +777,13 @@ def _probe_disk(d: str) -> dict:
 
 
 def _probe_disk_uncached(dev: str, info: dict) -> dict:
-    rc, iout, _ = sh(["/usr/sbin/diskutil", "info", dev], timeout=8)
+    # _sh3 on every leg, not the raise-absorbing _spawn: a wrong-shape
+    # answer used to unwind out of the bare unpack into _probe_disk's
+    # except arm and degrade the disk to an unpack-text row where the
+    # honest failure branch below was available — while a runner that
+    # *raises* keeps its own message in that guarded error row (the
+    # test_hotpath contract; _probe_disk absorbs it, never the route).
+    rc, iout, _ = _sh3(sh(["/usr/sbin/diskutil", "info", dev], timeout=8))
     iout = _as_text(iout)
     # _rc_int on every probe: an rc-subclass ``__eq__`` bomb from a poisoned
     # runner used to raise out of here — _probe_disk degraded the whole disk
@@ -719,11 +818,11 @@ def _probe_disk_uncached(dev: str, info: dict) -> dict:
     # Most macOS NVMe devices are readable as the login user.  Avoid a
     # failing sudo process on every disk; retry with passwordless sudo only
     # when the direct read clearly failed for permissions.
-    rc, sout, serr = sh([SMARTCTL, "-a", dev], timeout=10)
+    rc, sout, serr = _sh3(sh([SMARTCTL, "-a", dev], timeout=10))
     sout, serr = _as_text(sout), _as_text(serr)
     msg_lower = f"{sout}\n{serr}".lower()
     if _rc_int(rc) not in (0, 4) and any(x in msg_lower for x in ("permission", "operation not permitted", "access denied")):
-        rc, sout, serr = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-a", dev], timeout=10)
+        rc, sout, serr = _sh3(sh(["/usr/bin/sudo", "-n", SMARTCTL, "-a", dev], timeout=10))
         sout, serr = _as_text(sout), _as_text(serr)
     if _rc_int(rc) in (0, 4) and sout:
         sm = {}
@@ -865,7 +964,9 @@ def smart_devices() -> list:
     Results are re-ordered to match `disk_ids` so the array table does not
     reshuffle its rows depending on which disk answered first.
     """
-    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=10)
+    # _spawn as well as _rc_int: a raising runner (or a wrong-shape answer)
+    # used to blow the bare unpack itself, one seam before the rc guard.
+    rc, out, _ = _spawn(["/usr/sbin/diskutil", "list", "physical"], 10)
     out = _as_text(out)
     disk_ids = []
     # _rc_int, not a bare compare: an rc-subclass ``__eq__`` bomb from a

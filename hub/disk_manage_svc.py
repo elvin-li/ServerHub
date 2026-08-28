@@ -106,6 +106,58 @@ def _rc_int(rc) -> int:
         return -255
     return rc
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and ``disk_action``'s ``run()``
+    unpacked the answer bare: a tuple *subclass* whose bound ``__iter__``
+    bombs — or a lying ``__class__`` impostor claiming tuple over no real
+    sequence storage, or a wrong-arity answer — detonated every manage
+    mutation one seam before the ``_rc_int`` guard storage10 built (a raw
+    500 on POST /api/storage/manage/{id} where the degraded ``ok: false``
+    body is the contract; the vms11/network10 ``_sh3`` rule).  The unbound
+    base reads see the real C-level storage, so an honest answer in a
+    subclass wrapper survives untouched; junk degrades to
+    ``(-255, "", "")`` — nonzero, and never ``sh``'s ``-1`` sentinel, so
+    an unusable answer cannot forge the vanished-diskutil 503 either.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering used to 500 every mount/unmount/rename/erase out
+    of ``run()``'s bare call (the vms11 runner-seam rule).  A raising
+    runner reads as ``(-255, "", "")``: nonzero — a runner that cannot
+    answer is not consent to claim a mutation succeeded — with empty
+    streams, so it can match no vanished-CLI marker.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 # Formats we allow for eraseVolume / eraseDisk
 FS_TYPES = {
     "APFS": "APFS",
@@ -284,27 +336,56 @@ def _truthy(value) -> bool:
         return False
 
 
+def _exact_str_keys(entries) -> dict:
+    """(key, value) pairs re-keyed to exact base strs, junk entries dropped.
+
+    The storage9 hash-shadowing rule at the *copy* seam: a plain-dict copy
+    keeps a str-*subclass* key whose ``__eq__`` raises, and every later
+    field read that hashes to its slot runs the *stored* key's own
+    comparison — ``info.get("VolumeName")`` on the confirmed-erase path
+    used to 500 POST /api/storage/manage/{id} for a shadow key the plist
+    never honestly carries.  ``str.__str__`` base copies keep the honest
+    subclass key's text, so the field still reads; a key that is not str
+    at all cannot name a plist field and drops alone.
+    """
+    out: dict = {}
+    for k, v in entries:
+        if type(k) is not str:
+            if not _isa(k, str):
+                continue
+            try:
+                k = str.__str__(k)
+            except Exception:
+                continue
+        out[k] = v
+    return out
+
+
 def _plain_info(info) -> dict:
-    """*info* as a plain ``dict``, or empty.
+    """*info* as a plain ``dict`` with exact base-str keys, or empty.
 
     A dict-*subclass* leftover in the ``diskutil info`` cache (the
     jobs/metrics row-bomb class) passes the isinstance gate with a
     ``__bool__``/``__len__``/``.get`` that raises; ``disk_action``'s own
     ``if not info`` truthiness probe used to 500 every manage mutation on
-    such a value.  ``dict()`` copies through the C-level storage, so an
-    overridden method cannot fire; a subclass whose copy itself raises is
-    junk and reads as "no info".
+    such a value.  ``dict.items`` copies through the C-level storage, so
+    an overridden method cannot fire; a subclass whose copy itself raises
+    is junk and reads as "no info".  Keys are laundered to exact base strs
+    (see :func:`_exact_str_keys`) so the bare ``info.get`` / ``in info``
+    probes downstream cannot run a stored shadow key's ``__eq__``.
     """
-    if type(info) is dict:
-        return info
     # _isa: a ``__class__``-property bomb in the info cache used to
     # detonate this very gate on POST /api/storage/manage/{id}.
-    if _isa(info, dict):
-        try:
-            return dict(info)
-        except Exception:
-            return {}
-    return {}
+    if not _isa(info, dict):
+        return {}
+    try:
+        entries = list(dict.items(info))
+    except Exception:
+        return {}
+    if type(info) is dict and all(type(k) is str for k, _ in entries):
+        # The overwhelmingly common healthy plist: no copy needed.
+        return info
+    return _exact_str_keys(entries)
 
 
 def _ident(value) -> str:
@@ -645,7 +726,11 @@ def list_managed_volumes() -> list[dict]:
 
     def probe_root_info() -> dict:
         try:
-            return dict(root_info())
+            # _exact_str_keys: a str-subclass shadow key riding a patched
+            # shared read used to detonate the bare
+            # ``root_details.get("ParentWholeDisk")`` below and cost the
+            # whole manage listing through the route's catch.
+            return _exact_str_keys(dict(root_info()).items())
         except Exception:
             return {}
 
@@ -941,7 +1026,10 @@ def disk_action(
     log: list[str] = []
 
     def run(args: list[str], timeout: int = 120) -> tuple[int, str, str]:
-        rc, out, err = sh(args, timeout=timeout)
+        # _spawn, not bare sh(): a runner that raises instead of answering
+        # — or answers a wrong shape / an iteration bomb — used to blow the
+        # unpack itself, one seam before every guard below.
+        rc, out, err = _spawn(args, timeout)
         # _rc_int before any probe: an rc-subclass ``__eq__``/``__ne__``
         # bomb from a poisoned runner used to detonate the bare
         # ``rc != 0`` below (and every caller's ``"ok": rc == 0`` result

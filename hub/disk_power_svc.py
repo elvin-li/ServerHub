@@ -115,6 +115,60 @@ def _rc_int(rc) -> int:
     return rc
 
 
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and the bare
+    ``rc, out, err = sh(...)`` unpack dispatched into the answer's own
+    iteration: a tuple *subclass* whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple over no real sequence
+    storage, or a wrong-arity answer — detonated the sleep/eject/wake legs
+    themselves, one seam before the ``_rc_int`` guards storage10 built
+    (raw 500s on POST /api/storage/disks/{id}/power where the degraded
+    ``ok: false`` body is the contract; the vms11/network10 ``_sh3``
+    rule).  The unbound base reads see the real C-level storage, so an
+    honest answer in a subclass wrapper survives untouched; junk degrades
+    to ``(-255, "", "")`` — nonzero, and never ``sh``'s ``-1`` sentinel,
+    so an unusable answer cannot forge the vanished-diskutil 503 either.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except Exception:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except Exception:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering 500'd every sleep/eject/wake leg bare (the vms11
+    runner-seam rule) and cost ``_power_state`` its whole disk row through
+    ``_describe_disk``'s catch where "idle" is the honest unknown.  A
+    raising runner reads as ``(-255, "", "")``: nonzero — a runner that
+    cannot answer is not consent to claim success — with empty streams, so
+    it can match no vanished-CLI marker.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _text(value) -> str:
     """Plist display field as a JSON-safe string.
 
@@ -393,7 +447,7 @@ def _power_state(disk_id: str, volumes: list, info: dict, probe: bool = True) ->
         # Unmounted but present, no spin state to discover.
         return "idle"
     # smartctl check power mode
-    rc, out, err = sh(["/usr/bin/sudo", "-n", SMARTCTL, "-n", "standby", node], timeout=_DISKUTIL_TIMEOUT)
+    rc, out, err = _spawn(["/usr/bin/sudo", "-n", SMARTCTL, "-n", "standby", node], _DISKUTIL_TIMEOUT)
     # _rc_int: an rc-subclass ``__eq__`` bomb on this probe used to raise
     # out of _describe_disk and cost the whole disk row, where an unknown
     # power state degrades to "idle".
@@ -528,7 +582,7 @@ def _describe_disk(disk_id: str) -> dict | None:
         # Last-resort: ask smartctl (only for external non-system disks, avoids
         # the cost for internal disks where diskutil always answers).
         if ssd is None and not system and not internal:
-            rc_s, out_s, _ = sh([SMARTCTL, "-a", node], timeout=8)
+            rc_s, out_s, _ = _spawn([SMARTCTL, "-a", node], 8)
             out_s = _text(out_s)
             # _rc_int: an rc-subclass bomb on the membership probe used to
             # cost the whole disk row for one optional SSD hint.
@@ -735,13 +789,14 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     log = []
 
     # 1) Always unmount first (safe, keeps device node for wake)
-    rc, out, err = sh(["/usr/sbin/diskutil", "unmountDisk", "force", node], timeout=60)
-    # _rc_int on every leg below: an rc-subclass ``__eq__``/``__ne__`` bomb
-    # from a poisoned runner used to detonate the bare ``rc != 0`` /
-    # ``rc == 0`` probes, and a >4300-digit already-int rc ValueError'd the
-    # ``rc={rc}`` f-string itself — each a raw 500 on
-    # POST /api/storage/disks/{id}/power where the degraded ``ok: false``
-    # body is the contract.
+    rc, out, err = _spawn(["/usr/sbin/diskutil", "unmountDisk", "force", node], 60)
+    # _spawn as well as _rc_int on every leg below: an rc-subclass
+    # ``__eq__``/``__ne__`` bomb from a poisoned runner used to detonate
+    # the bare ``rc != 0`` / ``rc == 0`` probes, a >4300-digit already-int
+    # rc ValueError'd the ``rc={rc}`` f-string itself, and a runner that
+    # raises — or answers a wrong shape — blew the unpack one seam earlier
+    # — each a raw 500 on POST /api/storage/disks/{id}/power where the
+    # degraded ``ok: false`` body is the contract.
     rc, out, err = _rc_int(rc), _text(out), _text(err)
     log.append(f"unmountDisk: rc={rc} {(out or err)[:200]}")
     # This module mutates the very mount state disk_manage_svc caches, so its
@@ -771,7 +826,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     # 2) Explicit eject only when requested (USB 机械盘彻底停转/安全移除)
     #    注意：内置 SD 读卡器 eject 后设备节点会消失，无法软件唤醒，故 sleep 不做 eject
     if mode == "eject":
-        rc2, out2, err2 = sh(["/usr/sbin/diskutil", "eject", node], timeout=60)
+        rc2, out2, err2 = _spawn(["/usr/sbin/diskutil", "eject", node], 60)
         rc2, out2, err2 = _rc_int(rc2), _text(out2), _text(err2)
         log.append(f"eject: rc={rc2} {(out2 or err2)[:200]}")
         # Eject removes the device node entirely, which is a second state change
@@ -794,9 +849,9 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
         }
 
     # 3) ATA/SATA/USB HDD: try SMART standby (spin down, keep device)
-    rc3, out3, err3 = sh(
+    rc3, out3, err3 = _spawn(
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,now", node],
-        timeout=20,
+        20,
     )
     rc3, out3, err3 = _rc_int(rc3), _text(out3), _text(err3)
     log.append(f"smartctl standby: rc={rc3} {(out3 or err3)[:200]}")
@@ -833,8 +888,10 @@ def wake_disk(disk_id: str) -> dict:
 
     # If disk node gone after eject, user must re-plug
     if not _dev_exists(node):
-        # try diskutil list to refresh
-        sh(["/usr/sbin/diskutil", "list"], timeout=10)
+        # try diskutil list to refresh.  _spawn even though the answer is
+        # discarded: a raising runner used to 500 the wake here, before
+        # the re-probe it exists to refresh.
+        _spawn(["/usr/sbin/diskutil", "list"], 10)
         if not _dev_exists(node):
             return {
                 "ok": False,
@@ -846,23 +903,23 @@ def wake_disk(disk_id: str) -> dict:
 
     # gentle spin-up: read first sector (may need raw device)
     rdev = node.replace("/dev/disk", "/dev/rdisk")
-    rc0, out0, err0 = sh(
+    rc0, out0, err0 = _spawn(
         ["/bin/dd", f"if={rdev}", "of=/dev/null", "bs=512", "count=1"],
-        timeout=30,
+        30,
     )
-    # _rc_int on every leg — the sleep_disk rc-bomb / over-cap f-string
-    # note applies to each wake step the same way.
+    # _spawn + _rc_int on every leg — the sleep_disk rc-bomb / over-cap
+    # f-string / raising-runner note applies to each wake step the same way.
     log.append(f"dd spin-up: rc={_rc_int(rc0)} {(_text(err0) or _text(out0))[:120]}")
 
     # exit standby via smartctl if possible
-    rc1, out1, err1 = sh(
+    rc1, out1, err1 = _spawn(
         ["/usr/bin/sudo", "-n", SMARTCTL, "-s", "standby,off", node],
-        timeout=15,
+        15,
     )
     log.append(f"smartctl standby off: rc={_rc_int(rc1)} {(_text(out1) or _text(err1))[:120]}")
 
     time.sleep(0.5)
-    rc2, out2, err2 = sh(["/usr/sbin/diskutil", "mountDisk", node], timeout=90)
+    rc2, out2, err2 = _spawn(["/usr/sbin/diskutil", "mountDisk", node], 90)
     rc2, out2, err2 = _rc_int(rc2), _text(out2), _text(err2)
     log.append(f"mountDisk: rc={rc2} {(out2 or err2)[:200]}")
     # Waking remounts the volumes, so every cached `diskutil info` entry for this
