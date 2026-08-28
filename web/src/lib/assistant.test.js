@@ -22,6 +22,12 @@ describe('matchCatalog', () => {
   it('returns nothing for an empty needle', () => {
     expect(matchCatalog(panels, '   ')).toEqual([])
   })
+
+  it('does not throw when aliases is a leftover mapping', () => {
+    const hostile = [{ id: 'logs', path: '/logs', title: 'Logs', aliases: { 0: 'syslog' } }]
+    expect(matchCatalog(hostile, 'syslog')).toEqual([])
+    expect(matchCatalog(hostile, 'logs')[0].id).toBe('logs')
+  })
 })
 
 describe('openAssistant', () => {

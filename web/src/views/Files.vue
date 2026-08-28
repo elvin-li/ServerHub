@@ -136,7 +136,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
-import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtTs } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -295,7 +295,7 @@ function toggleSel(path) {
 
 function toggleAll(e) {
   if (e.target.checked) {
-    selected.value = (listing.value?.items || []).map(i => i.path)
+    selected.value = asArray(listing.value?.items).map(i => i.path)
   } else {
     selected.value = []
   }

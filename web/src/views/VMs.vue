@@ -44,7 +44,7 @@
         </div>
         <div class="vm-detail">{{ finiteText(v.detail) }}</div>
         <div v-if="v.ips?.length" class="mono" style="font-size:11px;margin-bottom:6px">
-          IP: {{ (v.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}
+          IP: {{ asArray(v.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}
         </div>
         <div v-if="v.backend === 'orb'" class="console-note">
           {{ t('vms.console_unavailable_orbstack') }}
@@ -320,7 +320,7 @@ async function act(v, action) {
     const j = requireOk(await vmAction(v.id, { action, force: action !== 'stop' }))
     if (generation !== loadGeneration || !pageAlive) return
     msg.value = finiteText(j.message, '')
-    if (j.ips) msg.value = t('vms.ip_result', { ips: (j.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
+    if (j.ips) msg.value = t('vms.ip_result', { ips: asArray(j.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
     toast(`✅ ${labels.value[action] || action}`)
     scheduleRefresh(action === 'restart' ? 3000 : 1000)
   } catch (e) {

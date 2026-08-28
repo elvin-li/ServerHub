@@ -74,9 +74,9 @@
         </ul>
       </section>
 
-      <section class="drawer-sec" v-if="(service.env_sample || []).length">
+      <section class="drawer-sec" v-if="asArray(service.env_sample).length">
         <h3>{{ t('services.sec_env') }}</h3>
-        <pre class="log mini-log">{{ (service.env_sample || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
+        <pre class="log mini-log">{{ asArray(service.env_sample).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
       </section>
 
       <section class="drawer-sec" v-if="service.launchctl">
@@ -203,7 +203,7 @@ import { computed, inject, onUnmounted, reactive, ref, watch } from 'vue'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { portOf, serviceLabels, signatureOf, stateChipClass } from '../lib/serviceActions'
 import ServiceActions from './ServiceActions.vue'
 
@@ -258,7 +258,7 @@ function resetForms() {
   adoptForm.name = ad.name || ''
   adoptForm.group = ad.group || ''
   adoptForm.url = ad.url || ''
-  adoptForm.ports = (ad.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
+  adoptForm.ports = asArray(ad.ports).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
   adoptForm.start = ad.start || ''
   adoptForm.stop = ad.stop || ''
   adoptForm.control_via = ad.control_via || ''
@@ -268,7 +268,7 @@ function resetForms() {
   scriptForm.name = sc.name || d.name || ''
   scriptForm.group = sc.group || d.group || ''
   scriptForm.url = sc.url || d.url || ''
-  scriptForm.ports = (sc.ports || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
+  scriptForm.ports = asArray(sc.ports).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
   scriptForm.start = sc.start || ''
   scriptForm.stop = sc.stop || ''
 }

@@ -92,16 +92,16 @@
 
           <div class="app-meta">
             <span class="cat-tag">{{ catLabel(tpl.category) }}</span>
-            <span v-for="tg in (tpl.tags || []).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
+            <span v-for="tg in asArray(tpl.tags).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
           </div>
 
           <p class="app-desc">{{ finiteText(tpl.desc) }}</p>
 
-          <div v-if="(tpl.ports || []).length" class="app-ports mono">
-            ports: {{ (tpl.ports || []).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
+          <div v-if="asArray(tpl.ports).length" class="app-ports mono">
+            ports: {{ asArray(tpl.ports).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
           </div>
-          <div v-if="(tpl.images || []).length" class="app-images mono" :title="(tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
-            {{ (tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ (tpl.images || []).length > 2 ? '…' : '' }}
+          <div v-if="asArray(tpl.images).length" class="app-images mono" :title="asArray(tpl.images).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
+            {{ asArray(tpl.images).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ asArray(tpl.images).length > 2 ? '…' : '' }}
           </div>
           <div v-if="tpl.package" class="app-ports mono">brew: {{ finiteText(tpl.package) }}</div>
           <div v-if="catalogOpenUrl(tpl)" class="app-ports mono">{{ catalogOpenUrl(tpl) }}</div>
@@ -218,7 +218,7 @@
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
                 <div class="show-m sub-line">{{ kindLabel(it.kind) }}</div>
-                <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="finiteText(it.ports_summary, '') || asArray(it.ips).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || asArray(it.ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
                 <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
                 <div class="show-m" @click.stop>
                   <!-- Named after the app: a column of switches all announced as
@@ -243,7 +243,7 @@
                   {{ stateLabel(it.state) }}
                 </span>
               </td>
-              <td class="mono ports-cell col-hide-m">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono ports-cell col-hide-m">{{ finiteText(it.ports_summary, '') || asArray(it.ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="col-hide-m" @click.stop>
                 <MacSwitch
                   v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
@@ -640,12 +640,12 @@
 
         <section class="drawer-sec" v-if="(detail.ips||[]).length">
           <h3>VM IP</h3>
-          <div class="mono">{{ (detail.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
+          <div class="mono">{{ asArray(detail.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
         </section>
 
         <section class="drawer-sec" v-if="(detail.env_sample||[]).length">
           <h3>Env</h3>
-          <pre class="env-pre">{{ (detail.env_sample || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
+          <pre class="env-pre">{{ asArray(detail.env_sample).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
         </section>
 
         <section class="drawer-sec" v-if="detail.notes">
@@ -669,9 +669,9 @@
         <!-- Elevated-access compose directives found when the remote template
              was synced: accepted (the admin's source choice is the trust
              root), but never silently. -->
-        <div v-if="(installTpl.compose_warnings || []).length" class="tpl-danger" role="alert">
+        <div v-if="asArray(installTpl.compose_warnings).length" class="tpl-danger" role="alert">
           <strong>{{ t('catalog_remote.warn_title') }}</strong>
-          {{ (installTpl.compose_warnings || []).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
+          {{ asArray(installTpl.compose_warnings).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
         </div>
         <p v-if="installTpl.source === 'remote' && installTpl.builtin_available" class="tpl-danger" role="alert">
           {{ t('catalog_remote.overrides_builtin_note') }}
@@ -1107,7 +1107,7 @@ function catalogOpenUrl(tpl) {
   const ut = finiteText(tpl.url_template, '')
   if (!ut) {
     // ports-only fallback for web-ish services
-    const ports = tpl.ports || []
+    const ports = asArray(tpl.ports)
     for (const p of ports) {
       const ps = String(p).split('/')[0]
       if (/^\d+$/.test(ps) && !['1883', '5432', '6379', '3306', '5900', '9100', '22000', '53'].includes(ps)) {

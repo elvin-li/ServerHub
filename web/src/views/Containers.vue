@@ -445,7 +445,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -600,7 +600,7 @@ function shortPath(p) {
   return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : s
 }
 function mountTitle(c) {
-  return (c.mounts || []).map(m => `${finiteText(m.src)} → ${finiteText(m.dst)}`).join('\n')
+  return asArray(c.mounts).map(m => `${finiteText(m.src)} → ${finiteText(m.dst)}`).join('\n')
 }
 function cpuNum(s) {
   if (!s) return null

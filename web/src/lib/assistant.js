@@ -1,3 +1,5 @@
+import { asArray } from './finite'
+
 /** Shell event: open the AI drawer from any page (Dashboard, etc.). */
 export const ASSISTANT_EVENT = 'serverhub:assistant'
 
@@ -17,7 +19,7 @@ export function matchCatalog(panels, query, limit = 6) {
   for (const panel of panels) {
     const title = String(panel.title || '').toLowerCase()
     const path = String(panel.path || '').toLowerCase()
-    const aliases = (panel.aliases || []).map((alias) => String(alias).toLowerCase())
+    const aliases = asArray(panel.aliases).map((alias) => String(alias).toLowerCase())
     let score = 0
     if (title === needle || panel.id === needle || path === needle || path === `/${needle}`) {
       score = 100
