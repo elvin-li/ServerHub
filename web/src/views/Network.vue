@@ -784,8 +784,18 @@ function priorityStatusKey(s) {
   return 'network.on'
 }
 
+function cloneServiceOrder(raw) {
+  if (!Array.isArray(raw)) return []
+  try {
+    const cloned = JSON.parse(JSON.stringify(raw))
+    return Array.isArray(cloned) ? cloned : []
+  } catch {
+    return []
+  }
+}
+
 function syncOrderFromData() {
-  orderList.value = JSON.parse(JSON.stringify(data.value?.services || []))
+  orderList.value = cloneServiceOrder(data.value?.services)
 }
 function resetOrderFromData() {
   syncOrderFromData()
