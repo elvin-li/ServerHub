@@ -30,6 +30,16 @@ LOG_TOTAL_CAP = 512 * 1024
 JOB_TIMEOUT_DEFAULT = 600
 JOB_TIMEOUT_MAX = 24 * 3600
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the nas13/modules12/logs12/json13 convention): swallowing a Ctrl-C or
+#: an interpreter shutdown to save one listing field would turn the
+#: sanitizer into a hang.  Everything else BaseException-shaped that a
+#: leftover raises out of its own hooks is a bomb like any other — the
+#: maint12 guards along the GET /api/maintenance pipe all stopped at
+#: ``except Exception``, so one such leftover sailed past every catch in
+#: the listing at once.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _isinst(value, types) -> bool:
     """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
@@ -43,10 +53,19 @@ def _isinst(value, types) -> bool:
     A lying ``__class__`` (answers ``int``) is *not* an error and still
     reports its claim here; the numeric arms' unbound base coercion then
     drops it, exactly as before.
+
+    ``except BaseException``: this gate is what every other guard in the
+    listing pipe stands on, and it stopped at ``Exception`` — a leftover
+    whose ``__class__`` property raises a *BaseException* subclass (the
+    nas13/modules12 watchdog shape) detonated the gate itself and rode raw
+    out of GET /api/maintenance past every net downstream.  Only genuine
+    control flow keeps propagating.
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -209,7 +228,13 @@ def _plain_dict(value) -> dict | None:
     if _isinst(value, dict):
         try:
             return dict(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A liar whose ``__class__`` merely answers dict has no C-level
+            # storage, so ``dict()`` falls back to its keys()/__iter__ hooks
+            # — and a hook raising a BaseException subclass used to sail
+            # past the old ``except Exception`` and 500 the listing.
             return None
     return None
 
@@ -233,10 +258,14 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raise can only come from a poisoned stored key (or a liar whose
         # ``__class__`` merely answers dict, which the unbound descriptor
-        # refuses): the field is junk-shadowed either way.
+        # refuses): the field is junk-shadowed either way.  BaseException
+        # too: a shadow key whose ``__eq__`` raises a BaseException subclass
+        # used to escape the old net and 500 GET /api/maintenance.
         return default
 
 
@@ -244,11 +273,16 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
     Fails closed to False: a bomb row is junk, not a live job, so treating
-    it as "running" would wedge the single-runner mutex forever.
+    it as "running" would wedge the single-runner mutex forever.  A
+    ``__bool__`` bomb raising a BaseException subclass (a leftover ``running``
+    value in a ``_jobs`` row) used to escape the old ``except Exception``
+    and 500 GET /api/maintenance through job_state.
     """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -257,7 +291,9 @@ def _decode_bytes(value) -> str:
     base = bytes if _isinst(value, bytes) else bytearray
     try:
         return base.decode(value, "utf-8", "replace")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A liar whose ``__class__`` *answers* bytes passes the callers'
         # _isinst gates but is not really bytes: the unbound descriptor
         # refuses it with TypeError, which used to ride out of _jsonable's
@@ -287,13 +323,22 @@ def _utf8_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # ``__str__`` bombs raising a BaseException subclass (a leftover
+            # task name) used to escape the old ``except Exception`` here
+            # and 500 GET /api/maintenance from _jsonable's fallback arm.
             return ""
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -323,7 +368,9 @@ def _jsonable(value, depth: int = 0):
                 # (only ValueError was caught) and 500 GET /api/maintenance
                 # — the modules5 unbound convention.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -339,7 +386,9 @@ def _jsonable(value, depth: int = 0):
                 # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf
                 # probes below and 500 GET /api/maintenance.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -358,27 +407,36 @@ def _jsonable(value, depth: int = 0):
             # cannot fire (same guard as metrics/sensors _jsonable).
             try:
                 value = dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         out = {}
         for k, v in value.items():
             if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if _isinst(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
-        except Exception:
-            # Leftover sequence subclass whose __iter__ raises.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Leftover sequence subclass whose __iter__ raises — a
+            # BaseException-subclass raise used to escape the old net.
             return None
         return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
@@ -387,11 +445,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/maintenance.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -434,7 +496,9 @@ def _task_id(raw) -> str:
             # raised anything but the digit-cap ValueError used to 500
             # GET /api/maintenance for every task.
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         return str(raw)
@@ -453,12 +517,19 @@ def maintenance_tasks():
     # C-level storage underneath the override.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A snapshot provider raising a BaseException subclass (the nas13
+        # watchdog shape) used to sail past the old ``except Exception``
+        # and 500 GET /api/maintenance and the run route's task walk.
         data = None
     if _isinst(data, dict):
         try:
             raw = dict.get(data, "maintenance")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # The unbound builtin is a descriptor bound to the real dict
             # layout: a liar whose ``__class__`` merely *answers* dict (the
             # modules9 impostor class — real type is no dict at all) passes
@@ -472,9 +543,13 @@ def maintenance_tasks():
     if _isinst(raw, list):
         try:
             # list() through the C storage: a leftover list-subclass whose
-            # __iter__ raises used to 500 GET /api/maintenance.
+            # __iter__ raises used to 500 GET /api/maintenance — and one
+            # raising a BaseException subclass kept doing so past the old
+            # ``except Exception``.
             rows = list(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     else:
         rows = []
@@ -527,11 +602,18 @@ def _jobs_row(tid: str):
     """
     try:
         return dict.get(_jobs, tid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A stored bomb key whose ``__eq__`` raises a BaseException subclass
+        # used to escape the old ``except Exception`` and 500 the listing
+        # before the rescue scan below ever ran.
         pass
     try:
         items = list(dict.items(_jobs))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Not really a dict (the modules9 impostor class): there is no
         # C-level storage to read, so there is no row to find.
         return None
@@ -540,7 +622,9 @@ def _jobs_row(tid: str):
             continue
         try:
             same = str.__eq__(k, tid)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A liar whose ``__class__`` *answers* str (the modules9
             # impostor class — real type is no str at all) passes the
             # _isinst gate above, and the unbound descriptor then
@@ -663,15 +747,31 @@ def maintenance_view() -> list:
     default, ``_truthy`` fails a ``__bool__``-bomb closed, and ``_jsonable``
     launders the whole entry before it reaches Starlette's encoder.  A row
     that cannot answer anything but its id still lists under that id.
+
+    maint13: every guard along this pipe stopped at ``except Exception``, so
+    a leftover whose hook raises a *BaseException* subclass (the
+    nas13/modules12 watchdog shape) sailed past all of them at once — a
+    ``__class__`` bomb blew ``_isinst`` (the gate every arm stands on), an
+    ``__eq__`` bomb blew ``_mapping_get`` / ``_jobs_row``, ``__bool__`` blew
+    ``_truthy`` under job_state's merge, ``__str__`` / ``__iter__`` blew
+    ``_utf8_text`` / ``_jsonable`` / the row materialisers, and a raising
+    cfg() blew ``maintenance_tasks`` — each a raw 500 on GET /api/maintenance.
+    Every guard now re-raises genuine control flow (KeyboardInterrupt,
+    SystemExit) and launders everything else BaseException-shaped exactly
+    like its Exception twin.
     """
     out: list = []
     try:
         tasks = maintenance_tasks()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return out
     try:
         items = list(dict.items(tasks)) if _isinst(tasks, dict) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         items = []
     for tid, task in items:
         if not _isinst(tid, str):
