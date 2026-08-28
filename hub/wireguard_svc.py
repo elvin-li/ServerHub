@@ -800,7 +800,26 @@ def _binary_version(binary: str) -> str:
 def installation() -> dict:
     """Which WireGuard pieces are present, and their versions."""
     # Two unrelated binaries; on a cold cache they answer in one wave instead of two.
-    tools, userspace = fan_out(_binary_version, [WG, WIREGUARD_GO], max_workers=2)
+    #
+    # Guarded unpack (the _sh_answer rule): this probe does not own the
+    # pool — tests and tooling patch ``fan_out`` — and a junk-shaped answer
+    # (None, a bare string, a 1- or 3-list, a pool that raises) used to
+    # blow the bare 2-way unpack: a raw 500 on GET /api/wireguard and GET
+    # /api/wireguard/settings, and — through the route guard's
+    # ``installation()`` call — on every mutation before validation ran.
+    # Junk reads as two empty version strings; presence stays decided by
+    # the on-disk probes below, exactly as before.
+    tools = userspace = ""
+    try:
+        answers = list(fan_out(_binary_version, [WG, WIREGUARD_GO], max_workers=2))
+        if len(answers) == 2:
+            # str-gated (the provider contract: _binary_version answers
+            # text): a right-length pair of non-text junk must read as no
+            # version, not leak a repr into the snapshot.
+            tools = _as_text(answers[0]) if _isa(answers[0], str) else ""
+            userspace = _as_text(answers[1]) if _isa(answers[1], str) else ""
+    except Exception:
+        tools = userspace = ""
     # Presence is decided by the binaries being on disk, not by a subprocess
     # succeeding.  Deriving it from `wg --version` meant any transient failure of
     # that probe -- a timeout under load, a stray non-zero exit -- reported
@@ -1574,9 +1593,74 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
     return device, grouped[device], ""
 
 
+def _live_answer(interface) -> tuple[str, list, str]:
+    """``(device, rows, error)`` from :func:`live_interface`; junk never raises.
+
+    The :func:`_sh_answer` rule on the resolution seam: neither consumer
+    owns the resolver — tests and tooling patch ``live_interface`` — and
+    the bare ``device, rows, error = live_interface(...)`` unpack detonated
+    on any answer that is not a 3-sequence (None, a bare string, a 2- or
+    4-tuple, a tuple-liar whose ``__iter__`` refuses, or a resolver that
+    raises outright): a raw 500 on GET /api/wireguard (:func:`_dump` under
+    ``status``) and POST /api/wireguard/sync (:func:`apply_live`), plus
+    every peer mutation's apply step after the change had already been
+    persisted.
+
+    A junk answer reads as ``("", [], "")`` — no device, so ``status``
+    reports not-running and ``apply_live`` answers its honest
+    ``not_running`` no-op instead of pointing ``wg syncconf`` at garbage.
+    The device launders through :func:`_as_text` (it is spawned into an
+    argv and echoed into the JSON body) and the rows keep only list/tuple
+    entries copied through the unbound base ``__iter__`` — ``status``'s
+    ``len(head)`` / ``row[7]`` reads run on exact lists, and each field
+    stays individually laundered at use, exactly as before.
+    """
+    try:
+        answer = live_interface(interface)
+    except Exception:
+        return "", [], ""
+    fields = None
+    if _isa(answer, tuple):
+        try:
+            fields = list(tuple.__iter__(answer))
+        except Exception:
+            fields = None
+    elif _isa(answer, list):
+        try:
+            fields = list(list.__iter__(answer))
+        except Exception:
+            fields = None
+    if fields is None or len(fields) != 3:
+        return "", [], ""
+    raw_rows = fields[1]
+    entries = None
+    if _isa(raw_rows, list):
+        try:
+            entries = list(list.__iter__(raw_rows))
+        except Exception:
+            entries = None
+    elif _isa(raw_rows, tuple):
+        try:
+            entries = list(tuple.__iter__(raw_rows))
+        except Exception:
+            entries = None
+    rows: list[list] = []
+    for row in entries or []:
+        if not _isa(row, (list, tuple)):
+            continue
+        try:
+            row = list(list.__iter__(row) if _isa(row, list) else tuple.__iter__(row))
+        except Exception:
+            continue
+        rows.append(row)
+    return _as_text(fields[0]).strip(), rows, _as_text(fields[2])
+
+
 def _dump(interface: str) -> tuple[bool, list[list[str]], str]:
     """``(running, rows, error)``, the shape :func:`status` consumes."""
-    device, rows, error = live_interface(interface)
+    # _live_answer: a junk-shaped resolver answer used to blow the bare
+    # 3-way unpack here — a raw 500 on every GET /api/wireguard poll.
+    device, rows, error = _live_answer(interface)
     return bool(device), rows, error
 
 
@@ -1606,7 +1690,23 @@ def status(force: bool = False) -> dict:
     del force  # state is cheap; the poll interval is the throttle
     cfg_ = settings()
     interface = cfg_["interface"]
-    install = installation()
+    # Exact-dict launder + _mapping_get (the _conf_interface rule): this
+    # read does not own its snapshot — tests and tooling patch
+    # ``installation`` — and the bare ``install["installed"]`` pull below
+    # used to KeyError on a partial snapshot (and a hash-shadow "installed"
+    # key detonated the probe loop) — a raw 500 on every GET /api/wireguard
+    # poll.  A junk snapshot reads as not-installed with the shape intact.
+    try:
+        install = installation()
+    except Exception:
+        install = None
+    if _isa(install, dict):
+        try:
+            install = dict(install)
+        except Exception:
+            install = {}
+    else:
+        install = {}
     # This walk does not own the provider (tests and tooling patch
     # ``peer_records``, the :func:`_ping_targets` rule): a listing that
     # raises, a list subclass whose ``__iter__`` bombs, or a junk row must
@@ -1741,7 +1841,9 @@ def status(force: bool = False) -> dict:
 
     return {
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
-        "installed": install["installed"],
+        # _truthy + _mapping_get: the bare index KeyError'd a partial
+        # snapshot, and a ``__bool__``-bomb flag must cost only itself.
+        "installed": _truthy(_mapping_get(install, "installed")),
         "install": install,
         "interface": _as_text(interface),
         "running": up,
@@ -1879,17 +1981,47 @@ def _write_conf(peers: list[dict]) -> Path:
 
 
 def _peers_for_write() -> list[dict]:
-    """Current peers in the shape :func:`render_conf` expects."""
-    return [
-        {
-            "public_key": record["public_key"],
-            "ip": record["ip"],
-            "preshared_key": record["preshared_key"],
-            "name": record["name"],
-            "keepalive": record["keepalive"],
-        }
-        for record in peer_records()
-    ]
+    """Current peers in the shape :func:`render_conf` expects.
+
+    The *write-path* twin of the wg11 read-path launders.  This walk does
+    not own its provider (tests and tooling patch ``peer_records``), and the
+    bare ``record["public_key"]`` indexing detonated on every shape the
+    listing seams already absorb: a partial row KeyError'd, a hash-shadow
+    stored key (hash collides with "public_key"/"ip", ``__eq__`` raises)
+    blew the C-level probe loop, and a dict-subclass row bombed its own
+    ``__getitem__`` — a raw 500 on POST /api/wireguard/peers, /peers/batch,
+    /peers/delete, /peers/import and /peers/psk before any validation or
+    coded error could answer.
+
+    The membership probes downstream had the same hole one token later:
+    :func:`del_peer`'s ``p["public_key"] != public`` ran a stored value's
+    reflected ``__ne__``, :func:`import_peer`'s set build hashed it, and
+    :func:`toggle_psk`'s ``==`` scan compared it.  ``_as_text`` here means
+    every row leaves as exact strings, so those probes can no longer
+    dispatch into a leftover's own methods.
+
+    A row with no laundered public key drops (the :func:`peer_records`
+    rule — such a row could never round-trip through the conf anyway); a
+    junk listing reads as empty and the mutation answers its coded 404
+    instead of a raw 500.
+    """
+    try:
+        rows = _plain_rows(peer_records())
+    except Exception:
+        rows = []
+    peers = []
+    for record in rows:
+        public = _as_text(_mapping_get(record, "public_key")).strip()
+        if not public:
+            continue
+        peers.append({
+            "public_key": public,
+            "ip": _as_text(_mapping_get(record, "ip")).strip(),
+            "preshared_key": _as_text(_mapping_get(record, "preshared_key")).strip(),
+            "name": _as_text(_mapping_get(record, "name")),
+            "keepalive": _as_text(_mapping_get(record, "keepalive")).strip(),
+        })
+    return peers
 
 
 def client_allowed_ips(mode: str) -> str:
@@ -1963,6 +2095,33 @@ def build_client_conf(
 
 # ── peer operations ──────────────────────────────────────────────────────────
 
+def _apply_after_write() -> bool:
+    """Whether the post-write apply step confirmed the change went live.
+
+    None of the peer mutations own the apply step's answer — tests and
+    tooling patch ``apply_live`` — and the bare ``apply_live().get("ok",
+    False)`` reads in :func:`add_peer` / :func:`batch_add` detonated on any
+    junk answer (None, a bare string, a dict-subclass whose ``.get`` bombs,
+    a lying-``__class__`` impostor, a hash-shadow "ok" key, or an
+    apply step that raises outright): a raw 500 on POST
+    /api/wireguard/peers and /peers/batch *after the peer was already
+    persisted*, so the operator got an error page for a create that
+    succeeded.  :func:`del_peer` / :func:`import_peer` / :func:`toggle_psk`
+    ignore the answer but still 500'd when a patched apply step raised —
+    the same lie about a mutation that was already on disk.
+
+    A junk answer reads as "not applied": the honest degrade these routes
+    already report when the interface is down.  POST /api/wireguard/sync
+    keeps calling :func:`apply_live` directly, so its coded
+    ``wg.sync_failed`` mapping is untouched.
+    """
+    try:
+        result = apply_live()
+    except Exception:
+        return False
+    return _truthy(_mapping_get(result, "ok"))
+
+
 def add_peer(
     *,
     name: str,
@@ -1994,8 +2153,9 @@ def add_peer(
         registry["peers"][entry["public_key"]] = meta
         _save_registry(registry)
 
-    apply_result = apply_live()
-    result["applied"] = apply_result.get("ok", False)
+    # _apply_after_write: a junk apply answer used to 500 this route after
+    # the peer was already persisted.
+    result["applied"] = _apply_after_write()
     return result
 
 
@@ -2102,7 +2262,9 @@ def batch_add(
 
         _write_conf(peers)
         _save_registry(registry)
-    applied = apply_live().get("ok", False)
+    # _apply_after_write: the bare ``.get`` on a junk apply answer used to
+    # 500 the batch after every peer was already persisted.
+    applied = _apply_after_write()
     for result in created:
         result["applied"] = applied
     return {"ok": True, "created": len(created), "peers": _batch_payload(created)}
@@ -2156,7 +2318,9 @@ def del_peer(pubkey: str) -> dict:
         registry["peers"].pop(public, None)
         _save_registry(registry)
 
-    apply_live()
+    # _apply_after_write: a raising patched apply step used to 500 this
+    # route after the peer was already removed from disk.
+    _apply_after_write()
     return {"ok": True, "pubkey": public, "remaining": len(remaining)}
 
 
@@ -2201,7 +2365,7 @@ def import_peer(*, pubkey: str, ip: str, name: str = "", psk: str = "") -> dict:
             **({"preshared_key": preshared} if preshared else {}),
         }
         _save_registry(registry)
-    apply_live()
+    _apply_after_write()
     return {"ok": True, "pubkey": public, "ip": address, "name": label}
 
 
@@ -2244,7 +2408,7 @@ def toggle_psk(*, pubkey: str, op: str) -> dict:
                 entry.pop("preshared_key", None)
             _save_registry(registry)
 
-    apply_live()
+    _apply_after_write()
     return {"ok": True, "pubkey": public, "psk": preshared, "op": action}
 
 
@@ -2380,7 +2544,10 @@ def apply_live() -> dict:
     # `wg` addresses the kernel-assigned device, not the wg-quick name.  Passing
     # the friendly name made every sync fail, so a peer added through the panel
     # landed in the file and never in the running tunnel until a full restart.
-    device, _, _ = live_interface(interface)
+    # _live_answer: a junk-shaped resolver answer used to blow this bare
+    # unpack — a raw 500 on POST /api/wireguard/sync and on every peer
+    # mutation's apply step; junk now reads as "not running".
+    device, _, _ = _live_answer(interface)
     if not device:
         return {"ok": True, "applied": False, "reason": "not_running"}
 
@@ -2414,12 +2581,25 @@ def apply_live() -> dict:
     # the change was already persisted.  A bombed honest 0 is salvaged.
     if _ping_rc(rc) == 0:
         return {"ok": True, "applied": True, "device": device}
-    result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
-    if result.get("ok"):
+    # Guarded call + _mapping_get/_truthy (the raise_for_admin_result
+    # rule, applied at the seam): this retry does not own its helper —
+    # tests and tooling patch ``run_admin`` — and the bare
+    # ``result.get("ok")`` detonated on a junk answer (None, a bare
+    # string, a dict-subclass ``.get`` bomb, a helper that raises), while
+    # ``result.get("error") or ...`` ran a leftover error value's own
+    # reflected ``__bool__`` — a raw 500 on POST /api/wireguard/sync and
+    # on every peer mutation's apply step, in place of the coded
+    # ``wg.sync_failed``.  Junk reads as a failed sync; the error string
+    # leaves laundered so the route's JSON body cannot detonate either.
+    try:
+        result = run_admin([WG, "syncconf", device, str(staged)], timeout=120)
+    except Exception:
+        result = None
+    if _truthy(_mapping_get(result, "ok")):
         return {"ok": True, "applied": True, "device": device}
     return {
         "ok": False,
-        "error": result.get("error") or "sync_failed",
+        "error": _as_text(_mapping_get(result, "error")).strip() or "sync_failed",
         "detail": _as_text(err)[:200],
     }
 
@@ -2467,6 +2647,60 @@ def runtime_state(interface: str | None = None) -> dict:
 _WG_QUICK_TIMEOUT = 180
 
 
+def _runtime_view(state) -> tuple[bool, bool, str]:
+    """``(stale, live, name_file)`` from a runtime snapshot; junk never raises.
+
+    :func:`interface_action` does not own the snapshot — tests and tooling
+    patch ``runtime_state`` — and the bare ``state["stale"]`` /
+    ``state["live"]`` / ``state["name_file"]`` pulls detonated on a junk
+    answer (None, a partial dict, a dict-subclass ``__getitem__`` bomb, or
+    a hash-shadow stored key whose ``__eq__`` raises inside the probe
+    loop): a raw 500 on POST /api/wireguard/interface before the first
+    command ever spawned.  A junk snapshot reads as "not stale, not live,
+    no record" — the same conservative view an absent name file already
+    earns — so the action proceeds and wg-quick's own answer decides.
+    """
+    if _isa(state, dict):
+        try:
+            state = dict(state)
+        except Exception:
+            state = {}
+    else:
+        state = {}
+    return (
+        _truthy(_mapping_get(state, "stale")),
+        _truthy(_mapping_get(state, "live")),
+        _as_text(_mapping_get(state, "name_file")).strip(),
+    )
+
+
+def _admin_sequence_answer(commands, *, timeout: int) -> dict:
+    """A plain admin-result dict from :func:`run_admin_sequence`, junk-proof.
+
+    The escalation retry does not own its helper (tests and tooling patch
+    ``run_admin_sequence``), and its answer used to be returned verbatim:
+    a junk shape (None, a bare string, a hash-shadow "ok" key, a
+    ``__bool__``-bomb flag) rode straight into the route's audit read and
+    the admin-result funnel — a raw 500 on POST /api/wireguard/interface
+    in place of the coded refusal.  The rebuild keeps exactly the fields
+    the funnel consumes (``ok``/``error``/``message``) as exact types; an
+    honest ``{"ok": True}`` or coded refusal passes through unchanged and
+    junk reads as the generic coded failure.
+    """
+    try:
+        answer = run_admin_sequence(commands, timeout=timeout)
+    except Exception:
+        answer = None
+    result: dict = {"ok": _truthy(_mapping_get(answer, "ok"))}
+    for field in ("error", "message"):
+        text = _as_text(_mapping_get(answer, field)).strip()
+        if text:
+            result[field] = text[:300]
+    if not result["ok"] and "error" not in result:
+        result["error"] = "failed"
+    return result
+
+
 def interface_action(action: str) -> dict:
     """Bring the tunnel up, down, or cycle it."""
     verb = (action or "").strip().lower()
@@ -2486,15 +2720,24 @@ def interface_action(action: str) -> dict:
     # interface exists, and `down` cannot remove the record because the device it
     # names is gone.  Only done when nothing is actually serving the interface, so
     # a live tunnel is never orphaned by this.
-    state = runtime_state(settings()["interface"])
-    if verb in ("up", "restart") and state["stale"]:
-        commands.insert(0, [RM, "-f", state["name_file"]])
+    # _runtime_view (the snapshot-shape launder): the bare ``state[...]``
+    # pulls used to 500 this route on a junk or shadowed snapshot — and a
+    # patched provider that raises outright costs the same.  The cleanup is
+    # additionally gated on a non-empty record path, so a junk snapshot can
+    # never enqueue an ``rm -f`` with nothing behind it.
+    try:
+        snapshot = runtime_state(settings()["interface"])
+    except Exception:
+        snapshot = None
+    stale, live_now, name_file = _runtime_view(snapshot)
+    if verb in ("up", "restart") and stale and name_file:
+        commands.insert(0, [RM, "-f", name_file])
 
     # Asking for `up` on a tunnel that is already serving traffic is not a
     # failure, and it must not be treated as one: the previous code answered
     # wg-quick's "already exists" by tearing the interface down and bringing it
     # back, dropping every live session to reach a state that already held.
-    if verb == "up" and state["live"]:
+    if verb == "up" and live_now:
         return {"ok": True, "action": verb, "already_running": True}
 
     # sudo -n first so an operator with the packaged sudoers rule is not
@@ -2519,18 +2762,27 @@ def interface_action(action: str) -> dict:
         if _ping_rc(rc) == 0:
             continue
         if sudo_refused(_as_text(err)):
-            return run_admin_sequence(commands, timeout=_WG_QUICK_TIMEOUT + 60)
+            # _admin_sequence_answer: a junk helper answer used to ride
+            # verbatim into the route's audit read and 500 it.
+            return _admin_sequence_answer(commands, timeout=_WG_QUICK_TIMEOUT + 60)
         combined = (_as_text(err) + "\n" + _as_text(out)).strip()
         # A zombie claim can appear between the check above and this call (or the
         # record can name a device that has since gone).  One repair attempt,
         # only when nothing is serving the interface.
         if verb in ("up", "restart") and "already exists" in combined:
-            fresh = runtime_state(settings()["interface"])
-            if fresh["live"]:
+            # _runtime_view again: the mid-flight re-probe had the same
+            # bare ``fresh[...]`` pulls, one repair attempt later.
+            try:
+                fresh = runtime_state(settings()["interface"])
+            except Exception:
+                fresh = None
+            _, fresh_live, fresh_name = _runtime_view(fresh)
+            if fresh_live:
                 return {"ok": True, "action": verb, "already_running": True}
-            _sh_answer(
-                sh, ["/usr/bin/sudo", "-n", RM, "-f", fresh["name_file"]], timeout=20
-            )
+            if fresh_name:
+                _sh_answer(
+                    sh, ["/usr/bin/sudo", "-n", RM, "-f", fresh_name], timeout=20
+                )
             rc, out, err = _sh_answer(
                 sh, ["/usr/bin/sudo", "-n", *command], timeout=_WG_QUICK_TIMEOUT
             )
