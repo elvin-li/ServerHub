@@ -312,5 +312,18 @@ class StatusSurrogatePinTests(RemoteSandbox):
         _starlette(status)
 
 
+class CatalogRemoteJsonableLeftoverTests(unittest.TestCase):
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("catalog remote isoformat watchdog")
+
+        self.assertEqual(catalog_remote._jsonable(_IsoBomb()), "")
+
+
 if __name__ == "__main__":
     unittest.main()

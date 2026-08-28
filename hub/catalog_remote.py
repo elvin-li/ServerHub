@@ -252,7 +252,9 @@ def source_url() -> str:
     # not 500 GET /api/catalog/remote and every POST /api/catalog/remote/check.
     try:
         section = settings_section("catalog_remote")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Fail-closed _isinst gate + unbound dict.get in a try (the
     # config.settings_section convention): the bare bound ``section.get``
@@ -266,7 +268,9 @@ def source_url() -> str:
         return ""
     try:
         url = dict.get(section, "url")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if type(url) is not str:
         # _as_text, not bare str(): YAML hex/octal int spellings dodge the
@@ -389,7 +393,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -401,7 +407,9 @@ def _jsonable(value, depth: int = 0):
             # fire, and a lying ``__class__`` claiming dict rejects the copy.
             try:
                 value = dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         out = {}
         for k, v in value.items():
@@ -409,25 +417,33 @@ def _jsonable(value, depth: int = 0):
                 base = bytes if _isinst(k, bytes) else bytearray
                 try:
                     key = base.decode(k, "utf-8", "replace")
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A lying-``__class__`` key claiming bytes rejects the
                     # unbound decode — drop this entry, keep the siblings.
                     continue
             else:
                 try:
                     key = k if _isinst(k, str) else str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
                 key = str.encode(key, "utf-8", "replace").decode("utf-8")
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[key] = _jsonable(v, depth + 1)
         return out
     if _isinst(value, (list, tuple, set, frozenset)):
         try:
             items = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Leftover nested sequence subclass whose __iter__ raises, or a
             # lying ``__class__`` claiming a sequence it is not.
             return None
@@ -435,7 +451,9 @@ def _jsonable(value, depth: int = 0):
     if _isinst(value, str):
         try:
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` claiming str rejects the unbound encode.
             return None
     if _isinst(value, int):
@@ -445,7 +463,9 @@ def _jsonable(value, depth: int = 0):
                 # used to blow the digit-cap probe below (only ValueError
                 # was caught).
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -458,12 +478,16 @@ def _jsonable(value, depth: int = 0):
         base = bytes if _isinst(value, bytes) else bytearray
         try:
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` claiming bytes rejects the unbound decode.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
@@ -472,11 +496,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/catalog/remote.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
