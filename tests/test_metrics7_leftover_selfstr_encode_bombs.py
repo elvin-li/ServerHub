@@ -274,5 +274,30 @@ class HttpSurfaceStaysCoded(unittest.TestCase):
                     self.assertIsNotNone(body["latest"])
 
 
+class MetricsBaseExceptionNetTests(unittest.TestCase):
+    def test_sensors_snapshot_swallows_provider_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        def boom():
+            raise LeftoverWatchdogTimeout("sensors watchdog")
+
+        from hub import sensors_svc
+
+        with mock.patch.object(sensors_svc, "peek_sensors", boom):
+            self.assertIsNone(metrics._sensors_snapshot())
+
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class LeftoverWatchdogTimeout(BaseException):
+            pass
+
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("metrics isoformat watchdog")
+
+        self.assertEqual(metrics._jsonable(_IsoBomb()), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

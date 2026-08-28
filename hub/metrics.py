@@ -112,7 +112,9 @@ def _sensors_snapshot() -> dict | None:
         # tick — no jsonl row and no maybe_rollup() pass until the cache
         # expired.
         return _plain_dict(snap)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -129,13 +131,17 @@ def _cpu_used_quick(sensors: dict | None = None) -> float | None:
         # whose modules5 bomb killed the sampler tick past metrics5's guards.
         if isinstance(s, dict) and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         load1 = os.getloadavg()[0]
         n = _ncpu()
         return round(min(100.0, load1 / n * 100), 1)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -174,7 +180,9 @@ def _sample() -> dict:
         if s.get("cpu_used_pct") is not None:
             try:
                 cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Exception: a leftover float-subclass ``__float__`` bomb in
                 # the snapshot is not one of the three conversion errors.
                 pass
@@ -187,7 +195,9 @@ def _sample() -> dict:
                     v = float(raw)
                     if v == v and v not in (float("inf"), float("-inf")):
                         gpu_util_pct = round(min(100.0, max(0.0, v)), 1)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # Exception: a leftover float-subclass ``__float__`` bomb
                     # is not one of the three conversion errors.
                     pass
@@ -373,7 +383,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -388,7 +400,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -404,14 +418,18 @@ def _jsonable(value, depth: int = 0):
             # cannot fire (same guard as sensors_svc._jsonable).
             try:
                 value = dict(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
@@ -424,7 +442,9 @@ def _jsonable(value, depth: int = 0):
                 return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / __getattr__ raising something that is not
         # AttributeError escapes getattr's default.
         iso = None
@@ -433,11 +453,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/metrics.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -469,7 +493,9 @@ def sample_ts(raw) -> int | None:
     if type(raw) not in (int, float):
         try:
             raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     # A leftover 400-digit ``t`` (or ``?since=`` of the same) used to
     # OverflowError ``float(raw)`` / ``time.time() - since`` on the range path.
@@ -550,7 +576,9 @@ def history(minutes: int = 60) -> list:
     now = sample_ts(time.time()) or 0
     try:
         span = int(minutes) * 60
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Leftover ``minutes: .inf`` / ``int(time.time())`` on inf used to
         # OverflowError GET /api/metrics.  Exception, not the three usual
         # conversion errors: ``int()`` of a leftover subclass dispatches
@@ -622,15 +650,21 @@ def _loop(interval: int = 90):
             try:
                 from hub import metrics_rollup
                 metrics_rollup.maybe_rollup()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         _stop.wait(interval)
     # flush remaining on stop
     try:
         flush_metrics()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -666,5 +700,7 @@ def stop_sampler(timeout: float = 3.0) -> None:
     _thread = None
     try:
         flush_metrics()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
