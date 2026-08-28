@@ -416,7 +416,13 @@ def settings_section(name: str) -> dict:
         data = cfg()
     except Exception:
         return {}
-    if not isinstance(data, dict):
+    # _isa, not a bare isinstance: ``isinstance`` consults ``__class__``
+    # when the exact-type check misses, so a snapshot root whose
+    # ``__class__`` is a *raising property* detonated this gate itself —
+    # a raw 500 on GET /api/settings/other and /thresholds one step ahead
+    # of every guard below (the host12 rule; the raising-provider try
+    # above never saw it because the answer, not the call, is the bomb).
+    if not _isa(data, dict):
         return {}
     # The unbound reads sit inside a try too: ``dict.get`` bypasses a
     # subclass's own ``.get`` but still runs the hash lookup, and a leftover
@@ -427,13 +433,16 @@ def settings_section(name: str) -> dict:
         s = dict.get(data, "settings")
     except Exception:
         return {}
-    if not isinstance(s, dict):
+    # _isa on the stored values as well: a ``__class__``-property bomb
+    # planted as the ``settings`` block (or the section itself) passes the
+    # guarded read whole and used to blow these bare gates the same way.
+    if not _isa(s, dict):
         return {}
     try:
         raw = dict.get(s, name)
     except Exception:
         return {}
-    if not isinstance(raw, dict):
+    if not _isa(raw, dict):
         return {}
     try:
         return dict(raw)
@@ -504,19 +513,23 @@ def override(sid):
         data = cfg()
     except Exception:
         return {}
-    if not isinstance(data, dict):
+    # _isa on every rank gate (the settings_section host12 rule): a
+    # snapshot root — or a stored ``overrides``/per-sid value — whose
+    # ``__class__`` is a raising property used to detonate the bare
+    # isinstance itself, one step ahead of the guarded reads.
+    if not _isa(data, dict):
         return {}
     try:
         ov = dict.get(data, "overrides")
     except Exception:
         return {}
-    if not isinstance(ov, dict):
+    if not _isa(ov, dict):
         return {}
     try:
         val = dict.get(ov, sid, {})
     except Exception:
         return {}
-    if not isinstance(val, dict):
+    if not _isa(val, dict):
         return {}
     try:
         return dict(val)
@@ -855,7 +868,16 @@ def _save_full_locked(data: dict) -> None:
     except OSError:
         # Leftover nonempty directory / EIO replacing the file must not 500.
         raise api_error("settings.save_failed")
-    reload_cfg()
+    # The refresh is best-effort: the new config is already on disk, so a
+    # snapshot provider that raises (this cache does not own ``cfg`` —
+    # tests and tooling patch it) used to 500 PUT /api/identity and every
+    # other mutate() *after* the save had landed, answering an error for a
+    # write that succeeded.  Skipping the refresh costs nothing durable:
+    # the mtime changed, so the next honest cfg() re-reads the file anyway.
+    try:
+        reload_cfg()
+    except Exception:
+        pass
 
 
 def mutate(mutator) -> dict:

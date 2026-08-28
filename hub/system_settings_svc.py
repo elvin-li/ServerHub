@@ -304,7 +304,12 @@ def _settings_map() -> dict:
         data = cfg()
     except Exception:
         return {}
-    if not isinstance(data, dict):
+    # _isa, not a bare isinstance (the settings_section host12 rule): a
+    # snapshot root whose ``__class__`` is a *raising property* detonated
+    # this gate itself and 500'd GET /api/settings/other one step ahead of
+    # the laundering — the raising-provider try above never saw it because
+    # the answer, not the call, is the bomb.
+    if not _isa(data, dict):
         return {}
     # _mapping_get, not a bare ``dict.get``: the unbound read dodges a
     # subclass ``.get`` bomb but a hash-shadowing "settings" key still
@@ -586,7 +591,13 @@ def get_datetime_info() -> dict:
         unix = 0
     return _json_tree({
         "now": _as_text(now),
-        "timezone": _as_text(tz or ""),
+        # _truthy, not a bare ``or``: the timezone answer comes from a seam
+        # this module does not own (identity_svc.time_zone, patched by
+        # tests and tooling), and a leftover ``__bool__`` bomb answered
+        # into ``tz or ""`` detonated the truth test itself — a raw 500 on
+        # GET /api/settings/datetime before _as_text ever saw the value
+        # (the get_identity ``_pick`` rule this route never got).
+        "timezone": _as_text(tz) if _truthy(tz) else "",
         "ntp_enabled": ntp_on,
         "ntp_server": _as_text(ntp_server) if ntp_server is not None else None,
         "unix": unix,
