@@ -654,7 +654,7 @@
               <div class="detail" style="margin:0">{{ finiteText(s.group) }} · {{ finiteText(s.detail) }}</div>
             </div>
             <button
-              v-for="a in (s.actions || []).filter(x => ['start','restart'].includes(x)).slice(0,1)"
+              v-for="a in asArray(s.actions).filter(x => ['start','restart'].includes(x)).slice(0,1)"
               :key="a"
               class="tiny primary"
               :disabled="busy"
@@ -777,7 +777,7 @@ import {
 } from '../api/client'
 import { openAssistant } from '../lib/assistant'
 import { copyToClipboard } from '../lib/clipboard'
-import { barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
 
@@ -1160,13 +1160,13 @@ const healthSummary = computed(() => {
   const w = finiteN(health.value.summary?.warn, 0)
   return e ? `❌ ${e}` : `⚠️ ${w}`
 })
-const failedChecks = computed(() => (health.value?.checks || []).filter(c => !c.ok))
+const failedChecks = computed(() => asArray(health.value?.checks).filter(c => !c.ok))
 
 const attention = computed(() => {
   if (!status.value) return []
   const list = []
-  for (const g of status.value.groups || []) {
-    for (const s of g.services || []) {
+  for (const g of asArray(status.value.groups)) {
+    for (const s of asArray(g.services)) {
       // A deliberate stop is not actionable; only warn/down need attention
       if (s.state && s.state !== 'ok' && s.state !== 'stopped') list.push(s)
     }

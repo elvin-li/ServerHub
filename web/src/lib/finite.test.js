@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+import { asArray, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+
+describe('asArray leftover lists', () => {
+  it('keeps real arrays and fail-closes mappings', () => {
+    expect(asArray(['a'])).toEqual(['a'])
+    expect(asArray([])).toEqual([])
+    expect(asArray({ 0: 'a', length: 1 })).toEqual([])
+    expect(asArray(null)).toEqual([])
+    expect(asArray('x')).toEqual([])
+  })
+})
 
 describe('leftover number clamps', () => {
   it('finiteN rejects Infinity and NaN', () => {

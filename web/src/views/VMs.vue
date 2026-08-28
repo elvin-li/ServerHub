@@ -163,7 +163,7 @@ import VncConsole from '../components/VncConsole.vue'
 import { createVm, getVms, vmAction } from '../api/client'
 import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -228,7 +228,7 @@ function stateBadge(state) {
   return 'down'
 }
 function displayActions(v) {
-  return (v.actions || []).filter(a => a !== 'shell' || v.backend === 'orb')
+  return asArray(v.actions).filter(a => a !== 'shell' || v.backend === 'orb')
 }
 function hasWebConsole(v) {
   return v.backend !== 'orb' && v.console?.available === true && Boolean(v.console_id)

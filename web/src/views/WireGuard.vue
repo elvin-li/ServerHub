@@ -610,7 +610,7 @@ import {
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, withUnit } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -720,7 +720,7 @@ const cfgForm = ref({
 // once without.
 const SELF_EXPLAINING = new Set(['peer_origin'])
 const blockingChecks = computed(
-  () => (readiness.value?.checks || []).filter(
+  () => asArray(readiness.value?.checks).filter(
     (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
   ),
 )
@@ -729,7 +729,7 @@ const blockingChecks = computed(
 // same fact.
 const ALREADY_SHOWN = new Set([...SELF_EXPLAINING, 'running'])
 const warningChecks = computed(
-  () => (readiness.value?.checks || []).filter(
+  () => asArray(readiness.value?.checks).filter(
     (c) => !c.ok && c.level === 'warn' && !ALREADY_SHOWN.has(c.id),
   ),
 )

@@ -252,7 +252,7 @@ import {
   updateSchedulerJob,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -443,15 +443,15 @@ const loadError = ref('')
 const q = ref('')
 
 const intervalCount = computed(() =>
-  (data.value?.timers || []).filter(t => t.interval_sec).length
+  asArray(data.value?.timers).filter(t => t.interval_sec).length
 )
 const calendarCount = computed(() =>
-  (data.value?.timers || []).filter(t => t.calendar && !t.interval_sec).length
-    || (data.value?.timers || []).filter(t => t.calendar).length
+  asArray(data.value?.timers).filter(t => t.calendar && !t.interval_sec).length
+    || asArray(data.value?.timers).filter(t => t.calendar).length
 )
 
 const filtered = computed(() => {
-  const list = data.value?.timers || []
+  const list = asArray(data.value?.timers)
   const qq = q.value.trim().toLowerCase()
   if (!qq) return list
   return list.filter(t =>

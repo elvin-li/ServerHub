@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { finiteN, finiteText, asArray } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -1822,7 +1822,7 @@ function catLabel(id) {
     const tr = t(key)
     if (tr && tr !== key) return tr
   }
-  const c = (categories.value || []).find(x => x.id === id)
+  const c = asArray(categories.value).find(x => x.id === id)
   return finiteText(c?.label, '') || finiteText(id, '') || 'other'
 }
 
@@ -1832,7 +1832,7 @@ function countLabel(id) {
     return n != null ? ` (${n})` : ''
   }
   if (id === 'featured') {
-    const n = (catalog.value || []).filter(x => x.featured).length
+    const n = asArray(catalog.value).filter(x => x.featured).length
     return n ? ` (${n})` : ''
   }
   if (id === 'native') {

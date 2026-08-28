@@ -6,6 +6,11 @@
  * used to render "Infinity".
  */
 
+/** Hostile leftover lists used to be mappings; `.filter`/`.map` then threw. */
+export function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)

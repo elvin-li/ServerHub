@@ -665,7 +665,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getStorage, getThresholds, manageStorageDevice, setDiskPower, getSmartOverview, startSmartTest } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
-import { barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -721,9 +721,13 @@ function scheduleRefresh(delay) {
 }
 
 const powerDisks = computed(() => data.value?.power_disks || [])
-const arrayDevices = computed(() => data.value?.array?.devices || (data.value?.volumes || []).filter(v =>
-  v.kind === 'system' || v.kind === 'external'
-))
+const arrayDevices = computed(() => {
+  const devices = data.value?.array?.devices
+  if (Array.isArray(devices)) return devices
+  return asArray(data.value?.volumes).filter(v =>
+    v.kind === 'system' || v.kind === 'external'
+  )
+})
 const sharedDiskIds = computed(() => {
   const s = new Set()
   for (const g of data.value?.array?.capacity_groups || []) {
@@ -745,7 +749,7 @@ const canFormat = computed(() => {
 })
 // Unassigned: non-system disks that are offline, spun down, or have no volumes
 const unassigned = computed(() => {
-  return (powerDisks.value || []).filter(d => {
+  return asArray(powerDisks.value).filter(d => {
     if (d.system) return false
     const vols = d.volumes || []
     if (!vols.length) return true
@@ -756,8 +760,8 @@ const unassigned = computed(() => {
 
 // Merge self-test capabilities (/api/smart) with SMART attributes (/api/storage disks)
 const smartMerged = computed(() => {
-  const testDevices = smartData.value?.devices || []
-  const storageDisks = data.value?.disks || []
+  const testDevices = asArray(smartData.value?.devices)
+  const storageDisks = asArray(data.value?.disks)
   const storageMap = new Map()
   for (const d of storageDisks) storageMap.set(d.id, d)
   const merged = testDevices.map(td => {

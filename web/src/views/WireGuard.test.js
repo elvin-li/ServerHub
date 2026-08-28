@@ -523,4 +523,16 @@ describe('WireGuard non-blocking warnings', () => {
     await flushPromises()
     expect(api.remediateWireguard).toHaveBeenCalledWith('nat', true)
   })
+
+  it('does not throw when readiness checks is a leftover mapping', async () => {
+    const { wrapper, toast } = await mountView({ running: true }, {
+      checks: { 0: { id: 'boot', ok: false, level: 'warn' } },
+      ready: true,
+      blocking: [],
+      warnings: [],
+    })
+    expect(toast).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('wg.warnings')
+    wrapper.unmount()
+  })
 })

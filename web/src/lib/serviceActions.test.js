@@ -80,6 +80,17 @@ describe('table and card offers agree', () => {
   })
 })
 
+describe('leftover action lists', () => {
+  it('does not throw when actions is a mapping leftover', () => {
+    const leftover = { id: 'x', kind: 'container', state: 'ok', actions: { 0: 'start' } }
+    expect(primaryActs(leftover)).toEqual([])
+    expect(controlActs(leftover)).toEqual([])
+    expect(canAct(leftover, 'start')).toBe(false)
+    expect(canAct(leftover, 'stop')).toBe(false)
+    expect(canLogs(leftover)).toBe(false)
+  })
+})
+
 describe('canLogs', () => {
   it('respects an explicit can_logs refusal above everything else', () => {
     expect(canLogs({ kind: 'container', actions: ['logs'], can_logs: false })).toBe(false)
