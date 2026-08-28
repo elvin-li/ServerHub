@@ -58,6 +58,46 @@ def _isa(value, kinds) -> bool:
         return False
 
 
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 / dash11 rule, which this module's LAN-detection cache
+    never got: even a plain-dict lookup still runs the *stored keys'* own
+    ``__eq__`` during the hash probe, so a leftover str-subclass key whose
+    hash shadows ``value`` and whose ``__eq__`` raises used to detonate the
+    bare ``_detect_cache["value"]`` read in ``_cached_detection`` — a raw
+    500 on ``host_ip()``'s one unguarded consumer, GET /api/system/host.
+    Only the shadowed field degrades to its default; siblings survive.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except Exception:
+        return default
+
+
+def _cache_publish(cache: dict, **fields) -> None:
+    """Cache write that a hash-shadowing planted key cannot 500.
+
+    ``dict.update`` with an exact-str keyword still runs the *stored*
+    poison key's ``__eq__`` during the insert compare, so a shadow key
+    planted over ``t`` used to raise at the very end of a successful
+    detection — the ``_detect_cache.update`` in ``_detect_lan_ip_uncached``
+    — and out of ``invalidate_routing`` (which ``network_svc._bust()``
+    reaches on every address / DNS / order / alias change).  ``clear()``
+    never compares keys, so evicting the poison and rewriting always lands.
+    """
+    try:
+        cache.update(fields)
+    except Exception:
+        try:
+            cache.clear()
+            cache.update(fields)
+        except Exception:
+            pass
+
+
 def _sh_run(cmd, timeout) -> tuple:
     """Spawn with the unpack inside the guard (the nginx `_sh_triple` rule).
 
@@ -294,14 +334,22 @@ def invalidate_routing() -> None:
     _interface_address.invalidate()
     with _cache_lock:
         _detect_generation += 1
-        _detect_cache.update(t=0.0, value=None)
+        # _cache_publish, not a bare update: a hash-shadowing key planted
+        # over ``value`` / ``t`` raises out of the C-level insert compare,
+        # and network_svc._bust() reaches this on every address change.
+        _cache_publish(_detect_cache, t=0.0, value=None)
 
 
 def _cached_detection(now: float) -> str:
     with _cache_lock:
-        value = _detect_cache["value"]
+        # _mapping_get, not a bare subscript: a hash-shadowing key planted
+        # over ``value`` (str subclass, same hash, raising ``__eq__``) ran
+        # the stored bomb's compare inside the C-level probe — a raw 500 on
+        # GET /api/system/host, one seam ahead of the ``t`` read already in
+        # the try below.  A poisoned slot reads as None and re-detects.
+        value = _mapping_get(_detect_cache, "value")
         try:
-            age = now - float(_detect_cache["t"])
+            age = now - float(_mapping_get(_detect_cache, "t", 0.0))
         except Exception:
             # Blanket, not the typed trio: a leftover planted in the ``t``
             # slot whose ``__float__`` raises RuntimeError (the same bomb
@@ -383,7 +431,10 @@ def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
     value = _as_text(value)
     with _cache_lock:
         if _detect_generation == began:
-            _detect_cache.update(t=now, value=value)
+            # _cache_publish: a shadow key planted over ``t`` / ``value``
+            # used to raise out of the insert compare at the very end of a
+            # successful detection — a raw 500 on GET /api/system/host.
+            _cache_publish(_detect_cache, t=now, value=value)
     return value
 
 
