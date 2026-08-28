@@ -1,6 +1,8 @@
 """Host + Docker network management (macOS networksetup + docker)."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import re
 import threading
 import time
@@ -79,7 +81,9 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -94,7 +98,9 @@ def _as_text(value) -> str:
     if _isinst(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims bytes, is not) TypeErrors the
             # unbound base decode; junk answers "" like every other
             # unreadable leftover instead of 500ing the caller.
@@ -106,9 +112,13 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
         return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
@@ -137,7 +147,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -145,7 +157,9 @@ def _pick(value, fallback):
     """``value or fallback`` that survives a leftover ``__bool__`` bomb."""
     try:
         return value if value else fallback
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
 
 
@@ -170,7 +184,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -192,7 +208,9 @@ def _rows(value) -> list:
         return []
     try:
         return list.__getitem__(value, slice(None))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -211,7 +229,9 @@ def _as_rc(value) -> int:
     if type(value) is not int:
         try:
             value = int(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return -255
         if type(value) is not int:
             return -255
@@ -245,12 +265,16 @@ def _sh_triple(value) -> tuple:
     elif _isinst(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isinst(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -970,7 +994,9 @@ def switch_profile(profile: str) -> dict:
     try:
         time.sleep(1.5)  # allow link/DHCP to settle slightly
         alias_r = ensure_aliases_on_preferred(force=True)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # exc_detail, not str(): the rebind can now raise the coded
         # network.ifconfig_missing HTTPException (ifconfig vanished after
         # the service listing succeeded), and str() on that renders the
@@ -1112,7 +1138,9 @@ def _coerce_int(value, default: int) -> int:
     """
     try:
         coerced = int(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
         # and both settings readers sit on GET /api/system/network.  Broader
         # than the (TypeError, ValueError, OverflowError) net it replaces:
@@ -1161,13 +1189,17 @@ def _alias_settings() -> dict:
     if _isinst(ips, str):
         try:
             ips = str.split(str.replace(ips, ",", " "))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             ips = []
     elif not _isinst(ips, list):
         ips = []
     try:
         rows = list.__iter__(ips)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     # sanitize
     clean = []
@@ -1266,7 +1298,9 @@ def preferred_active_device() -> dict | None:
     """
     try:
         svcs = _network_service_order_entries()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         svcs = []
     # ``_rows`` + ``_mapping_get`` + ``_as_text`` throughout: a poisoned
     # ``interfaces()`` / order listing (iter bomb / lying list), a row that is
@@ -1563,7 +1597,9 @@ def alias_auto_status() -> dict:
             # network.route_missing HTTPException, and str() on that renders
             # the detail dict's Python repr into this 200 status row.
             return {"ok": False, "reason": "route lookup failed: " + exc_detail(exc)}
-        except Exception as exc:  # noqa: BLE001 - surfaced in the row
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - surfaced in the row
             return {"ok": False, "reason": "route lookup failed: " + _as_text(exc)}
 
     # `route -n get` is genuinely per IP, so those overlap; order follows the
@@ -1718,7 +1754,9 @@ def network_failover_tick(force: bool = False) -> dict:
                 return _probe_wired_device(
                     device, conf["probe_timeout_ms"], iface=iface_map.get(device)
                 )
-            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
                 # The label stays ASCII on purpose: the payload is the operating
                 # system's own message ("no route to host"), which has no
                 # translation, and hub/errors.py is for text we author.
@@ -1891,7 +1929,9 @@ def start_alias_autobind(interval: int | None = None) -> None:
                             next_alias = now + 5
                         else:
                             next_alias = now + (interval or alias_conf["interval"] or 60)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
                 deadlines = []
                 if alias_conf["auto_bind"]:
@@ -1900,7 +1940,9 @@ def start_alias_autobind(interval: int | None = None) -> None:
                     deadlines.append(next_failover)
                 if deadlines:
                     wait_for = max(1.0, min(deadlines) - time.monotonic())
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             _alias_stop.wait(wait_for)
 
@@ -1996,13 +2038,17 @@ def _valid_ip(ip: str) -> bool:
     if _isinst(ip, (bytes, bytearray)):
         try:
             ip = _decode_bytes(ip)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return False
     elif not _isinst(ip, str):
         return False
     try:
         parts = str.split(str.strip(ip), ".")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     if len(parts) != 4:
         return False
@@ -2245,7 +2291,9 @@ def docker_networks_detail() -> list:
                         "ipv4": c.get("IPv4Address") or "",
                         "ipv6": c.get("IPv6Address") or "",
                     })
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
         return {
             "id": nid[:12],
@@ -2434,7 +2482,9 @@ def _build_overview(force_services: bool = False) -> dict:
     def _safe(fn, default):
         try:
             return fn()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
     _wifi_power_unknown = {"ok": False, "on": None, "device": None, "message": ""}
@@ -2460,7 +2510,9 @@ def _build_overview(force_services: bool = False) -> dict:
     try:
         services = f_services.result()
         svc_error = None
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         services = []
         svc_error = _as_text(e)
 
