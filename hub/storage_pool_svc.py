@@ -32,6 +32,7 @@ the disk.  Files stay exactly where they are; only the panel's view changes.
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import Any
@@ -39,6 +40,9 @@ from typing import Any
 from hub.config import cfg, update_settings
 from hub.errors import api_error
 from hub.util import strftime_now
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 #: Volume kinds that may join a pool.  System volumes are never eligible: the
 #: boot disk cannot be a pool member without making the pool undetachable.
@@ -86,7 +90,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -106,7 +112,9 @@ def _sequence_rows(value) -> list:
         if _isa(value, base):
             try:
                 return list(base.__iter__(value))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
     return []
 
@@ -127,7 +135,9 @@ def _mapping_get(mapping, key):
         return None
     try:
         return dict.get(mapping, key)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -152,7 +162,9 @@ def _match_policy(policy):
         try:
             if known == policy:
                 return known
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return None
 
@@ -178,7 +190,9 @@ def _wants_refresh(force) -> bool:
         return force
     try:
         return bool(force)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return True
 
 
@@ -205,7 +219,9 @@ def _pool_config() -> dict:
     # escape this reader and 500 every pool route.
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         data = {}
     # _mapping_get, not bare ``dict.get``-under-isinstance: a ``__class__``
     # property bomb detonated each rank gate, and a hash-shadowing key bomb
@@ -234,7 +250,9 @@ def _pool_config() -> dict:
         # subclass bomb in either used to raise past the tuple and 500 the
         # same four routes.
         min_free = float(_mapping_get(raw, "min_free_gb") or 0)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         min_free = 0.0
     if min_free != min_free or min_free in (float("inf"), float("-inf")):
         min_free = 0.0
@@ -291,14 +309,22 @@ def _text(raw) -> str:
         base = list if _isa(raw, list) else tuple
         try:
             raw = base.__getitem__(raw, 0) if base.__len__(raw) else ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(raw, (bytes, bytearray)):
-        base = bytes if _isa(raw, bytes) else bytearray
-        try:
-            return base.decode(raw, "utf-8", "replace")
-        except Exception:
-            return ""
+        decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(raw, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if decoded is not None:
+            return decoded
     # Exact-type probe, not ``_isa``: ``type`` never reflects into a lying
     # ``__class__``, and bool cannot be subclassed — so a real int-subclass
     # *claiming* bool now renders its digits through the int gate below
@@ -311,7 +337,9 @@ def _text(raw) -> str:
             # digit-cap probe; str() of that exact int cannot reflect back
             # into a leftover ``__str__`` override.
             return str(int.__index__(raw))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     if _isa(raw, float):
         # Every exact float already read as "" (nan/inf via the explicit
@@ -324,13 +352,17 @@ def _text(raw) -> str:
     if not _isa(raw, str):
         try:
             iso = getattr(raw, "isoformat", None)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if not callable(iso):
             return ""
         try:
             stamped = iso()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         # isoformat() is usually a str; a leftover that returns inf
         # used to TypeError ``.encode`` on GET /api/storage/pool.
@@ -343,9 +375,20 @@ def _text(raw) -> str:
             # caught by the identity probe above.
             return ""
     try:
-        return str.encode(raw, "utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(raw, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        cls = type(raw)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _finite_float(raw) -> float:
