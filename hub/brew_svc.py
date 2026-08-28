@@ -1,6 +1,8 @@
 """Homebrew services management — macOS-native module."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import os
 
 from hub import cli_args
@@ -28,7 +30,9 @@ def _isinstance(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -49,7 +53,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -72,12 +78,16 @@ def _sh_answer(value) -> tuple:
     elif _isinstance(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (None, None, None)
     elif _isinstance(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (None, None, None)
     else:
         return (None, None, None)
@@ -104,12 +114,16 @@ def _spawn_pair(value) -> tuple:
     elif _isinstance(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (None, None)
     elif _isinstance(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (None, None)
     else:
         return (None, None)
@@ -137,12 +151,16 @@ def _as_text(value) -> str:
     if _isinstance(value, bytes):
         try:
             text = bytes.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             text = None
     elif _isinstance(value, bytearray):
         try:
             text = bytearray.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             text = None
     elif _isinstance(value, str):
         text = value
@@ -154,22 +172,32 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         return str.encode(text, "utf-8", "replace").decode("utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A str-liar rode the ``_isinstance(value, str)`` branch as *text*
         # itself, and unbound ``str.encode`` cannot apply to it — one last
         # guarded ``str()`` renders its honest ``__str__`` instead of 500ing.
         try:
             return str.encode(str(value), "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
 
 
@@ -213,7 +241,9 @@ def _json_safe(value, depth: int = 0):
         # It used to ride through as-is and 500 Starlette's encoder.
         try:
             return bool(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, int):
         if type(value) is not int:
@@ -222,7 +252,9 @@ def _json_safe(value, depth: int = 0):
                 # used to blow the digit-cap probe below (only ValueError
                 # was caught).
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -239,7 +271,9 @@ def _json_safe(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -250,23 +284,31 @@ def _json_safe(value, depth: int = 0):
         # of raising out and wiping every sibling row.
         try:
             return str.encode(value, "utf-8", "replace").decode("utf-8")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, bytes):
         try:
             return bytes.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, bytearray):
         try:
             return bytearray.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, (list, tuple, set, frozenset)):
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Property bomb / ``__getattr__`` raising non-AttributeError past
         # getattr's default.
         iso = None
@@ -275,7 +317,9 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/brew/services.
             stamped = iso()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if stamped is value:
             return None
@@ -302,17 +346,23 @@ def _plain_rc(value):
     if _isinstance(value, bool):
         try:
             return int(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, int):
         try:
             return int.__index__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isinstance(value, float):
         try:
             return float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -349,7 +399,9 @@ def list_services() -> list:
     items = []
     try:
         data = brew_services_list()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         data = []
     rows = []
     # Guarded isinstance: a leftover snapshot object whose ``__class__``
@@ -365,7 +417,9 @@ def list_services() -> list:
         # used to blow the filter and wipe every sibling row.
         try:
             rows = [s for s in list.__iter__(data) if _isinstance(s, dict)]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     if rows:
         try:
@@ -402,15 +456,21 @@ def list_services() -> list:
                         "exit_code": _json_safe(_mapping_get(s, "exit_code")),
                         "actions": ["restart", "stop"] if state == "ok" else ["start"],
                     })
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             return items
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items = []
     # fallback text parse
     try:
         answer = sh([BREW, "services", "list"], timeout=20)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return items
     # _sh_answer, not a bare unpack: the answer object is not ours (tests
     # and tooling patch ``sh``), and a tuple-subclass ``__iter__`` bomb
@@ -471,7 +531,9 @@ def service_action(name: str, action: str) -> dict:
             [BREW, "services", action, name],
             timeout=120, env=_brew_env(), cap=2000,
         )
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # Leftover ``\ud800`` in a raised message used to 500 the action
         # JSON the same way a leftover brew-list name 500'd the list.
         return {"ok": False, "message": _as_text(e)}
@@ -509,11 +571,15 @@ def service_action(name: str, action: str) -> dict:
     # the SPA one stale refresh window, never the action's answer.
     try:
         invalidate_brew_services()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         invalidate_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # run_capped is str; a bytes leftover from a stub (or a future
     # binary-capped helper) used to TypeError Starlette's encoder.
