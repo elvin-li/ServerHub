@@ -89,6 +89,26 @@ def _isinst(value, types) -> bool:
         return False
 
 
+def _real(value, types) -> bool:
+    """True when the *real* storage is this type.
+
+    The ``hub.jobs._real`` rule: ``type(value)`` reads the C-level type
+    slot, which a lying ``__class__`` property cannot swap, so this is the
+    probe for the recover-the-real-storage arms below.  ``_isinst`` honours
+    the lie (that is its job — a raising property must fail closed), which
+    means it must not gate an arm whose *absence* throws honest storage
+    away: a genuine int logout counter whose ``__class__`` lied ``bool``
+    used to read as 0 through ``_epoch_count`` and quietly un-revoke every
+    session its bump had revoked.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb.
 
@@ -276,9 +296,16 @@ def _epoch_count(raw) -> int:
     cap reads as 1, not 0: the account has logged out at least once, so
     pre-logout tokens (whose version omits the epoch) must stay revoked.
     """
-    # _isinst: a ``__class__``-property bomb as one epoch value used to
-    # detonate this bare isinstance and 500 every login and cookie check.
-    if raw is None or _isinst(raw, bool):
+    # _real, not _isinst: isinstance consults ``raw.__class__`` when the
+    # real-type check misses, so a genuine *int* counter whose ``__class__``
+    # lied ``bool`` was steered into this arm and read as 0 — logout had
+    # answered 200 and recorded the bump, and every "revoked" cookie
+    # quietly went back to verifying for its full TTL.  ``type(raw)`` reads
+    # the C-level slot the lie cannot swap: honest int storage keeps its
+    # count, a real bool (a final type — nothing genuine hides behind the
+    # claim) still reads 0, and a raising ``__class__`` property no longer
+    # matters because the probe never consults it.
+    if raw is None or _real(raw, bool):
         return 0
     try:
         value = int(raw)
@@ -481,6 +508,11 @@ def _utf8(text: str) -> bytes:
     return str.encode(value, "utf-8", "surrogatepass")
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f…>`` and the function /
+#: bound-method variants) — a raw heap address, never account or config data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _cfg_text(raw) -> str:
     """``str()`` of a config value that cannot 500 login / status / setup.
 
@@ -504,14 +536,51 @@ def _cfg_text(raw) -> str:
     "change-me")`` reflected ``__eq__``, and the resources walk — and one
     such value planted anywhere in ``settings.auth`` 500'd GET
     /api/auth/status, POST /api/auth/login and every session-cookie check
-    at once.  ``str.__str__`` copies through the C-level storage, so the
-    real text underneath the poisoned override is kept.
+    at once.
+
+    Real str storage reads through *unbound* ``str.__str__`` (the jobs14
+    ``_str_text`` rule, which this reader never got): the old dispatching
+    ``str(raw)`` ran the subclass override first, so a genuine str hash
+    riding a ``__str__`` bomb read as "" — the administrator's own
+    sessions stopped verifying and every login 401'd — and a genuine str
+    *username* of a member row read as "" and dropped the whole account,
+    even though the honest text was sitting in the C-level storage the
+    unbound descriptor reads.  Real str data stays verbatim: no repr belt
+    runs on this arm.
+
+    Only a type that renders *itself* may coerce (the jobs14 slot-probe
+    rule): the coercion arm ran ``str()`` on any leftover shape, and for a
+    type that never overrode ``__str__`` / ``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f…>``, a raw heap
+    address — which rode verbatim into the *unauthenticated* GET
+    /api/auth/status suggested username, into GET /api/auth/accounts as an
+    account name and its resources, and into the POST /api/auth/login
+    response body.  The probe reads the real ``type(raw)`` slots, so a
+    flickering ``__class__`` property cannot steer it.  The address-regex
+    belt catches what the slot probe cannot see: a function / bound-method
+    leftover (C-level ``__repr__``) and an exception whose *message
+    object* renders a default repr (``RuntimeError(<X object at 0x…>)``).
+    Both scrubs run on the coercion arm only.
     """
+    if _real(raw, str):
+        try:
+            return str.__str__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        cls = type(raw)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(raw)
         if type(text) is not str:
             text = str.__str__(text)
-        return text
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -519,6 +588,7 @@ def _cfg_text(raw) -> str:
         # sail past the broad-but-Exception catch here — one such value on
         # the stored hash slot 500'd status/login/cookie checks at once.
         return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _utf8_ok(text: str) -> bool:
