@@ -6,6 +6,8 @@ broken bare `brew services cloudflared` (no args / no config) is avoided.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import base64
 import json
 import os
@@ -76,7 +78,9 @@ def _safe_isinstance(value, classinfo) -> bool:
     """
     try:
         return isinstance(value, classinfo)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -85,14 +89,18 @@ def _decode_bytes(value) -> str:
     base = bytes if _safe_isinstance(value, bytes) else bytearray
     try:
         return base.decode(value, "utf-8", "replace")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A lying ``__class__`` property that merely *claims* bytes reaches
         # here as a non-bytes object, so the unbound descriptor TypeErrors.
         # bytes(value) gives its ``__bytes__`` one guarded chance (a bomb
         # there is caught too) before the field drops to empty.
         try:
             return bytes(value).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
 
 
@@ -107,9 +115,13 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
@@ -344,11 +356,15 @@ def _rc_int(rc) -> int:
         return rc
     try:
         return int.__index__(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -403,7 +419,9 @@ def _jsonable_state(value, depth: int = 0):
         # It used to ride through as-is and 500 the encoder.
         try:
             return bool(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _safe_isinstance(value, int):
         if type(value) is not int:
@@ -411,7 +429,9 @@ def _jsonable_state(value, depth: int = 0):
                 # Base coercion to an exact int: a subclass ``__str__``
                 # bomb used to blow the digit-cap probe below.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -428,7 +448,9 @@ def _jsonable_state(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -438,7 +460,9 @@ def _jsonable_state(value, depth: int = 0):
         # used to raise out of the surrogate laundering itself.
         try:
             value = str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         return str.encode(value, "utf-8", "replace").decode("utf-8")
     if _safe_isinstance(value, (bytes, bytearray)):
@@ -452,7 +476,9 @@ def _jsonable_state(value, depth: int = 0):
         # text salvage instead.
         try:
             rows = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = None
         if rows is not None:
             out = {}
@@ -462,7 +488,9 @@ def _jsonable_state(value, depth: int = 0):
                 elif not _safe_isinstance(k, str):
                     try:
                         k = str(k)
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         continue
                 # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status
                 # — and a str-subclass key whose ``encode`` raises blew the
@@ -470,7 +498,9 @@ def _jsonable_state(value, depth: int = 0):
                 # base encode.
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
                 k = str.encode(k, "utf-8", "replace").decode("utf-8")
                 out[k] = _jsonable_state(v, depth + 1)
@@ -485,12 +515,16 @@ def _jsonable_state(value, depth: int = 0):
             # TypeErrors the unbound call and salvages as text instead.
             try:
                 elems = list(base.__iter__(value))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 break
             return [_jsonable_state(v, depth + 1) for v in elems]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -499,11 +533,15 @@ def _jsonable_state(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/cloudflared/status.
             return _jsonable_state(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -776,7 +814,9 @@ def _launchd_job_info(label: str = LABEL) -> dict:
     try:
         uid = os.getuid()
         rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{uid}/{label}"], timeout=5)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return empty
     # _rc_int: this compare sits *outside* the try, so an rc-subclass
     # ``__ne__`` bomb from a poisoned sh seam used to ride _is_running
@@ -903,7 +943,9 @@ def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required")
                 # bomb from an in-process caller used to raise a
                 # non-ValueError past the digit-cap net below and 500.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 raise api_error("cloudflared.invalid_name")
         # ``tunnel_name: 123`` written unquoted by an operator script parses
         # as an int; the plain isinstance gate below silently refused to
@@ -916,7 +958,9 @@ def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required")
     if not _safe_isinstance(value, str):
         try:
             empty = value in (None, "")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A leftover ``__eq__`` bomb on a non-string used to raise out
             # of this emptiness probe itself instead of the coded 400.
             empty = False
@@ -1079,7 +1123,9 @@ def _recent_tunnel_error() -> str:
     """Human reason from the last log lines, or empty when nothing matches."""
     try:
         lines = tail_file_lines(LOG_FILE, 40)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     text = _as_text("\n".join(lines)).lower()
     if "token is not valid" in text:
@@ -1182,7 +1228,9 @@ def status() -> dict:
             return [], None
         try:
             return list_tunnels(), None
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             return [], _as_text(e)
 
     # The liveness check is local and the tunnel list is a round-trip to
@@ -1208,7 +1256,9 @@ def status() -> dict:
     bin_path = None
     try:
         bin_path = _bin()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         bin_path = None
     has_token = _path_is_file(TOKEN_FILE)
     token_ok = token_looks_valid(_read_saved_token()) if has_token else False
@@ -1513,7 +1563,9 @@ def stop() -> dict:
         if "cloudflared" in low and ("tunnel" in low or "token" in low):
             try:
                 os.kill(pid, signal.SIGTERM)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
     time.sleep(0.5)
     return {
@@ -1579,18 +1631,24 @@ def logs(lines: int = 120) -> dict:
     if _safe_isinstance(lines, int) and not _safe_isinstance(lines, bool) and type(lines) is not int:
         try:
             lines = int.__index__(lines)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             lines = 120
     elif _safe_isinstance(lines, float) and type(lines) is not float:
         try:
             lines = float.__float__(lines)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             lines = 120
     try:
         n = int(lines or 120)
     except (TypeError, ValueError, OverflowError):
         n = 120
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A junk ``__bool__``/``__int__`` bomb on a non-numeric leftover is
         # not one of the numeric conversion errors.
         n = 120
@@ -1612,7 +1670,9 @@ def logs(lines: int = 120) -> dict:
         try:
             tail = "\n".join(tail_file_lines(p, lines))
             chunks.append(f"===== {p} =====\n{tail}")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             chunks.append(
                 f"===== {p} =====\n(read error: {_as_text(e) or 'error'})"
             )
@@ -1631,7 +1691,9 @@ def uninstall_service() -> dict:
             if _path_is_file(p):
                 p.unlink()
                 removed.append(str(p))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     # Scrub before the read-modify-write: a dict-subclass ``pop`` bomb from
     # the _load_state seam used to 500 POST /uninstall-service after the
