@@ -250,7 +250,9 @@ def list_volumes() -> list:
     try:
         home = user_home()
         orbstack_home = str(home / "OrbStack") if home is not None else ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         orbstack_home = ""
     # The shared mount table (hub/disk_snapshot.py).  This module spelled the command
     # `df` and disk_power_svc spelled it `/bin/df`, so `/api/storage` read the table
@@ -568,11 +570,15 @@ def _json_gb(raw, ndigits: int = 1) -> float:
         try:
             # Base coercion first so the bombed subclass keeps its number.
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return 0.0
     try:
         value = round(float(raw), ndigits)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0.0
     if value != value or value in (float("inf"), float("-inf")):
         return 0.0
@@ -586,7 +592,9 @@ def _json_int(raw, default: int = 0) -> int:
         try:
             # Base coercion first so a bombed subclass keeps its number.
             raw = int.__index__(raw)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
     try:
         if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
@@ -595,7 +603,9 @@ def _json_int(raw, default: int = 0) -> int:
         # ``__int__``/``__eq__`` bomb is not one of the three usual
         # conversion errors and used to raise out of the shaping loops.
         value = int(raw)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
     try:
         str(value)
@@ -620,7 +630,9 @@ def _exact_str_keys(mapping) -> dict:
     """
     try:
         entries = list(dict.items(mapping))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     out: dict = {}
     for k, v in entries:
@@ -636,7 +648,9 @@ def _exact_str_keys(mapping) -> dict:
                     k = str.__str__(k)
                 else:
                     k = str(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             k = _as_text(k)
             if not k:
@@ -686,7 +700,9 @@ def _volume_row(raw) -> dict | None:
                     # through this fast path untouched and blow up later in
                     # aggregate_capacity / the encoder.
                     val = int.__index__(val)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     row[key] = 0.0
                     continue
                 row[key] = val
@@ -834,7 +850,9 @@ def _probe_disk(d: str) -> dict:
     }
     try:
         return _probe_disk_uncached(dev, info)
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         info["error"] = _as_text(exc)[:160]
         return info
 
@@ -1070,7 +1088,9 @@ def storage_overview() -> dict:
     # `.result()` re-raises; SMART must not blank the volume table.
     try:
         vols = f_vols.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         vols = []
     # _isa, not bare isinstance: a listing *return* wearing a raising
     # ``__class__`` property detonated this gate itself — a raw 500 on
@@ -1079,7 +1099,9 @@ def storage_overview() -> dict:
         vols = []
     try:
         disks = f_disks.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         disks = []
     if not _isa(disks, list):
         disks = []
@@ -1096,7 +1118,9 @@ def storage_overview() -> dict:
     for v in vols:
         try:
             row = _volume_row(v)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if row is not None:
             clean_vols.append(row)
@@ -1105,7 +1129,9 @@ def storage_overview() -> dict:
     for x in disks:
         try:
             d = _jsonable(x)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if isinstance(d, dict):
             clean_disks.append(d)

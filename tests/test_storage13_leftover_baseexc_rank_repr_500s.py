@@ -66,6 +66,14 @@ class Storage13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             storage_svc._isa(_Ki(), dict)
 
+    def test_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("storage isoformat watchdog")
+
+        self.assertEqual(storage_svc._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()
