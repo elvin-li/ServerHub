@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 
 from hub import audit, auth, shares_svc
-from hub.errors import api_error
+from hub.errors import api_error, api_error_from
 from hub.routers.nas_common import _isa, _jsonable, _plain_result, _truthy, _utf8_text
 
 router = APIRouter(tags=["shares"])
@@ -210,7 +210,12 @@ def create_share(body: SMBCreate, request: Request):
     try:
         result = _service_result(shares_svc.create_smb_share(**body.model_dump()))
     except shares_svc.ShareValidationError as error:
-        raise api_error(error.code)
+        # api_error_from, not bare ``api_error(error.code)``: a leftover
+        # subclass whose ``code`` is a *raising property* used to detonate
+        # the attribute read inside this except clause — a raw HTTP 500 in
+        # place of the coded validation refusal (same guarded unwrap on
+        # every ShareValidationError / ShareAclError site in this router).
+        raise api_error_from(error)
     outcome = "success" if result.get("ok") else "failure"
     _audit_change(
         audit.SHARE_CHANGED,
@@ -238,7 +243,7 @@ def update_share(record_name: str, body: SMBUpdate, request: Request):
             shares_svc.update_smb_share(record_name, **body.model_dump())
         )
     except shares_svc.ShareValidationError as error:
-        raise api_error(error.code)
+        raise api_error_from(error)
     _audit_change(
         audit.SHARE_CHANGED,
         request,
@@ -262,7 +267,7 @@ def delete_share(record_name: str, request: Request, confirm: bool = False):
     try:
         result = _service_result(shares_svc.remove_smb_share(record_name))
     except shares_svc.ShareValidationError as error:
-        raise api_error(error.code)
+        raise api_error_from(error)
     _audit_change(
         audit.SHARE_CHANGED,
         request,
@@ -401,7 +406,7 @@ def share_acl(path: str, request: Request):
     try:
         state = share_acl_svc.read_acl(resolved)
     except share_acl_svc.ShareAclError as error:
-        raise api_error(error.code)
+        raise api_error_from(error)
     # _plain_result before the ``{**state}`` merge: a leftover dict-subclass
     # state whose ``keys()``/``__iter__`` raises takes dict-unpacking's slow
     # path and used to 500 the route out of the merge itself; junk shapes
@@ -437,7 +442,7 @@ def share_acl_put(body: ShareAclPut, request: Request):
             share_acl_svc.set_user_access(resolved, body.username, body.level)
         )
     except share_acl_svc.ShareAclError as error:
-        raise api_error(error.code)
+        raise api_error_from(error)
     _audit_change(
         audit.SHARE_CHANGED,
         request,

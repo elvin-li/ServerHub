@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from hub import audit, nfs_svc, raid_svc, smart_test_svc, snapshots_svc, usage_svc
-from hub.errors import api_error
+from hub.errors import api_error, api_error_from
 from hub.routers.nas_common import (
     _jsonable,
     _utf8_text,
@@ -90,7 +90,12 @@ def api_nfs_save(body: NfsSaveBody, request: Request):
     try:
         result = nfs_svc.save_exports([e.model_dump() for e in body.entries])
     except nfs_svc.NfsConfigError as exc:
-        raise api_error(exc.code, **exc.params)
+        # api_error_from, not bare ``api_error(exc.code, **exc.params)``: a
+        # leftover subclass whose ``code``/``params`` is a raising property —
+        # or whose params slot is a non-mapping / carries a non-str key —
+        # used to detonate this except clause itself, a raw HTTP 500 in
+        # place of the coded validation refusal.
+        raise api_error_from(exc)
     audit.record(
         audit.NFS_CHANGED,
         username=username,
@@ -173,7 +178,10 @@ def _raid_call(fn, request: Request, action: str, **kwargs):
     try:
         result = fn(**kwargs)
     except raid_svc.RaidError as exc:
-        raise api_error(exc.code, **exc.params)
+        # Same guarded unwrap as the NFS save above: bombs riding the typed
+        # error's ``code``/``params`` slots used to 500 every RAID mutation
+        # out of this except clause instead of answering the coded refusal.
+        raise api_error_from(exc)
     audit.record(
         audit.RAID_CHANGED,
         username=username,

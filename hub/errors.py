@@ -992,3 +992,69 @@ def api_error(code: str, /, **params) -> HTTPException:
     """
     status, body = error_payload(code, **params)
     return HTTPException(status, body["detail"])
+
+
+def api_error_from(exc) -> HTTPException:
+    """:func:`api_error` from a typed service error's ``code``/``params`` slots.
+
+    Routers translate typed service errors (WireGuardError, NfsConfigError,
+    RaidError, ShareValidationError, ShareAclError) into coded HTTP errors
+    inside their ``except`` clauses.  The old shape read ``exc.code`` bare and
+    unpacked ``**exc.params`` *at the call site* — one step ahead of every
+    guard ``error_payload`` carries — so a leftover subclass riding the
+    typed-error seam turned the coded 4xx into a raw HTTP 500 four ways:
+
+    * ``code`` as a *raising property* blew the attribute read itself;
+    * ``params`` as a raising property did the same;
+    * a non-mapping ``params`` TypeError'd CPython's ``**`` keyword rebuild
+      before the call even began;
+    * a mapping carrying a non-str key blew the same rebuild with
+      "keywords must be strings".
+
+    Guarded reads instead: an unreadable/absent code takes the same
+    ``error.unrenderable`` placeholder as :func:`_clean_code` (the
+    unknown-code 500 contract, as valid JSON instead of a crash); the params
+    mapping is rebuilt over unbound ``dict.items`` — the C-level storage,
+    matching what a healthy ``**`` unpack reads, so a subclass ``items()``
+    bomb cannot vaporize honest entries — with each key laundered to an
+    exact str and each unusable entry dropped alone.  Values stay raw here:
+    ``error_payload`` already launders them, and pre-coercing would change
+    the formatted message for healthy params.
+    """
+    try:
+        code = getattr(exc, "code", None)
+    except Exception:
+        # A raising ``code`` property is not AttributeError, so the getattr
+        # default does not catch it; the try does.
+        code = None
+    if code is None:
+        code = "error.unrenderable"
+    try:
+        raw = getattr(exc, "params", None)
+    except Exception:
+        raw = None
+    params: dict = {}
+    if _isinst(raw, dict):
+        try:
+            items = list(dict.items(raw))
+        except Exception:
+            # A lying-``__class__`` impostor claiming dict rejects the
+            # unbound read — the code alone still answers its status.
+            items = []
+        for entry in items:
+            try:
+                k, v = entry
+            except Exception:
+                continue
+            if not _isinst(k, str):
+                try:
+                    k = str(k)
+                except Exception:
+                    continue
+            try:
+                key = str.encode(k, "utf-8", "replace").decode("utf-8")
+            except Exception:
+                continue
+            params[key] = v
+    status, body = error_payload(code, **params)
+    return HTTPException(status, body["detail"])

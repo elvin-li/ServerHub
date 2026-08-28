@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from hub import audit, wireguard_export, wireguard_net_svc, wireguard_svc
-from hub.errors import api_error
+from hub.errors import api_error, api_error_from
 from hub.routers.nas_common import (
     client_host,
     raise_for_admin_result,
@@ -42,7 +42,13 @@ def _call(fn, **kwargs):
     try:
         return fn(**kwargs)
     except wireguard_svc.WireGuardError as exc:
-        raise api_error(exc.code, **exc.params)
+        # api_error_from, not bare ``api_error(exc.code, **exc.params)``: a
+        # leftover subclass whose ``code``/``params`` is a raising property —
+        # or whose params slot is a non-mapping / carries a non-str key —
+        # used to detonate this except clause itself (the attribute read or
+        # CPython's ``**`` keyword rebuild), a raw HTTP 500 in place of the
+        # coded refusal on every route funnelled through here.
+        raise api_error_from(exc)
 
 
 def _check_format(fmt: str) -> str:
