@@ -429,7 +429,9 @@ class _HostCpuLoadInfo(ctypes.Structure):
 try:
     _libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
     _libc.mach_host_self.restype = ctypes.c_uint
-except Exception:  # pragma: no cover — non-macOS / sandbox
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover — non-macOS / sandbox
     _libc = None
 
 _cpu_ticks_prev: list[int] | None = None
@@ -449,7 +451,9 @@ def _read_cpu_ticks() -> list[int] | None:
         if rc != 0:
             return None
         return list(info.ticks)  # [user, system, idle, nice]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -567,20 +571,26 @@ def _cpu_and_mem_from_top_cached() -> dict:
         if _isa(hit, dict):
             try:
                 return dict(hit)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
     value = _cpu_and_mem_from_top() or {}
     if not isinstance(value, dict):
         value = {}
     try:
         _top_cache.update(t=now, v=value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A shadow key raises out of the insert compare; clear() never
         # compares keys, so evicting the poison and rewriting always lands.
         try:
             _top_cache.clear()
             _top_cache.update(t=now, v=value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return value
 
@@ -686,12 +696,16 @@ def _static_hw() -> dict:
     page_size = page_n if page_n else 16384
     try:
         _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Same shadow-key insert-compare class as the top cache write.
         try:
             _static.clear()
             _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return {"ncpu": ncpu_i, "mem_total_gb": mem_gb, "page_size": page_size}
 
@@ -876,7 +890,9 @@ def _network_rates() -> dict:
     # used to detonate the bare truthiness / compare and wipe the net leg.
     try:
         prev_t = float(_mapping_get(_net_prev, "t", 0.0))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         prev_t = 0.0
     if prev_t and now > prev_t:
         dt = now - prev_t
@@ -888,7 +904,9 @@ def _network_rates() -> dict:
             try:
                 rx_bps = max(0, int((total_rx - _mapping_get(_net_prev, "rx", 0)) / dt))
                 tx_bps = max(0, int((total_tx - _mapping_get(_net_prev, "tx", 0)) / dt))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 rx_bps = tx_bps = None
     _net_prev = {"t": now, "rx": total_rx, "tx": total_tx}
     return {
@@ -970,7 +988,9 @@ def _nonneg_bytes(value) -> int | None:
             # to blow ``0 <= value`` and escape the GPU leg's guards.
             try:
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         return value if 0 <= value <= 2**62 else None
     n = _finite_float(value)
@@ -1055,7 +1075,9 @@ def _gpu() -> dict | None:
                     "model": model,
                 }
         return best
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -1225,7 +1247,9 @@ def _collect_sensors_uncached() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; one wedged `top`/`pmset` must not 500 the dashboard.
@@ -1369,7 +1393,9 @@ def _collect_sensors_uncached() -> dict:
     v = _jsonable(v)
     try:
         _cache.update(t=time.time(), v=v)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A hash-shadowing key planted in the module cache raises out of
         # the C-level insert compare at the very end of a successful
         # collection — pre-fix a raw 500 on GET /api/system/sensors.
@@ -1377,6 +1403,8 @@ def _collect_sensors_uncached() -> dict:
         try:
             _cache.clear()
             _cache.update(t=time.time(), v=v)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return v

@@ -82,6 +82,14 @@ class Dash13LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             system._isa(_Ki(), dict)
 
+    def test_sensors_jsonable_swallows_isoformat_getattr_baseexception(self):
+        class _IsoBomb:
+            @property
+            def isoformat(self):
+                raise LeftoverWatchdogTimeout("sensors isoformat watchdog")
+
+        self.assertEqual(sensors_svc._jsonable(_IsoBomb()), "")
+
 
 if __name__ == "__main__":
     unittest.main()
