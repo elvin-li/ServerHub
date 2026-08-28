@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 from hub import cli_args, secure_io
 from hub.config import settings_section
 from hub.docker_cli import engine_up, looks_engine_down
@@ -531,6 +533,20 @@ _RECEIPT_DEFAULTS = {
     "duration_ms": 0,
 }
 
+#: Fields ``run_host``/``run_container`` *write* onto the receipt after the
+#: command ran.  They are not transport fields, so ``_RECEIPT_DEFAULTS`` does
+#: not seed them — which left their hash buckets open: a leftover str-subclass
+#: key whose ``__hash__`` lands on ``target``/``container``/``cwd`` slipped
+#: through the copy (no seeded key to collide with, so its ``__eq__`` never
+#: ran) and the bare ``result["target"] = ...`` writes then probed that bucket
+#: and ran the stored key's own raising ``__eq__`` — a raw 500 on
+#: POST /api/terminal/run *after* the command had already executed.  Seeding a
+#: placeholder makes every such collider drop at insert time exactly like the
+#: transport-field shadows; untouched placeholders are stripped again so the
+#: response shape is unchanged.
+_MUTATED_FIELDS = ("target", "container", "cwd")
+_UNSET = object()
+
 
 def _receipt_map(result) -> dict:
     """Plain-dict copy of a ``_run`` receipt with every transport field present.
@@ -552,6 +568,12 @@ def _receipt_map(result) -> dict:
     ``__eq__`` inside the probe, and only that key's entry drops.
     """
     out = dict(_RECEIPT_DEFAULTS)
+    # Placeholders for the post-run mutation fields: a collider key whose
+    # hash lands on ``target``/``container``/``cwd`` now meets a seeded
+    # exact-str key at insert time and drops here, instead of detonating
+    # the later bare ``result[...] = ...`` writes (see _MUTATED_FIELDS).
+    for field in _MUTATED_FIELDS:
+        out[field] = _UNSET
     if _isa(result, dict):
         try:
             items = list(dict.items(result))
@@ -565,6 +587,12 @@ def _receipt_map(result) -> dict:
                 # raised against the seeded exact-str field: the seeded
                 # default stays and only this entry degrades.
                 continue
+    # Strip the placeholders the receipt did not overwrite, so a host run's
+    # payload still has no ``container`` key and the response shape is
+    # byte-for-byte what it was before the seeding.
+    for field in _MUTATED_FIELDS:
+        if out.get(field) is _UNSET:
+            del out[field]
     return out
 
 
@@ -790,6 +818,66 @@ def _clamp_timeout(timeout: int | None) -> int:
     return max(1, min(value, MAX_TIMEOUT))
 
 
+def _spawn_receipt(argv: list[str], timeout: int, cwd: str | None = None) -> dict:
+    """``_run`` through the seam guard, laundered into a plain receipt.
+
+    ``run_host``/``run_container`` do not own the runner (tests and tooling
+    patch ``_run``), and the call itself was bare: a patched runner that
+    *raises* — any exception type at all — used to unwind straight out of
+    POST /api/terminal/run as a raw 500 (the vms11/storage11 runner-seam
+    rule).  Coded ``HTTPException``s pass through untouched, because
+    ``_run``'s own timeout answer *is* the coded 504 and must stay it.
+    Anything else degrades to the failed-command stub: rc ``-255`` — never
+    ``127`` and never ``-1`` — with an empty stderr, so an unusable runner
+    answer can neither forge the vanished-CLI confirm nor read like the
+    engine-down phrases; the caller's 503 still requires honest evidence.
+    """
+    try:
+        return _receipt_map(_run(argv, timeout, cwd=cwd))
+    except HTTPException:
+        raise
+    except Exception:
+        return _receipt_map({})
+
+
+def _looks_engine_down(blob: str) -> bool:
+    """``looks_engine_down`` through the seam guard.
+
+    The classifier's answer fed a bare ``or`` truthiness probe, and the call
+    itself was unguarded: a patched classifier that raises, or one answering
+    a leftover whose ``__bool__`` bombs, used to detonate the failure branch
+    — a raw 500 on POST /api/terminal/run *after* the command had already
+    executed.  An unreadable answer is no classification: the run keeps its
+    own receipt, the same non-matching branch honest output takes.
+    """
+    try:
+        return _cfg_truthy(looks_engine_down(blob))
+    except Exception:
+        return False
+
+
+def _engine_confirmed_down() -> bool:
+    """Forced ``engine_up`` probe through the seam guard, inverted.
+
+    The coded 503 replaces the command's own output, so it requires a
+    *confirmed* down answer.  The bare ``not engine_up(force=True)`` ran a
+    raising patched probe — and a probe answering a ``__bool__``-bombing
+    leftover — straight into a raw 500 after the command had executed.  An
+    unreadable probe answer confirms nothing (``_cfg_truthy`` alone would
+    read the bomb as falsy and *mint* the 503 from junk): the receipt is
+    handed back verbatim, exactly what the route answered before the
+    classifier existed.  Only an honest falsy answer confirms down.
+    """
+    try:
+        answer = engine_up(force=True)
+    except Exception:
+        return False
+    try:
+        return not bool(answer)
+    except Exception:
+        return False
+
+
 def _check_command(command: str) -> str:
     # _isa + _config_text: a leftover command whose ``__class__`` is a
     # raising property used to detonate the bare isinstance, and a str
@@ -837,14 +925,15 @@ def run_host(
     shell = _config_text(_cfg_value(tc, "shell")) or _default_shell()
     start_cwd = _resolve_cwd(cwd)
 
-    # _receipt_map: run_host does not own ``_run``'s receipt (tests and
-    # tooling patch it), and a dict-subclass receipt whose item hooks raise,
-    # a receipt missing a field, or a hash-shadowing key used to detonate
+    # _spawn_receipt: run_host does not own ``_run`` (tests and tooling
+    # patch it) — a runner that *raises* used to unwind out of the route as
+    # a raw 500, and a dict-subclass receipt whose item hooks raise, a
+    # receipt missing a field, or a hash-shadowing key used to detonate
     # the bare ``result[...]`` reads and writes below — a raw 500 after the
     # command had already executed.  _config_text on stdout: a non-str (or
     # a str subclass whose ``rfind``/``endswith`` raises) used to blow
     # ``_split_cwd`` the same way.
-    result = _receipt_map(_run([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd))
+    result = _spawn_receipt([shell, "-c", _wrap_with_cwd(cmd)], secs, cwd=start_cwd)
     result["stdout"], end_cwd = _split_cwd(
         _config_text(_mapping_get(result, "stdout", "")), start_cwd
     )
@@ -959,10 +1048,11 @@ def run_container(
     if start_cwd:
         wrapped = f"cd {_sh_quote(start_cwd)} 2>/dev/null || true\n{wrapped}"
 
-    # _receipt_map: the same launder run_host applies — a dict-subclass
-    # receipt, a missing field or a hash-shadowing key used to detonate the
-    # bare ``result[...]`` reads/writes after the command already executed.
-    result = _receipt_map(_run([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs))
+    # _spawn_receipt: the same seam guard + launder run_host applies — a
+    # raising patched runner, a dict-subclass receipt, a missing field or a
+    # hash-shadowing key used to detonate the route after the command
+    # already executed.
+    result = _spawn_receipt([DOCKER, "exec", "--", name, sh, "-c", wrapped], secs)
     result["stdout"], end_cwd = _split_cwd(
         _config_text(_mapping_get(result, "stdout", "")), start_cwd
     )
@@ -983,17 +1073,20 @@ def run_container(
     # raises used to detonate the bare comparison / or-truthiness f-string —
     # a raw 500 after the command had already executed.  _mapping_get on the
     # reads: a stateful hostile key that survived the launder still cannot
-    # 500 the probe lookups themselves.
+    # 500 the probe lookups themselves.  _looks_engine_down /
+    # _engine_confirmed_down: the classifier and the forced probe are patched
+    # seams too — a raising probe, or one answering a ``__bool__``-bombing
+    # leftover, used to detonate the bare ``or`` / ``not`` right here.
     if (
         _rc_int(_mapping_get(result, "rc")) != 0
         and (
-            looks_engine_down(
+            _looks_engine_down(
                 f"{_config_text(_mapping_get(result, 'stderr'))}\n"
                 f"{_config_text(_mapping_get(result, 'stdout'))}"
             )
             or _docker_vanished(result)
         )
-        and not engine_up(force=True)
+        and _engine_confirmed_down()
     ):
         # A dead daemon used to be presented as the command's own output
         # (raw untranslated stderr).  Coded 503 like the Containers page;
