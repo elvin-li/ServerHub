@@ -9,6 +9,8 @@ Inspired by:
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import platform
 import re
@@ -40,7 +42,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -61,7 +65,9 @@ def _rc_int(rc) -> int:
         if isinstance(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -82,19 +88,25 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
     try:
         if len(items) != 3:
             return (-255, "", "")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
     return items
 
@@ -113,7 +125,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -133,16 +147,22 @@ def _utf8_text(value) -> str:
             # like any other junk object below instead of 500ing.
             base = bytes if isinstance(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Unbound str.encode, not text.encode: ``str(x)`` of a str *subclass*
     # whose ``__str__`` returns itself keeps the subclass, so the bound
@@ -165,14 +185,18 @@ def _as_text(value) -> str:
             # ``__class__`` impostor, which renders as junk text below.
             base = bytes if isinstance(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     if _isa(value, float):
         try:
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
         if value != value or value in (float("inf"), float("-inf")):
             return ""
@@ -181,7 +205,9 @@ def _as_text(value) -> str:
         return ""
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -201,7 +227,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -220,7 +248,9 @@ def _finite_number(value, default=None):
             # GET /api/settings/thresholds and /other.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A >4300-digit leftover int is unrenderable by json.dumps
             # (CPython's int->str digit cap) — fall back like inf.
             return default
@@ -230,7 +260,9 @@ def _finite_number(value, default=None):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
@@ -250,7 +282,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -268,7 +302,9 @@ def _as_map(value) -> dict:
         return {}
     try:
         return dict(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -286,7 +322,9 @@ def _as_list(value) -> list:
         return []
     try:
         return list(list.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -302,7 +340,9 @@ def _settings_map() -> dict:
     """
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     # _isa, not a bare isinstance (the settings_section host12 rule): a
     # snapshot root whose ``__class__`` is a *raising property* detonated
@@ -337,7 +377,9 @@ def _json_atom(value):
             # one raised out of the sanitizer.
             base = bytes if isinstance(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims bytes, is not) TypeErrors the
             # unbound decode: junk drops like any other unrenderable.
             return None
@@ -348,7 +390,9 @@ def _json_atom(value):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -357,7 +401,9 @@ def _json_atom(value):
         return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raising ``isoformat`` property used to blow the probe itself
         # (the _plist_jsonable rule from host7): getattr's default only
         # swallows AttributeError, so the bomb 500'd every _json_atom rider.
@@ -365,7 +411,9 @@ def _json_atom(value):
     if callable(iso):
         try:
             stamped = iso()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if stamped is value:
             return None
@@ -379,7 +427,9 @@ def _json_atom(value):
             # the same drop instead of returning it raw.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
@@ -392,7 +442,9 @@ def _json_atom(value):
         return value
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -421,7 +473,9 @@ def _json_tree(value, depth: int = 0):
             # bomb used to raise past the ValueError-only digit-cap catch.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
@@ -431,7 +485,9 @@ def _json_tree(value, depth: int = 0):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -443,7 +499,9 @@ def _json_tree(value, depth: int = 0):
             # one raised out of the sanitizer.
             base = bytes if isinstance(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims bytes, is not) TypeErrors the
             # unbound decode: junk drops like any other unrenderable.
             return None
@@ -453,7 +511,9 @@ def _json_tree(value, depth: int = 0):
         out = {}
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A dict *subclass* whose items() raises must not 500 the
             # settings bundle — drop the node like an unrenderable scalar;
             # healthy siblings around it are untouched.
@@ -461,7 +521,9 @@ def _json_tree(value, depth: int = 0):
         for pair in items:
             try:
                 k, v = pair
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A subclass items() answering torn pairs (three-tuples, a
                 # bombing pair iterator) used to ValueError out of the walk
                 # itself; the torn entry drops and its siblings survive.
@@ -474,28 +536,36 @@ def _json_tree(value, depth: int = 0):
                     # ``__bytes__`` bomb used to raise out of the walk.
                     kbase = bytes if isinstance(k, bytes) else bytearray
                     k = kbase.decode(k, "utf-8", "replace")
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     # A lying-``__class__`` key cannot be rendered: the
                     # entry drops, its siblings stay.
                     continue
             else:
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _json_tree(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A list/set subclass whose __iter__ raises drops to null rather
             # than raising out of the encode; the structure survives.
             return None
         return [_json_tree(v, depth + 1) for v in seq]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A raising ``isoformat`` property used to blow the probe itself
         # (the _plist_jsonable rule from host7): getattr's default only
         # swallows AttributeError, so the bomb 500'd GET /api/scheduler,
@@ -504,11 +574,15 @@ def _json_tree(value, depth: int = 0):
     if callable(iso):
         try:
             return _json_tree(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -571,7 +645,9 @@ def get_datetime_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     now, tz, ntp_on, ntp_server = fan_out(
@@ -662,7 +738,9 @@ def _pmset_settings() -> dict:
                         settings[key] = int(val)
                     else:
                         settings[key] = val
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     settings[key] = val
     return settings
 
@@ -707,7 +785,9 @@ def get_power_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     settings, sleep_prevented_by, ups = fan_out(
@@ -786,7 +866,9 @@ def _storage_snapshot() -> tuple[dict, list]:
         st = storage_svc.collect_storage(force=False)
         smart = (st.get("system") or {}).get("smart") or st.get("smart") or {}
         return smart, st.get("disks") or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}, []
 
 
@@ -794,7 +876,9 @@ def _power_disks() -> list:
     try:
         from hub import disk_power_svc
         return disk_power_svc.list_power_disks()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -812,7 +896,9 @@ def get_disk_settings() -> dict:
             [get_power_info, _storage_snapshot, _power_disks],
             max_workers=3,
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         power, storage, power_disks = {}, ({}, []), []
     # _as_map, not the bare isinstance gate: a leftover dict-*subclass*
     # power snapshot with a bombing ``.get`` passed the gate and raised on
@@ -826,7 +912,9 @@ def get_disk_settings() -> dict:
             smart, disks = storage[0], storage[1]
         else:
             smart, disks = {}, []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         smart, disks = {}, []
     # _as_list on both inventories: a list *subclass* answer passed the old
     # isinstance gates whole, and its bombing ``__len__`` detonated the
@@ -876,7 +964,9 @@ def _panel_update_snapshot() -> dict:
     try:
         from hub.tools_svc import github_update_status
         snap = github_update_status(fetch=False, checkout=False)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     return snap if isinstance(snap, dict) else {}
 
@@ -952,12 +1042,16 @@ def get_thresholds() -> dict:
                 k = (bytes if isinstance(k, bytes) else bytearray).decode(
                     k, "utf-8", "replace",
                 )
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         elif not _isa(k, str):
             try:
                 k = str(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         k = _utf8_text(k)
         if not k or v is None:
@@ -993,7 +1087,9 @@ def get_other_settings() -> dict:
     if _isa(ips, list):
         try:
             items = list(ips)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A list *subclass* whose __iter__ raises passes the isinstance
             # gate; iterating it 500'd GET /api/settings/other.
             items = []
@@ -1054,7 +1150,9 @@ def get_scheduler_summary() -> dict:
         # passed the old ``or []`` and blew the slice / len below.
         from hub.tools_svc import launchd_timers
         timers = list(launchd_timers() or [])
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # leftover ``str(e)`` RecursionError / ``\\ud800`` used to 500 GET /api/settings.
         return {"timers": [], "count": 0, "error": _as_text(e)}
     slim = []
@@ -1150,7 +1248,9 @@ def get_vm_settings() -> dict:
             "items": items[:20],
             "hint": "UTM + OrbStack virtual machines",
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"error": _as_text(e), "total": 0, "running": 0, "items": []}
 
 
@@ -1174,7 +1274,9 @@ def _diag_host() -> dict:
             "python": _as_text(platform.python_version()),
             "hostname": _as_text(platform.node()),
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"platform": "", "python": "", "hostname": "", "host_error": _as_text(e)}
 
 
@@ -1182,14 +1284,18 @@ def _diag_identity() -> dict:
     try:
         from hub import identity_svc
         return {"identity": identity_svc.get_identity()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"identity": {"error": _as_text(e)}}
 
 
 def _diag_datetime() -> dict:
     try:
         return {"datetime": get_datetime_info()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"datetime": {"error": _as_text(e)}}
 
 
@@ -1201,7 +1307,9 @@ def _diag_power() -> dict:
     """
     try:
         info = get_power_info()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"power": {"error": _as_text(e)}}
     return {"power": {
         **{k: v for k, v in info.items() if k != "assertions"},
@@ -1212,14 +1320,18 @@ def _diag_power() -> dict:
 def _diag_management() -> dict:
     try:
         return {"management": get_management_access()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"management": {"error": _as_text(e)}}
 
 
 def _diag_other() -> dict:
     try:
         return {"other": get_other_settings()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"other": {"error": _as_text(e)}}
 
 
@@ -1233,7 +1345,9 @@ def _diag_docker() -> dict:
             "containers_running": (di.get("info") or {}).get("ContainersRunning"),
             "orb_version": di.get("orb_version"),
         }}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"docker": {"error": _as_text(e)}}
 
 
@@ -1241,7 +1355,9 @@ def _diag_alias_auto() -> dict:
     try:
         from hub import network_svc
         return {"alias_auto": network_svc.alias_auto_status()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"alias_auto": {"error": _as_text(e)}}
 
 
@@ -1249,7 +1365,9 @@ def _diag_alerts() -> dict:
     try:
         from hub import alerts
         return {"recent_alerts": alerts.list_alerts(20)}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"recent_alerts": []}
 
 
@@ -1257,7 +1375,9 @@ def _diag_health() -> dict:
     try:
         from hub import health_svc
         return {"health": health_svc.run_checks()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"health": {"error": _as_text(e)}}
 
 
@@ -1267,7 +1387,9 @@ def _diag_metrics() -> dict:
         hist = metrics.history(30)
         latest = hist[-1] if hist else None
         return {"metrics_latest": _json_tree(latest) if isinstance(latest, dict) else None}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"metrics_latest": None}
 
 
@@ -1281,7 +1403,9 @@ def _diag_vms() -> dict:
     try:
         vm = get_vm_settings()
         return {"vms": {"total": vm.get("total"), "running": vm.get("running")}}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -1358,7 +1482,9 @@ def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
             ).encode("utf-8"),
         )
         return str(path), None
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # Assigned onto the JSON body after ``_json_tree``; leftover ``\\ud800``
         # / RecursionError on ``str(e)`` used to 500 GET /api/diagnostics.
         return None, _as_text(e) or "save failed"
@@ -1392,47 +1518,69 @@ def unraid_settings_bundle(force: bool = False) -> dict:
 
     try:
         identity = f_identity.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         identity = {"error": _as_text(e)}
     try:
         alias = f_alias.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         alias = None
     try:
         shares = f_shares.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         shares = {"error": _as_text(e), "smb_running": False, "share_count": 0}
     try:
         sched = f_sched.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         sched = {"timers": [], "count": 0, "error": _as_text(e)}
     try:
         vms = f_vms.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         vms = {"total": 0, "running": 0, "items": [], "error": _as_text(e)}
     try:
         datetime_info = f_datetime.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         datetime_info = {"error": _as_text(e)}
     try:
         power = f_power.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         power = {"error": _as_text(e)}
     try:
         disk = f_disk.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         disk = {"error": _as_text(e)}
     try:
         mgmt = f_mgmt.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         mgmt = {"error": _as_text(e)}
     try:
         other = f_other.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         other = {"error": _as_text(e)}
     try:
         thresholds = f_thresholds.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         thresholds = {**DEFAULT_THRESHOLDS, "error": _as_text(e)}
 
     v = {

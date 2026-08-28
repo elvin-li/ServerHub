@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import time
 from typing import Any, Optional
 
@@ -128,7 +130,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -160,7 +164,9 @@ def _as_map(v):
         return {}
     try:
         return dict(v)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -177,7 +183,9 @@ def _mapping_get(mapping, key, default=None):
     """
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -197,28 +205,38 @@ def _merged_section(name: str, patch: dict) -> dict:
     out: dict = {}
     try:
         items = list(dict.items(dict(settings_section(name))))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         items = []
     for k, v in items:
         if _isa(k, str) and type(k) is not str:
             try:
                 k = str.__str__(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         try:
             out[k] = v
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     try:
         out.update(patch)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A non-str hostile key whose hash shadows a patched field: the
         # patch wins; keep every stored sibling that can still be probed.
         merged = dict(patch)
         for k, v in dict.items(out):
             try:
                 merged.setdefault(k, v)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         out = merged
     return out
@@ -234,7 +252,9 @@ def _cfg_map():
     """
     try:
         data = cfg()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     return _as_map(data)
 
@@ -250,16 +270,22 @@ def _utf8_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         try:
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     # Unbound str.encode, not text.encode: ``str(x)`` of a str *subclass*
     # whose ``__str__`` returns itself keeps the subclass, so the bound
@@ -294,7 +320,9 @@ def _jsonable(value, depth: int = 0):
             # GET /api/settings when it rode a stack port / groups entry.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
@@ -304,7 +332,9 @@ def _jsonable(value, depth: int = 0):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -318,13 +348,17 @@ def _jsonable(value, depth: int = 0):
             # The try is for a lying ``__class__`` (claims bytes, is not),
             # which TypeErrors the unbound call and drops the impostor.
             return _decode_bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, dict):
         out = {}
         try:
             items = list(value.items())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A dict *subclass* whose items() raises (or a Mapping bomb) must
             # not 500 Starlette's encoder — drop the whole node like an
             # unrenderable scalar; healthy siblings around it are untouched.
@@ -335,26 +369,34 @@ def _jsonable(value, depth: int = 0):
             if _isa(k, (bytes, bytearray)):
                 try:
                     k = _decode_bytes(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             seq = list(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A list/set subclass whose __iter__ raises drops to null rather
             # than 500ing the encode; the surrounding structure survives.
             return None
         return [_jsonable(v, depth + 1) for v in seq]
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a leftover whose
         # ``isoformat`` is a raising property (or a ``__getattr__`` bomb)
         # used to raise out of the probe itself and 500 GET /api/settings
@@ -365,11 +407,15 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/settings.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -390,7 +436,9 @@ def _finite(value, default):
             # ValueError-only catch and 500 GET /api/settings.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A >4300-digit leftover interval is unrenderable by json.dumps
             # (CPython's int->str digit cap) — fall back like inf.
             return default
@@ -400,7 +448,9 @@ def _finite(value, default):
             # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
             # bomb used to blow the NaN/inf probes below.
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
@@ -421,14 +471,18 @@ def _epoch(value, default: int = 0) -> int:
             # used to raise past the ValueError-only digit-cap catch.
             value = int.__index__(value)
             str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A >4300-digit epoch cannot be JSON-encoded (int->str digit cap).
             return default
         return value
     if _isa(value, float):
         try:
             value = float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
@@ -438,7 +492,9 @@ def _epoch(value, default: int = 0) -> int:
             return default
     try:
         return int(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ``int()`` of an arbitrary leftover dispatches into its own
         # ``__int__``/``__index__``, whose bomb is not one of the three
         # usual conversion errors.
@@ -465,7 +521,9 @@ def _truthy(value) -> bool:
         return value
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -503,7 +561,9 @@ def _public_settings() -> dict:
     password = auth.get("password")
     try:
         password_set = bool(password) and password != "change-me"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         password_set = False
     # _text first, then membership: ``s.get("resource_mode") in ("low",
     # "high")`` gives a str-*subclass* ``__eq__`` bomb reflected priority,
@@ -799,7 +859,9 @@ def _redact_export(node, depth: int = 0):
             if not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             k = _utf8_text(k)
             if k in _EXPORT_REDACT_KEYS and v:
