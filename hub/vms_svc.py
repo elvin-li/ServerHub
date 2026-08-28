@@ -197,6 +197,31 @@ def _sh3(value) -> tuple:
     return items
 
 
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it (tests and tooling patch it, the same
+    seam ``_sh3`` launders for the *answer shape*), and every spawning
+    action called it bare: a leftover runner that raises instead of
+    answering 500'd POST /api/vms/{id}/action and /api/vms/create outside
+    every listing catch, escaped ``_utm_status`` into the console-session
+    mint (``utm_vm_running``'s try only covers the listing read), and blew
+    the fire-and-forget ``utmctl stop --force`` inside the delete action
+    after its status probe had already answered.  The files14/catalog12
+    runner-seam rule: a raising runner reads as ``(-255, "", "")`` —
+    nonzero (a runner that cannot answer is not consent to claim success)
+    and never the ``-1`` spawn *sentinel*, so it cannot forge the
+    vanished-CLI 503 in :func:`_cli_missing` either (the ``_rc_int`` junk
+    rule).  The listings inherit the same degrade: a raising runner loses
+    that inventory refresh, never the route.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except Exception:
+        return (-255, "", "")
+
+
 def _bin_present(path) -> bool:
     if not path:
         return False
@@ -553,7 +578,7 @@ def _probe_port(port) -> bool | None:
 def _list_utm_vms_uncached() -> list[dict]:
     if not _utm_available():
         return []
-    rc, out, err = _sh3(sh([UTMCTL, "list"], timeout=10))
+    rc, out, err = _spawn([UTMCTL, "list"], 10)
     if _rc_int(rc) != 0:
         return []
     out = _as_text(out)
@@ -672,7 +697,7 @@ def _list_orb_machines_uncached() -> list[dict]:
     if not _orb_available():
         return []
     # orbctl list -f json if available, else text
-    rc, out, err = _sh3(sh([ORBCTL, "list", "-f", "json"], timeout=15))
+    rc, out, err = _spawn([ORBCTL, "list", "-f", "json"], 15)
     items: list[dict] = []
     out = _as_text(out)
     if _rc_int(rc) == 0 and out.strip().startswith(("[", "{")):
@@ -714,7 +739,7 @@ def _list_orb_machines_uncached() -> list[dict]:
                     return items
         except Exception:
             pass
-    rc, out, err = _sh3(sh([ORBCTL, "list"], timeout=15))
+    rc, out, err = _spawn([ORBCTL, "list"], 15)
     if _rc_int(rc) != 0:
         return []
     # parse table: NAME  STATE  ...
@@ -1003,7 +1028,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
     if not _utm_available():
         raise api_error("vms.utm_unavailable")
     if action == "start":
-        rc, out, err = _sh3(sh([UTMCTL, "start", ident], timeout=90))
+        rc, out, err = _spawn([UTMCTL, "start", ident], 90)
     elif action == "stop":
         force = kwargs.get("force", True)
         args = [UTMCTL, "stop", ident]
@@ -1011,20 +1036,23 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
             args.append("--force")
         else:
             args.append("--request")
-        rc, out, err = _sh3(sh(args, timeout=180))
+        rc, out, err = _spawn(args, 180)
     elif action == "kill":
-        rc, out, err = _sh3(sh([UTMCTL, "stop", ident, "--kill"], timeout=60))
+        rc, out, err = _spawn([UTMCTL, "stop", ident, "--kill"], 60)
     elif action == "suspend":
-        rc, out, err = _sh3(sh([UTMCTL, "suspend", ident], timeout=120))
+        rc, out, err = _spawn([UTMCTL, "suspend", ident], 120)
     elif action == "restart":
         return _utm_restart_async(ident)
     elif action == "delete":
         # must be stopped
         st = _utm_status(ident)
         if st in ("started", "running"):
-            sh([UTMCTL, "stop", ident, "--force"], timeout=120)
+            # _spawn even though the answer is discarded: a raising runner
+            # used to 500 the delete here, after the status probe had
+            # already answered through the guarded path.
+            _spawn([UTMCTL, "stop", ident, "--force"], 120)
             time.sleep(2)
-        rc, out, err = _sh3(sh([UTMCTL, "delete", ident], timeout=60))
+        rc, out, err = _spawn([UTMCTL, "delete", ident], 60)
     elif action == "clone":
         new_name = kwargs.get("name")
         args = [UTMCTL, "clone", ident]
@@ -1032,9 +1060,9 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
             if not isinstance(new_name, str):
                 raise api_error("vms.bad_machine_name")
             args += ["--name", _argv_name(new_name, code="vms.bad_machine_name")]
-        rc, out, err = _sh3(sh(args, timeout=300))
+        rc, out, err = _spawn(args, 300)
     elif action == "ip":
-        rc, out, err = _sh3(sh([UTMCTL, "ip-address", ident], timeout=15))
+        rc, out, err = _spawn([UTMCTL, "ip-address", ident], 15)
         if _cli_missing(rc, err, UTMCTL):
             raise api_error("vms.utm_unavailable")
         text = _as_text(out)
@@ -1061,7 +1089,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
 
 
 def _utm_status(name: str) -> str:
-    rc, out, _ = _sh3(sh([UTMCTL, "status", name], timeout=10))
+    rc, out, _ = _spawn([UTMCTL, "status", name], 10)
     return _as_text(out).strip() if _rc_int(rc) == 0 else "unknown"
 
 
@@ -1104,17 +1132,19 @@ def utm_vm_running(vm_uuid: str) -> bool:
 
 def _utm_restart_async(name: str) -> dict:
     def job():
-        # sh(), not bare subprocess.run: a TimeoutExpired from stop/start
-        # escaped this worker thread, abandoning the restart halfway with
-        # the VM left stopped.  sh() bounds every call and reports failure
-        # as a return code instead of raising.
-        sh([UTMCTL, "stop", name, "--force"], timeout=180)
+        # _spawn over sh(), not bare subprocess.run: a TimeoutExpired from
+        # stop/start escaped this worker thread, abandoning the restart
+        # halfway with the VM left stopped.  sh() bounds every call and
+        # reports failure as a return code instead of raising — and _spawn
+        # keeps a leftover raising runner from crashing the worker between
+        # the stop and the start for the same abandoned-halfway result.
+        _spawn([UTMCTL, "stop", name, "--force"], 180)
         for _ in range(40):
-            _, out, _ = _sh3(sh([UTMCTL, "status", name], timeout=10))
+            _, out, _ = _spawn([UTMCTL, "status", name], 10)
             if _as_text(out).strip() == "stopped":
                 break
             time.sleep(2)
-        sh([UTMCTL, "start", name], timeout=90)
+        _spawn([UTMCTL, "start", name], 90)
         _invalidate()
 
     threading.Thread(target=job, daemon=True).start()
@@ -1125,16 +1155,16 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
     if not _orb_available():
         raise api_error("vms.orb_unavailable")
     if action == "start":
-        rc, out, err = _sh3(sh([ORBCTL, "start", ident], timeout=120))
+        rc, out, err = _spawn([ORBCTL, "start", ident], 120)
     elif action == "stop":
-        rc, out, err = _sh3(sh([ORBCTL, "stop", ident], timeout=120))
+        rc, out, err = _spawn([ORBCTL, "stop", ident], 120)
     elif action == "restart":
-        rc, out, err = _sh3(sh([ORBCTL, "restart", ident], timeout=180))
+        rc, out, err = _spawn([ORBCTL, "restart", ident], 180)
     elif action == "delete":
         # orbctl delete NAME -y if exists
-        rc, out, err = _sh3(sh([ORBCTL, "delete", ident, "-f"], timeout=180))
+        rc, out, err = _spawn([ORBCTL, "delete", ident, "-f"], 180)
         if _rc_int(rc) != 0:
-            rc, out, err = _sh3(sh([ORBCTL, "delete", ident], timeout=180))
+            rc, out, err = _spawn([ORBCTL, "delete", ident], 180)
     elif action == "clone":
         new_name = kwargs.get("name")
         if new_name is None or new_name == "":
@@ -1142,7 +1172,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         elif not isinstance(new_name, str):
             raise api_error("vms.bad_machine_name")
         new_name = _argv_name(new_name, code="vms.bad_machine_name")
-        rc, out, err = _sh3(sh([ORBCTL, "clone", ident, new_name], timeout=600))
+        rc, out, err = _spawn([ORBCTL, "clone", ident, new_name], 600)
     elif action == "shell":
         # Hint only.  ``orbctl ssh`` is an interactive session and used to sit
         # on the request thread until the 10s sh() timeout.
@@ -1154,7 +1184,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
             "command": f"orb -m {ident}",
         }
     elif action == "info":
-        rc, out, err = _sh3(sh([ORBCTL, "info", ident], timeout=15))
+        rc, out, err = _spawn([ORBCTL, "info", ident], 15)
         if _cli_missing(rc, err, ORBCTL):
             raise api_error("vms.orb_unavailable")
         return {
@@ -1195,7 +1225,7 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
         args.append(name)
     if arch in ("arm64", "amd64"):
         args += ["--arch", arch]
-    rc, out, err = _sh3(sh(args, timeout=600))
+    rc, out, err = _spawn(args, 600)
     if _cli_missing(rc, err, ORBCTL):
         raise api_error("vms.orb_unavailable")
     _invalidate()
