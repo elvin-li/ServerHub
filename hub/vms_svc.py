@@ -14,6 +14,9 @@ from hub.errors import api_error
 from hub.paths import ORBCTL, UTMCTL
 from hub.util import cached_snapshot, fan_out, port_open, safe_json_loads, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 # Short TTL shared by status feed, bookmarks, and /api/vms (dedupe utmctl/orbctl).
 # Must stay LONGER than hub.status._STATUS_TTL (35s): the status feed is polled
@@ -61,7 +64,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -81,7 +86,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -97,7 +104,9 @@ def _override(sid) -> dict:
     """
     try:
         ov = override(sid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     if type(ov) is dict:
         return ov
@@ -105,7 +114,9 @@ def _override(sid) -> dict:
         return {}
     try:
         return dict(ov)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -113,7 +124,9 @@ def _truthy(value) -> bool:
     """Truthiness that a leftover value's ``__bool__`` bomb cannot 500."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -146,7 +159,9 @@ def _rc_int(value) -> int:
     elif _isa(value, int):
         try:
             rc = int.__index__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return -255
         if type(rc) is not int:
             return -255
@@ -183,12 +198,16 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -218,7 +237,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -279,9 +300,17 @@ def _decode_bytes(value) -> str | None:
     lets each caller fall back to its own junk rendering.
     """
     try:
-        base = bytes if _isa(value, bytes) else bytearray
-        return base.decode(value, "utf-8", "replace")
-    except Exception:
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -307,9 +336,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the hub.modules._utf8_text rule): a str subclass
     # carrying a bound ``encode`` bomb rode this line to a 500 on
@@ -317,20 +350,31 @@ def _as_text(value) -> str:
     # GET /api/vms.  The round-trip also hands back an exact str, so the
     # ``.strip()`` / ``or`` that follow cannot hit another override.
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        pass
-    # A lying ``__class__`` impostor claiming str (or bytes, decoded to
-    # None above) reaches here: the unbound encode TypeError'd instead of
-    # detonating the caller, and the impostor renders like any junk object.
-    try:
-        value = str(value)
-    except Exception:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        return ""
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            value = str(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        try:
+            text = str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _display_text(value, fallback: str = "") -> str:
@@ -350,7 +394,9 @@ def _display_text(value, fallback: str = "") -> str:
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
@@ -363,7 +409,9 @@ def _display_text(value, fallback: str = "") -> str:
                 # about a >4300-digit value smuggled it into ``str()``,
                 # whose digit-cap ValueError 500'd the caller.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return fallback
         try:
             float(value)
@@ -377,7 +425,9 @@ def _display_text(value, fallback: str = "") -> str:
         # shares10 ``str.__str__`` launder).
         try:
             value = str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
         return _as_text(value)
     if _isa(value, (bytes, bytearray)):
@@ -387,7 +437,9 @@ def _display_text(value, fallback: str = "") -> str:
         return fallback
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
     # Scrub before the truthiness test: ``str()`` may hand back a subclass
     # (a ``__str__`` answering *self*) whose ``__bool__`` raises.
@@ -408,7 +460,9 @@ def _id_text(value, fallback: str) -> str:
         # no id at all, never as its repr.
         try:
             value = str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
         # Scrub before the truthiness test: a str-subclass ``__bool__`` bomb
         # used to raise out of ``_orb_item`` and cost the whole listing.
@@ -421,7 +475,9 @@ def _id_text(value, fallback: str) -> str:
                 # bomb (or one lying about a >4300-digit value, whose
                 # ``str()`` then ValueError'd on the digit cap) cannot 500.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return fallback
         try:
             float(value)
@@ -463,7 +519,9 @@ def _jsonable(value, depth: int = 0):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -479,7 +537,9 @@ def _jsonable(value, depth: int = 0):
         # itself, which used to 500 GET /api/vms out of this final pass.
         try:
             pairs = dict.items(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         out = {}
         for k, v in pairs:
@@ -494,7 +554,9 @@ def _jsonable(value, depth: int = 0):
                 # (their unbound decode answered None) render as repr.
                 try:
                     key = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_as_text(key)] = _jsonable(v, depth + 1)
         return out
@@ -507,13 +569,17 @@ def _jsonable(value, depth: int = 0):
                 # the unbound read itself — it degrades instead of 500ing.
                 try:
                     return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     return None
     if _isa(value, int):
         if type(value) is not int:
             try:
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             float(value)
@@ -524,7 +590,9 @@ def _jsonable(value, depth: int = 0):
         return _as_text(value)
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself.
         iso = None
@@ -533,7 +601,9 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/vms.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
@@ -554,7 +624,9 @@ def _rows_list(value) -> list:
         if _isa(value, base):
             try:
                 return [row for row in base.__iter__(value)]
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return []
     return []
 
@@ -571,7 +643,9 @@ def _listing_rows(probe) -> list:
     """
     try:
         rows = probe()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     return _rows_list(rows)
 
