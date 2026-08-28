@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import fcntl
 import os
 import stat
@@ -16,6 +17,9 @@ from hub import secure_io
 from hub.errors import api_error
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR, ensure_state_dirs
 from hub.util import read_text_capped
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _cfg = {"mtime": 0.0, "data": {}}
 _write_lock = threading.Lock()
@@ -600,7 +604,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -627,13 +633,15 @@ def _renderable_tree(value, depth: int = 0):
     """
     if depth > 64:
         return value
-    if _isa(value, bool):
+    if type(value) is bool:
         return value
     if _isa(value, int):
         if type(value) is not int:
             try:
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return _UNRENDERABLE
         try:
             str(value)
@@ -646,14 +654,18 @@ def _renderable_tree(value, depth: int = 0):
         try:
             # NaN/inf stay: YAML renders them as ``.nan`` / ``.inf``.
             return float.__float__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _UNRENDERABLE
     if _isa(value, str):
         if type(value) is str:
             return value
         try:
             return str.__str__(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A lying ``__class__`` (claims str, is not) TypeErrors the
             # unbound copy: no representer could render it either way.
             return _UNRENDERABLE
@@ -661,12 +673,16 @@ def _renderable_tree(value, depth: int = 0):
         # bytearray as well: SafeDumper only represents exact bytes.
         try:
             return bytes(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _UNRENDERABLE
     if not _isa(value, (dict, list, tuple, set, frozenset)):
         try:
             value.__class__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A ``__class__``-property bomb detonates the dumper's own bare
             # ``ignore_aliases`` isinstance (RuntimeError, not YAMLError):
             # unrepresentable either way — drop the node, keep siblings.
@@ -675,7 +691,9 @@ def _renderable_tree(value, depth: int = 0):
     if _isa(value, dict):
         try:
             items = list(dict.items(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _UNRENDERABLE
         out = {}
         for k, v in items:
@@ -687,7 +705,9 @@ def _renderable_tree(value, depth: int = 0):
                 continue
             try:
                 out[k2] = v2
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A passthrough key whose ``__hash__`` bombs cannot land in
                 # a YAML mapping; drop the entry, keep siblings.
                 continue
@@ -696,18 +716,24 @@ def _renderable_tree(value, depth: int = 0):
         base = set if _isa(value, set) else frozenset
         try:
             members = list(base.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _UNRENDERABLE
         cleaned = (_renderable_tree(v, depth + 1) for v in members)
         try:
             return {v for v in cleaned if v is not _UNRENDERABLE}
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A laundered member whose ``__hash__`` bombs cannot join a set.
             return _UNRENDERABLE
     base = list if _isa(value, list) else tuple
     try:
         members = list(base.__iter__(value))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return _UNRENDERABLE
     cleaned = [_renderable_tree(v, depth + 1) for v in members]
     return [v for v in cleaned if v is not _UNRENDERABLE]
