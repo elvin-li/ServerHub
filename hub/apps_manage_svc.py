@@ -35,6 +35,14 @@ from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh
 #: Apps managed routes raw.
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never Apps-page data (the
+#: audit14/modules14/bookmarks rule).  Only the free-text *coercion* arms of
+#: ``_utf8_text`` / ``_field_text`` are scrubbed with it; real str/bytes
+#: storage is data — a docker log line may legitimately contain the pattern —
+#: and stays verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _isa(value, kinds) -> bool:
     """``isinstance`` that survives a leftover ``__class__``-property bomb.
@@ -139,9 +147,32 @@ def _rc_int(rc) -> int:
         return -255
 
 
+def _user_home() -> Path | None:
+    """``paths.user_home``, fenced: this module does not own the provider.
+
+    ``user_home`` names only the typed ``Path.home()`` failures (OSError /
+    RuntimeError / ValueError), so a leftover provider raising anything
+    else — a *BaseException* subclass included — sailed through the bare
+    reads in ``_native_detail`` and ``_native_logs``, where no seam stands
+    behind ``detail()`` / ``logs()``: a raw 500 on
+    GET /api/apps/managed/detail?id=native:* and
+    GET /api/apps/managed/logs?id=native:* (the host-ip provider twin).
+    ``type``-based gate on the answer: a junk home that is not really a
+    Path would detonate the bare ``home / "…"`` joins one line later.
+    Every caller already owns the ``None`` degrade.
+    """
+    try:
+        home = user_home()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return home if issubclass(type(home), Path) else None
+
+
 def _default_services_root() -> Path:
     """Services tree under ``~/Services``.  ``Path.home()`` leftover must not 500 import."""
-    home = user_home()
+    home = _user_home()
     return (home / "Services") if home is not None else Path("/var/empty/serverhub-services")
 
 
@@ -177,12 +208,37 @@ def _utf8_text(value) -> str:
     # old bound call (planted as an override value it raised out of
     # ``_launchd_apps`` — a 500 on the launchd detail route and a wiped
     # launchd section).  ``_decode_bytes`` answers ``None`` for a *lying*
-    # ``__class__`` (claims bytes, is not): the value falls to the str()
-    # scrub below like any other junk leftover (docker_cli twin).
+    # ``__class__`` (claims bytes, is not): the value falls to the scrub
+    # below like any other junk leftover (docker_cli twin).
     if _isa(value, (bytes, bytearray)):
         decoded = _decode_bytes(value)
         if decoded is not None:
             return decoded
+    # Real layout, not the claimed one: ``type(value)`` never consults a
+    # lying ``__class__`` property, so the coercion probes below cannot be
+    # steered.  Genuine str storage (subclasses included) is *data* and
+    # skips the probe and the belt.
+    real_str = issubclass(type(value), str)
+    if not real_str:
+        # Only a type that renders *itself* may coerce.  This free-text arm
+        # ran ``str()`` on any leftover shape, and for a type that never
+        # overrode ``__str__``/``__repr__`` the answer is the default
+        # ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+        # address — which a junk config-override field (name/port/group/url)
+        # carried verbatim onto GET /api/apps/managed and its launchd
+        # detail, and a junk cloudflared ``active_tunnel`` carried into the
+        # native detail's status text (the audit14/modules14 slot-probe
+        # rule, sealed on those surfaces but never here).  The probe reads
+        # the slots off the real type, so a flickering ``__class__``
+        # property cannot swap them out and no instance hook ever runs.
+        try:
+            cls = type(value)
+            if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     try:
         text = str(value)
     except RecursionError:
@@ -198,6 +254,13 @@ def _utf8_text(value) -> str:
         # A ``__str__`` bomb raising a *BaseException* subclass used to
         # sail past the ``except Exception`` here and 500 the Apps routes
         # at value, field and status-text rank.
+        return ""
+    if not real_str and _ADDR_REPR_RE.search(text):
+        # Belt for what the slot probe cannot see: a function / bound-method
+        # leftover (a C-level ``__repr__`` override) and a custom ``__str__``
+        # whose *rendering* embeds a default repr still answered an address.
+        # Only this coercion arm is scrubbed — real str/bytes storage above
+        # is data and stays verbatim.
         return ""
     # Unbound base encode — ``str()`` of a str subclass whose ``__str__``
     # returns self keeps the subclass, so a bound ``.encode`` bomb could
@@ -363,8 +426,14 @@ def _as_text(value) -> str:
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return ""
-        if probe != probe or probe in (float("inf"), float("-inf")):
+            # A *lying* ``__class__`` steered honest storage into this arm
+            # and the descriptor's refusal used to throw it away as "" (the
+            # files16/notify13 wrong-rank shape): a genuine int port whose
+            # ``__class__`` lied float rendered empty although its real
+            # layout answers.  Fall through to the scrub, which coerces off
+            # the real type.
+            probe = None
+        if probe is not None and (probe != probe or probe in (float("inf"), float("-inf"))):
             return ""
     if value is None:
         return ""
@@ -394,14 +463,22 @@ def _field_text(value, fallback: str = "") -> str:
         # / ``__ne__`` bomb (a poisoned override ``port``) used to detonate
         # the bare NaN/inf probes below (the docker_cli._jsonable rule).
         try:
-            value = float.__float__(value)
+            probe = float.__float__(value)
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return fallback
-        if value != value or value in (float("inf"), float("-inf")):
-            return fallback
-        return str(value)
+            # The descriptor refused the real layout, so the claim was a
+            # lie — the old ``return fallback`` here threw honest storage
+            # away at the wrong rank (a genuine override ``port: 8080``
+            # whose ``__class__`` lied float rendered as the fallback).
+            # ``isinstance`` checks the real MRO *first*, so falling
+            # through lets the arm the real storage matches render it
+            # (the modules14/files16 wrong-rank rule).
+            probe = None
+        if probe is not None:
+            if probe != probe or probe in (float("inf"), float("-inf")):
+                return fallback
+            return str(probe)
     if _isa(value, int):
         # A YAML hex/octal leftover dodges the int(str) digit cap, so an
         # override ``port: 0xfff…`` arrives as a >4300-digit int whose str()
@@ -410,20 +487,40 @@ def _field_text(value, fallback: str = "") -> str:
         # int.__index__ first: an int-subclass ``__str__`` bomb used to
         # raise past the ValueError catch the digit cap already has.
         try:
-            return str(int.__index__(value))
+            coerced = int.__index__(value)
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            return fallback
-    if _isa(value, str):
+            # A lying ``__class__`` claiming int: real storage recovers in
+            # the arm it genuinely matches below.
+            coerced = None
+        if coerced is not None:
+            try:
+                return str(coerced)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # The >4300-digit cap on honest int storage: junk, fallback.
+                return fallback
+    if _isa(value, str) and issubclass(type(value), str):
+        # The real-layout check keeps the wrong-rank door shut both ways: a
+        # genuine container claiming str used to render its repr blob here,
+        # and a junk object claiming str rode ``_utf8_text``'s old bare
+        # ``str()`` out as its ``object.__repr__`` heap address.  Liars fall
+        # through to the arm (or the scrubbed coercion) their real storage
+        # answers.
         return _utf8_text(value)
     if _isa(value, (bytes, bytearray)):
         # Unbound both-bases decode: a bytes-subclass ``.decode`` bomb in an
         # override field used to fire the old bound call; a lying
-        # ``__class__`` reads as ``None`` and degrades to the fallback.
+        # ``__class__`` reads as ``None`` and falls through to the arm the
+        # real storage matches.
         decoded = _decode_bytes(value)
-        return decoded if decoded is not None else fallback
-    if _isa(value, (dict, list, tuple, set, frozenset)):
+        if decoded is not None:
+            return decoded
+    if _isa(value, (dict, list, tuple, set, frozenset)) and issubclass(
+        type(value), (dict, list, tuple, set, frozenset)
+    ):
         return fallback
     try:
         iso = getattr(value, "isoformat", None)
@@ -441,13 +538,14 @@ def _field_text(value, fallback: str = "") -> str:
             raise
         except BaseException:
             return fallback
-    try:
-        text = str(value)
-    except _CONTROL_FLOW:
-        raise
-    except BaseException:
-        return fallback
-    return _utf8_text(text) if text else fallback
+    # Through the scrubbed coercion arm, not bare ``str(value)``: the old
+    # exact-str result of ``str()`` rode ``_utf8_text``'s verbatim data
+    # branch, so a plain-object override value rendered its
+    # ``object.__repr__`` — a raw heap address — as a name/port/group field
+    # on GET /api/apps/managed (the audit14 ``str(k)`` shape).  A value that
+    # coerces to nothing keeps the fallback.
+    text = _utf8_text(value)
+    return text if text else fallback
 
 
 def _optional_text(value) -> str | None:
@@ -578,7 +676,26 @@ def invalidate_inventory() -> None:
 
 
 def _host_ip() -> str:
-    return host_ip()
+    """``host_address.host_ip``, fenced: this module does not own the provider.
+
+    ``host_address``'s own nets stop at ``except Exception``, so a leftover
+    riding its config seam (``cfg()``) that raises a *BaseException*
+    subclass sailed out of ``host_ip()`` raw — and ``_docker_detail`` /
+    ``_native_detail`` / ``_vm_detail`` read this helper bare with no seam
+    behind ``detail()``: a raw 500 on GET /api/apps/managed/detail for all
+    three kinds, where the inventory's ``_collect`` fallback already
+    absorbed the same bomb.  ``_as_text`` on the answer: a junk *return*
+    (a ``__str__`` bomb, a default-repr object) used to ride the bare
+    f-string URL builders as its heap-address repr.  An unusable provider
+    costs the address fields only, never the route.
+    """
+    try:
+        value = host_ip()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return _as_text(value)
 
 
 # ─── Docker stacks ───────────────────────────────────────────────────────────
@@ -1355,7 +1472,9 @@ def _native_detail(source_id: str) -> dict:
     pkg = app.get("package")
     pkg_key = pkg.split("@", 1)[0] if isinstance(pkg, str) and pkg else ""
     data_paths = []
-    home = user_home()
+    # _user_home, not the bare provider: a raising leftover used to 500 the
+    # native detail route with no seam behind detail().
+    home = _user_home()
     # common brew prefixes
     bases = [Path("/opt/homebrew/var"), Path("/usr/local/var")]
     if home is not None:
@@ -1428,29 +1547,50 @@ def _native_detail(source_id: str) -> dict:
         try:
             from hub import cloudflared_svc
             cf = cloudflared_svc.status()
-            out["state"] = "ok" if cf.get("running") else "down"
-            out["cloudflared"] = cf
+            # _mapping_get/_truthy/_field_text on every scalar read, the
+            # _native_apps cf-branch convention this detail twin never got:
+            # a junk ``notes`` used to TypeError the bare ``+`` concat and
+            # absorb the *whole* cloudflared section into ``ok: false``
+            # although every sibling field was sane, and a junk
+            # ``active_tunnel`` (a plain default-repr object) rode the bare
+            # f-string into ``status_text`` as its ``object.__repr__`` — a
+            # raw heap address on the wire.  Each junk field costs itself.
+            cf_running = _truthy(_mapping_get(cf, "running"))
+            active = _field_text(_mapping_get(cf, "active_tunnel"), "")
+            cf_notes = _field_text(_mapping_get(cf, "notes"), "")
+            out["state"] = "ok" if cf_running else "down"
+            # The status payload is handed on, but through the launder with
+            # the scalar reads above pinned over their junk-prone slots —
+            # the old verbatim hand-off carried the same default-repr
+            # address out inside ``cloudflared.active_tunnel``.
+            cf_view = _jsonable_safe(cf) if _isa(cf, dict) else None
+            if not isinstance(cf_view, dict):
+                cf_view = _salvage_dict(cf) if _isa(cf, dict) else None
+            if not isinstance(cf_view, dict):
+                cf_view = {}
+            cf_view["running"] = cf_running
+            cf_view["active_tunnel"] = active
+            cf_view["notes"] = cf_notes
+            out["cloudflared"] = cf_view
             out["plist_hint"] = str(cloudflared_svc.PLIST)
             out["path"] = str(cloudflared_svc.STATE_DIR)
             out["actions"] = (
                 ["stop", "restart", "detail", "logs", "uninstall"]
-                if cf.get("running")
+                if cf_running
                 else ["start", "detail", "logs", "uninstall"]
             )
-            out["notes"] = (out.get("notes") or "") + " · " + (cf.get("notes") or "")
-            if cf.get("active_tunnel"):
+            base_notes = _field_text(out.get("notes"), "")
+            out["notes"] = (base_notes + " · " + cf_notes) if base_notes else cf_notes
+            if active:
                 out["status_text"] = (
-                    f"running · {cf['active_tunnel']}"
-                    if cf.get("running")
-                    else f"stopped · {cf['active_tunnel']}"
+                    f"running · {active}" if cf_running else f"stopped · {active}"
                 )
         except _CONTROL_FLOW:
             raise
         except BaseException as e:
-            # The bare ``.get`` / f-string reads above run the status
-            # payload's own hooks, and one raising a *BaseException*
-            # subclass sailed past the old Exception-only net — a raw 500
-            # on GET /api/apps/managed/detail?id=native:native-cloudflared.
+            # A *raising* status backend keeps the apps13 contract — the
+            # section answers ``ok: false``, never a 500 on
+            # GET /api/apps/managed/detail?id=native:native-cloudflared.
             out["cloudflared"] = {"ok": False, "message": _as_text(e)}
     return out
 
@@ -1483,7 +1623,9 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         return {"ok": False, "log": f"unusable log payload ({type(cf_logs).__name__})"}
     pkg = app.get("package")
     chunks = []
-    home = user_home()
+    # _user_home, not the bare provider: a raising leftover used to 500 the
+    # native logs route with no seam behind logs().
+    home = _user_home()
     # brew services log paths
     for logp in (
         Path(f"/opt/homebrew/var/log/{pkg}.log") if pkg else None,
@@ -1711,13 +1853,22 @@ def _launchd_detail(label: str) -> dict:
     # pins the FIFO-plist detail as services.uninstall_unknown, not a 200
     # with blank preview fields.
     try:
-        preview = _jsonable(services_uninstall_svc.preview(label))
+        raw_preview = services_uninstall_svc.preview(label)
     except HTTPException:
         raise
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        preview = None
+        raw_preview = None
+    # _jsonable_safe + _salvage_dict, not the bare launder: the launder's
+    # own nets stop at ``Exception``, so *one* nested preview value whose
+    # hooks raise a BaseException subclass used to blank every preview
+    # field at once (program / workdir / plist / remove_data_path) although
+    # the siblings were sane — the ``_safe_payload`` per-field rule, which
+    # this branch's apps13 sweep never got.  The bombed field costs itself.
+    preview = _jsonable_safe(raw_preview) if _isa(raw_preview, dict) else None
+    if not isinstance(preview, dict):
+        preview = _salvage_dict(raw_preview) if _isa(raw_preview, dict) else None
     if not isinstance(preview, dict):
         preview = {}
     return {

@@ -535,10 +535,16 @@ class DockerDetailJunkInspectOutTests(unittest.TestCase):
 
 
 class CloudflaredDetailBaseBombHttpTests(unittest.TestCase):
-    """A bombed status field costs the cloudflared section, never the
-    native detail route."""
+    """A bombed status field costs itself, never the native detail route.
 
-    def test_a_str_base_bomb_tunnel_name_costs_the_section_only(self):
+    Updated by the apps14 sweep: this pin used to assert the *whole*
+    cloudflared section degrading to ``ok: false`` (the bare f-string read
+    detonated and the branch's net absorbed everything at once).  The
+    scalar reads are now sanitized per-field, so the bombed tunnel name
+    costs its own field only and the sane siblings keep answering.
+    """
+
+    def test_a_str_base_bomb_tunnel_name_costs_its_field_only(self):
         status = {"running": True, "active_tunnel": _StrBaseBomb()}
         with mock.patch("hub.cloudflared_svc.status", return_value=status), \
                 mock.patch("hub.native_catalog.list_native_apps",
@@ -551,7 +557,9 @@ class CloudflaredDetailBaseBombHttpTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text[:300])
         payload = json.loads(_strict_utf8(resp))
         self.assertEqual(payload["source_id"], "native-cloudflared")
-        self.assertIs(payload["cloudflared"]["ok"], False)
+        self.assertIs(payload["cloudflared"]["running"], True)
+        self.assertEqual(payload["cloudflared"]["active_tunnel"], "")
+        self.assertEqual(payload["state"], "ok")
 
 
 class StaysImmunePins(unittest.TestCase):
