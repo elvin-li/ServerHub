@@ -538,29 +538,62 @@ def _jsonable(value, depth: int = 0):
     return None
 
 
+def _rows_list(value) -> list:
+    """Exact list from a possibly-poisoned listing/pool answer; junk reads [].
+
+    The laundering half of :func:`_listing_rows`, split out because the
+    *pool* answers need it too: this module does not own ``fan_out`` (tests
+    and tooling patch it, the same seam :func:`_spawn` launders for the
+    runner), and the batch it hands back rode into bare unpacks and ``+``
+    concatenation with no gate of its own.  ``_isa`` on the gates and
+    unbound base iteration, for the same reasons as everywhere else: a
+    ``__class__``-property bomb, a subclass ``__iter__`` bomb, or a lying
+    impostor claiming list/tuple each degrade to [] instead of raising.
+    """
+    for base in (list, tuple):
+        if _isa(value, base):
+            try:
+                return [row for row in base.__iter__(value)]
+            except Exception:
+                return []
+    return []
+
+
 def _listing_rows(probe) -> list:
     """One hypervisor's inventory, or [] if that listing is leftover/broken.
 
     ``fan_out`` re-raises, so a single ``utmctl`` blow-up used to 500 GET /api/vms
-    (including the OrbStack rows that had already succeeded).
+    (including the OrbStack rows that had already succeeded).  The ``_isa``
+    gate and unbound base iteration live in :func:`_rows_list`: a probe
+    answering a leftover whose ``__class__`` is a raising property (or whose
+    subclass ``__iter__`` bombs) used to detonate *outside* this try,
+    re-raise through ``fan_out`` and 500 GET /api/vms with both inventories.
     """
     try:
         rows = probe()
     except Exception:
         return []
-    for base in (list, tuple):
-        # _isa: a probe answering a leftover whose ``__class__`` is a
-        # raising property detonated this gate *outside* the try, re-raised
-        # through ``fan_out`` and 500'd GET /api/vms with both inventories.
-        if _isa(rows, base):
-            try:
-                # Unbound base iteration, inside the guard: ``list(rows)``
-                # ran *outside* the try, so a leftover subclass ``__iter__``
-                # bomb re-raised through ``fan_out`` and 500'd GET /api/vms.
-                return [row for row in base.__iter__(rows)]
-            except Exception:
-                return []
-    return []
+    return _rows_list(rows)
+
+
+def _listing_pair(answers) -> tuple[list, list]:
+    """Exactly two laundered inventories from a possibly-poisoned pool answer.
+
+    ``hub.util.fan_out`` maps :func:`_listing_rows` in order and never
+    raises past its guarded workers — but this module does not own the pool
+    (tests and tooling patch it, the ``wireguard_svc.installation`` rule),
+    and ``list_all_vms`` unpacked its answer *bare*, outside every listing
+    catch: a pool that raises, answers None / a scalar / a wrong-length
+    batch, a tuple-subclass whose ``__iter__`` bombs, or a right-length
+    pair of non-list junk each 500'd GET /api/vms raw — and, through the
+    same call, the Apps inventory and the settings export that embed it.
+    Junk reads as two empty inventories: a pool that cannot answer loses
+    that refresh, never the route.
+    """
+    items = _rows_list(answers)
+    if len(items) != 2:
+        return [], []
+    return _rows_list(items[0]), _rows_list(items[1])
 
 
 def _probe_port(port) -> bool | None:
@@ -608,10 +641,24 @@ def _list_utm_vms_uncached() -> list[dict]:
     # ``__bool__`` raises used to detonate inside the fan_out worker,
     # re-raise on iteration and cost the *whole* UTM inventory through the
     # ``_listing_rows`` catch instead of degrading one row's probe.
-    probes = fan_out(
-        lambda port: _probe_port(port) if _truthy(port) else None,
-        [_mapping_get(row["ov"], "port") for row in rows],
-    )
+    #
+    # The pool call itself is guarded too (the _listing_pair rule): this
+    # module does not own ``fan_out``, and a pool that raises — or answers
+    # a junk shape, which the bare ``zip`` below silently *truncated the
+    # rows to* — used to throw every already-parsed row away through the
+    # ``_listing_rows`` catch.  A poisoned pool now loses only the port
+    # probes (each row reads as unprobed, exactly like a row with no
+    # configured port), never the inventory.
+    try:
+        probes = fan_out(
+            lambda port: _probe_port(port) if _truthy(port) else None,
+            [_mapping_get(row["ov"], "port") for row in rows],
+        )
+    except Exception:
+        probes = []
+    probes = _rows_list(probes)
+    if len(probes) != len(rows):
+        probes = [None] * len(rows)
 
     items = []
     for row, p in zip(rows, probes):
@@ -706,6 +753,14 @@ def _list_orb_machines_uncached() -> list[dict]:
         except (TypeError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested ``orbctl list -f json``
             # is not ValueError; GET /api/vms used to 500.
+            data = None
+        except Exception:
+            # This module does not own the loader either (the _spawn /
+            # _listing_pair seam rule): one that raises outside the typed
+            # set above used to skip the degraded ``orbctl list`` text
+            # fallback below and throw the whole OrbStack inventory away
+            # through the ``_listing_rows`` catch.  An unusable JSON parse
+            # loses the JSON rows, never the text listing.
             data = None
         try:
             if data is not None:
@@ -822,9 +877,16 @@ def list_all_vms() -> dict:
     one listing does not inform the other. `fan_out` keeps them in order, which is
     what puts UTM's rows ahead of OrbStack's in the combined list.
     """
-    utm, orb = fan_out(
-        _listing_rows, [list_utm_vms, list_orb_machines], max_workers=2
-    )
+    # Guarded pool call + _listing_pair, not a bare 2-way unpack: the pool
+    # seam is not this module's to trust (see _listing_pair) and this is
+    # the one fan_out whose answer rode straight into the route.
+    try:
+        answers = fan_out(
+            _listing_rows, [list_utm_vms, list_orb_machines], max_workers=2
+        )
+    except Exception:
+        answers = ([], [])
+    utm, orb = _listing_pair(answers)
     return _jsonable({
         "vms": utm + orb,
         "utm_count": len(utm),
