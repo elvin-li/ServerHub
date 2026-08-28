@@ -7,6 +7,7 @@ health:
 """
 from __future__ import annotations
 
+import re
 import ssl
 import time
 import urllib.error
@@ -677,10 +678,55 @@ def _decode_bytes(value) -> str:
         return ""
 
 
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never bookmark data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _str_text(value) -> str | None:
+    """Exact text of *really-str* storage, or ``None`` for an impostor.
+
+    ``str.__str__`` is a descriptor bound to the real str layout: any real
+    str (or subclass — even one riding a ``__str__`` / ``encode`` bomb)
+    answers its character data without dispatching the override, while a
+    *lying* ``__class__`` that only claims str rejects the operand.  The old
+    dispatching ``str()`` rendered that impostor's ``repr`` — a raw memory
+    address — into name / id / service cells of GET /api/bookmarks (the
+    assistant12 rule).  The encode-replace pass scrubs lone surrogates the
+    same way as before.
+    """
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except Exception:
+        return None
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
+    if _isinst(value, str):
+        # Unbound base read, not the dispatching ``str()``: real str storage
+        # keeps its text even when the subclass ``__str__`` raises, and a
+        # lying ``__class__`` claiming str drops to "" instead of leaking
+        # its ``repr`` (a heap address) into the response body.
+        return _str_text(value) or ""
+    # Only a type that renders *itself* may coerce.  This free-text arm ran
+    # ``str()`` on any leftover shape, and for a type that never overrode
+    # ``__str__`` / ``__repr__`` the answer is the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which a junk link
+    # name / id / service, an override sid riding into the merged row, and
+    # a backend row's state / status / name / id / detail all carried
+    # verbatim into the GET /api/bookmarks body.  A slot probe on the real
+    # ``type(value)``, not an instance lookup: a ``__getattr__`` bomb
+    # answers instance probes and a flickering ``__class__`` property
+    # cannot swap the real type out.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except Exception:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -695,7 +741,13 @@ def _utf8_text(value) -> str:
     # bomb rode this line to a 500 — through ``_jsonable``'s str branch and
     # ``_key_text``'s lookup path alike.  ``str.encode`` reads the C-level
     # storage and always answers an exact str after the decode round-trip.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    # Belt for what the slot probe cannot see: a function / bound-method
+    # leftover (C-level ``__repr__`` override) and a value whose *rendering*
+    # embeds a default repr (``{'x': <_Junk object at 0x...>}``) still
+    # answered an address.  Only this coercion arm is scrubbed — real
+    # str/bytes storage above is data and stays verbatim.
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -770,14 +822,20 @@ def _jsonable(value, depth: int = 0):
                 k, v = pair
             except Exception:
                 continue
-            if not _isinst(k, (str, bytes, bytearray)):
-                try:
-                    k = str(k)
-                except Exception:
-                    continue
+            # No raw ``str(k)`` pre-coercion: a junk *key* (default
+            # ``object.__repr__``) used to render its heap address as the
+            # JSON key itself, one rank above the value scrub.  ``_utf8_text``
+            # coerces the renderable kinds (int / float / tuple keys) the
+            # same as before and drops the address shapes to "".
+            was_text = _isinst(k, (str, bytes, bytearray))
             try:
                 k = _utf8_text(k)
             except Exception:
+                continue
+            if not k and not was_text:
+                # A key with no real text storage that coerced to nothing:
+                # there is no name to file the value under — the pair drops
+                # alone, siblings survive.  A real empty-str key stays.
                 continue
             out[k] = _jsonable(v, depth + 1)
         return out
