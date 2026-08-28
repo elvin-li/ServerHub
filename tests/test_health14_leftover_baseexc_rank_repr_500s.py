@@ -72,6 +72,13 @@ class Health14LeftoverTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             health_svc._isa(_Ki(), dict)
 
+    def test_jsonable_swallows_list_iter_baseexception(self):
+        class _IterBomb(list):
+            def __iter__(self):
+                raise LeftoverWatchdogTimeout("health jsonable watchdog")
+
+        self.assertIsNone(health_svc._jsonable(_IterBomb([1])))
+
 
 if __name__ == "__main__":
     unittest.main()

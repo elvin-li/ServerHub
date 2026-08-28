@@ -256,7 +256,9 @@ def _jsonable(value, depth: int = 0):
         # bomb drops like any other unreadable leftover.
         try:
             return bool(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     if _isa(value, int):
         if type(value) is not int:
@@ -266,7 +268,9 @@ def _jsonable(value, depth: int = 0):
                 # used to blow the digit-cap probe below and 500 GET
                 # /api/health/checks on every TTL hit.
                 value = int.__index__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         try:
             str(value)
@@ -281,7 +285,9 @@ def _jsonable(value, depth: int = 0):
                 # Base coercion to an exact float: a subclass ``__eq__``
                 # bomb used to blow the NaN/inf probes below.
                 value = float.__float__(value)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
@@ -297,7 +303,9 @@ def _jsonable(value, depth: int = 0):
             # header below — past the guard — and 500 GET /api/health/checks
             # exactly like the items bomb this try already absorbed.
             items = [(k, v) for k, v in value.items()]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A mapping that refuses iteration (odd dict subclass planted in
             # the cache, or a raw Immich/Ollama check row that bypasses
             # ``_check``): nothing to salvage from it, but its *siblings*
@@ -318,20 +326,26 @@ def _jsonable(value, depth: int = 0):
                 elif not _isa(k, str):
                     k = str(k)
                 out[_utf8_text(k)] = _jsonable(v, depth + 1)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         try:
             return [_jsonable(v, depth + 1) for v in value]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Same class as the mapping above, at sequence rank: a list
             # subclass whose ``__iter__`` raises drops alone, never the
             # payload or the route.
             return None
     try:
         iso = getattr(value, "isoformat", None)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # getattr's default only swallows AttributeError; a property or
         # ``__getattr__`` bomb still raised out of the probe itself and
         # 500'd GET /api/health/checks.
@@ -341,18 +355,24 @@ def _jsonable(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/health/checks.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
 def _check(id_: str, name: str, level: str, ok: bool, detail: str, fix: str = "") -> dict:
     try:
         ok_b = bool(ok)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         ok_b = False
     return {
         "id": _as_text(id_),
@@ -375,7 +395,9 @@ def _probe_port(port) -> bool:
     """
     try:
         return _truthy(port_open(port))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -421,7 +443,9 @@ def _label_set(labels) -> frozenset:
         if _isa(labels, base):
             try:
                 it = base.__iter__(labels)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 it = None
             break
     else:
@@ -429,7 +453,9 @@ def _label_set(labels) -> frozenset:
     if it is None:
         try:
             it = iter(labels)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return frozenset()
     out = []
     while True:
@@ -437,7 +463,9 @@ def _label_set(labels) -> frozenset:
             item = next(it)
         except StopIteration:
             break
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             break
         out.append(_as_text(item))
     return frozenset(out)
@@ -446,7 +474,9 @@ def _label_set(labels) -> frozenset:
 def _engine_up() -> bool:
     try:
         return bool(engine_up())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -503,7 +533,9 @@ def _nginx_pair() -> list[dict]:
             "Check ~/Services/nginx/conf.d/" if not t_ok else "",
         ))
         return pair
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "nginx", "System Nginx", "error", False, exc_detail(e, 160),
             "Check LaunchAgent local.system-nginx",
@@ -541,7 +573,9 @@ def _skip_keepalive_watch(pl: dict, label: str) -> bool:
         return True
     try:
         return bool(override(label).get("hide"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -554,7 +588,9 @@ def _stale_runtime_checks() -> list:
     try:
         from hub import stale_runtime
         return stale_runtime.health_checks()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "stale_runtime", "LaunchAgents on missing interpreter",
             "warn", False, exc_detail(e, 160),
@@ -591,7 +627,9 @@ def _brew_snapshot() -> list:
     """
     try:
         rows = brew_services_list() or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     # _isa: a ``__class__``-property-bomb listing detonated the bare gate.
     return rows if _isa(rows, list) else []
@@ -621,7 +659,9 @@ def _smart_checks() -> list[dict]:
         rc, out, _err = sh(
             ["/usr/bin/sudo", "-n", SMARTCTL, "-H", "/dev/disk0"], timeout=10
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rc, out = -255, ""
     # The production sh always decodes (utf-8, replace), but this function
     # does not own the provider (nginx_svc guards the same class with
@@ -654,7 +694,9 @@ def _immich_checks() -> list[dict]:
         from hub import immich_svc
 
         return list(immich_svc.run_checks().get("checks") or [])
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "immich", "Immich hybrid stack check", "warn", False,
             "check failed: " + exc_detail(e, 140),
@@ -674,7 +716,9 @@ def _ollama_checks() -> list[dict]:
         from hub import ollama_svc
 
         return ollama_svc.health_checks()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "ollama_api", "Ollama local LLM check", "warn", False,
             "check failed: " + exc_detail(e, 140), "See hub/ollama_svc.py",
@@ -708,7 +752,9 @@ def _time_machine_checks() -> list[dict]:
             "Turn on File Sharing in System Settings so client Macs can reach "
             "the backup share" if not up else "",
         )]
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "tm_share_smb", "Time Machine share check", "warn", False,
             "check failed: " + exc_detail(e, 140), "See hub/shares_svc.py",
@@ -787,7 +833,9 @@ def _wireguard_checks() -> list[dict]:
                     "Apply the saved wstunnel settings from the WireGuard page",
                 ))
         return checks
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return [_check(
             "wg_check", "WireGuard check", "warn", False,
             "check failed: " + exc_detail(e, 140), "See hub/wireguard_net_svc.py",
@@ -820,7 +868,9 @@ def _worker_checks() -> list[dict]:
             "Restart the ServerHub panel LaunchAgent (launchctl kickstart)"
             if dead else "",
         )]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -842,14 +892,18 @@ def _serve_cached(hit: dict) -> dict:
         }
     try:
         dirty = cleaned != hit
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         dirty = True
     if not dirty:
         return hit
     try:
         hit.clear()
         hit.update(cleaned)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A dict subclass whose clear/update raises (a planted poisoned
         # snapshot): serve the cleaned copy rather than 500 the TTL hit.
         return cleaned
@@ -878,7 +932,9 @@ def _fresh_snapshot() -> dict | None:
         # Exception, not the arithmetic trio: a numeric subclass whose
         # ``__rsub__``/``__le__`` raises RuntimeError still 500'd here.
         expired = time.time() - _cache["t"] >= _TTL
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if expired:
         return None
@@ -934,7 +990,9 @@ def _collect_checks() -> dict:
                 f"used {pct:.0f}% ({used//2**30}/{total//2**30} GB)",
                 "Clean up large files / Docker images, or expand storage" if pct >= 90 else "",
             )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         disk_row = None
     if disk_row is None:
         disk_row = _check(
@@ -960,7 +1018,9 @@ def _collect_checks() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration.  One probe that escapes would empty
@@ -996,7 +1056,9 @@ def _collect_checks() -> dict:
             # lazily-raising return value — and 500 GET /api/health/checks
             # (the nginx_svc.overview rule).
             return list(rows)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     # A plain frozenset of exact strs, not the object the probe answered: a
@@ -1063,7 +1125,9 @@ def _collect_checks() -> dict:
                 st or "unknown",
                 f"brew services start {n}" if not ok else "",
             ))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     # Homebrew python upgrades delete Cellar paths while KeepAlive PIDs
@@ -1081,7 +1145,9 @@ def _collect_checks() -> dict:
         # raising iterable would otherwise detonate the loop header below,
         # past this guard.
         agent_paths = list(glob.glob(str(Path(AGENTS_DIR) / "*.plist")))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A None/NUL AGENTS_DIR used to TypeError after the fan-out and
         # empty GET /api/health/checks.  Exception, not the old
         # (OSError, TypeError, ValueError) trio: a leftover path-like
@@ -1118,7 +1184,9 @@ def _collect_checks() -> dict:
                 "LaunchAgent has KeepAlive configured but is not running",
                 f"launchctl kickstart -k gui/$(id -u)/{label}",
             ))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
 
     # SMART quick (cached style) — probed in the wave above.
@@ -1142,7 +1210,9 @@ def _collect_checks() -> dict:
             # test on this page that sat outside every guard).
             ok = _truthy(os.access(bdir, os.W_OK))
             backup_detail = str(bdir)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Path.home() raises RuntimeError when HOME cannot be resolved —
         # that used to sit outside this try and 500 /api/health/checks.
         ok = True
@@ -1190,7 +1260,9 @@ def _collect_checks() -> dict:
             # summary through this try; the shadowed field now degrades
             # alone and the row still counts.
             return bool(_mapping_get(c, "ok")), _as_text(_mapping_get(c, "level"))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
 
     flags = [f for f in (_row_flags(c) for c in checks) if f is not None]
@@ -1212,7 +1284,9 @@ def _collect_checks() -> dict:
         }
     try:
         _cache.update(t=time.time(), v=v)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A hash-shadowing junk key planted in the module cache raises out
         # of the C-level insert compare (never out of a plain ``t``/``v``
         # overwrite) — pre-fix that 500'd GET /api/health/checks at the
@@ -1221,6 +1295,8 @@ def _collect_checks() -> dict:
         try:
             _cache.clear()
             _cache.update(t=time.time(), v=v)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return v
