@@ -6,6 +6,8 @@ fresh read. No API caller can submit a command, launchd label, or executable.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import plistlib
@@ -94,7 +96,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -112,7 +116,9 @@ def _as_text(value) -> str:
         base = bytes if _isa(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     if value is None:
         return ""
@@ -122,9 +128,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the modules6 rule the sibling services follow):
     # ``str()`` of a subclass whose ``__str__`` answers *self* skips
@@ -132,7 +142,9 @@ def _as_text(value) -> str:
     # the subclass override — a leftover encode bomb 500'd the same routes.
     try:
         return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -140,7 +152,9 @@ def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -168,7 +182,9 @@ def _rc_int(rc) -> int:
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -200,7 +216,9 @@ def _str_keyed(plain: dict) -> dict:
             # the junk key drops like any other non-str.
             try:
                 out[str.__str__(k)] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -224,7 +242,9 @@ def _plain_result(result) -> dict:
             # very next ``plain.get("ok")`` probe — a raw 500 on every
             # share mutation out of the laundering built to absorb junk.
             plain = _str_keyed(dict(result))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {"ok": False, "error": "failed"}
     else:
         return {"ok": False, "error": "failed"}
@@ -487,7 +507,9 @@ def time_machine_records() -> dict[str, dict]:
         return {}
     try:
         return parse_time_machine_records(output)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -509,7 +531,9 @@ def _plain_tm_records() -> dict:
             return {}
         try:
             records = dict(records)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {}
     return _str_keyed(records)
 
@@ -533,7 +557,9 @@ def _tm_record_uuid(record: str) -> str | None:
         # C-level storage, a lying impostor TypeErrors, and a shadow-key
         # ``uuid`` probe raising inside the hash table degrades the same.
         raw = dict.get(tm, "uuid")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     # _as_text, not the raw value: ``_time_machine_commands`` decides
     # "mint or keep" from this value's truthiness, and a ``__bool__``-bomb
@@ -547,7 +573,9 @@ def smb_service_running() -> bool:
     """Whether smbd is accepting connections (File Sharing is on)."""
     try:
         return bool(port_open(SMB_PORT, host="localhost", timeout=0.4))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -652,7 +680,9 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
     if shares is None:
         try:
             shares = list_smb_shares(include_sizes=False)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             shares = []
     # Guarded unbound walk with per-row reads: this runs *after* the
     # ``shares_overview`` fan-out has already absorbed its own failures, so a
@@ -663,13 +693,17 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
     tm_count = 0
     try:
         rows = list.__iter__(shares) if isinstance(shares, list) else iter(())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     try:
         for share in rows:
             if isinstance(share, dict) and _truthy(dict.get(share, "time_machine")):
                 tm_count += 1
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A walk dying mid-iteration keeps the count already gathered.
         pass
     return {
@@ -768,7 +802,9 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
         try:
             share["time_machine"] = bool(dict.get(tm, "time_machine"))
             share["tm_quota_gb"] = dict.get(tm, "tm_quota_gb") if share["time_machine"] else None
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A dict-liar record: the TM columns drop, the share row stays.
             share["time_machine"] = False
             share["tm_quota_gb"] = None
@@ -1087,7 +1123,9 @@ def _probe_port(port) -> bool | None:
     """Port reachability that never raises, for use inside the pool."""
     try:
         return port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -1195,7 +1233,9 @@ def system_services() -> list[dict]:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; one probe must not blank Sharing.
@@ -1334,7 +1374,9 @@ def shares_overview() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; one collector must not 500 the page.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -40,7 +42,9 @@ def _str_keyed(plain: dict) -> dict:
             # the junk key drops like any other non-str.
             try:
                 out[str.__str__(k)] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -345,14 +349,18 @@ def _share_directory(path: str) -> str:
     shared = set()
     try:
         listing = shares_svc.list_smb_shares(include_sizes=False)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         listing = []
     try:
         # Guarded iter() (the users_svc rule): a leftover list-subclass
         # listing whose ``__iter__`` bomb fired *at* the walk used to raise
         # out of the gate itself and 500 GET and PUT /api/shares/acl.
         rows = iter(listing)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rows = iter(())
     try:
         for share in rows:
@@ -367,20 +375,26 @@ def _share_directory(path: str) -> str:
             # dict underneath, and the unbound TypeError rode the same path.
             try:
                 raw = dict.get(share, "path") if _isa(share, dict) else None
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 raw = None
             if not _truthy(raw):
                 continue
             try:
                 shared.add(str(Path(str(raw)).resolve()))
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # Any exception, not just the four Path shapes: a leftover
                 # ``__str__`` bomb raising something else used to escape into
                 # the outer catch and abort the walk, so every share point
                 # *after* the hostile row was lost and a legitimate directory
                 # answered the acl_not_share / sharing_missing lie.
                 continue
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A walk dying mid-iteration keeps the share points already
         # collected; the resolve below then answers from what is known.
         pass
