@@ -227,13 +227,18 @@ class IsoformatProbeBombTests(_RegistrySandbox):
     def test_isoformat_property_bomb_falls_back_to_text(self):
         row = self._row(apis=[_IsoPropertyBomb(), "/api/x"])
         self.assertIn("/api/x", row["apis"])
-        # The object itself still renders via its (sane) str().
-        self.assertIn("_IsoPropertyBomb", row["apis"][0])
+        # The object itself degrades through the text fallback — since the
+        # modules14 sweep, a type that never overrode ``__str__``/``__repr__``
+        # answers "" instead of the default ``object.__repr__`` (a raw heap
+        # address the route used to leak verbatim).
+        self.assertEqual(row["apis"][0], "")
+        self.assertNotIn(" at 0x", str(row["apis"][0]))
 
     def test_getattr_bomb_falls_back_to_text(self):
         row = self._row(apis=[_GetattrBomb(), "/api/x"])
         self.assertIn("/api/x", row["apis"])
-        self.assertIn("_GetattrBomb", row["apis"][0])
+        self.assertEqual(row["apis"][0], "")
+        self.assertNotIn(" at 0x", str(row["apis"][0]))
 
 
 class StaysImmuneTests(_RegistrySandbox):
