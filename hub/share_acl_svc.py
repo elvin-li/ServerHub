@@ -35,6 +35,18 @@ CHMOD = "/bin/chmod"
 LS = "/bin/ls"
 DSCL = "/usr/bin/dscl"
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/jobs13/apps13 convention): swallowing a Ctrl-C or an
+#: interpreter shutdown to save one JSON field would turn the sanitizer
+#: into a hang.  Everything else BaseException-shaped that a leftover
+#: raises out of its own hooks is a bomb like any other — the users12
+#: sweep sealed the raising-runner/admin seams, but every guard in this
+#: module stopped at ``except Exception``, so a leftover whose hooks raise
+#: a *BaseException* subclass (the watchdog/timeout shape the sibling
+#: sweeps sealed on their own surfaces) sailed past every catch at once
+#: and 500'd GET and PUT /api/shares/acl raw.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: Canonical grants written by set_user_access.  Inheritance flags are included
 #: so files created later inside the share inherit the same access.
 _READ_PERMS = (
@@ -79,10 +91,19 @@ def _isa(value, kinds) -> bool:
     junk shapes.  A real subclass still matches through the C-level type
     check; only a value that cannot answer what it is takes the
     non-matching branch.
+
+    ``except BaseException``: the users9 guard stopped at ``Exception``,
+    so a leftover whose ``__class__`` property raises a *BaseException*
+    subclass sailed past this catch — the gate every sanitizer arm in
+    this module stands on — and past every sibling ``except Exception``
+    up the stack, a raw 500 on GET and PUT /api/shares/acl.  Only genuine
+    control flow keeps propagating.
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -91,17 +112,25 @@ def _as_text(value) -> str:
     if _isa(value, (bytes, bytearray)):
         # Unbound base decode (the brew6 rule): a leftover bytes-subclass
         # whose bound ``.decode`` raises used to escape read_acl untyped and
-        # 500 GET /api/shares/acl past the share gate.  _isa + try-wrap: a
-        # *lying* ``__class__`` impostor passes the bytes gate but is no
-        # bytes underneath, and the unbound call's TypeError used to 500
-        # GET /api/shares/acl (parse_acl_listing / local_users) and PUT's
-        # failure funnel — fall through to the str() rank so a legible
-        # impostor still renders instead of costing the route.
-        base = bytes if _isa(value, bytes) else bytearray
-        try:
-            value = base.decode(value, "utf-8", "replace")
-        except Exception:
-            pass
+        # 500 GET /api/shares/acl past the share gate.  Both bases are
+        # tried, real layout first-come (the jobs13/modules12/apps13 decode
+        # rule): the users9 arm picked the base off the *claimed*
+        # ``__class__`` (``bytes if _isa(value, bytes)``), so a genuine
+        # ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
+        # ``bytes.decode``, rejected by the descriptor, and its perfectly
+        # decodable ls/dscl text fell through to the str() rank — a
+        # ``bytearray(b'…')`` repr where the honest listing should have
+        # parsed.  A total impostor (real type is neither base) still falls
+        # through to the str() rank so a legible impostor renders instead
+        # of costing the route.
+        for base in (bytes, bytearray):
+            try:
+                value = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     if value is None:
         return ""
     if type(value) is not str:
@@ -110,9 +139,16 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A ``__str__`` bomb raising a *BaseException* subclass used to
+            # sail past the ``except Exception`` here and 500 GET and PUT
+            # /api/shares/acl at value, field and message rank.
             return ""
     # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
     # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
@@ -122,10 +158,19 @@ def _as_text(value) -> str:
 
 
 def _truthy(value) -> bool:
-    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False).
+
+    ``except BaseException``: a ``__bool__`` bomb raising a *BaseException*
+    subclass (a stderr slot riding ``_pick``'s truth test, a privileged
+    result's ``ok`` / ``message``) sailed past the old catch — a raw 500
+    on GET and PUT /api/shares/acl out of the very probes built to absorb
+    the Exception-shaped twin.
+    """
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -176,7 +221,14 @@ def _rc_int(rc) -> int:
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
         return value
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # The bare ``isinstance`` gates inside the try read a raising
+        # ``__class__`` property, and an rc whose property — or whose
+        # ``__int__`` coercion — raises a *BaseException* subclass sailed
+        # past the users11 catch: raw 500s out of every ``!=`` / ``==``
+        # probe on GET and PUT /api/shares/acl.
         return -255
 
 
@@ -197,18 +249,27 @@ def _sh3(value) -> tuple:
     sentinel included — while junk degrades to ``(-255, "", "")``: nonzero
     (a poisoned answer is not consent to claim success) and never the
     ``-1`` sentinel (an unusable answer cannot forge the vanished-CLI 503).
+    BaseException-shaped failure reads take the same junk branch as their
+    Exception twins; only genuine control flow keeps propagating.
     """
+    # ``except BaseException`` on both storage reads: a lying-``__class__``
+    # impostor whose failure shape is a *BaseException* subclass sailed
+    # past the users11 catches and blew the unwrap it was built for.
     if type(value) is tuple:
         items = value
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__getitem__(value, slice(None)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
@@ -234,10 +295,20 @@ def _sh_call(argv, *, timeout) -> tuple:
     no marker text it can never mint the disk-confirmed vanished-CLI 503
     either.  An honest answer — the ``-1`` sentinel included — keeps riding
     ``_sh3`` untouched.
+
+    ``except BaseException``: the users12 guard stopped at ``Exception``,
+    so a leftover runner raising a *BaseException* subclass (the
+    watchdog/timeout shape) sailed past the guard built for it — the same
+    raw 500s on GET and PUT /api/shares/acl the guard exists to absorb,
+    one exception rank over.  Only genuine control flow keeps propagating:
+    a Ctrl-C mid-spawn must still stop the process, not read as one more
+    failed ls.
     """
     try:
         answer = sh(argv, timeout=timeout)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
     return _sh3(answer)
 
@@ -266,10 +337,13 @@ def _str_keyed(plain: dict) -> dict:
         elif _isa(k, str):
             # _isa: a ``__class__``-property-bomb KEY blew a bare gate.
             # str.__str__ TypeErrors on a lying-``__class__`` impostor and
-            # the junk key drops like any other non-str.
+            # the junk key drops like any other non-str — BaseException
+            # rank included, so a bombed key can never cost the copy.
             try:
                 out[str.__str__(k)] = v
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
     return out
 
@@ -293,8 +367,14 @@ def _plain_result(result) -> dict:
             # very next ``plain.get("ok")`` probe — and the ``{**result,
             # "error": ...}`` merge in set_user_access after it — raw 500s
             # on PUT /api/shares/acl out of the laundering itself.
+            # ``except BaseException``: a subclass whose ``keys()`` /
+            # ``__iter__`` raises a *BaseException* subclass took
+            # ``dict()``'s slow path past the users10 catch — the same
+            # detonation one rank over.
             plain = _str_keyed(dict(result))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return {"ok": False, "error": "failed"}
     else:
         return {"ok": False, "error": "failed"}
@@ -316,10 +396,19 @@ def _admin_sequence(commands) -> dict:
     vanished-CLI answer — while an honest answer keeps riding
     ``_plain_result`` untouched, ``cancelled`` / ``password_required``
     shapes included.
+
+    ``except BaseException``: the users12 guard stopped at ``Exception``,
+    so a leftover helper raising a *BaseException* subclass blew both
+    escalation seams past the guard built for it — a raw 500 on PUT
+    /api/shares/acl in place of the coded authorization failure.  Only
+    genuine control flow keeps propagating: an interpreter shutdown
+    mid-escalation must never be reported as one more failed grant.
     """
     try:
         answer = macos_admin.run_admin_sequence(commands)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"ok": False, "error": "failed"}
     return _plain_result(answer)
 
