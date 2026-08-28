@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+import re
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -10,6 +11,9 @@ from hub.config import cfg, update_settings
 from hub.errors import api_error
 from hub.host_address import configured_host, host_ip as effective_host_ip
 from hub.util import LazyPool, sh, ttl_memo
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _pool = LazyPool(7, "hub-identity")
 
@@ -65,7 +69,9 @@ def _isa(value, kinds) -> bool:
     """
     try:
         return isinstance(value, kinds)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -79,12 +85,14 @@ def _rc_int(rc) -> int:
     is no honest exit status, so a bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return -255
 
 
@@ -111,19 +119,25 @@ def _sh3(value) -> tuple:
     elif _isa(value, tuple):
         try:
             items = tuple(tuple.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     elif _isa(value, list):
         try:
             items = tuple(list.__iter__(value))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return (-255, "", "")
     else:
         return (-255, "", "")
     try:
         if len(items) != 3:
             return (-255, "", "")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
     return items
 
@@ -143,7 +157,9 @@ def _spawn(argv, timeout) -> tuple:
     """
     try:
         return _sh3(sh(argv, timeout=timeout))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return (-255, "", "")
 
 
@@ -153,16 +169,14 @@ def _as_text(value) -> str:
     # _isa, not a bare isinstance: a ``__class__``-property bomb planted as
     # the stored comment used to detonate this gate one step ahead of the scrub.
     if _isa(value, (bytes, bytearray)):
-        try:
-            # Unbound base decode (the brew6 rule): a leftover bytes-subclass
-            # whose bound ``.decode`` raises used to escape untyped and 500
-            # GET /api/identity.  The try is for a *lying* ``__class__``
-            # (claims bytes, is not): the unbound call TypeErrors and the
-            # impostor renders like any other junk object below.
-            base = bytes if isinstance(value, bytes) else bytearray
-            decoded = base.decode(value, "utf-8", "replace")
-        except Exception:
-            decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     if decoded is not None:
         value = decoded
     elif value is None:
@@ -173,26 +187,42 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     # Unbound base encode (the modules6 rule): ``str()`` of a subclass whose
     # ``__str__`` answers *self* skips CPython's exact-str copy, so a leftover
     # bound ``encode`` bomb in sh output rode this line to a raw 500 on
     # GET /api/identity.
     try:
-        return str.encode(value, "utf-8", "replace").decode("utf-8")
-    except Exception:
-        # Only a lying-``__class__`` str impostor lands here: junk.
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _truthy(value) -> bool:
     """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
     try:
         return bool(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -210,7 +240,9 @@ def _mapping_get(mapping, key, default=None):
         return default
     try:
         return dict.get(mapping, key, default)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
