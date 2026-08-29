@@ -46,22 +46,22 @@
           <div class="form-grid">
             <label>{{ t('common.status') }}</label>
             <div class="twofa-status">
-              <span class="badge" :class="twofa.enabled ? 'ok' : 'warn'">
-                {{ twofa.enabled ? t('common.on') : t('common.off') }}
+              <span class="badge" :class="asRecord(twofa).enabled ? 'ok' : 'warn'">
+                {{ asRecord(twofa).enabled ? t('common.on') : t('common.off') }}
               </span>
-              <span v-if="twofa.enabled" class="hint">
-                {{ t('twofa.recovery_remaining', { n: finiteN(twofa.recovery_remaining) }) }}
+              <span v-if="asRecord(twofa).enabled" class="hint">
+                {{ t('twofa.recovery_remaining', { n: finiteN(asRecord(twofa).recovery_remaining) }) }}
               </span>
             </div>
           </div>
 
           <!-- Recovery codes exist in plaintext only in the minting response;
                they are rendered once and discarded on navigation. -->
-          <div v-if="recoveryCodes.length" class="twofa-recovery">
+          <div v-if="asArray(recoveryCodes).length" class="twofa-recovery">
             <strong>{{ t('twofa.recovery_title') }}</strong>
             <p class="hint" style="margin-top:4px">{{ t('twofa.recovery_hint') }}</p>
             <div class="twofa-recovery-grid">
-              <code v-for="code in recoveryCodes" :key="code" class="mono">{{ finiteText(code) }}</code>
+              <code v-for="code in asArray(recoveryCodes)" :key="finiteText(code)" class="mono">{{ finiteText(code) }}</code>
             </div>
             <div class="btns" style="margin-top:10px">
               <button @click="copyRecoveryCodes">{{ copiedRecovery ? t('common.copied') : t('twofa.recovery_copy') }}</button>
@@ -69,7 +69,7 @@
             </div>
           </div>
 
-          <template v-if="!twofa.enabled">
+          <template v-if="!asRecord(twofa).enabled">
             <div v-if="!enrollment" class="btns" style="margin-top:10px">
               <button class="primary" :disabled="busy" @click="startEnroll">{{ t('twofa.enable') }}</button>
             </div>
@@ -79,10 +79,10 @@
                    "Manual entry secret" below, so for a screen reader it is a
                    duplicate with no name, announced as an anonymous graphic
                    (same as the WireGuard peer QR). -->
-              <div class="twofa-qr" aria-hidden="true" v-html="enrollment.qrSvg"></div>
+              <div class="twofa-qr" aria-hidden="true" v-html="asRecord(enrollment).qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
-                <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(enrollment.manual_entry) }}</code>
+                <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(asRecord(enrollment).manual_entry) }}</code>
                 <label>{{ t('twofa.code_label') }}</label>
                 <input v-model.trim="pairingCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" :aria-label="t('twofa.code_label')" />
               </div>
@@ -118,7 +118,7 @@ import {
 } from '../api/client'
 import { authState } from '../lib/authState'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -130,9 +130,13 @@ const newPassword = ref('')
 const confirmPassword = ref('')
 const savingPassword = ref(false)
 
+function secretLen(value) {
+  return typeof value === 'string' ? value.length : 0
+}
+
 const passwordValidation = computed(() => {
   if (!currentPassword.value) return t('settings.current_password_required')
-  if (newPassword.value.length < 10) return t('auth.password_length')
+  if (secretLen(newPassword.value) < 10) return t('auth.password_length')
   if (newPassword.value !== confirmPassword.value) return t('auth.password_mismatch')
   return ''
 })
@@ -184,7 +188,7 @@ let loadGeneration = 0
 async function loadTwofa() {
   const generation = ++loadGeneration
   try {
-    const next = await getTotpStatus()
+    const next = asRecord(await getTotpStatus())
     if (generation !== loadGeneration || !pageAlive) return
     twofa.value = next
     twofaError.value = ''
@@ -213,7 +217,7 @@ async function startEnroll() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = await enrollTotp()
+    const r = asRecord(await enrollTotp())
     if (generation !== loadGeneration || !pageAlive) return
     enrollment.value = { ...r, qrSvg: totpQrSvg(r.otpauth_uri) }
     pairingCode.value = ''
@@ -234,9 +238,9 @@ async function confirmEnroll() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = await confirmTotp(pairingCode.value)
+    const r = asRecord(await confirmTotp(pairingCode.value))
     if (generation !== loadGeneration || !pageAlive) return
-    recoveryCodes.value = r.recovery_codes || []
+    recoveryCodes.value = asArray(r.recovery_codes)
     copiedRecovery.value = false
     enrollment.value = null
     pairingCode.value = ''
@@ -278,9 +282,9 @@ async function regenRecovery() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = await regenerateTotpRecovery(actionCode.value)
+    const r = asRecord(await regenerateTotpRecovery(actionCode.value))
     if (generation !== loadGeneration || !pageAlive) return
-    recoveryCodes.value = r.recovery_codes || []
+    recoveryCodes.value = asArray(r.recovery_codes)
     copiedRecovery.value = false
     actionCode.value = ''
     // Enable and disable both toast; regeneration was the one 2FA write whose
@@ -298,7 +302,7 @@ async function regenRecovery() {
 }
 
 async function copyRecoveryCodes() {
-  const ok = await copyToClipboard(recoveryCodes.value.join('\n'))
+  const ok = await copyToClipboard(asArray(recoveryCodes.value).map((c) => finiteText(c, '')).filter(Boolean).join('\n'))
   if (!pageAlive) return
   if (!ok) {
     toast('❌ ' + t('common.copy_failed'))
