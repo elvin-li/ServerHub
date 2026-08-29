@@ -3627,6 +3627,14 @@ describe('leftover Infinity interpolations', () => {
     expect(modal).toMatch(/finiteText\(asRecord\(entry\)\.log, ''\) \|\| t\('services\.log_empty'\)/)
   })
 
+  it('ServiceActions leftover leftover url and state go through asRecord', () => {
+    const actions = readFileSync(resolve(SRC, 'components/ServiceActions.vue'), 'utf8')
+    expect(actions).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(actions).toMatch(/finiteText\(asRecord\(service\)\.url, ''\)/)
+    expect(actions).toMatch(/asRecord\(props\.service\)\.state/)
+    expect(actions).toMatch(/v-for="a in asArray\(buttonActs\)"/)
+  })
+
   it('ServiceSignatures leftover ports and counts go through finite helpers', () => {
     const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
     expect(sigs).toMatch(/from ['"][^'"]*lib\/finite/)

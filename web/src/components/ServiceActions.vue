@@ -17,9 +17,9 @@
 <template>
   <div :class="wrapClass" :aria-busy="busy ? 'true' : undefined">
     <a
-      v-if="service.url"
+      v-if="asRecord(service).url"
       :class="openClass"
-      :href="finiteText(service.url, '')"
+      :href="finiteText(asRecord(service).url, '')"
       target="_blank"
       rel="noopener"
       @click.stop
@@ -53,7 +53,7 @@
 <script setup>
 import { computed } from 'vue'
 import { injectI18n } from '../i18n'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { canLogs, controlActs, primaryActs, serviceLabels } from '../lib/serviceActions'
 import MacSwitch from './MacSwitch.vue'
 
@@ -95,7 +95,7 @@ const buttonActs = computed(() => (
 ))
 
 const powerOn = computed(() => {
-  const st = props.service.state
+  const st = asRecord(props.service).state
   return st === 'ok' || st === 'warn'
 })
 
