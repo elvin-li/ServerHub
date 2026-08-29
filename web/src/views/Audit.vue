@@ -38,17 +38,17 @@
           </thead>
           <tbody>
             <tr v-for="(e, i) in asArray(filteredRows)" :key="i">
-              <td class="mono col-hide-m">{{ fmt(e.ts) }}</td>
+              <td class="mono col-hide-m">{{ fmt(asRecord(e).ts) }}</td>
               <td class="mono">
-                {{ finiteText(e.event) }}
-                <div class="show-m sub">{{ fmt(e.ts) }}</div>
-                <div v-if="finiteText(e.client, '')" class="show-m sub">{{ finiteText(e.client) }}</div>
+                {{ finiteText(asRecord(e).event) }}
+                <div class="show-m sub">{{ fmt(asRecord(e).ts) }}</div>
+                <div v-if="finiteText(asRecord(e).client, '')" class="show-m sub">{{ finiteText(asRecord(e).client) }}</div>
                 <div v-if="detail(e)" class="show-m sub">{{ detail(e) }}</div>
               </td>
-              <td><strong>{{ finiteText(e.username) }}</strong></td>
-              <td class="mono col-hide-m">{{ finiteText(e.client) }}</td>
+              <td><strong>{{ finiteText(asRecord(e).username) }}</strong></td>
+              <td class="mono col-hide-m">{{ finiteText(asRecord(e).client) }}</td>
               <td>
-                <span class="badge" :class="badgeClass(e.outcome)">{{ finiteText(e.outcome) }}</span>
+                <span class="badge" :class="badgeClass(asRecord(e).outcome)">{{ finiteText(asRecord(e).outcome) }}</span>
               </td>
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
@@ -96,7 +96,7 @@ let loadGeneration = 0
 // that is the natural order of an append-only log.
 const rows = computed(() => {
   try {
-    return asArray(entries.value).slice().reverse().filter(
+    return asArray(entries.value).slice().reverse().map((e) => asRecord(e)).filter(
       (e) => e != null && typeof e === 'object' && !Array.isArray(e),
     )
   } catch {
