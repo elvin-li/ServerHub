@@ -49,7 +49,7 @@
     <!-- Filter-miss and empty-file are different answers: "(empty)" on a
          full log whose filter matched nothing told the operator the file
          has no lines. Same split Brew/Health pinned (common.no_match). -->
-    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ filter.trim() && text ? t('common.no_match') : t('logs.empty') }}</pre>
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ finiteText(filter, '').trim() && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
@@ -58,7 +58,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonLoad, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -78,11 +78,38 @@ let timer = null
 let loadGeneration = 0
 let pageAlive = true
 
+function lineText(value) {
+  const rendered = finiteText(value, '')
+  if (typeof rendered === 'string') return rendered
+  if (typeof rendered === 'number') return String(rendered)
+  return jsonText(value, '')
+}
+
+function asLogLines(raw) {
+  if (Array.isArray(raw)) {
+    return asArray(raw).map((l) => lineText(l))
+  }
+  if (raw != null && typeof raw === 'object') {
+    const rec = asRecord(raw)
+    if (rec.lines !== undefined && rec.lines !== raw) return asLogLines(rec.lines)
+    if (rec.log !== undefined && rec.log !== raw) return asLogLines(rec.log)
+    const dumped = jsonText(raw, '')
+    return dumped ? [dumped] : []
+  }
+  const text = lineText(raw)
+  if (!text) return []
+  const parsed = jsonLoad(text)
+  if (Array.isArray(parsed)) return asLogLines(parsed)
+  if (parsed != null && typeof parsed === 'object') return asLogLines(parsed)
+  return text.split('\n')
+}
+
 const displayLines = computed(() => {
-  const f = filter.value.trim().toLowerCase()
-  const all = (text.value || '').split('\n')
+  const rawFilter = filter.value
+  const f = typeof rawFilter === 'string' ? rawFilter.trim().toLowerCase() : ''
+  const all = asArray(asLogLines(text.value))
   if (!f) return all
-  return all.filter(l => l.toLowerCase().includes(f))
+  return all.filter((l) => lineText(l).toLowerCase().includes(f))
 })
 const displayText = computed(() => asArray(displayLines.value).map((l) => finiteText(l, '')).join('\n'))
 
@@ -103,10 +130,11 @@ function fmtCount(n) {
 async function loadSources() {
   const generation = loadGeneration
   try {
-    const d = await getLogSources()
+    const d = asRecord(await getLogSources())
     if (generation !== loadGeneration || !pageAlive) return false
-    sources.value = asArray(d.sources)
-    if (!sourceId.value && asArray(sources.value).length) sourceId.value = asArray(sources.value)[0].id
+    sources.value = asArray(d.sources).map((s) => asRecord(s))
+    const first = asRecord(asArray(sources.value)[0])
+    if (!sourceId.value && asArray(sources.value).length && first.id) sourceId.value = first.id
     loadError.value = ''
     return true
   } catch (e) {
@@ -127,10 +155,10 @@ async function load(manual = false) {
   const requestedLines = lines.value
   loading.value = true
   try {
-    const d = await getLogTail(requestedSource, requestedLines)
+    const d = asRecord(await getLogTail(requestedSource, requestedLines))
     if (generation !== loadGeneration || !pageAlive || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
     meta.value = d
-    text.value = d.log || ''
+    text.value = d.log
     loadError.value = ''
     return true
   } catch (e) {

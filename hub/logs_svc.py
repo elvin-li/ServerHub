@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +19,11 @@ from hub.util import tail_file_lines
 # Everything else BaseException-shaped that a leftover raises out of its
 # own hooks is a bomb like any other.
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+# Leftover ``str()`` of an arbitrary object used to leak a CPython
+# ``<… object at 0x…>`` into published id/name/path (and into a tail
+# line that was never file text).  Fail-closed: that token is junk,
+# not a configured source field and not a log row.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _isa(value, kinds) -> bool:
@@ -103,6 +109,46 @@ def _utf8_text(value) -> str:
         raise
     except BaseException:
         return ""
+
+
+def _label_text(value) -> str:
+    """Published id/name/path: leftover object-repr tokens drop.
+
+    Applied here rather than inside :func:`_utf8_text` so a single
+    leftover ``<… object at 0x…>`` line cannot wipe an otherwise honest
+    tail (the ADDR belt on the joined body used to fail-close the whole
+    payload).
+    """
+    text = _utf8_text(value)
+    try:
+        if not text or _ADDR_REPR_RE.search(text):
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return text
+
+
+def _rows_list(value) -> list:
+    """Exact list from a possibly-poisoned tailer answer; junk reads [].
+
+    ``tail_file_lines`` is a patched provider seam (the term12 rule).  A
+    leftover mapping, a subclass ``__iter__`` bomb, or a lying
+    ``__class__`` claiming list used to 500 GET /api/logs/{id} at the
+    bare ``"\\n".join(parts)`` / ``len(parts)`` after the file had already
+    been read.  Unbound base iteration keeps honest rows; a mid-walk
+    bomb degrades to no lines rather than the route.
+    """
+    for base in (list, tuple):
+        if _isa(value, base):
+            try:
+                return [row for row in base.__iter__(value)]
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return []
+    return []
 
 
 def _exact_str(text) -> str | None:
@@ -514,16 +560,18 @@ def _entries() -> list[tuple[Path, dict]]:
             size = _stat_size(p) if exists else 0
         except OSError:
             exists, size = False, 0
-        sid = _utf8_text(raw_id)
+        sid = _label_text(raw_id)
+        if not sid:
+            continue
         name = _config_text(_mapping_get(s, "name"))
         if not name:
             name = sid
         else:
-            name = _utf8_text(name)
+            name = _label_text(name)
         out.append((p, {
             "id": sid,
             "name": name,
-            "path": _utf8_text(p),
+            "path": _label_text(p),
             "exists": exists,
             "size": size,
         }))
@@ -563,10 +611,10 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
         raise api_error("logs.unknown_source")
     meta = sources[source_id]
     name = meta.get("name") if _isa(meta.get("name"), str) else source_id
-    name = _utf8_text(name)
+    name = _label_text(name)
 
     def _missing(path: Path) -> dict:
-        return {"id": _utf8_text(source_id), "name": name, "path": _utf8_text(path),
+        return {"id": _label_text(source_id), "name": name, "path": _label_text(path),
                 "exists": False, "size": 0, "log": "(file does not exist)", "lines": 0}
 
     # Read through the raw Path the listing stat'ed, not the published text:
@@ -625,17 +673,38 @@ def tail_log(source_id: str, lines: int = 200) -> dict:
     except OSError:
         # Dying FUSE mounts raise EIO.
         raise api_error("logs.read_failed")
-    path_s = _utf8_text(p)
+    path_s = _label_text(p)
     if not is_file:
         return _missing(p)
     lines = _clamp_lines(lines)
     try:
         file_size = _stat_size(p)
-        parts = tail_file_lines(p, lines)
-        return {"id": _utf8_text(source_id), "name": name, "path": path_s,
+        parts = _rows_list(tail_file_lines(p, lines))
+        lines_out = []
+        for row in parts:
+            text = _utf8_text(row)
+            try:
+                leftover_repr = bool(text) and bool(_ADDR_REPR_RE.search(text))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                leftover_repr = True
+            if leftover_repr:
+                continue
+            if not text and not _isa(row, (str, bytes, bytearray)):
+                continue
+            lines_out.append(text)
+        try:
+            joined = "\n".join(lines_out)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            joined = ""
+            lines_out = []
+        return {"id": _label_text(source_id), "name": name, "path": path_s,
                 "exists": True, "size": file_size,
-                "log": _utf8_text("\n".join(parts)),
-                "lines": len(parts)}
+                "log": joined,
+                "lines": len(lines_out)}
     except OSError:
         # Race between the is_file gate above and the open: the file was
         # rotated/unlinked (FileNotFoundError), or a non-regular node — a
