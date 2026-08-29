@@ -6,8 +6,8 @@
     </div>
     <div class="toolbar">
       <select v-model="sourceId" :aria-label="t('logs.source_label')" @change="load(true)">
-        <option v-for="s in asArray(sources)" :key="s.id" :value="s.id">
-          {{ finiteText(s.name) }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
+        <option v-for="s in asArray(sources)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">
+          {{ finiteText(asRecord(s).name) }}{{ asRecord(s).exists ? ' · ' + fmtSize(asRecord(s).size) : t('logs.missing') }}
         </option>
       </select>
       <select v-model.number="lines" :aria-label="t('logs.lines_label')" @change="load(true)">
@@ -26,9 +26,9 @@
       <button class="tiny hide-m" @click="downloadLog">{{ t('logs.download') }}</button>
     </div>
     <div v-if="meta" class="detail" style="margin-bottom:8px;white-space:normal">
-      <span class="mono">{{ finiteText(meta.path) }}</span>
-      · {{ fmtSize(meta.size) }}
-      · {{ t('logs.lines_n', { n: fmtCount(meta.lines) }) }}
+      <span class="mono">{{ finiteText(asRecord(meta).path) }}</span>
+      · {{ fmtSize(asRecord(meta).size) }}
+      · {{ t('logs.lines_n', { n: fmtCount(asRecord(meta).lines) }) }}
       <!-- Always-rendered live region, text gated inside: typing in the filter
            otherwise changes nothing a screen reader is told about, so there
            was no way to hear whether the filter matched anything at all. -->
@@ -139,7 +139,7 @@ async function loadSources() {
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
     return false
   }
@@ -157,13 +157,13 @@ async function load(manual = false) {
   try {
     const d = asRecord(await getLogTail(requestedSource, requestedLines))
     if (generation !== loadGeneration || !pageAlive || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
-    meta.value = d
-    text.value = d.log
+    meta.value = asRecord(d)
+    text.value = asRecord(d).log
     loadError.value = ''
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // Same convention as the Audit/Alerts pollers: the 6-second auto-refresh
     // stays silent on failure — LoadFailure already marks the state on screen,
     // and re-toasting every tick while the panel is unreachable interrupts a

@@ -2375,7 +2375,7 @@ describe('leftover Infinity interpolations', () => {
     expect(logs).toMatch(/function fmtCount\([\s\S]*Number\.isFinite/)
     expect(logs).toMatch(/t\('logs\.lines_n',\s*\{\s*n:\s*fmtCount\(/)
     expect(logs).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
-    expect(logs).toMatch(/finiteText\(s\.name\)/)
+    expect(logs).toMatch(/finiteText\(asRecord\(s\)\.name\)/)
   })
 
   it('Files and Ollama size formatters reject leftover Infinity', () => {
@@ -3743,9 +3743,9 @@ describe('leftover Infinity interpolations', () => {
     const logs = readFileSync(resolve(SRC, 'views/Logs.vue'), 'utf8')
     expect(logs).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(logs).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
-    expect(logs).toMatch(/finiteText\(s\.name\)/)
+    expect(logs).toMatch(/finiteText\(asRecord\(s\)\.name\)/)
     expect(logs).not.toMatch(/\{\{\s*meta\.path\s*\}\}/)
-    expect(logs).toMatch(/finiteText\(meta\.path\)/)
+    expect(logs).toMatch(/finiteText\(asRecord\(meta\)\.path\)/)
     expect(logs).toMatch(/n: finiteN\(asArray\(displayLines\)\.length\)/)
     expect(logs).not.toMatch(/displayLines\.value\.join\('\\n'\)/)
     expect(logs).toMatch(/asArray\(displayLines\.value\)\.map\(\(l\) => finiteText\(l, ''\)\)/)
