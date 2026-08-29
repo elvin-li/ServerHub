@@ -3404,9 +3404,12 @@ describe('leftover Infinity interpolations', () => {
     expect(scheduler).toMatch(/v-for="job in asArray\(jobs\)"/)
     expect(scheduler).toMatch(/v-for="s in asArray\(systemJobs\)"/)
     expect(scheduler).toMatch(/v-for="\(run, i\) in asArray\(runs\)"/)
-    expect(scheduler).toMatch(/jobs\.value = asArray\(d\?\.jobs\)/)
-    expect(scheduler).toMatch(/systemJobs\.value = asArray\(d\?\.system\)/)
-    expect(scheduler).toMatch(/runs\.value = asArray\(d\?\.runs\)/)
+    expect(scheduler).toMatch(/jobs\.value = ingestJobRows\(d, 'jobs'\)/)
+    expect(scheduler).toMatch(/systemJobs\.value = ingestJobRows\(d, 'system'\)/)
+    expect(scheduler).toMatch(/runs\.value = ingestJobRows\(d, 'runs'\)/)
+    expect(scheduler).toMatch(/function ingestJobRows\(/)
+    expect(scheduler).toMatch(/asRecord\(job\)/)
+    expect(scheduler).toMatch(/Do not wrap a Set as asArray/)
   })
 
   it('Backups leftover ports/files/mtime go through finite helpers', () => {

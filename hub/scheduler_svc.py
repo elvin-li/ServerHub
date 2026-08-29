@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -124,6 +125,23 @@ def _isinst(value, types) -> bool:
     """
     try:
         return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap (the jobs14/modules14 rule).  After a claimed arm
+    rejects the operand, only the arm the *real* layout matches may pick
+    the value up — the lie must not steer the listing walk a second time.
+    Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -276,6 +294,28 @@ def valid_cron(expr: str) -> bool:
         return False
 
 
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor."""
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _decode_or_none(value):
+    """Both bases, real layout first-come — or ``None`` for a total liar."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
 def _decode_bytes(value) -> str:
     """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
 
@@ -287,20 +327,42 @@ def _decode_bytes(value) -> str:
     total liar (real type is neither base) still degrades to ``""``, which
     used to ride out of _jsonable's bytes arm and 500 GET /api/scheduler/jobs.
     """
-    for base in (bytes, bytearray):
-        try:
-            return base.decode(value, "utf-8", "replace")
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            continue
-    return ""
+    decoded = _decode_or_none(value)
+    if decoded is not None:
+        return decoded
+    text = _str_text(value)
+    return text if text is not None else ""
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>``) — a raw heap
+#: address, never a job-listing field.  Applied to the *coercion* arms only.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    jobs14: a *lying* ``__class__`` claim no longer wipes honest storage at
+    the wrong rank, and the free-text arm no longer runs dispatching
+    ``str()`` on a type that never overrode ``__str__``/``__repr__`` (the
+    default ``object.__repr__`` is a raw heap address).
+    """
     if _isinst(value, (bytes, bytearray)):
-        return _decode_bytes(value)
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+    if _isinst(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
@@ -313,17 +375,47 @@ def _utf8_text(value) -> str:
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        # A ``__str__`` bomb raising a BaseException subclass used to sail
-        # past the ``except Exception`` here and 500 GET /api/scheduler/jobs
-        # from outside every net.
         return ""
-    # Unbound base encode: ``str()`` of a str subclass whose ``__str__``
-    # returns self keeps the subclass, so a bound ``.encode`` bomb in a
-    # leftover job id/name/params value used to raise here — outside the
-    # try — and 500 GET /api/scheduler/jobs (and drop the run-journal
-    # record from _record_run's shaping).  The modules6/docker6 unbound
-    # convention, like hub.docker_cli._utf8_text.
-    return str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry."""
+    if _isinst(k, (bytes, bytearray)):
+        decoded = _decode_or_none(k)
+        if decoded is not None:
+            return decoded
+    if _isinst(k, str):
+        text = _str_text(k)
+        if text is not None:
+            return text
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -335,6 +427,12 @@ def _jsonable(value, depth: int = 0):
     job name still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     A >4300-digit ``timeout``/param int still passed through untouched:
     CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
+
+    jobs15 listing (the jobs14 union): recover honest storage behind a lying
+    ``__class__``, snapshot ``dict.items`` so a nested cell cannot
+    RuntimeError the live walk, belt default-repr heap addresses on keys
+    and coercion, and iterate sequences through unbound bases so an
+    ``__iter__`` bomb cannot vaporise walkable C-level rows.
     """
     if depth > 32:
         return None
@@ -345,89 +443,95 @@ def _jsonable(value, depth: int = 0):
     if value is None or type(value) is bool:
         return value
     if _isinst(value, int):
-        if type(value) is not int:
+        num = value if type(value) is int else None
+        if num is None:
             try:
-                # Base coercion to an exact int: a leftover subclass
-                # ``__str__`` bomb used to blow the digit-cap probe below
-                # (only ValueError was caught) and 500 GET /api/scheduler/jobs
-                # — the modules5 unbound convention.
-                value = int.__index__(value)
+                num = int.__index__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
                 return None
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
     if _isinst(value, float):
-        if type(value) is not float:
+        num = value if type(value) is float else None
+        if num is None:
             try:
-                # Base coercion to an exact float: a leftover subclass
-                # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf
-                # probes below and 500 GET /api/scheduler/jobs.
-                value = float.__float__(value)
+                num = float.__float__(value)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
                 return None
-        if value != value or value in (float("inf"), float("-inf")):
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
     if _isinst(value, str):
-        return _utf8_text(value)
+        text = _str_text(value)
+        if text is not None:
+            return text
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            return _utf8_text(value)
     if _isinst(value, (bytes, bytearray)):
-        # Unbound base decode: a leftover bytes-subclass ``decode`` bomb
-        # (a poisoned job name / params value) used to 500 the encoder walk.
-        return _decode_bytes(value)
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            return ""
     if _isinst(value, dict):
-        if type(value) is not dict:
-            # dict() copies through the C-level storage, ignoring overridden
-            # items()/keys()/__iter__ — a leftover nested dict-subclass bomb
-            # (a ``params`` row whose .items() raised) used to 500
-            # GET /api/scheduler/jobs (same guard as hub.jobs._jsonable).
+        plain = value if type(value) is dict else None
+        if plain is None:
             try:
-                value = dict(value)
+                plain = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                plain = None
+        if plain is not None:
+            try:
+                items = list(dict.items(plain))
             except _CONTROL_FLOW:
                 raise
             except BaseException:
                 return None
-        out = {}
-        for k, v in value.items():
-            if not _isinst(k, str):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
                     continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
-        return out
-    if _isinst(value, (list, tuple, set, frozenset)):
-        try:
-            items = list(value)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
-            # Leftover nested sequence subclass whose __iter__ raises.
+                out[key] = _jsonable(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
             return None
-        return [_jsonable(v, depth + 1) for v in items]
+    if _isinst(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            try:
+                items = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable(v, depth + 1) for v in items]
+        return None
     try:
         iso = getattr(value, "isoformat", None)
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        # Property bomb / __getattr__ raising something that is not
-        # AttributeError escapes getattr's default — including one raising
-        # a BaseException subclass past the old ``except Exception``.
         iso = None
     if callable(iso):
         try:
-            # isoformat() is usually a str; a leftover that returns inf
-            # used to skip the float sanitizer and 500 GET /api/scheduler/jobs.
             return _jsonable(iso(), depth + 1)
         except _CONTROL_FLOW:
             raise
@@ -683,15 +787,20 @@ def list_jobs() -> list[dict]:
             raw = None
     else:
         raw = None
-    if _isinst(raw, list):
-        try:
-            # list() through the C storage: a leftover list-subclass whose
-            # __iter__ raises used to 500 GET /api/scheduler/jobs (the same
-            # guard hub.jobs.maintenance_tasks applies to its rows).
-            rows = list(raw)
-        except _CONTROL_FLOW:
-            raise
-        except BaseException:
+    if _isinst(raw, list) or _real(raw, (list, tuple)):
+        # Unbound bases, real layout first-come (the jobs14 listing rule):
+        # bound ``list(raw)`` dispatched a subclass ``__iter__`` bomb and
+        # vaporised walkable C-level rows to the empty listing.
+        rows = None
+        for base in (list, tuple):
+            try:
+                rows = list(base.__iter__(raw))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            break
+        if rows is None:
             rows = []
     else:
         rows = []
@@ -719,7 +828,9 @@ def _matches_id(job: dict, job_id) -> bool:
     DELETE / PUT / enable / run-now — for jobs whose own records were fine.
     """
     try:
-        if job.get("id") == job_id:
+        # _mapping_get, not bound ``job.get``: a leftover hash-shadowing
+        # bomb key with "id"'s text used to detonate the listing scan.
+        if _mapping_get(job, "id") == job_id:
             return True
     except _CONTROL_FLOW:
         raise
@@ -925,10 +1036,10 @@ def last_runs_by_job() -> dict[str, dict]:
             rec = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
-        rec = _jsonable(rec) if isinstance(rec, dict) else None
-        if not isinstance(rec, dict):
+        rec = _jsonable(rec) if _isinst(rec, dict) else None
+        if not _isinst(rec, dict):
             continue
-        jid = str(rec.get("job") or "")
+        jid = _utf8_text(_mapping_get(rec, "job") or "")
         if jid and jid not in out:
             out[jid] = rec
     return out
