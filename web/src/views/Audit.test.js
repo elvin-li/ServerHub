@@ -117,6 +117,51 @@ describe('Audit leave-guards', () => {
     wrapper.unmount()
   })
 
+  it('fail-closes leftover mapping payloads and non-row list entries', async () => {
+    api.getAuthAudit.mockResolvedValue({
+      0: { event: 'panel.event', username: 'alice' },
+      retained_lines: 1,
+    })
+    const wrapper = mount(Audit, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('audit.empty')
+    expect(wrapper.text()).not.toContain('alice')
+    wrapper.unmount()
+
+    const cycle = {}
+    cycle.self = cycle
+    api.getAuthAudit.mockResolvedValue({
+      entries: [
+        null,
+        'nope',
+        { ts: 1, event: { nested: true }, username: 'alice', outcome: 'success', extra: cycle },
+        { ts: 2, event: 'panel.event', username: 'bob', client: 10, outcome: 'failure' },
+      ],
+      retained_lines: 2,
+    })
+    const wrapper2 = mount(Audit, {
+      global: {
+        provide: { toast: vi.fn() },
+        stubs: { SkeletonLoader: true, LoadFailure: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper2.text()).toContain('alice')
+    expect(wrapper2.text()).toContain('bob')
+    const input = wrapper2.find('input[type="text"]')
+    await input.setValue('bob')
+    expect(wrapper2.text()).toContain('bob')
+    expect(wrapper2.text()).not.toContain('alice')
+    await input.setValue('nested')
+    expect(wrapper2.text()).toContain('alice')
+    wrapper2.unmount()
+  })
+
   it('polls while mounted and stops the poller on leave', async () => {
     const wrapper = mount(Audit, {
       global: {
