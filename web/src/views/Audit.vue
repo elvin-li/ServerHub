@@ -96,7 +96,9 @@ let loadGeneration = 0
 // that is the natural order of an append-only log.
 const rows = computed(() => {
   try {
-    return asArray(entries.value).slice().reverse()
+    return asArray(entries.value).slice().reverse().filter(
+      (e) => e != null && typeof e === 'object' && !Array.isArray(e),
+    )
   } catch {
     return []
   }
