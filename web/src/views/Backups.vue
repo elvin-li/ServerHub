@@ -282,7 +282,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -511,7 +511,7 @@ async function openPreview(job) {
   previewError.value = ''
   previewBusy.value = true
   try {
-    const next = await rsyncPreview(job.params || {})
+    const next = await rsyncPreview(asRecord(job.params))
     if (!pageAlive) return
     preview.value = next
   } catch (e) {

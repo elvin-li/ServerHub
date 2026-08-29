@@ -331,7 +331,7 @@
     <!-- Hardware -->
     <template v-else-if="tab==='hw'">
       <div class="two-col" v-if="hw">
-        <div class="card" v-for="(sec, key) in (hw.sections||{})" :key="key">
+        <div class="card" v-for="(sec, key) in asRecord(hw.sections)" :key="key">
           <h2 class="section-title" style="margin-top:0">{{ finiteText(key) }} · {{ finiteText(sec.data_type) }}</h2>
           <!-- tabindex=0: system_profiler output overflows the 240px cap, and a
                scrollable region a keyboard cannot reach cannot be scrolled by
@@ -581,7 +581,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { asArray, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import {
   flushDns,
   generateDiagnostics,
@@ -696,8 +696,8 @@ const filteredProc = computed(() => {
 })
 
 const aboutCredits = computed(() => {
-  const a = about.value || {}
-  if (a.credit_keys?.length) return a.credit_keys.map((k) => t(k))
+  const a = asRecord(about.value)
+  if (asArray(a.credit_keys).length) return asArray(a.credit_keys).map((k) => t(k))
   return asArray(a.credits)
 })
 

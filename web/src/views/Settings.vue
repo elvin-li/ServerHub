@@ -1145,7 +1145,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import qrcode from 'qrcode-generator'
-import { asArray, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
@@ -1416,7 +1416,7 @@ async function loadSysBundle() {
     if (generation !== loadGeneration || !pageAlive) return
     sysBundle.value = next
     sysBundleError.value = ''
-    const p = sysBundle.value?.power?.settings || {}
+    const p = asRecord(sysBundle.value?.power?.settings)
     powerForm.value = {
       sleep: p.sleep ?? sysBundle.value?.power?.sleep ?? 0,
       displaysleep: p.displaysleep ?? sysBundle.value?.power?.displaysleep ?? 10,
@@ -2194,7 +2194,7 @@ async function loadUps() {
     if (generation !== loadGeneration || !pageAlive) return
     upsInfo.value = next
     upsError.value = ''
-    const sd = upsInfo.value.settings?.shutdown || {}
+    const sd = asRecord(upsInfo.value.settings?.shutdown)
     upsForm.value = {
       alerts_enabled: upsInfo.value.settings?.alerts_enabled !== false,
       low_battery_pct: upsInfo.value.settings?.low_battery_pct ?? 20,

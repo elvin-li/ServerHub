@@ -36,7 +36,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -54,7 +54,7 @@ const loaded = ref(false)
 const loading = ref(false)
 const loadError = ref('')
 const moduleCount = computed(() =>
-  Object.values(byCat.value || {}).reduce(
+  Object.values(asRecord(byCat.value)).reduce(
     (total, list) => total + (Array.isArray(list) ? list.length : 0),
     0,
   ),
@@ -77,7 +77,7 @@ async function load() {
     // fires AUTH_LOST_EVENT instead of writing the 401 body into `byCat`.
     const j = await getModules()
     if (generation !== loadGeneration || !pageAlive) return
-    byCat.value = j.by_category || {}
+    byCat.value = asRecord(j.by_category)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

@@ -136,7 +136,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
-import { asArray, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -227,7 +227,7 @@ async function loadOverview() {
     const j = await getFilesOverview()
     if (request !== listRequest) return false
     roots.value = asArray(j.roots)
-    fb.value = j.filebrowser || {}
+    fb.value = asRecord(j.filebrowser)
     if (!rootId.value && roots.value.length) {
       rootId.value = roots.value[0].id
       currentPath.value = roots.value[0].path

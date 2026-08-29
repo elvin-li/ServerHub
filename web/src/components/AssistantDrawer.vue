@@ -86,7 +86,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { askAssistant } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -134,7 +134,7 @@ watch(() => props.open, async (isOpen) => {
 })
 
 function formatBrief(snap) {
-  const c = snap?.counts || {}
+  const c = asRecord(snap?.counts)
   const lines = [
     t('assistant.brief_overview', {
       load: finiteN(snap.load),

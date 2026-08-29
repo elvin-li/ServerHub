@@ -283,7 +283,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -328,7 +328,7 @@ const availableCandidates = computed(() => {
 })
 
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
-const shownSummary = computed(() => preview.value?.summary || view.value?.summary || {})
+const shownSummary = computed(() => asRecord(preview.value?.summary || view.value?.summary))
 const shownTarget = computed(() => preview.value?.next_write_target ?? view.value?.next_write_target)
 const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model))
 

@@ -11,6 +11,11 @@ export function asArray(value) {
   return Array.isArray(value) ? value : []
 }
 
+/** Hostile leftover mappings used to be lists; Object.values/v-for then threw. */
+export function asRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)

@@ -307,7 +307,7 @@ import {
   getPhotosHubLogs,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, withUnit } from '../lib/finite'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 
@@ -387,12 +387,12 @@ const formDirty = computed(() => {
   return JSON.stringify(form.value) !== JSON.stringify(formFromConfig(cfg.value))
 })
 const peopleLabel = computed(() => {
-  const p = data.value?.people || {}
+  const p = asRecord(data.value?.people)
   const names = [p.yuanbao?.name, p.erbao?.name].map(n => finiteText(n, '')).filter(Boolean)
   return names.join(' · ') || '—'
 })
 const peopleMeta = computed(() => {
-  const p = data.value?.people || {}
+  const p = asRecord(data.value?.people)
   const bits = [p.yuanbao?.birthday, p.erbao?.birthday].map(n => finiteText(n, '')).filter(Boolean)
   return bits.join(' · ')
 })

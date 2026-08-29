@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, asArray } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -1843,7 +1843,7 @@ function countLabel(id) {
     const n = finiteN(overview.value.docker_count, null)
     return n != null ? ` (${n})` : ''
   }
-  const n = finiteN((overview.value.counts || {})[id], null)
+  const n = finiteN(asRecord(overview.value.counts)[id], null)
   return n ? ` (${n})` : ''
 }
 

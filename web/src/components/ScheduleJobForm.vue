@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -141,7 +141,7 @@ const { t } = injectI18n()
 const lockType = computed(() => Boolean(props.job) || props.allowedTypes.length === 1)
 const allowedTypes = computed(() => props.allowedTypes)
 
-const p = props.job?.params || {}
+const p = asRecord(props.job?.params)
 const name = ref(props.job?.name || '')
 const type = ref(props.job?.type || props.allowedTypes[0])
 const cron = ref(props.job?.cron || '30 3 * * *')

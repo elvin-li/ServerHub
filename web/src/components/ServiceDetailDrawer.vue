@@ -203,7 +203,7 @@ import { computed, inject, onUnmounted, reactive, ref, watch } from 'vue'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { portOf, serviceLabels, signatureOf, stateChipClass } from '../lib/serviceActions'
 import ServiceActions from './ServiceActions.vue'
 
@@ -247,13 +247,13 @@ function parsePorts(raw) {
 }
 
 function resetForms() {
-  const d = props.service || {}
-  const ov = d.override || {}
+  const d = asRecord(props.service)
+  const ov = asRecord(d.override)
   editForm.name = ov.name != null ? ov.name : (d.name || '')
   editForm.group = ov.group != null ? ov.group : (d.group || '')
   editForm.url = ov.url != null ? ov.url : (d.url || '')
   editForm.port = ov.port != null ? ov.port : (d.port ?? null)
-  const ad = d.adopt_defaults || {}
+  const ad = asRecord(d.adopt_defaults)
   adoptForm.id = ad.id || ''
   adoptForm.name = ad.name || ''
   adoptForm.group = ad.group || ''
@@ -264,7 +264,7 @@ function resetForms() {
   adoptForm.control_via = ad.control_via || ''
   adoptForm.formula = ad.formula || ''
   adoptForm.remember = Boolean(ad.remember)
-  const sc = d.script_defaults || {}
+  const sc = asRecord(d.script_defaults)
   scriptForm.name = sc.name || d.name || ''
   scriptForm.group = sc.group || d.group || ''
   scriptForm.url = sc.url || d.url || ''

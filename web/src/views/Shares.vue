@@ -334,7 +334,7 @@ import {
   createShare, getShareAcl, getShares, openSharingSettings,
   removeShare as removeShareRequest, setShareAcl, setSystemSharing, updateShare,
 } from '../api/client'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -374,8 +374,8 @@ const serviceIcon = (id) => iconMap[id] || Archive
 const systemServices = computed(() => asArray(data.value?.system_services))
 const coreServices = computed(() => systemServices.value.filter((service) => service.controllable))
 const managedServices = computed(() => systemServices.value.filter((service) => !service.controllable))
-const shareCount = computed(() => data.value?.smb?.length || 0)
-const tmStatus = computed(() => data.value?.time_machine || {})
+const shareCount = computed(() => asArray(data.value?.smb).length)
+const tmStatus = computed(() => asRecord(data.value?.time_machine))
 const hostName = computed(() => finiteText(data.value?.host?.name, '') || t('shares.unknown'))
 const activeCoreCount = computed(() => coreServices.value.filter((service) => service.enabled === true).length)
 const stateClass = (enabled) => enabled === true ? 'ok' : enabled === false ? 'stopped' : 'warn'

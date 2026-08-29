@@ -393,7 +393,7 @@
               <i :style="{ width: barPct(diskPct) + '%' }"></i>
             </div>
             <div class="disk-list">
-              <div v-for="d in smartDisks" :key="d.id" class="disk-item">
+              <div v-for="d in asArray(smartDisks)" :key="d.id" class="disk-item">
                 <div class="disk-primary">
                   <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
                   <span class="disk-primary-meta">
@@ -492,7 +492,7 @@
             </thead>
             <tbody>
               <tr
-                v-for="p in topProcs"
+                v-for="p in asArray(topProcs)"
                 :key="p.pid"
                 :class="{ dim: finiteN(p.cpu, 0) < 0.5 }"
               >
@@ -645,7 +645,7 @@
         <div v-if="!status" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
         <div v-else-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
-          <div v-for="s in attention.slice(0, 10)" :key="s.id" class="alert-item">
+          <div v-for="s in asArray(attention).slice(0, 10)" :key="s.id" class="alert-item">
             <!-- warn vs down was carried by the LED colour alone. -->
             <span class="led" :class="led(s.state)" aria-hidden="true"></span>
             <span class="sr-only">{{ ledText(s.state) }}</span>
@@ -715,7 +715,7 @@
           <div class="hg err"><div class="n">{{ finiteN(health.summary.error) }}</div><div class="l">{{ t('health.errors') }}</div></div>
         </div>
         <div class="failed-checks" v-if="failedChecks.length">
-          <div v-for="c in failedChecks.slice(0, 3)" :key="c.id" class="alert-item">
+          <div v-for="c in asArray(failedChecks).slice(0, 3)" :key="c.id" class="alert-item">
             <!-- error vs warn was the LED colour alone. -->
             <span class="led" :class="c.level === 'error' ? 'err' : 'warn'" aria-hidden="true"></span>
             <span class="sr-only">{{ c.level === 'error' ? t('common.error') : t('common.warn') }}</span>
@@ -734,9 +734,9 @@
             nginx: asArray(status.adaptive.nginx_sites).length,
           }) }}
         </div>
-        <div class="bm-grid" v-if="bookmarks.length" style="margin-top:10px">
+        <div class="bm-grid" v-if="asArray(bookmarks).length" style="margin-top:10px">
           <a
-            v-for="b in bookmarks.slice(0, 9)"
+            v-for="b in asArray(bookmarks).slice(0, 9)"
             :key="b.url"
             class="bm-card"
             :class="bmClass(b)"
@@ -777,7 +777,7 @@ import {
 } from '../api/client'
 import { openAssistant } from '../lib/assistant'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
 
@@ -878,15 +878,15 @@ const labels = computed(() => ({
   run: t('dashboard.act_run'),
 }))
 
-const sys = computed(() => status.value?.system || {})
-const cpu = computed(() => sensors.value?.cpu || {})
-const mem = computed(() => sensors.value?.memory || {})
-const net = computed(() => sensors.value?.network || {})
-const thermal = computed(() => cpu.value?.thermal || sensors.value?.thermal || {})
+const sys = computed(() => asRecord(status.value?.system))
+const cpu = computed(() => asRecord(sensors.value?.cpu))
+const mem = computed(() => asRecord(sensors.value?.memory))
+const net = computed(() => asRecord(sensors.value?.network))
+const thermal = computed(() => asRecord(cpu.value?.thermal || sensors.value?.thermal))
 const smartDisks = computed(() => asArray(storage.value?.disks))
 const topProcs = computed(() => asArray(sensors.value?.top_processes))
 const engineUp = computed(() => !!status.value?.engine_up)
-const ss = computed(() => powerData.value?.screen_sharing || {})
+const ss = computed(() => asRecord(powerData.value?.screen_sharing))
 const ncpu = computed(() => finiteN(cpu.value.ncpu || sys.value.ncpu || host.value?.ncpu, 1))
 
 const load1 = computed(() => cpu.value.load1 ?? sys.value.load1)
@@ -1034,7 +1034,7 @@ const memFootnote = computed(() => {
   })}`
 })
 
-const diskArray = computed(() => storage.value?.array || {})
+const diskArray = computed(() => asRecord(storage.value?.array))
 const diskUsed = computed(() => finiteN(diskArray.value.used_gb, null) ?? finiteN(sensors.value?.disk?.root_used_gb, null) ?? finiteN(sys.value.disk_used_gb))
 const diskTotal = computed(() => finiteN(diskArray.value.total_gb, null) ?? finiteN(sensors.value?.disk?.root_total_gb, null) ?? finiteN(sys.value.disk_total_gb))
 const diskFree = computed(() => finiteN(diskArray.value.free_gb, null) ?? finiteN(sensors.value?.disk?.root_free_gb, null) ?? finiteN(sys.value.disk_free_gb))
@@ -1063,7 +1063,7 @@ const upsChipClass = computed(() => {
   return ''
 })
 const upsIcon = computed(() => {
-  const u = ups.value || {}
+  const u = asRecord(ups.value)
   if (u.charging) return BatteryCharging
   const p = Number(u.battery_percent)
   if (!Number.isFinite(p)) return Battery
@@ -1514,11 +1514,11 @@ async function loadSensors(force = false, { light = false } = {}) {
       sensors.value = {
         ...prev,
         ...next,
-        top_processes: (next.top_processes && next.top_processes.length)
-          ? next.top_processes
-          : prev.top_processes,
+        top_processes: asArray(next.top_processes).length
+          ? asArray(next.top_processes)
+          : asArray(prev.top_processes),
         network: net,
-        memory: { ...(prev.memory || {}), ...(next.memory || {}) },
+        memory: { ...asRecord(prev.memory), ...asRecord(next.memory) },
       }
     } else {
       sensors.value = next

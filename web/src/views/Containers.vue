@@ -445,7 +445,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -533,7 +533,7 @@ function scheduleRefresh(delay) {
 }
 
 const containers = computed(() => asArray(data.value?.containers))
-const stats = computed(() => data.value?.stats || {})
+const stats = computed(() => asRecord(data.value?.stats))
 const engineMem = computed(() => {
   const n = Number(engineInfo.value?.info?.MemTotal)
   if (!Number.isFinite(n) || n <= 0) return '—'

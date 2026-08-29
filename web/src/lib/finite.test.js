@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+
+describe('asRecord leftover mappings', () => {
+  it('keeps real objects and fail-closes lists', () => {
+    expect(asRecord({ a: 1 })).toEqual({ a: 1 })
+    expect(asRecord([])).toEqual({})
+    expect(asRecord(['a'])).toEqual({})
+    expect(asRecord(null)).toEqual({})
+    expect(asRecord('x')).toEqual({})
+  })
+})
 
 describe('asArray leftover lists', () => {
   it('keeps real arrays and fail-closes mappings', () => {

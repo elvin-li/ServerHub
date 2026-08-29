@@ -117,7 +117,7 @@ import {
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -232,9 +232,9 @@ function startEdit(c) {
     enabled: c.enabled,
     min_level: c.min_level,
     notify_resolve: c.notify_resolve,
-    config: { ...(c.config || {}) },
+    config: { ...asRecord(c.config) },
     secrets: {},
-    has: { ...(c.has || {}) },
+    has: { ...asRecord(c.has) },
   }
 }
 
