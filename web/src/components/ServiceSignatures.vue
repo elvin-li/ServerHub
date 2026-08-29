@@ -125,7 +125,7 @@ async function load() {
   try {
     const data = await getServiceSignatures()
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = Array.isArray(data?.signatures) ? data.signatures : []
+    rows.value = asArray(data?.signatures)
     builtinCount.value = finiteN(data.builtin_count, 0)
     loadError.value = ''
   } catch (e) {

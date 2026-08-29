@@ -74,7 +74,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { deleteGroupRule, getGroupRules, saveGroupRules } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -90,7 +90,7 @@ let pageAlive = true
 let loadGeneration = 0
 
 function fmtList(value) {
-  const arr = Array.isArray(value) ? value : (value ? [value] : [])
+  const arr = asArray(value)
   return arr.map((item) => finiteText(item, '')).filter(Boolean).join(', ')
 }
 
@@ -123,7 +123,7 @@ async function load() {
   try {
     const data = await getGroupRules()
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = Array.isArray(data?.rules) ? data.rules : []
+    rows.value = asArray(data?.rules)
     source.value = data?.source === 'yaml' ? 'yaml' : 'seed'
     loadError.value = ''
   } catch (e) {

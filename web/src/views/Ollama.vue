@@ -94,7 +94,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in resident" :key="m.name">
+              <tr v-for="m in asArray(resident)" :key="m.name">
                 <td class="mono">
                   {{ finiteText(m.name) }}
                   <div class="show-m sub">{{ finiteN(m.context_length) }} · {{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</div>
@@ -106,7 +106,7 @@
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
                 </td>
               </tr>
-              <tr v-if="!resident.length">
+              <tr v-if="!asArray(resident).length">
                 <td colspan="5" class="empty-row">
                   {{ emptyListText('ollama.resident_empty') }}
                 </td>
@@ -139,7 +139,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in models" :key="m.name">
+              <tr v-for="m in asArray(models)" :key="m.name">
                 <td class="mono">
                   {{ finiteText(m.name) }}
                   <div class="show-m sub">{{ finiteText(m.family) }}{{ finiteText(m.parameter_size, '') ? ' ' + finiteText(m.parameter_size) : '' }} · {{ finiteText(m.quantization) }}</div>
@@ -224,7 +224,7 @@
         </div>
         <div class="toolbar" style="flex-wrap:wrap">
           <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
-            <option v-for="m in models" :key="'chat-' + m.name" :value="m.name">{{ finiteText(m.name) }}</option>
+            <option v-for="m in asArray(models)" :key="'chat-' + m.name" :value="m.name">{{ finiteText(m.name) }}</option>
           </select>
           <textarea
             v-model="chatInput"
@@ -253,7 +253,7 @@
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
           <select v-model="testModel" :aria-label="t('ollama.test_model_label')">
-            <option v-for="m in models" :key="m.name" :value="m.name">{{ finiteText(m.name) }}</option>
+            <option v-for="m in asArray(models)" :key="m.name" :value="m.name">{{ finiteText(m.name) }}</option>
           </select>
           <input
             v-model="testPrompt"
@@ -437,11 +437,11 @@ let actionTimer = null
 let pullTimer = null
 let pullGeneration = 0
 
-const models = computed(() => (Array.isArray(data.value?.models) ? data.value.models : []))
-const resident = computed(() => (Array.isArray(data.value?.resident) ? data.value.resident : []))
+const models = computed(() => asArray(data.value?.models))
+const resident = computed(() => asArray(data.value?.resident))
 const duplicateLabels = computed(() => {
-  const c = data.value?.service?.candidates
-  return Array.isArray(c) && c.length > 1 ? c : []
+  const c = asArray(data.value?.service?.candidates)
+  return c.length > 1 ? c : []
 })
 
 const openaiCompatUrl = computed(() => {
@@ -475,9 +475,9 @@ const chatSendDisabled = computed(() =>
   || !chatInput.value.trim())
 
 function defaultChatModel(j) {
-  const res = Array.isArray(j?.resident) ? j.resident : []
+  const res = asArray(j?.resident)
   if (res[0]?.name) return res[0].name
-  const mods = Array.isArray(j?.models) ? j.models : []
+  const mods = asArray(j?.models)
   return mods[0]?.name || ''
 }
 
@@ -591,8 +591,8 @@ async function refresh(force = false) {
     if (generation !== loadGeneration || !pageAlive) return false
     data.value = j
     loadError.value = ''
-    if (!testModel.value && Array.isArray(j?.models) && j.models.length) {
-      testModel.value = j.models[0].name
+    if (!testModel.value && asArray(j?.models).length) {
+      testModel.value = asArray(j.models)[0].name
     }
     if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.

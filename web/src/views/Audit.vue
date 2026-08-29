@@ -94,16 +94,17 @@ let loadGeneration = 0
 // Newest first on screen: an operator opening this page is looking at what just
 // happened, not at the start of the file. The API returns oldest-first because
 // that is the natural order of an append-only log.
-const rows = computed(() => entries.value.slice().reverse())
+const rows = computed(() => asArray(entries.value).slice().reverse())
 
 // Text filter over every rendered column — the same convention as the
 // Maintenance task filter.  200 rows of mixed sign-ins need "which of these
 // touched user X / came from client Y" to be one keystroke, not a scan.
 const q = ref('')
 const filteredRows = computed(() => {
+  const list = asArray(rows.value)
   const needle = q.value.trim().toLowerCase()
-  if (!needle) return rows.value
-  return rows.value.filter((e) => (
+  if (!needle) return list
+  return list.filter((e) => (
     `${e.event || ''} ${e.username || ''} ${e.client || ''} ${e.outcome || ''} ${detail(e)}`
       .toLowerCase()
       .includes(needle)

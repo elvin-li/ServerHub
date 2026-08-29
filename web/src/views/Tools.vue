@@ -687,8 +687,9 @@ const tabs = [
 
 const filteredProc = computed(() => {
   const q = procQ.value.trim().toLowerCase()
-  if (!q) return processes.value
-  return processes.value.filter(p =>
+  const list = asArray(processes.value)
+  if (!q) return list
+  return list.filter(p =>
     (p.command || '').toLowerCase().includes(q)
     || (p.user || '').toLowerCase().includes(q)
     || String(p.pid).includes(q)
@@ -816,7 +817,7 @@ async function loadProc() {
   try {
     const j = await getSystemProcesses(40)
     if (generation !== reloadGeneration || !pageAlive) return
-    processes.value = Array.isArray(j.processes) ? j.processes : []
+    processes.value = asArray(j.processes)
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('proc', e)

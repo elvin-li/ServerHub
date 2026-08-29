@@ -6,7 +6,7 @@
     </div>
     <div class="toolbar">
       <select v-model="sourceId" :aria-label="t('logs.source_label')" @change="load(true)">
-        <option v-for="s in sources" :key="s.id" :value="s.id">
+        <option v-for="s in asArray(sources)" :key="s.id" :value="s.id">
           {{ finiteText(s.name) }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
         </option>
       </select>

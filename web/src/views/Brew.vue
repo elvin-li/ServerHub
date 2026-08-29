@@ -114,9 +114,10 @@ const busyNote = computed(() => t('brew.action_running', {
 }))
 
 const filtered = computed(() => {
+  const list = asArray(services.value)
   const qq = q.value.trim().toLowerCase()
-  if (!qq) return services.value
-  return services.value.filter(s => (s.name || '').toLowerCase().includes(qq))
+  if (!qq) return list
+  return list.filter(s => (s.name || '').toLowerCase().includes(qq))
 })
 
 async function refresh() {

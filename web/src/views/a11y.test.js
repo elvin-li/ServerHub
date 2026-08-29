@@ -2897,6 +2897,8 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).not.toMatch(/class="badge cap">\{\{ c \}\}<\/span>/)
     expect(ollama).toMatch(/finiteText\(c\)/)
     expect(ollama).toMatch(/v-for="c in asArray\(m\.capabilities\)"/)
+    expect(ollama).toMatch(/const models = computed\(\(\) => asArray\(data\.value\?\.models\)\)/)
+    expect(ollama).toMatch(/const resident = computed\(\(\) => asArray\(data\.value\?\.resident\)\)/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
@@ -3172,6 +3174,7 @@ describe('leftover Infinity interpolations', () => {
     expect(tools).toMatch(/what: finiteText\(labels\[what\], ''\) \|\| finiteText\(what\)/)
     expect(tools).toMatch(/function formatCal\([\s\S]*jsonText/)
     expect(tools).not.toMatch(/JSON\.stringify\(c\)/)
+    expect(tools).toMatch(/processes\.value = asArray\(j\.processes\)/)
   })
 
   it('Files leftover listing counts and mtimes reject Infinity', () => {
@@ -3410,6 +3413,8 @@ describe('leftover Infinity interpolations', () => {
     expect(backups).not.toMatch(/preview\.samples" :key="i">\{\{ line \}\}<\/div>/)
     expect(backups).toMatch(/finiteText\(line\)/)
     expect(backups).toMatch(/v-for="\(line, i\) in asArray\(preview\.samples\)"/)
+    expect(backups).toMatch(/v-for="b in asArray\(backups\)"/)
+    expect(backups).toMatch(/jobs\.value = asArray\(d\?\.jobs\)/)
   })
 
   it('App leftover service counts go through finiteN', () => {
@@ -3443,6 +3448,7 @@ describe('leftover Infinity interpolations', () => {
     expect(audit).toMatch(/`\$\{finiteText\(k\)\}=\$\{finiteText\(v\)\}`/)
     expect(audit).toMatch(/n: finiteN\(entries\.length\)/)
     expect(audit).toMatch(/max: finiteN\(maxRetained\)/)
+    expect(audit).toMatch(/asArray\(entries\.value\)\.slice\(\)\.reverse\(\)/)
   })
 
   it('Dashboard leftover service totals go through finiteN', () => {
@@ -3593,6 +3599,7 @@ describe('leftover Infinity interpolations', () => {
     expect(sigs).not.toMatch(/\(row\.procs \|\| \[\]\)\.join\(', '\)/)
     expect(sigs).toMatch(/asArray\(row\.procs\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
     expect(sigs).toMatch(/asArray\(row\.ports\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
+    expect(sigs).toMatch(/rows\.value = asArray\(data\?\.signatures\)/)
   })
 
   it('GroupRules leftover ids and matcher lists go through finite helpers', () => {
@@ -3606,7 +3613,8 @@ describe('leftover Infinity interpolations', () => {
     expect(grules).not.toMatch(/toast\(`❌ \$\{err\.message \|\| err\}`\)/)
     expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
     expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(err\.message \|\| err\)\)/)
-    expect(grules).toMatch(/function fmtList\([\s\S]*finiteText/)
+    expect(grules).toMatch(/function fmtList\([\s\S]*asArray/)
+    expect(grules).toMatch(/rows\.value = asArray\(data\?\.rules\)/)
   })
 
   it('string identifier interpolations go through finiteText', () => {
@@ -3686,6 +3694,7 @@ describe('leftover Infinity interpolations', () => {
     expect(logs).toMatch(/displayLines\.value\.map\(\(l\) => finiteText\(l, ''\)\)/)
     expect(logs).not.toMatch(/\{\{\s*displayText\s*\}\}/)
     expect(logs).toMatch(/finiteText\(displayText\)/)
+    expect(logs).toMatch(/v-for="s in asArray\(sources\)"/)
   })
 
   it('Terminal leftover container labels and session ids go through finiteText', () => {

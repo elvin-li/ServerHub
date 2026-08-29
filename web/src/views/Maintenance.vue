@@ -114,14 +114,15 @@ let pollTimer = null
 let pollGeneration = 0
 let listTimer = null
 
-const anyRunning = computed(() => tasks.value.some(row => row.running))
+const anyRunning = computed(() => asArray(tasks.value).some(row => row.running))
 const filtered = computed(() => {
+  const list = asArray(tasks.value)
   const qq = q.value.trim().toLowerCase()
-  if (!qq) return tasks.value
+  if (!qq) return list
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
   // on it — typing one character in the filter box blanked the whole page.
-  return tasks.value.filter(row =>
+  return list.filter(row =>
     String(row.name ?? '').toLowerCase().includes(qq)
     || String(row.id ?? '').toLowerCase().includes(qq)
     || String(row.desc ?? '').toLowerCase().includes(qq)

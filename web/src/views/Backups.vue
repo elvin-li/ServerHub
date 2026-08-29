@@ -188,7 +188,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="b in backups" :key="b.path">
+          <tr v-for="b in asArray(backups)" :key="b.path">
             <td class="mono">
               {{ finiteText(b.name) }}
               <div v-if="finiteText(b.dir, '')" class="show-m sub">{{ finiteText(b.dir) }}</div>
@@ -342,8 +342,8 @@ let pageAlive = true
 let backupsGeneration = 0
 let jobsGeneration = 0
 
-const rsyncJobs = computed(() => jobs.value.filter((j) => j.type === 'rsync'))
-const stackJobs = computed(() => jobs.value.filter((j) => j.type === 'stack_backup'))
+const rsyncJobs = computed(() => asArray(jobs.value).filter((j) => j.type === 'rsync'))
+const stackJobs = computed(() => asArray(jobs.value).filter((j) => j.type === 'stack_backup'))
 
 function fmt(t) {
   return fmtTs(t, '')
@@ -395,16 +395,16 @@ async function refresh(manual = false) {
 
 async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
-  const wasRunning = jobs.value.some((j) => j.running)
+  const wasRunning = asArray(jobs.value).some((j) => j.running)
   try {
     const d = await getSchedulerJobs()
     if (generation !== jobsGeneration || !pageAlive) return
-    jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
+    jobs.value = asArray(d?.jobs)
     jobsError.value = ''
     jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
     // the operator to press "Refresh list" to see the backup they just made.
-    if (wasRunning && !jobs.value.some((j) => j.running)) void refresh()
+    if (wasRunning && !asArray(jobs.value).some((j) => j.running)) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')
