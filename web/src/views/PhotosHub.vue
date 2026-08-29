@@ -99,7 +99,7 @@
             {{ t('photoshub.map_to_photos') }}
           </button>
           <button @click="removeSelected" :disabled="!selected.length || pendingLoading">
-            {{ t('photoshub.remove_selected') }} ({{ selected.length }})
+            {{ t('photoshub.remove_selected') }} ({{ asArray(selected).length }})
           </button>
         </div>
         <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down-text)" role="alert">{{ finiteText(pendingError) }}</p>

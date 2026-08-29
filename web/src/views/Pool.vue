@@ -137,7 +137,7 @@
               >{{ t('pool.remove') }}</button>
             </td>
           </tr>
-          <tr v-if="!selectedMembers.length && !loadError">
+          <tr v-if="!asArray(selectedMembers).length && !loadError">
             <td colspan="8" class="empty-row">{{ t('pool.empty_members') }}</td>
           </tr>
         </tbody>
@@ -182,9 +182,9 @@
           <!-- Two different truths share this row: with every eligible disk
                already selected, "no eligible disks" would wrongly claim the
                host lost its disks (the common.no_match split Brew/Tools pin). -->
-          <tr v-if="!availableCandidates.length && !loadError">
+          <tr v-if="!asArray(availableCandidates).length && !loadError">
             <td colspan="6" class="empty-row" role="status">
-              {{ allCandidates.length ? t('pool.all_in_pool') : t('pool.empty_candidates') }}
+              {{ asArray(allCandidates).length ? t('pool.all_in_pool') : t('pool.empty_candidates') }}
             </td>
           </tr>
         </tbody>
@@ -220,7 +220,7 @@
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
           </tr>
-          <tr v-if="!shownFaults.length && !loadError">
+          <tr v-if="!asArray(shownFaults).length && !loadError">
             <td colspan="5" class="empty-row">{{ t('pool.empty_faults') }}</td>
           </tr>
         </tbody>

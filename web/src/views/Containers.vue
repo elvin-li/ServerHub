@@ -223,7 +223,7 @@
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!images.length && !subError.images"><td colspan="6" class="empty-row">{{ t('docker.no_images') }}</td></tr>
+            <tr v-if="!asArray(images).length && !subError.images"><td colspan="6" class="empty-row">{{ t('docker.no_images') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -253,7 +253,7 @@
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
               </td>
             </tr>
-            <tr v-if="!volumes.length && !subError.volumes"><td colspan="4" class="empty-row">{{ t('docker.no_volumes') }}</td></tr>
+            <tr v-if="!asArray(volumes).length && !subError.volumes"><td colspan="4" class="empty-row">{{ t('docker.no_volumes') }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -290,7 +290,7 @@
                 <span v-else class="sub">{{ t('docker.builtin') }}</span>
               </td>
             </tr>
-            <tr v-if="!networks.length && !subError.networks"><td colspan="5" class="empty-row">{{ t('docker.no_networks') }}</td></tr>
+            <tr v-if="!asArray(networks).length && !subError.networks"><td colspan="5" class="empty-row">{{ t('docker.no_networks') }}</td></tr>
           </tbody>
         </table>
       </div>

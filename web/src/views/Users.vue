@@ -70,7 +70,7 @@
            surfaced nowhere — loadAccounts() never toasts. Stale rows still
            render below, which is the LoadFailure contract. -->
       <LoadFailure
-        v-if="accountsError && accounts.length"
+        v-if="accountsError && asArray(accounts).length"
         :detail="accountsError"
         :retry="loadAccounts"
         :busy="accountsBusy"
@@ -179,7 +179,7 @@
                 </td>
               </tr>
             </template>
-            <tr v-if="!accounts.length">
+            <tr v-if="!asArray(accounts).length">
               <td colspan="5" class="empty-row">
                 <!-- The failure text gets its own role=alert span: loadAccounts()
                      does not toast, so this cell is the only place the error

@@ -397,7 +397,7 @@
           <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok ? t('common.ok') : t('common.fail') }}</span>
         </div>
         <div class="mono" style="margin-top:8px" v-for="(a,i) in asArray(lookupResult.answers)" :key="i">{{ finiteText(a) }}</div>
-        <pre v-if="!lookupResult.answers?.length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
+        <pre v-if="!asArray(lookupResult.answers).length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
       </div>
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
@@ -485,7 +485,7 @@
           <!-- role=status: the count is the only feedback the filter box gives,
                and it changed silently for a screen reader. Same pattern as the
                Services filter count. -->
-          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ asArray(data?.docker_ports).length }}</span>
+          <span class="meta-count" role="status">{{ asArray(filteredDockerPorts).length }} / {{ asArray(data?.docker_ports).length }}</span>
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">
@@ -508,7 +508,7 @@
                   <button class="tiny" :disabled="busy" @click="openPortEdit(p.container)">{{ t('network.change_port') }}</button>
                 </td>
               </tr>
-              <tr v-if="!filteredDockerPorts.length && !loadError">
+              <tr v-if="!asArray(filteredDockerPorts).length && !loadError">
                 <!-- A filter miss and a host with no published ports are
                      different states; the listening tab already tells them
                      apart the same way. -->
@@ -807,8 +807,8 @@ function resetOrderFromData() {
 }
 function moveService(idx, dir) {
   const j = idx + dir
-  if (j < 0 || j >= orderList.value.length) return
-  const arr = orderList.value.slice()
+  if (j < 0 || j >= asArray(orderList.value).length) return
+  const arr = asArray(orderList.value).slice()
   const tmp = arr[idx]
   arr[idx] = arr[j]
   arr[j] = tmp
@@ -826,7 +826,7 @@ async function refresh(force = false) {
     data.value = next
     loadError.value = ''
     syncOrderFromData()
-    if (deviceOptions.value.length && !deviceOptions.value.includes(aliasForm.value.device)) {
+    if (asArray(deviceOptions.value).length && !asArray(deviceOptions.value).includes(aliasForm.value.device)) {
       aliasForm.value.device = deviceOptions.value[0]
     }
     const aa = data.value?.alias_auto

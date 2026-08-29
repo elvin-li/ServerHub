@@ -43,7 +43,7 @@
           <span class="badge" :class="stateBadge(v.state)">{{ finiteText(v.backend) }}</span>
         </div>
         <div class="vm-detail">{{ finiteText(v.detail) }}</div>
-        <div v-if="v.ips?.length" class="mono" style="font-size:11px;margin-bottom:6px">
+        <div v-if="asArray(v.ips).length" class="mono" style="font-size:11px;margin-bottom:6px">
           IP: {{ asArray(v.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}
         </div>
         <div v-if="v.backend === 'orb'" class="console-note">

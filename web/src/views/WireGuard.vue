@@ -118,7 +118,7 @@
            tunnel comes back after a reboot, and the action that fixes it existed
            in the API with nothing on the page able to call it. -->
       <div
-        v-if="warningChecks.length"
+        v-if="asArray(warningChecks).length"
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--warn)"
       >

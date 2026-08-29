@@ -32,7 +32,7 @@
       <!-- Always-rendered live region, text gated inside: typing in the filter
            otherwise changes nothing a screen reader is told about, so there
            was no way to hear whether the filter matched anything at all. -->
-      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</template></span>
+      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(asArray(displayLines).length) }) }}</template></span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="retry" :busy="loading" />
     <pre v-if="!loaded" class="log-viewer" role="status" aria-live="polite">{{ t('common.loading') }}</pre>

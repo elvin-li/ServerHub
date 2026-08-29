@@ -143,7 +143,7 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredProc.length }} / {{ processes.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredProc).length }} / {{ asArray(processes).length }}</span>
       </div>
       <SkeletonLoader v-if="!tabLoaded.proc" :cols="6" :rows="8" />
       <LoadFailure v-else-if="tabError.proc" :detail="tabError.proc" :retry="reload" :busy="loading" />
@@ -166,7 +166,7 @@
             <!-- "No match" is only true while a filter is applied; with the box
                  empty a bare list means the host reported no processes, which is
                  a different (and stranger) fact worth stating as itself. -->
-            <tr v-if="!filteredProc.length">
+            <tr v-if="!asArray(filteredProc).length">
               <td colspan="6" class="empty-row">{{ procQ.trim() ? t('common.no_match') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -238,7 +238,7 @@
                  engine (or its CLI) gone this list is empty because docker is
                  unreachable, not because zero containers exist, and "no data"
                  next to an "engine down" df row contradicted it. -->
-            <tr v-if="!sizes.length">
+            <tr v-if="!asArray(sizes).length">
               <td colspan="4" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -254,7 +254,7 @@
         <!-- role=status: the timer count is the answer to the Refresh click,
              and it changed silently for a screen reader. Same pattern as the
              syslog line count and the listening-port count. -->
-        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
+        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: asArray(timers).length }) }}</span>
       </div>
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
       <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
@@ -280,7 +280,7 @@
               <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
               <td class="mono col-hide-m" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(row.program)">{{ finiteText(row.program) }}</td>
             </tr>
-            <tr v-if="!timers.length && !tabError.sched">
+            <tr v-if="!asArray(timers).length && !tabError.sched">
               <td colspan="4" class="empty-row">{{ t('tools.no_timers') }}</td>
             </tr>
           </tbody>

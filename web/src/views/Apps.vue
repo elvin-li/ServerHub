@@ -4,7 +4,7 @@
       <h1>{{ t('apps.title') }}</h1>
       <span class="meta">
         {{ t('apps.meta') }}
-        · {{ finiteN(overview.total, catalog.length) }} {{ t('apps.templates') }}
+        · {{ finiteN(overview.total, asArray(catalog).length) }} {{ t('apps.templates') }}
         · {{ finiteN(overview.installed, 0) }} {{ t('apps.installed_n') }}
       </span>
     </div>

@@ -62,17 +62,17 @@
          both being empty meant one rsync job hid the stack card and this block at
          the same time, leaving no way to create a stack backup anywhere. -->
     <LoadFailure v-if="jobsError" :detail="jobsError" :retry="loadJobs" />
-    <details v-if="jobsLoaded && !jobsError && (!rsyncJobs.length || !stackJobs.length)" class="tile" style="margin-bottom:12px" data-test="backup-advanced">
+    <details v-if="jobsLoaded && !jobsError && (!asArray(rsyncJobs).length || !asArray(stackJobs).length)" class="tile" style="margin-bottom:12px" data-test="backup-advanced">
       <summary class="advanced-sum">{{ t('backups.advanced_generic') }}</summary>
       <p class="meta" style="font-size:11px;color:var(--sub);margin:8px 0 12px">{{ t('backups.advanced_generic_desc') }}</p>
-      <div v-if="!rsyncJobs.length" class="tile" style="margin-bottom:12px">
+      <div v-if="!asArray(rsyncJobs).length" class="tile" style="margin-bottom:12px">
         <div class="row">
           <h3 style="margin:0">{{ t('backups.rsync_title') }}</h3>
           <button class="tiny primary" @click="openJobEditor('rsync', null)">{{ t('backups.new_task') }}</button>
         </div>
         <p class="meta" style="font-size:11px;color:var(--sub);margin:6px 0">{{ t('backups.rsync_desc') }}</p>
       </div>
-      <div v-if="!stackJobs.length" class="tile">
+      <div v-if="!asArray(stackJobs).length" class="tile">
         <div class="row">
           <h3 style="margin:0">{{ t('backups.stack_title') }}</h3>
           <button class="tiny primary" @click="openJobEditor('stack_backup', null)">{{ t('backups.new_task') }}</button>
@@ -82,7 +82,7 @@
     </details>
 
     <!-- ── scheduled rsync sync tasks ─────────────────────────────────── -->
-    <div v-if="rsyncJobs.length" class="tile" style="margin-bottom:12px">
+    <div v-if="asArray(rsyncJobs).length" class="tile" style="margin-bottom:12px">
       <div class="row">
         <h3 style="margin:0">{{ t('backups.rsync_title') }}</h3>
         <button class="tiny primary" @click="openJobEditor('rsync', null)">{{ t('backups.new_task') }}</button>
@@ -121,7 +121,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!rsyncJobs.length && jobsLoaded">
+          <tr v-if="!asArray(rsyncJobs).length && jobsLoaded">
             <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
@@ -130,7 +130,7 @@
     </div>
 
     <!-- ── scheduled compose-stack (appdata) backups ──────────────────── -->
-    <div v-if="stackJobs.length" class="tile" style="margin-bottom:12px">
+    <div v-if="asArray(stackJobs).length" class="tile" style="margin-bottom:12px">
       <div class="row">
         <h3 style="margin:0">{{ t('backups.stack_title') }}</h3>
         <button class="tiny primary" @click="openJobEditor('stack_backup', null)">{{ t('backups.new_task') }}</button>
@@ -159,7 +159,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!stackJobs.length && jobsLoaded">
+          <tr v-if="!asArray(stackJobs).length && jobsLoaded">
             <td colspan="5" class="empty-row" style="font-size:12px">{{ t('backups.no_tasks') }}</td>
           </tr>
         </tbody>
@@ -205,7 +205,7 @@
               <span v-if="b.restore" class="mono sub" :title="finiteText(b.restore)">{{ finiteText(b.restore) }}</span>
             </td>
           </tr>
-          <tr v-if="!backups.length && !loadError">
+          <tr v-if="!asArray(backups).length && !loadError">
             <td colspan="5" class="empty-row">{{ t('backups.empty') }}</td>
           </tr>
         </tbody>
@@ -218,7 +218,7 @@
            or refresh for a screen reader — same treatment as the Ollama
            model count and the VMs/Health header counts. -->
       <p v-if="hiddenCount" class="meta" style="margin-top:8px" role="status">
-        {{ t('backups.truncated', { shown: backups.length, total: finiteN(total) }) }}
+        {{ t('backups.truncated', { shown: asArray(backups).length, total: finiteN(total) }) }}
       </p>
     </div>
 

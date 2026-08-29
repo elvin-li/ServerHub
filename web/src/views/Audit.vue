@@ -11,19 +11,19 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ filteredRows.length }} / {{ rows.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filteredRows).length }} / {{ asArray(rows).length }}</span>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="6" :rows="8" />
-    <div v-else-if="!entries.length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
+    <div v-else-if="!asArray(entries).length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
     <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
          the else-branch rendered a table whose only row said "None" — an empty
          claim for an API failure. The banner above is the whole story; stale
          rows still render when a re-poll fails, which is the LoadFailure
          contract. -->
-    <template v-else-if="entries.length">
+    <template v-else-if="asArray(entries).length">
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead>
@@ -57,13 +57,13 @@
                  (it gets the audit.empty placeholder above). "None" claimed
                  the log was empty when the filter simply missed — the same
                  filter-miss/no-data split as Tools, Network and Health. -->
-            <tr v-if="!filteredRows.length">
+            <tr v-if="!asArray(filteredRows).length">
               <td colspan="6" class="empty-row">{{ t('common.no_match') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="meta">{{ t('audit.retained', { n: finiteN(entries.length), max: finiteN(maxRetained) }) }}</p>
+      <p class="meta">{{ t('audit.retained', { n: finiteN(asArray(entries).length), max: finiteN(maxRetained) }) }}</p>
     </template>
   </div>
 </template>

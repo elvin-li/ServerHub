@@ -48,7 +48,7 @@
       </div>
       <div class="tile span-3">
         <h2>{{ t('main.unassigned') }}</h2>
-        <div class="v">{{ unassigned.length }}</div>
+        <div class="v">{{ asArray(unassigned).length }}</div>
       </div>
     </div>
 
@@ -98,7 +98,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!arrayDevices.length && !loadError">
+          <tr v-if="!asArray(arrayDevices).length && !loadError">
             <td colspan="9" class="empty-row">{{ t('main_extra.empty_array_vols') }}</td>
           </tr>
         </tbody>
@@ -224,7 +224,7 @@
               <span v-if="!asArray(d.actions).length" class="sub">—</span>
             </td>
           </tr>
-          <tr v-if="!powerDisks.length && !loadError && !pendingFull">
+          <tr v-if="!asArray(powerDisks).length && !loadError && !pendingFull">
             <td colspan="9" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
@@ -431,7 +431,7 @@
                With the toggle off and only system volumes present, the table
                claimed the disk had no volumes at all — say the filter missed
                instead, like every other filtered table. -->
-          <tr v-if="!managedVols.length && !loadError && !pendingFull">
+          <tr v-if="!asArray(managedVols).length && !loadError && !pendingFull">
             <td colspan="6" class="empty-row">{{ asArray(data?.managed?.volumes).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
@@ -567,13 +567,13 @@
                          accessible name was "▼ 12" — nothing says what
                          expands. aria-expanded carries the open state. -->
                     <button
-                      v-if="m.smart?.attrs?.length"
+                      v-if="asArray(m.smart?.attrs).length"
                       class="tiny"
                       :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(m.id) })"
                       :aria-expanded="smartExpanded.has(m.id)"
                       @click="toggleSmartDetail(m.id)"
                     >
-                      {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ m.smart.attrs.length }}
+                      {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ asArray(m.smart.attrs).length }}
                     </button>
                     <template v-if="asArray(m.caps?.supported).length">
                       <button
@@ -585,7 +585,7 @@
                     </template>
                   </td>
                 </tr>
-                <tr v-if="smartExpanded.has(m.id) && m.smart?.attrs?.length">
+                <tr v-if="smartExpanded.has(m.id) && asArray(m.smart?.attrs).length">
                   <td :colspan="9" style="padding:0;background:var(--table-alt)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
                       <table class="dense fit-m" style="width:100%">
@@ -624,7 +624,7 @@
               </tbody>
             </table>
           </div>
-          <div v-if="smartData?.history?.length" style="margin-top:12px">
+          <div v-if="asArray(smartData?.history).length" style="margin-top:12px">
             <h4 style="font-size:12px;margin-bottom:6px">{{ t('main_extra.smart_history') }}</h4>
             <div class="table-wrap" style="max-height:160px;overflow:auto">
               <table class="dense fit-m">

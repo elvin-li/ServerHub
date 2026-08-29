@@ -60,7 +60,7 @@
           stopped: finiteN(status.counts?.stopped, 0),
           ts: finiteText(status.ts),
         }) }}
-        · {{ finiteN(status.service_total, flat.length) }} {{ t('services.total_unit') }}
+        · {{ finiteN(status.service_total, asArray(flat).length) }} {{ t('services.total_unit') }}
         <span v-if="!status.engine_up" class="warn-tag">{{ t('services.engine_down') }}</span>
       </span>
     </div>
@@ -68,7 +68,7 @@
     <!-- State chips: status shortcuts, kept as their own visual row -->
     <div class="state-chips">
       <button type="button" class="chip" :class="{ active: stateF === '' }" :aria-pressed="stateF === ''" @click="stateF = ''">
-        {{ t('common.all') }} {{ flat.length }}
+        {{ t('common.all') }} {{ asArray(flat).length }}
       </button>
       <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" :aria-pressed="stateF === 'ok'" @click="stateF = stateF === 'ok' ? '' : 'ok'">
         {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
@@ -98,7 +98,7 @@
          stay on screen under the banner instead (the LoadFailure contract —
          same as Containers and the Users accounts table). -->
     <template v-else-if="dense">
-      <div v-if="flat.length || !loadError" class="table-wrap">
+      <div v-if="asArray(flat).length || !loadError" class="table-wrap">
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
@@ -151,7 +151,7 @@
             <tr v-if="!asArray(filtered).length && !loadError">
               <!-- A filter that misses and a host with nothing discovered are
                    different answers (Tools/Network/Containers pattern). -->
-              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ flat.length ? t('common.no_match') : t('services.empty') }}</td>
+              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ asArray(flat).length ? t('common.no_match') : t('services.empty') }}</td>
             </tr>
           </tbody>
         </table>

@@ -48,7 +48,7 @@
                   <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
                 </td>
               </tr>
-              <tr v-if="!stacks.length && !loadError">
+              <tr v-if="!asArray(stacks).length && !loadError">
                 <td colspan="3" class="empty-row">{{ t('common.none') }}</td>
               </tr>
             </tbody>
