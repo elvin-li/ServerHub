@@ -1367,4 +1367,4 @@ def list_bookmarks() -> dict:
         "checked_at": strftime_now("%H:%M:%S"),
     }
     cleaned = _jsonable(v)
-    return cleaned if isinstance(cleaned, dict) else v
+    return cleaned if _isinst(cleaned, dict) else v

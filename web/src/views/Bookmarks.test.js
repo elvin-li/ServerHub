@@ -130,6 +130,50 @@ describe('Bookmarks leftover payloads', () => {
   })
 })
 
+describe('Bookmarks leftover leftover lists', () => {
+  it('fail-closes a mapping leftover bookmarks field without throwing', async () => {
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: { 0: { id: 'ghost', name: 'Ghost', url: 'http://ghost.lan' } },
+      up: 1, stopped: 0, down: 0, checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+
+  it('null and primitive rows do not throw out of the card v-for', async () => {
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: [
+        null,
+        'x',
+        {
+          id: 'nas', service: 'nas', name: 'NAS', url: 'http://nas.local',
+          ok: true, health: 'ok', status: 200, ms: 12, error: null,
+          backend: ['not-a-map'],
+        },
+      ],
+      up: 1, stopped: 0, down: 0, checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.bm-page-card').length).toBe(3)
+    expect(wrapper.text()).toContain('NAS')
+    expect(wrapper.text()).toContain('http://nas.local')
+    wrapper.unmount()
+  })
+
+  it('a whole-payload list leftover renders empty instead of throwing', async () => {
+    api.getBookmarks.mockResolvedValue(['nas'])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+})
+
 describe('Bookmarks failure states', () => {
   it('latches the failure banner and toasts once', async () => {
     api.getBookmarks.mockRejectedValue(new Error('probe sweep failed'))

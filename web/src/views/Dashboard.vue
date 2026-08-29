@@ -736,20 +736,20 @@
         </div>
         <div class="bm-grid" v-if="asArray(bookmarks).length" style="margin-top:10px">
           <a
-            v-for="b in asArray(bookmarks).slice(0, 9)"
-            :key="b.url"
+            v-for="(b, i) in asArray(bookmarks).slice(0, 9)"
+            :key="finiteText(asRecord(b).url, '') || i"
             class="bm-card"
             :class="bmClass(b)"
-            :href="finiteText(b.url, '')"
+            :href="finiteText(asRecord(b).url, '')"
             target="_blank"
             rel="noopener"
-            :title="finiteText(b.url)"
+            :title="finiteText(asRecord(b).url)"
           >
             <!-- Decoration: .bm-meta below already spells up/stopped/down
                  (bmLabel), so the LED only repeats it in colour — same
                  treatment as the Bookmarks page cards. -->
             <span class="led" :class="bmLed(b)" aria-hidden="true"></span>
-            <span class="bm-name">{{ finiteText(b.name) }}</span>
+            <span class="bm-name">{{ finiteText(asRecord(b).name) }}</span>
             <span class="bm-meta">{{ bmLabel(b) }}</span>
           </a>
         </div>
@@ -1175,13 +1175,15 @@ const attention = computed(() => {
 })
 
 function bmHealth(b) {
-  if (b?.health) return b.health
-  return b?.ok ? 'ok' : 'error'
+  const row = asRecord(b)
+  if (row.health) return row.health
+  return row.ok ? 'ok' : 'error'
 }
 function bmClass(b) {
   const h = bmHealth(b)
+  const row = asRecord(b)
   if (h === 'stopped') return 'stopped'
-  if (h === 'error' || b?.ok === false) return 'down'
+  if (h === 'error' || row.ok === false) return 'down'
   return ''
 }
 function bmLed(b) {
@@ -1193,7 +1195,7 @@ function bmLed(b) {
 function bmLabel(b) {
   const h = bmHealth(b)
   if (h === 'ok') {
-    const ms = Number(b.ms)
+    const ms = Number(asRecord(b).ms)
     return Number.isFinite(ms) ? ms + ' ms' : t('dashboard.bm_up')
   }
   if (h === 'stopped') return t('dashboard.bm_stopped')
@@ -1572,7 +1574,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // top_processes / proc counts, so first paint and idle 90s ticks showed "—".
   // The 20s admin tick stays light and merges last full extras.
   void loadSensors(forceSensors, { light: false })
-  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = asArray(b.bookmarks) }).catch(() => {})
+  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = asArray(asRecord(b).bookmarks) }).catch(() => {})
   await Promise.all([
     loadMetrics(),
     getStorage(true).then(s => { if (stillHere()) storage.value = s }).catch(() => {}),
