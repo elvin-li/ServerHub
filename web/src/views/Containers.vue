@@ -308,29 +308,29 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.engine_info') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ finiteText(engineInfo.info?.Name) }}</div>
-            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ finiteText(engineInfo.info?.ServerVersion) }}</div>
-            <div class="k">OrbStack</div><div class="mono">{{ finiteText(engineInfo.orb_version) }}</div>
-            <div class="k">OS</div><div class="mono">{{ finiteText(engineInfo.info?.OperatingSystem) }}</div>
-            <div class="k">Arch</div><div>{{ finiteText(engineInfo.info?.Architecture) }}</div>
-            <div class="k">CPU</div><div>{{ finiteN(engineInfo.info?.NCPU) }}</div>
+            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).Name) }}</div>
+            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).ServerVersion) }}</div>
+            <div class="k">OrbStack</div><div class="mono">{{ finiteText(asRecord(engineInfo).orb_version) }}</div>
+            <div class="k">OS</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).OperatingSystem) }}</div>
+            <div class="k">Arch</div><div>{{ finiteText(asRecord(asRecord(engineInfo).info).Architecture) }}</div>
+            <div class="k">CPU</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).NCPU) }}</div>
             <div class="k">{{ t('docker.mem') }}</div><div>{{ engineMem }} GB</div>
-            <div class="k">Root</div><div class="mono">{{ finiteText(engineInfo.info?.DockerRootDir) }}</div>
-            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ finiteText(engineInfo.info?.Driver) }}</div>
-            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ finiteText(engineInfo.info?.LoggingDriver) }}</div>
-            <div class="k">Cgroup</div><div class="mono">{{ finiteText(engineInfo.info?.CgroupDriver) }}</div>
+            <div class="k">Root</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).DockerRootDir) }}</div>
+            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).Driver) }}</div>
+            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).LoggingDriver) }}</div>
+            <div class="k">Cgroup</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).CgroupDriver) }}</div>
           </div>
         </div>
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.resources') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ finiteN(engineInfo.info?.Containers) }}</div>
-            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ finiteN(engineInfo.info?.ContainersRunning, 0) }}</span></div>
-            <div class="k">{{ t('docker.paused') }}</div><div>{{ finiteN(engineInfo.info?.ContainersPaused, 0) }}</div>
-            <div class="k">{{ t('common.stopped') }}</div><div>{{ finiteN(engineInfo.info?.ContainersStopped, 0) }}</div>
-            <div class="k">{{ t('docker.images') }}</div><div>{{ finiteN(engineInfo.info?.Images, 0) }}</div>
-            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ finiteText(engineInfo.docker_cli) }}</div>
-            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ finiteText(engineInfo.orb_cli) }}</div>
+            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).Containers) }}</div>
+            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersRunning, 0) }}</span></div>
+            <div class="k">{{ t('docker.paused') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersPaused, 0) }}</div>
+            <div class="k">{{ t('common.stopped') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersStopped, 0) }}</div>
+            <div class="k">{{ t('docker.images') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).Images, 0) }}</div>
+            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ finiteText(asRecord(engineInfo).docker_cli) }}</div>
+            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ finiteText(asRecord(engineInfo).orb_cli) }}</div>
           </div>
           <div class="btns" style="margin-top:12px">
             <button class="tiny" @click="loadEngine">{{ t('common.refresh') }}</button>
@@ -358,7 +358,7 @@
     <div ref="execPanel" v-if="execC" class="modal-bg" @click.self="execC=null" role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ctr-exec-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ finiteText(execC.name) }}</span>
+          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ finiteText(asRecord(execC).name) }}</span>
           <button class="tiny" @click="execC=null">{{ t('common.close') }}</button>
         </div>
         <p style="color:var(--sub);font-size:11px;margin-bottom:8px">
@@ -600,7 +600,7 @@ function shortPath(p) {
   return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : s
 }
 function mountTitle(c) {
-  return asArray(c.mounts).map(m => `${finiteText(m.src)} → ${finiteText(m.dst)}`).join('\n')
+  return asArray(asRecord(c).mounts).map(m => `${finiteText(asRecord(m).src)} → ${finiteText(asRecord(m).dst)}`).join('\n')
 }
 function cpuNum(s) {
   if (!s) return null

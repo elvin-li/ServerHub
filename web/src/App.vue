@@ -74,7 +74,7 @@
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('appearance.language') }}</span>
               <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-                <option v-for="l in locales" :key="l.id" :value="l.id">{{ finiteText(l.native) }}</option>
+                <option v-for="l in asArray(locales)" :key="finiteText(asRecord(l).id)" :value="asRecord(l).id">{{ finiteText(asRecord(l).native) }}</option>
               </select>
             </label>
             <label class="nav-tool">
@@ -188,16 +188,16 @@
         <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
             v-for="(item, i) in asArray(cmdFlat)"
-            :key="item.to"
+            :key="finiteText(asRecord(item).to)"
             :id="`cmd-opt-${i}`"
             role="option"
             :aria-selected="i === cmdIdx"
-            :class="{ active: i === cmdIdx, 'cmd-ai': item.type === 'ai' }"
+            :class="{ active: i === cmdIdx, 'cmd-ai': asRecord(item).type === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(item.query) }) : (finiteText(item.title, '') || t(item.labelKey)) }}</span>
-            <kbd>{{ item.type === 'ai' ? t('assistant.short') : finiteText(item.to) }}</kbd>
+            <span>{{ asRecord(item).type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(asRecord(item).query) }) : (finiteText(asRecord(item).title, '') || t(asRecord(item).labelKey)) }}</span>
+            <kbd>{{ asRecord(item).type === 'ai' ? t('assistant.short') : finiteText(asRecord(item).to) }}</kbd>
           </li>
           <!-- role=presentation: a listbox may only own options, and "no
                matches" is a message about the list, not a choice in it. -->

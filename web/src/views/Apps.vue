@@ -464,19 +464,19 @@
             {{ t('apps.cf_hint_tail') }}
           </p>
           <div class="app-badges" style="margin-bottom:10px">
-            <span class="chip" :class="cfStatus.logged_in ? 'chip-ok' : 'chip-muted'">
-              {{ cfStatus.logged_in ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
+            <span class="chip" :class="asRecord(cfStatus).logged_in ? 'chip-ok' : 'chip-muted'">
+              {{ asRecord(cfStatus).logged_in ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
             </span>
-            <span class="chip" :class="cfStatus.running ? 'chip-ok' : 'chip-muted'">
-              {{ cfStatus.running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
+            <span class="chip" :class="asRecord(cfStatus).running ? 'chip-ok' : 'chip-muted'">
+              {{ asRecord(cfStatus).running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
             </span>
-            <span v-if="cfStatus.has_token && cfStatus.token_ok === false" class="chip chip-warn">
+            <span v-if="asRecord(cfStatus).has_token && asRecord(cfStatus).token_ok === false" class="chip chip-warn">
               {{ t('apps.cf_token_invalid') }}
             </span>
-            <span v-else-if="!cfStatus.running && cfStatus.crash_loop" class="chip chip-warn">
+            <span v-else-if="!asRecord(cfStatus).running && asRecord(cfStatus).crash_loop" class="chip chip-warn">
               {{ t('apps.cf_crash_loop') }}
             </span>
-            <span v-if="cfStatus.active_tunnel" class="chip chip-muted mono">{{ finiteText(cfStatus.active_tunnel) }}</span>
+            <span v-if="asRecord(cfStatus).active_tunnel" class="chip chip-muted mono">{{ finiteText(asRecord(cfStatus).active_tunnel) }}</span>
           </div>
 
           <div class="credential-actions" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -490,9 +490,9 @@
             <button type="button" :disabled="busy || cfBusy" @click="openManagedLogs(detail)">{{ t('apps.logs') }}</button>
           </div>
 
-          <div v-if="cfStatus.login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
+          <div v-if="asRecord(cfStatus).login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
-            <a :href="finiteText(cfStatus.login_url, '')" target="_blank" rel="noopener">{{ finiteText(cfStatus.login_url) }}</a>
+            <a :href="finiteText(asRecord(cfStatus).login_url, '')" target="_blank" rel="noopener">{{ finiteText(asRecord(cfStatus).login_url) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
           </div>
 
@@ -508,8 +508,8 @@
               <!-- Error vs empty: a failed tunnel-list fetch used to render as
                    "No tunnels found", silently hiding the failure. -->
               <div class="field-help" v-if="!asArray(asRecord(cfStatus).tunnels).length" role="status">
-                <template v-if="cfStatus.logged_in && finiteText(cfStatus.tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(cfStatus.tunnels_error, '') }}</template>
-                <template v-else>{{ cfStatus.logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
+                <template v-if="asRecord(cfStatus).logged_in && finiteText(asRecord(cfStatus).tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(asRecord(cfStatus).tunnels_error, '') }}</template>
+                <template v-else>{{ asRecord(cfStatus).logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
               </div>
             </div>
             <label class="form-label">{{ t('apps.cf_new_tunnel') }}</label>

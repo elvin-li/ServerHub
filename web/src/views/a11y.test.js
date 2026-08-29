@@ -2549,8 +2549,8 @@ describe('leftover Infinity interpolations', () => {
   it('Containers leftover engine figures go through finiteN', () => {
     const containers = readFileSync(resolve(SRC, 'views/Containers.vue'), 'utf8')
     expect(containers).toMatch(/from ['"][^'"]*lib\/finite/)
-    expect(containers).toMatch(/finiteN\(engineInfo\.info\?\.Containers/)
-    expect(containers).toMatch(/finiteN\(engineInfo\.info\?\.NCPU/)
+    expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.Containers/)
+    expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.NCPU/)
     expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
     expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
@@ -2561,8 +2561,8 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/finiteText\(asRecord\(c\)\.ports\)/)
     expect(containers).not.toMatch(/\{\{\s*c\.ports \|\| '—'\s*\}\}/)
     expect(containers).not.toMatch(/engineInfo\.orb_version \|\| '—'/)
-    expect(containers).toMatch(/finiteText\(engineInfo\.orb_version/)
-    expect(containers).toMatch(/finiteText\(engineInfo\.info\?\.ServerVersion/)
+    expect(containers).toMatch(/finiteText\(asRecord\(engineInfo\)\.orb_version/)
+    expect(containers).toMatch(/finiteText\(asRecord\(asRecord\(engineInfo\)\.info\)\.ServerVersion/)
     expect(containers).not.toMatch(/\{\{\s*c\.name\s*\}\}/)
     expect(containers).toMatch(/finiteText\(asRecord\(c\)\.name\)/)
     expect(containers).not.toMatch(/im\.Repository \|\| '—'/)
@@ -2596,9 +2596,9 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).not.toMatch(/\{\{\s*n\.Driver\s*\}\}/)
     expect(containers).toMatch(/finiteText\(asRecord\(n\)\.Driver\)/)
     expect(containers).not.toMatch(/\{\{\s*engineInfo\.info\?\.OperatingSystem\s*\}\}/)
-    expect(containers).toMatch(/finiteText\(engineInfo\.info\?\.OperatingSystem\)/)
+    expect(containers).toMatch(/finiteText\(asRecord\(asRecord\(engineInfo\)\.info\)\.OperatingSystem\)/)
     expect(containers).not.toMatch(/\{\{\s*engineInfo\.docker_cli\s*\}\}/)
-    expect(containers).toMatch(/finiteText\(engineInfo\.docker_cli\)/)
+    expect(containers).toMatch(/finiteText\(asRecord\(engineInfo\)\.docker_cli\)/)
     expect(containers).not.toMatch(/\{\{\s*logName\s*\}\}/)
     expect(containers).toMatch(/finiteText\(logName\)/)
     expect(containers).not.toMatch(/\{\{\s*logText\s*\}\}/)
@@ -2659,9 +2659,9 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).not.toMatch(/compose_warnings \|\| \[\]\)\.map\(\(w\) => t\(`catalog_remote\.warn_\$\{w\}`\)\)\.join/)
     expect(apps).toMatch(/asArray\(asRecord\(installTpl\)\.compose_warnings\)\.map\(\(w\) => finiteText\(w, ''\)\)/)
     expect(apps).not.toMatch(/:href="cfStatus\.login_url"/)
-    expect(apps).toMatch(/:href="finiteText\(cfStatus\.login_url, ''\)"/)
+    expect(apps).toMatch(/:href="finiteText\(asRecord\(cfStatus\)\.login_url, ''\)"/)
     expect(apps).not.toMatch(/\{\{\s*cfStatus\.login_url\s*\}\}/)
-    expect(apps).toMatch(/finiteText\(cfStatus\.login_url\)/)
+    expect(apps).toMatch(/finiteText\(asRecord\(cfStatus\)\.login_url\)/)
     expect(apps).not.toMatch(/:href="installUrl"/)
     expect(apps).toMatch(/:href="finiteText\(installUrl, ''\)"/)
     const tools = readFileSync(resolve(SRC, 'views/Tools.vue'), 'utf8')
@@ -2714,7 +2714,7 @@ describe('leftover Infinity interpolations', () => {
     // call-to-action showed up.
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
     expect(apps).not.toMatch(/v-if="cfStatus\.login_url" class="notes" style/)
-    expect(apps).toMatch(/v-if="cfStatus\.login_url" class="notes" role="status"/)
+    expect(apps).toMatch(/v-if="asRecord\(cfStatus\)\.login_url" class="notes" role="status"/)
   })
 
   it('Apps cloudflared tunnel picker tells error apart from empty', () => {
@@ -2724,7 +2724,7 @@ describe('leftover Infinity interpolations', () => {
     // finiteText so a leftover value cannot render as junk.
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
     expect(apps).toMatch(/class="field-help" v-if="!asArray\(asRecord\(cfStatus\)\.tunnels\)\.length" role="status"/)
-    expect(apps).toMatch(/cfStatus\.logged_in && finiteText\(cfStatus\.tunnels_error, ''\)/)
+    expect(apps).toMatch(/asRecord\(cfStatus\)\.logged_in && finiteText\(asRecord\(cfStatus\)\.tunnels_error, ''\)/)
     expect(apps).toMatch(/t\('apps\.cf_tunnels_failed'\)/)
     expect(apps).not.toMatch(/\{\{\s*cfStatus\.tunnels_error\s*\}\}/)
     for (const locale of ['en', 'ja', 'zh-CN']) {
@@ -3466,11 +3466,11 @@ describe('leftover Infinity interpolations', () => {
     expect(app).toMatch(/finiteN\(counts\.warn/)
     expect(app).toMatch(/finiteN\(counts\.down/)
     expect(app).not.toMatch(/item\.title \|\| t\(item\.labelKey\)/)
-    expect(app).toMatch(/finiteText\(item\.title/)
-    expect(app).toMatch(/finiteText\(item\.to\)/)
+    expect(app).toMatch(/finiteText\(asRecord\(item\)\.title/)
+    expect(app).toMatch(/finiteText\(asRecord\(item\)\.to\)/)
     expect(app).toMatch(/finiteText\(toast\)/)
     expect(app).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
-    expect(app).toMatch(/finiteText\(l\.native\)/)
+    expect(app).toMatch(/finiteText\(asRecord\(l\)\.native\)/)
   })
 
   it('Audit leftover extra fields go through finiteText', () => {
