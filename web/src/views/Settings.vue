@@ -2315,7 +2315,7 @@ async function forceCheck() {
   try {
     const r = await forceAlertCheck()
     if (!pageAlive) return
-    toast(`${t('settings.force_check')} · ${r.emitted?.length || 0}`)
+    toast(`${t('settings.force_check')} · ${asArray(r.emitted).length}`)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))

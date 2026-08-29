@@ -24,7 +24,7 @@
 
     <!-- Quick links -->
     <div v-if="asArray(status?.links).length" class="quick-links">
-      <a v-for="l in status.links" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
+      <a v-for="l in asArray(status.links)" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
     </div>
 
     <!-- Toolbar: one row — refresh, filter, selects, then the compact toggle cluster -->

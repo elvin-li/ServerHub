@@ -21,7 +21,7 @@
             </thead>
             <tbody>
               <tr
-                v-for="s in stacks"
+                v-for="s in asArray(stacks)"
                 :key="s.id"
                 :style="selected===s.id ? 'background:var(--table-hover)' : ''"
                 style="cursor:pointer"
@@ -125,7 +125,7 @@ import {
   validateCompose,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -182,7 +182,7 @@ async function loadStacks(manual = false) {
   try {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = Array.isArray(d.stacks) ? d.stacks : []
+    stacks.value = asArray(d.stacks)
     loadError.value = ''
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return

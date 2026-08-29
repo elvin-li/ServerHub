@@ -99,7 +99,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText, jsonDump } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -247,7 +247,7 @@ async function openTerminal() {
     socket.binaryType = 'arraybuffer'
     term.onData(data => {
       if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'input', data }))
+        socket.send(jsonDump({ type: 'input', data }))
       }
     })
     socket.addEventListener('message', onSocketMessage)
@@ -331,7 +331,7 @@ function fitTerminal() {
   try {
     fitAddon.fit()
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      socket.send(jsonDump({ type: 'resize', cols: term.cols, rows: term.rows }))
     }
   } catch {
     // The dialog may be closing while ResizeObserver delivers its final event.

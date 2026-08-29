@@ -76,7 +76,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, finiteText, fmtTs } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -93,7 +93,7 @@ const loadError = ref('')
 // down | warn.  'ok' rows are resolutions, useful context but never urgent.
 const filter = ref('all')
 const filtered = computed(() => {
-  const rows = alerts.value
+  const rows = asArray(alerts.value)
   if (filter.value === 'issues') return rows.filter((a) => a?.level !== 'ok')
   if (filter.value === 'down' || filter.value === 'warn') {
     return rows.filter((a) => a?.level === filter.value)
@@ -126,7 +126,7 @@ async function refresh(manual = false) {
   try {
     const d = await getAlerts(100)
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
+    alerts.value = asArray(d.alerts)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
@@ -151,10 +151,10 @@ async function check() {
   try {
     const r = await forceAlertCheck()
     if (generation !== loadGeneration || !pageAlive) return
-    toast(t('alerts.inspect_done', { n: finiteN(r.emitted?.length, 0) }))
+    toast(t('alerts.inspect_done', { n: asArray(r.emitted).length }))
     const d = await getAlerts(100)
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
+    alerts.value = asArray(d.alerts)
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

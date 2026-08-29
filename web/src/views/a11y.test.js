@@ -2869,6 +2869,8 @@ describe('leftover Infinity interpolations', () => {
     expect(settings).toMatch(/finiteText\(diagPreview\)/)
     expect(settings).not.toMatch(/`✅ \$\{key\}=\$\{value\}`/)
     expect(settings).toMatch(/`✅ \$\{finiteText\(key\)\}=\$\{finiteText\(value\)\}`/)
+    expect(settings).not.toMatch(/r\.emitted\?\.length \|\| 0/)
+    expect(settings).toMatch(/asArray\(r\.emitted\)\.length/)
   })
 
   it('Ollama leftover context lengths, pids and dates reject Infinity', () => {
@@ -3330,7 +3332,8 @@ describe('leftover Infinity interpolations', () => {
     expect(alerts).not.toMatch(/\{\{\s*a\.name\s*\}\}/)
     expect(alerts).toMatch(/finiteText\(a\.name\)/)
     expect(alerts).not.toMatch(/n: r\.emitted\?\.length \|\| 0/)
-    expect(alerts).toMatch(/n: finiteN\(r\.emitted\?\.length, 0\)/)
+    expect(alerts).not.toMatch(/n: finiteN\(r\.emitted\?\.length, 0\)/)
+    expect(alerts).toMatch(/n: asArray\(r\.emitted\)\.length/)
     expect(alerts).not.toMatch(/'❌ ' \+ \(r\.message \|\| ''\)/)
     expect(alerts).toMatch(/'❌ ' \+ finiteText\(r\.message, ''\)/)
   })
@@ -3458,6 +3461,7 @@ describe('leftover Infinity interpolations', () => {
     expect(services).not.toMatch(/toast\(`❌ \$\{e\.message \|\| e\}`\)/)
     expect(services).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
     expect(services).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(services).toMatch(/v-for="l in asArray\(status\.links\)"/)
   })
 
   it('Containers job log live region is gated on jobLog', () => {
@@ -3485,6 +3489,8 @@ describe('leftover Infinity interpolations', () => {
     expect(form).toMatch(/asArray\(p\.exclude\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
     expect(form).toMatch(/previewError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(form).toMatch(/n: finiteN\(step\[1\]\)/)
+    expect(form).toMatch(/v-for="s in asArray\(stacks\)"/)
+    expect(form).toMatch(/v-for="\(line, i\) in asArray\(preview\.samples\)"/)
   })
 
   it('ServiceDetailDrawer leftover detail goes through finiteText', () => {
@@ -3638,6 +3644,8 @@ describe('leftover Infinity interpolations', () => {
     expect(compose).toMatch(/finiteText\(r\.message, ''\) \|\| t\('compose\.started'\)/)
     expect(compose).not.toMatch(/jobLog\.value = j\.log \|\| ''/)
     expect(compose).toMatch(/jobLog\.value = finiteText\(j\.log, ''\)/)
+    expect(compose).toMatch(/v-for="s in asArray\(stacks\)"/)
+    expect(compose).toMatch(/stacks\.value = asArray\(d\.stacks\)/)
   })
 
   it('Brew leftover names go through finiteText', () => {
@@ -3677,6 +3685,8 @@ describe('leftover Infinity interpolations', () => {
     expect(terminal).not.toMatch(/item\?\.label \|\| container\.value \|\| t\('terminal\.target_container'\)/)
     expect(terminal).toMatch(/finiteText\(item\?\.label, ''\) \|\| finiteText\(container\.value, ''\)/)
     expect(terminal).toMatch(/sessionId\.value = finiteText\(message\.session, ''\)/)
+    expect(terminal).toMatch(/socket\.send\(jsonDump\(/)
+    expect(terminal).not.toMatch(/socket\.send\(JSON\.stringify\(/)
   })
 
   it('leftover name interpolations in listed views go through finiteText', () => {

@@ -88,7 +88,7 @@
         </div>
         <div v-if="!preview.total" class="meta">{{ t('sched.preview_empty') }}</div>
         <div v-else style="max-height:140px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-          <div v-for="(line, i) in (Array.isArray(preview.samples) ? preview.samples : [])" :key="i">{{ finiteText(line) }}</div>
+          <div v-for="(line, i) in asArray(preview.samples)" :key="i">{{ finiteText(line) }}</div>
         </div>
       </div>
     </template>
@@ -98,7 +98,7 @@
       <div class="kv" style="margin-bottom:8px">
         <div class="k">{{ t('sched.stack') }}</div>
         <select v-model="stackId" :aria-label="t('sched.stack')">
-          <option v-for="s in stacks" :key="s.id" :value="s.id">{{ finiteText(s.name, '') || finiteText(s.id) }}</option>
+          <option v-for="s in asArray(stacks)" :key="s.id" :value="s.id">{{ finiteText(s.name, '') || finiteText(s.id) }}</option>
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
@@ -273,7 +273,7 @@ onMounted(async () => {
   try {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = Array.isArray(d?.stacks) ? d.stacks : []
+    stacks.value = asArray(d?.stacks)
     stacksError.value = ''
     if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
   } catch (e) {
