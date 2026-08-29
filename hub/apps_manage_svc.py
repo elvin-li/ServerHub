@@ -1816,15 +1816,17 @@ def _launchd_apps() -> list[dict]:
         elif loaded and last_text not in ("", "-", "0"):
             status_text = f"Exited · last exit {last_text}"
         elif loaded:
-            status_text = "Loaded but not running"
+            state, status_text = "down", "Loaded but not running"
+            acts = ["start", "detail", "logs", "uninstall"]
         else:
-            status_text = "Not loaded"
+            state, status_text = "down", "Not loaded"
+            acts = ["start", "detail", "logs", "uninstall"]
         items.append({
             "id": f"launchd:{label}",
             "source_id": label,
             "kind": "launchd",
             "name": name,
-            "state": "ok" if running else "down",
+            "state": state,
             "status_text": status_text,
             "path": workdir,
             "package": None,
@@ -2517,7 +2519,7 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                             "ok": True,
                             "message": "Ollama is already serving :11434; not starting a second brew daemon",
                         }
-                    if source_id == "native-redis" and native_catalog.redis_port_already_served():
+                    if source_id == "native-redis":
                         return {
                             "ok": True,
                             "message": "Valkey/Redis is already serving :6379; not starting Homebrew Redis",

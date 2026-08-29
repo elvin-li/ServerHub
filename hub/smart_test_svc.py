@@ -999,6 +999,22 @@ def _capped_json_int(text):
         return None
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is ValueError (not JSONDecodeError) for
+    the *whole* document: one poisoned row made ``_load_history`` return
+    ``[]``, GET /api/smart/history went silently empty, and the next
+    ``_append_history`` rewrote the journal with only its own record — every
+    prior self-test result silently lost.  Dropping just the number matches
+    the ``_jsonable`` rule for an int the encoder cannot render.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_history() -> list[dict]:
     try:
         data = safe_json_loads(
@@ -1171,6 +1187,31 @@ def _schedule_text(value) -> str:
     # ``__str__`` answers *self* skips CPython's exact-str copy, so a bound
     # ``encode`` bomb here used to 500 GET /api/smart the same way.
     return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _schedule_text(value) -> str:
+    """str() probe for hand-edited YAML schedule fields.
+
+    ``interval: 0xFFF…`` loads as an over-cap int (``int(x, 16)`` is a
+    power-of-two base, so the 4300-digit parse cap never applied) and a bare
+    ``str()`` here ValueError'd GET /api/smart through ``overview()`` — and
+    the same raise escaped ``schedule_due()`` inside the scheduler tick,
+    silently stopping every scheduled self-test.  An unrenderable value
+    coerces to "" so the caller's own fallback ("off" / "short" / drop the
+    device entry) answers instead; a renderable int still coerces via str()
+    rather than being hidden behind an isinstance(str) gate.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    try:
+        text = str(value)
+    except Exception:
+        return ""
+    # Lone surrogates (a mojibake hand-edit) must not reach Starlette's
+    # UTF-8 encode.
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _now() -> int:

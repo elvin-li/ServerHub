@@ -322,6 +322,9 @@
           <tr v-if="!asArray(asRecord(data).disks).length && !loadError">
             <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
+          <tr v-if="!(data?.disks || []).length && !loadError">
+            <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
+          </tr>
         </tbody>
       </table>
     </div>

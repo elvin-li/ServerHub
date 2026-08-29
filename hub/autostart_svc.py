@@ -450,6 +450,16 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     # Same hyphen-permissive class as brew_svc had: `{"id": "brew:--all"}`
     # reached `brew services stop --all`.
     name = cli_args.require_positional(name, label="brew service name")
+    from hub.brew_svc import _BLOCK_BREW_START
+    if enabled and name in _BLOCK_BREW_START:
+        return {
+            "ok": False,
+            "message": (
+                f"{name} is replaced by a custom LaunchAgent on this host; "
+                f"do not brew services start {name}"
+            ),
+            "autostart": False,
+        }
     if not _is_file(Path(BREW)):
         raise api_error("brew.not_found")
     action = "start" if enabled else "stop"

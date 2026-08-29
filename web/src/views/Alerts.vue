@@ -65,6 +65,9 @@
           <tr v-if="!asArray(filtered).length">
             <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
           </tr>
+          <tr v-if="!filtered.length">
+            <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
+          </tr>
         </tbody>
       </table>
     </div>

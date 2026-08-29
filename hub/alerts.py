@@ -1565,6 +1565,40 @@ def _service_transition_alerts(
             )
         else:
             pending.pop(sid, None)
+    # A down/warn row that disappeared (hidden, bootout, or uninstalled)
+    # never walks the recover branch, so the journal's last line stays
+    # "problem" and the dashboard Recent alerts LED stays red for a
+    # dummy brew Cloudflared that is no longer even listed.
+    # An *ok* job vanishing for one sweep is the KeepAlive flicker this
+    # debounce exists for — do not call that recovery.
+    for sid, old in list(prev.items()):
+        if not isinstance(sid, str) or sid.startswith("_"):
+            continue
+        # resource:/smart:/freshness:/ups: live in alert_state but are not
+        # service rows.  Treating them as vanished would "resolve" a still-
+        # bad disk on every sweep.
+        if sid.startswith(("resource:", "smart:", "freshness:", "ups:", "stale_runtime:")):
+            continue
+        if sid in services:
+            continue
+        if old not in ("down", "warn"):
+            continue
+        pending.pop(sid, None)
+        _fire(
+            {
+                "t": now,
+                "id": sid,
+                "name": sid,
+                "kind": "launchd",
+                "group": "",
+                "level": "ok",
+                "event": "resolved",
+                "detail": "removed from the services list",
+                "message": f"{sid} is no longer monitored",
+            },
+            notify_title="ServerHub recovered",
+            notify_ok=bool(notify_settings().get("notify_resolve", True)),
+        )
     return emitted
 
 

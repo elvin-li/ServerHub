@@ -3067,6 +3067,9 @@ export default {
       scutil_missing: 'このホストには scutil がありません',
       value_too_long: '{field} が長すぎます（最大 {max} 文字）',
     },
+    identity: {
+      bad_name: 'コンピュータ名が正しくありません',
+    },
     autostart: {
       self_protected: '{label} は ServerHub パネル自身のログインタスクのため、ここでは無効化できません。設定ページの「ログイン時に起動」スイッチを使用してください。',
       bad_id: 'id は kind:name 形式で指定してください',

@@ -830,11 +830,11 @@ def _launchd_job_info(label: str = LABEL) -> dict:
 
 
 def _launchd_running() -> bool:
-    if _launchd_job_info().get("running"):
-        return True
-    # brew agent (usually useless without config)
-    brew = _launchd_job_info("homebrew.mxcl.cloudflared")
-    return bool(brew.get("running"))
+    # Only the token LaunchAgent.  Bare `brew services cloudflared` has no
+    # config, crash-loops on exit 1, and used to count as "the tunnel is up"
+    # for one poll — which is the recover/crash flap on the Apps Cloudflared
+    # row.
+    return bool(_launchd_job_info().get("running"))
 
 
 def _is_running() -> bool:

@@ -625,6 +625,47 @@ def _cfg_path_text(value) -> str | None:
     return _as_text(value) or None
 
 
+def _finite_int(value, default: int = 0) -> int:
+    """A stat number JSON and headers can carry, or *default*.
+
+    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
+    ``st_size`` that is already a >4300-digit int passes through untouched,
+    and CPython's int->str digit limit then ValueError'd Starlette's
+    ``json.dumps`` — 500ing GET /api/files/list after the listing had
+    already been built — and the ``str(length)`` Content-Length header on
+    GET /api/files/download.  ``float()`` rejects anything beyond float
+    range, the same junk test hub/backups.py applies to its stat numbers.
+    """
+    try:
+        value = int(value)
+        float(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return default
+    return value
+
+
+def _max_upload_mb() -> int:
+    """The configured upload cap in MB, or 512 on junk.
+
+    ``int(raw)`` with a try only guards *conversions*: YAML parses hex and
+    octal integer text uncapped (``int(x, 16)`` is a power-of-two base, so
+    CPython's 4300-digit parse limit does not apply), and a leftover
+    ``max_upload_mb: 0xFFF…`` was therefore already an over-cap int that
+    passed straight through — silently disabling the upload size cap, and
+    handing ``files.upload_too_large`` an over-cap ``max_mb`` param that
+    ``json.dumps`` cannot render.  :func:`_finite_int`'s float() probe
+    rejects anything beyond float range, the same junk test the stat
+    numbers get.
+    """
+    raw = _settings().get("max_upload_mb")
+    if isinstance(raw, bool) or raw is None:
+        return 512
+    max_mb = _finite_int(raw, 512)
+    if max_mb <= 0:
+        return 512
+    return max_mb
+
+
 def _try_resolve(value) -> Path | None:
     """Resolve *value*, or None on a leftover path the kernel will not follow.
 

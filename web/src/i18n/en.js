@@ -3073,6 +3073,9 @@ export default {
       scutil_missing: 'scutil is missing on this host',
       value_too_long: '{field} is too long (max {max} characters)',
     },
+    identity: {
+      bad_name: 'Computer name is invalid',
+    },
     autostart: {
       self_protected: '{label} is ServerHub\'s own login task and cannot be disabled here; use the \'Start at login\' switch on the Settings page instead',
       bad_id: 'id must be kind:name',

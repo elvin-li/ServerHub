@@ -792,6 +792,13 @@ def _size_fields(raw) -> tuple:
         # on GET /api/raid (the 400-digit class only lost its GB figure).
         return None, None
     try:
+        str(n)
+    except ValueError:
+        # A leftover plist Size already past CPython's int->str digit cap
+        # survives ``int()`` unchanged and ValueError'd json.dumps itself
+        # on GET /api/raid (the 400-digit class only lost its GB figure).
+        return None, None
+    try:
         gb = round(n / 2**30, 1)
     except OverflowError:
         return n, None

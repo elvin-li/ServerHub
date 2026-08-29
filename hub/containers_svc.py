@@ -2012,6 +2012,13 @@ def _stack_paths() -> list[dict]:
             sid = _field_text(s.get("id"))
             if not sid:
                 continue
+            # Same _field_text pass as the path branch above: YAML double
+            # quotes load ``id: "\ud800"`` as a *lone surrogate* str, which
+            # this branch used to hand to Starlette raw — its UTF-8 encode
+            # then 500'd GET /api/stacks for every stack.
+            sid = _field_text(sid)
+            if not sid:
+                continue
             stacks.append({
                 "id": sid,
                 "name": _field_text(s.get("name")) or sid,

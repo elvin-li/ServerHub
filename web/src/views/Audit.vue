@@ -137,6 +137,20 @@ const filteredRows = computed(() => {
   }
 })
 
+// Text filter over every rendered column — the same convention as the
+// Maintenance task filter.  200 rows of mixed sign-ins need "which of these
+// touched user X / came from client Y" to be one keystroke, not a scan.
+const q = ref('')
+const filteredRows = computed(() => {
+  const needle = q.value.trim().toLowerCase()
+  if (!needle) return rows.value
+  return rows.value.filter((e) => (
+    `${e.event || ''} ${e.username || ''} ${e.client || ''} ${e.outcome || ''} ${detail(e)}`
+      .toLowerCase()
+      .includes(needle)
+  ))
+})
+
 function fmt(ts) {
   if (ts == null || ts === '') return ''
   try {

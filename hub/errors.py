@@ -1131,6 +1131,16 @@ class _FmtParam:
         return text
 
 
+def jsonable_error_detail(value):
+    """Sanitize a non-coded error body for Starlette's allow_nan=False encoder.
+
+    Coded errors go through ``error_payload`` and are cleaned there.  FastAPI's
+    own validation handler builds its body from the request, so it needs the
+    same treatment before the response is rendered.
+    """
+    return _jsonable_param(value)
+
+
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
     """(http status, response body) for *code* — the shape the SPA parses.
 

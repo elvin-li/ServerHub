@@ -1101,6 +1101,14 @@ def _argv_name(value: str, *, code: str = "vms.bad_id") -> str:
         # listings are UTF-8-cleaned — and echoing it back in ``id`` or the
         # ``orb -m {name}`` shell hint used to 500 Starlette's UTF-8 encode.
         raise api_error(code)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate (JSON ``"\ud800"`` body, a services.yaml leftover
+        # routed through actions.py) can never name a listed machine — the
+        # listings are UTF-8-cleaned — and echoing it back in ``id`` or the
+        # ``orb -m {name}`` shell hint used to 500 Starlette's UTF-8 encode.
+        raise api_error(code)
     return text
 
 

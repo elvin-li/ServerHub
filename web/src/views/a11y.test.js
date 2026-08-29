@@ -2733,6 +2733,15 @@ describe('leftover Infinity interpolations', () => {
     }
   })
 
+  it('Apps cloudflared login URL is announced when it appears', () => {
+    // The sign-in link arrives asynchronously (login start + poll); without a
+    // live region a screen reader user is never told the panel's key
+    // call-to-action showed up.
+    const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
+    expect(apps).not.toMatch(/v-if="cfStatus\.login_url" class="notes" style/)
+    expect(apps).toMatch(/v-if="cfStatus\.login_url" class="notes" role="status"/)
+  })
+
   it('Dashboard leftover volumes/ports/rss go through finite helpers', () => {
     const dash = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
     expect(dash).toMatch(/function fmt\(ts\)[\s\S]*fmtTs/)

@@ -119,6 +119,21 @@ def _truthy(value) -> bool:
         return False
 
 
+def _audit_host_change(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a host-level mutation.
+
+    Called after the service call returned, so a rejected action that raised
+    leaves no record.  FastAPI always injects `request`; the None guard only
+    keeps direct in-process calls (tests, tooling) working.
+    """
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; ``.isdigit`` / JSON need text."""
     if value is None:

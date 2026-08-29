@@ -3069,6 +3069,9 @@ export default {
       scutil_missing: '此主机上缺少 scutil 工具',
       value_too_long: '{field} 过长（最多 {max} 个字符）',
     },
+    identity: {
+      bad_name: '计算机名称无效',
+    },
     autostart: {
       self_protected: '{label} 是 ServerHub 面板自身的开机任务，不能从这里关闭；请使用设置页的「登录时启动」开关。',
       bad_id: 'id 格式: kind:name',
