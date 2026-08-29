@@ -3259,6 +3259,11 @@ describe('leftover Infinity interpolations', () => {
     expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(users).toMatch(/v-for="opt in asArray\(serviceOptions\)"/)
+    expect(users).toMatch(/asArray\(asRecord\(await listPanelAccounts\(\)\)\.accounts\)/)
+    expect(users).toMatch(/const status = asRecord\(await getServices\(\)\)/)
+    expect(users).toMatch(/const next = asRecord\(await getUsers\(\)\)/)
+    expect(users).toMatch(/asArray\(createForm\.value\.resources\)/)
+    expect(users).toMatch(/function secretLen\([\s\S]*typeof value === 'string'/)
   })
 
   it('Gateway leftover pids go through finiteN', () => {

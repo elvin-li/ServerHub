@@ -58,7 +58,7 @@
           </div>
         </div>
         <div class="btns" style="margin-top:10px">
-          <button class="primary" :disabled="accountsBusy || !createForm.username || createForm.password.length < 10">
+          <button class="primary" :disabled="accountsBusy || !createForm.username || secretLen(createForm.password) < 10">
             {{ t('accounts.create') }}
           </button>
         </div>
@@ -160,7 +160,7 @@
                         :aria-label="t('settings.new_password')"
                         style="max-width:240px"
                       />
-                      <button :disabled="accountsBusy || resetPassword.length < 10" @click="doResetPassword(acct)">
+                      <button :disabled="accountsBusy || secretLen(resetPassword) < 10" @click="doResetPassword(acct)">
                         {{ t('accounts.reset_password') }}
                       </button>
                     </div>
@@ -269,7 +269,7 @@ import {
   setPanelAccountResources,
 } from '../api/client'
 import { authState } from '../lib/authState'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -289,6 +289,10 @@ function resourceList(list) {
   return asArray(list).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
 }
 
+function secretLen(value) {
+  return typeof value === 'string' ? value.length : 0
+}
+
 const loading = ref(false)
 // Latched, unlike `loading`: the skeleton stands in for content that has never
 // arrived. Keying it off `loading` would blank the populated table every time
@@ -302,7 +306,7 @@ async function load() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getUsers()
+    const next = asRecord(await getUsers())
     if (generation !== loadGeneration || !pageAlive) return
     data.value = next
     loadError.value = ''
@@ -338,7 +342,7 @@ const serviceOptionsLoaded = ref(false)
 async function loadAccounts() {
   const generation = loadGeneration
   try {
-    const next = asArray((await listPanelAccounts()).accounts)
+    const next = asArray(asRecord(await listPanelAccounts()).accounts)
     if (generation !== loadGeneration || !pageAlive) return
     accounts.value = next
     accountsError.value = ''
@@ -353,10 +357,13 @@ async function loadAccounts() {
 async function loadServiceOptions() {
   const generation = loadGeneration
   try {
-    const status = await getServices()
+    const status = asRecord(await getServices())
     if (generation !== loadGeneration || !pageAlive) return
     serviceOptions.value = asArray(status.groups).flatMap((group) =>
-      asArray(group.services).map((svc) => ({ id: svc.id, name: finiteText(svc.name, '') || finiteText(svc.id) })),
+      asArray(asRecord(group).services).map((svc) => {
+        const rec = asRecord(svc)
+        return { id: rec.id, name: finiteText(rec.name, '') || finiteText(rec.id) }
+      }),
     )
     serviceOptionsError.value = ''
   } catch (e) {
@@ -384,7 +391,7 @@ async function createAccount() {
     await createPanelAccount({
       username: createForm.value.username,
       password: createForm.value.password,
-      resources: createForm.value.resources,
+      resources: asArray(createForm.value.resources),
     })
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('accounts.created', { name: finiteText(createForm.value.username) }))
@@ -404,7 +411,7 @@ async function saveResources(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await setPanelAccountResources(acct.username, editResources.value)
+    await setPanelAccountResources(acct.username, asArray(editResources.value))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('accounts.resources_saved', { name: finiteText(acct.username) }))
     await loadAccounts()

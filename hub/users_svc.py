@@ -227,10 +227,32 @@ def list_users() -> list:
 
 
 def overview() -> dict:
-    users = list_users()
+    try:
+        users = list_users()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        users = []
+    if not _isa(users, list):
+        users = []
+    count = 0
+    admins = 0
+    kept = []
+    for row in users:
+        try:
+            if not _isa(row, dict):
+                continue
+            kept.append(row)
+            count += 1
+            if row.get("admin"):
+                admins += 1
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     return {
-        "users": users,
-        "count": len(users),
-        "admins": sum(1 for u in users if u["admin"]),
+        "users": kept,
+        "count": count,
+        "admins": admins,
         "hint": "Read-only list of macOS users; add or remove them in System Settings → Users & Groups",
     }

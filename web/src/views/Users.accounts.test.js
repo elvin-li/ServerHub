@@ -279,4 +279,35 @@ describe('panel accounts section', () => {
     expect(wrapper.text()).toContain('users.empty')
     wrapper.unmount()
   })
+
+  it('does not throw when the accounts payload is leftover JSON null', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockResolvedValue(null)
+    api.getServices.mockResolvedValue(null)
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('accounts.title')
+    expect(wrapper.text()).toContain('common.none')
+    wrapper.unmount()
+  })
+
+  it('does not throw when accounts leftover is a mapping', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockResolvedValue({
+      accounts: { 0: { username: 'kid', role: 'member', resources: { 0: 'jellyfin' }, twofa_enabled: false } },
+    })
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('common.none')
+    wrapper.unmount()
+  })
+
+  it('does not throw when the users payload is leftover JSON list', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.getUsers.mockResolvedValue([{ uid: 501, name: 'elvin', groups: ['staff'] }])
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('users.empty')
+    wrapper.unmount()
+  })
 })

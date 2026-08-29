@@ -1395,12 +1395,24 @@ def _valid_username(name: str) -> bool:
 
 
 def _clean_resources(resources) -> list[str]:
-    """Resource ids that Starlette can JSON-encode.  Leftover inf / ``\\ud800`` 500'd create."""
-    if not isinstance(resources, list):
+    """Resource ids that Starlette can JSON-encode.  Leftover inf / ``\\ud800`` 500'd create.
+
+    ``_isinst`` + ``_iter_list``, not a bare ``isinstance``/walk: a leftover
+    mapping, a list-subclass ``__iter__`` bomb, or a ``__class__``-property
+    impostor as the grants list used to 500 PUT/POST on the Users panel
+    instead of failing closed to no grants.  One unanswerable id costs only
+    itself.
+    """
+    if not _isinst(resources, list):
         return []
     out = []
-    for raw in resources:
-        text = str(raw).strip()
+    for raw in _iter_list(resources):
+        try:
+            text = str(raw).strip()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
         if text and _utf8_ok(text):
             out.append(text)
     return out
