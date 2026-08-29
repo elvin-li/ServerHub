@@ -535,32 +535,32 @@
                 </tr>
               </thead>
               <tbody>
-                <template v-for="m in asArray(smartMerged)" :key="m.id">
+                <template v-for="m in asArray(smartMerged)" :key="finiteText(asRecord(m).id)">
                 <tr>
                   <td class="mono">
                     <strong>{{ finiteText(asRecord(m).id) }}</strong>
-                    <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.error) }}</div>
+                    <div v-if="asRecord(m).error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(asRecord(m).error) }}</div>
                   </td>
                   <td>
-                    <strong>{{ finiteText(m.smart?.model, '') || finiteText(m.smart?.serial) }}</strong>
-                    <div class="sub mono" style="font-size:10px">{{ finiteText(m.size) }}</div>
-                    <div class="show-m sub">{{ finiteText(m.protocol) }}{{ m.ssd ? ' · SSD' : '' }}{{ finiteText(m.smart?.wear, '') ? ' · ' + finiteText(m.smart.wear) : '' }}</div>
+                    <strong>{{ finiteText(asRecord(asRecord(m).smart).model, '') || finiteText(asRecord(asRecord(m).smart).serial) }}</strong>
+                    <div class="sub mono" style="font-size:10px">{{ finiteText(asRecord(m).size) }}</div>
+                    <div class="show-m sub">{{ finiteText(asRecord(m).protocol) }}{{ asRecord(m).ssd ? ' · SSD' : '' }}{{ finiteText(asRecord(asRecord(m).smart).wear, '') ? ' · ' + finiteText(asRecord(asRecord(m).smart).wear) : '' }}</div>
                   </td>
-                  <td class="col-hide-m" style="font-size:11px">{{ finiteText(m.protocol) }}{{ m.ssd ? ' · SSD' : '' }}</td>
-                  <td>{{ finiteText(m.smart?.temp) }}</td>
+                  <td class="col-hide-m" style="font-size:11px">{{ finiteText(asRecord(m).protocol) }}{{ asRecord(m).ssd ? ' · SSD' : '' }}</td>
+                  <td>{{ finiteText(asRecord(asRecord(m).smart).temp) }}</td>
                   <td>
-                    <span class="badge" :class="m.smart?.health === 'PASSED' ? 'ok' : (m.smart?.health ? 'warn' : '')">
-                      {{ finiteText(m.smart?.health) }}
+                    <span class="badge" :class="asRecord(asRecord(m).smart).health === 'PASSED' ? 'ok' : (asRecord(asRecord(m).smart).health ? 'warn' : '')">
+                      {{ finiteText(asRecord(asRecord(m).smart).health) }}
                     </span>
                   </td>
-                  <td class="col-hide-m">{{ finiteText(m.smart?.wear) }}</td>
-                  <td class="mono col-hide-m">{{ finiteText(m.smart?.power_on) }}</td>
+                  <td class="col-hide-m">{{ finiteText(asRecord(asRecord(m).smart).wear) }}</td>
+                  <td class="mono col-hide-m">{{ finiteText(asRecord(asRecord(m).smart).power_on) }}</td>
                   <td class="col-hide-m" style="font-size:11px">
-                    <span v-if="asArray(m.caps?.supported).length">{{ asArray(m.caps.supported).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
+                    <span v-if="asArray(asRecord(asRecord(m).caps).supported).length">{{ asArray(asRecord(asRecord(m).caps).supported).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
-                    <div v-if="finiteText(m.caps?.reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.caps.reason) }}</div>
-                    <div v-if="m.progress?.running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(m.progress.percent_remaining, '?') }) }}</div>
-                    <div v-if="finiteText(m.lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(m.lastResult) }} · {{ finiteN(m.logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
+                    <div v-if="finiteText(asRecord(asRecord(m).caps).reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(asRecord(asRecord(m).caps).reason) }}</div>
+                    <div v-if="asRecord(asRecord(m).progress).running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(asRecord(asRecord(m).progress).percent_remaining, '?') }) }}</div>
+                    <div v-if="finiteText(asRecord(m).lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(asRecord(m).lastResult) }} · {{ finiteN(asRecord(m).logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
                   </td>
                   <td class="ops">
                     <!-- The visible face is a glyph and a count, so the
