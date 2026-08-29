@@ -855,7 +855,7 @@ describe('brew and gateway surface leftovers', () => {
     // The LED repeats the Status badge's started/stopped text in colour only
     // — same treatment as the Health check LED one table over.
     const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
-    expect(brew).toMatch(/class="led" :class="s\.state==='ok'\?'on':\(s\.state==='warn'\?'warn':'err'\)" aria-hidden="true"/)
+    expect(brew).toMatch(/class="led" :class="asRecord\(s\)\.state==='ok'\?'on':\(asRecord\(s\)\.state==='warn'\?'warn':'err'\)" aria-hidden="true"/)
   })
 
   it('tells a filtered-out Brew list apart from an empty one', () => {
@@ -3720,14 +3720,15 @@ describe('leftover Infinity interpolations', () => {
     const brew = readFileSync(resolve(SRC, 'views/Brew.vue'), 'utf8')
     expect(brew).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(brew).not.toMatch(/\{\{\s*s\.name\s*\}\}/)
-    expect(brew).toMatch(/finiteText\(s\.name\)/)
+    expect(brew).toMatch(/finiteText\(asRecord\(s\)\.name\)/)
     expect(brew).not.toMatch(/s\.user \|\| '—'/)
-    expect(brew).toMatch(/finiteText\(s\.user\)/)
+    expect(brew).toMatch(/finiteText\(asRecord\(s\)\.user\)/)
     expect(brew).not.toMatch(/\{\{\s*s\.status\s*\}\}/)
-    expect(brew).toMatch(/finiteText\(s\.status\)/)
+    expect(brew).toMatch(/finiteText\(asRecord\(s\)\.status\)/)
     expect(brew).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
     expect(brew).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
     expect(brew).toMatch(/v-for="s in asArray\(filtered\)"/)
+    expect(brew).toMatch(/v-for="a in asArray\(asRecord\(s\)\.actions\)"/)
   })
 
   it('Logs leftover names go through finiteText', () => {

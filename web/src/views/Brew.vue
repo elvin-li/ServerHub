@@ -32,23 +32,23 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in asArray(filtered)" :key="s.id">
+          <tr v-for="s in asArray(filtered)" :key="finiteText(asRecord(s).id)">
             <!-- aria-hidden: the LED repeats the Status badge's started/stopped
                  text in colour only (same as the Health check LED). -->
-            <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')" aria-hidden="true"></span></td>
+            <td><span class="led" :class="asRecord(s).state==='ok'?'on':(asRecord(s).state==='warn'?'warn':'err')" aria-hidden="true"></span></td>
             <td>
-              <strong>{{ finiteText(s.name) }}</strong>
-              <div v-if="finiteText(s.file, '')" class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.file) }}</div>
-              <div v-if="finiteText(s.user, '')" class="show-m sub">{{ finiteText(s.user) }}</div>
+              <strong>{{ finiteText(asRecord(s).name) }}</strong>
+              <div v-if="finiteText(asRecord(s).file, '')" class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(asRecord(s).file) }}</div>
+              <div v-if="finiteText(asRecord(s).user, '')" class="show-m sub">{{ finiteText(asRecord(s).user) }}</div>
             </td>
             <td>
-              <span class="badge" :class="s.state==='ok'?'ok':(s.state==='warn'?'warn':'')">{{ finiteText(s.status) }}</span>
+              <span class="badge" :class="asRecord(s).state==='ok'?'ok':(asRecord(s).state==='warn'?'warn':'')">{{ finiteText(asRecord(s).status) }}</span>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(s.user) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(s).user) }}</td>
             <td class="ops">
               <button
-                v-for="a in asArray(s.actions)"
-                :key="a"
+                v-for="a in asArray(asRecord(s).actions)"
+                :key="finiteText(a)"
                 class="tiny"
                 :class="{ primary: a==='start', danger: a==='stop', 'hide-m': a==='restart' }"
                 :disabled="busy"
@@ -73,7 +73,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { brewAction, getBrewServices } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -114,22 +114,22 @@ const busyNote = computed(() => t('brew.action_running', {
 }))
 
 const filtered = computed(() => {
-  const list = asArray(services.value)
+  const list = asArray(services.value).map((row) => asRecord(row))
   const qq = q.value.trim().toLowerCase()
   if (!qq) return list
-  return list.filter(s => (s.name || '').toLowerCase().includes(qq))
+  return list.filter(s => finiteText(s.name, '').toLowerCase().includes(qq))
 })
 
 async function refresh() {
   const generation = ++loadGeneration
   try {
-    const j = await getBrewServices()
+    const j = asRecord(await getBrewServices())
     if (generation !== loadGeneration || !pageAlive) return
-    services.value = asArray(j.services)
+    services.value = asArray(j.services).map((row) => asRecord(row))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === loadGeneration) loaded.value = true
@@ -137,16 +137,17 @@ async function refresh() {
 }
 
 async function act(s, action) {
-  if (action === 'stop' && !confirm(t('brew.confirm_stop', { name: finiteText(s.name) }))) return
-  if (action === 'restart' && !confirm(t('brew.confirm_restart', { name: finiteText(s.name) }))) return
+  const row = asRecord(s)
+  if (action === 'stop' && !confirm(t('brew.confirm_stop', { name: finiteText(row.name) }))) return
+  if (action === 'restart' && !confirm(t('brew.confirm_restart', { name: finiteText(row.name) }))) return
   const generation = loadGeneration
   busyAction.value = action
-  busyName.value = finiteText(s.name)
+  busyName.value = finiteText(row.name)
   busy.value = true
   try {
-    const j = await brewAction(s.id, action)
+    const j = asRecord(await brewAction(row.id, action))
     if (generation !== loadGeneration || !pageAlive) return
-    toast(j.ok ? `✅ ${finiteText(s.name)}` : `❌ ${finiteText(j.message)}`)
+    toast(j.ok ? `✅ ${finiteText(row.name)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
