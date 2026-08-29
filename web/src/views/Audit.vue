@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -129,7 +129,7 @@ function badgeClass(outcome) {
 // filter here.
 const KNOWN = new Set(['ts', 'event', 'username', 'client', 'outcome'])
 function detail(e) {
-  return Object.entries(e)
+  return Object.entries(asRecord(e))
     .filter(([k]) => !KNOWN.has(k))
     .map(([k, v]) => `${finiteText(k)}=${finiteText(v)}`)
     .join(' · ')

@@ -1562,8 +1562,8 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   void getContainers(withDockerStats).then(c => {
     if (!stillHere()) return
     containers.value = asArray(c.containers)
-    if (c.stats && Object.keys(c.stats).length) {
-      cstats.value = c.stats
+    if (Object.keys(asRecord(c.stats)).length) {
+      cstats.value = asRecord(c.stats)
       cstatsAt.value = Date.now()
     }
   }).catch(() => {})

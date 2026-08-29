@@ -195,8 +195,8 @@ async function load() {
   try {
     const r = await getNotifyChannels()
     if (generation !== loadGeneration || !pageAlive) return
-    channels.value = Array.isArray(r?.channels) ? r.channels : []
-    types.value = r?.types && typeof r.types === 'object' ? r.types : {}
+    channels.value = asArray(r?.channels)
+    types.value = asRecord(r?.types)
     typeIds.value = Object.keys(types.value)
     loadError.value = ''
   } catch (e) {
@@ -247,7 +247,7 @@ async function save() {
     // An untouched (empty) secret input means "keep the stored value"; the
     // API treats an empty string as "clear", so those are dropped here.
     const secrets = {}
-    for (const [k, v] of Object.entries(e.secrets)) {
+    for (const [k, v] of Object.entries(asRecord(e.secrets))) {
       if (v) secrets[k] = v
     }
     const body = {
