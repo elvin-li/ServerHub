@@ -149,7 +149,7 @@
               <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)" :aria-label="t('network.move_up')">↑</button>
-                <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
+                <button class="tiny" :disabled="busy || idx===asArray(orderList).length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
                 <button class="tiny" :disabled="busy" @click="toggleService(s)">{{ s.disabled ? t('network.act_enable') : t('network.act_disable') }}</button>
                 <template v-if="isWifi(s)">
                   <button class="tiny" :disabled="busy" @click="wifi('on')">{{ t('network.wifi_on') }}</button>
@@ -157,7 +157,7 @@
                 </template>
               </td>
             </tr>
-            <tr v-if="!orderList.length && !loadError">
+            <tr v-if="!asArray(orderList).length && !loadError">
               <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>

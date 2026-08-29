@@ -28,8 +28,8 @@
           <h2>{{ t('ollama.service_title') }}</h2>
           <span class="badge" :class="serviceBadge.cls">{{ serviceBadge.text }}</span>
         </div>
-        <div v-if="duplicateLabels.length" class="notice warn" role="alert">
-          {{ t('ollama.duplicate_agents', { labels: duplicateLabels.map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
+        <div v-if="asArray(duplicateLabels).length" class="notice warn" role="alert">
+          {{ t('ollama.duplicate_agents', { labels: asArray(duplicateLabels).map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
         </div>
         <div v-if="data.url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
           {{ t('ollama.url_rejected', { url: finiteText(data.url) }) }}
@@ -808,7 +808,7 @@ async function sendChat() {
 }
 
 function clearChat() {
-  if (!chatMessages.value.length) return
+  if (!asArray(chatMessages.value).length) return
   if (!confirm(t('ollama.chat_clear_confirm'))) return
   if (chatAbort) chatAbort.abort()
   chatMessages.value = []

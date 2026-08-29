@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asRecord, jsonDump } from '../lib/finite.js'
+import { asArray, asRecord, jsonDump } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -214,12 +214,12 @@ export const listPanelAccounts = () => json('/api/auth/accounts')
 export const createPanelAccount = ({ username, password, resources }) =>
   json('/api/auth/accounts', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: jsonDump({ username, password, resources: resources || [] }),
+    body: jsonDump({ username, password, resources: asArray(resources) }),
   })
 export const setPanelAccountResources = (username, resources) =>
   json(`/api/auth/accounts/${encodeURIComponent(username)}/resources`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: jsonDump({ resources }),
+    body: jsonDump({ resources: asArray(resources) }),
   })
 export const resetPanelAccountPassword = (username, newPassword) =>
   json(`/api/auth/accounts/${encodeURIComponent(username)}/password`, {

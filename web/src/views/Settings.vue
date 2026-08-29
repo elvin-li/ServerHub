@@ -42,7 +42,7 @@
             @click="pickTheme(th.id)"
           >
             <div class="swatches">
-              <i v-for="(c, i) in th.swatches" :key="i" :style="{ background: c }"></i>
+              <i v-for="(c, i) in asArray(th.swatches)" :key="i" :style="{ background: c }"></i>
             </div>
             <div class="t-name">{{ t(th.labelKey) }}</div>
           </button>

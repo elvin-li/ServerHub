@@ -415,7 +415,7 @@
                 <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
               </div>
               <div v-if="!storage" class="disk-empty">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-              <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
+              <div v-else-if="!asArray(smartDisks).length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
             </div>
           </div>
           <div class="am-monitor-chart">
@@ -507,7 +507,7 @@
                 <td class="num">{{ finiteN(p.mem) }}</td>
                 <td class="num col-hide-m">{{ withUnit(p.rss_mb, 'M') }}</td>
               </tr>
-              <tr v-if="!topProcs.length">
+              <tr v-if="!asArray(topProcs).length">
                 <td colspan="4" class="empty-row">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
               </tr>
             </tbody>
@@ -633,7 +633,7 @@
                header count. One region so a poll that moves both reads as
                one announcement, not two. -->
           <span role="status">
-            <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
+            <span class="badge" :class="asArray(attention).length ? 'down' : 'ok'">{{ asArray(attention).length }}</span>
             <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
               {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
             </span>
@@ -643,7 +643,7 @@
              not because everything is healthy: the old status-gated ok branch
              fell through to an empty list that said nothing at all. -->
         <div v-if="!status" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-        <div v-else-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
+        <div v-else-if="!asArray(attention).length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
           <div v-for="s in asArray(attention).slice(0, 10)" :key="s.id" class="alert-item">
             <!-- warn vs down was carried by the LED colour alone. -->
@@ -664,7 +664,7 @@
         </div>
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
         <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-        <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
+        <div v-else-if="!asArray(alerts).length" class="sub">{{ t('common.none') }}</div>
         <div v-for="(a,i) in asArray(alerts).slice(0,5)" :key="i" class="alert-item">
           <!-- The alert's severity was its LED colour alone; the message text
                does not necessarily repeat it. -->
@@ -696,7 +696,7 @@
               <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
             <tr v-if="!ports"><td colspan="3" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td></tr>
-            <tr v-else-if="!ports.length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
+            <tr v-else-if="!asArray(ports).length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
         </div>
@@ -714,7 +714,7 @@
           <div class="hg warn"><div class="n">{{ finiteN(health.summary.warn) }}</div><div class="l">{{ t('health.warnings') }}</div></div>
           <div class="hg err"><div class="n">{{ finiteN(health.summary.error) }}</div><div class="l">{{ t('health.errors') }}</div></div>
         </div>
-        <div class="failed-checks" v-if="failedChecks.length">
+        <div class="failed-checks" v-if="asArray(failedChecks).length">
           <div v-for="c in asArray(failedChecks).slice(0, 3)" :key="c.id" class="alert-item">
             <!-- error vs warn was the LED colour alone. -->
             <span class="led" :class="c.level === 'error' ? 'err' : 'warn'" aria-hidden="true"></span>
@@ -984,16 +984,16 @@ function formatCapacityGb(value) {
   if (gb >= 1024) return `${(gb / 1024).toFixed(gb >= 10240 ? 0 : 2)} TB`
   return `${fmtN(gb)} GB`
 }
-const smartReadableCount = computed(() => smartDisks.value.filter(d => d.smart).length)
-const smartHasWarning = computed(() => smartDisks.value.some(d => d.smart && !smartIsOk(d)))
+const smartReadableCount = computed(() => asArray(smartDisks.value).filter(d => d.smart).length)
+const smartHasWarning = computed(() => asArray(smartDisks.value).some(d => d.smart && !smartIsOk(d)))
 const smartSummaryClass = computed(() => smartHasWarning.value ? 'down' : (smartReadableCount.value ? 'ok' : ''))
 const smartSummary = computed(() => t('dashboard.smart_summary', {
   ok: smartReadableCount.value,
-  total: smartDisks.value.length,
+  total: asArray(smartDisks.value).length,
 }))
 const smartSummaryTitle = computed(() => t('dashboard.smart_summary_title', {
   ok: smartReadableCount.value,
-  total: smartDisks.value.length,
+  total: asArray(smartDisks.value).length,
 }))
 /** Activity Monitor red (system) + cyan (user). */
 const CPU_APPLE_SYS = '#FF453A'

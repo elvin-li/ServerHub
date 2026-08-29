@@ -206,13 +206,13 @@ const scale = computed(() => {
   const all = []
   if (props.stacked) {
     // Stacked totals drive the y-scale.
-    const seriesList = cleaned.value
-    const n = Math.max(0, ...seriesList.map(s => s.values.length))
+    const seriesList = asArray(cleaned.value)
+    const n = Math.max(0, ...seriesList.map(s => asArray(s.values).length))
     for (let i = 0; i < n; i++) {
       let sum = 0
       let any = false
       for (const s of seriesList) {
-        const v = s.values[i]
+        const v = asArray(s.values)[i]
         if (v != null && Number.isFinite(v)) {
           sum += Math.max(0, v)
           any = true
@@ -221,8 +221,8 @@ const scale = computed(() => {
       if (any) all.push(sum)
     }
   } else {
-    for (const s of cleaned.value) {
-      for (const v of s.values) if (v != null) all.push(v)
+    for (const s of asArray(cleaned.value)) {
+      for (const v of asArray(s.values)) if (v != null) all.push(v)
     }
   }
   if (props.reference != null) all.push(props.reference)
@@ -431,13 +431,13 @@ const fillOpacity = computed(() => {
 })
 
 const drawn = computed(() => {
-  const seriesList = cleaned.value
+  const seriesList = asArray(cleaned.value)
   if (!seriesList.length) return []
   const fill = fillOpacity.value
 
   if (!props.stacked) {
     return seriesList.map(s => {
-      const vals = s.values
+      const vals = asArray(s.values)
       const n = vals.length
       const lines = []
       const areas = []
@@ -464,14 +464,14 @@ const drawn = computed(() => {
   }
 
   // Stacked: bottom→top cumulative bands (Activity Monitor CPU LOAD).
-  const n = Math.max(...seriesList.map(s => s.values.length), 0)
+  const n = Math.max(...seriesList.map(s => asArray(s.values).length), 0)
   const base = new Array(n).fill(0)
   const out = []
   for (const s of seriesList) {
     const topLine = []
     const polyPts = []
     for (let i = 0; i < n; i++) {
-      const raw = s.values[i]
+      const raw = asArray(s.values)[i]
       const x = xOf(i, n)
       if (raw == null || !Number.isFinite(raw)) {
         // Gap: close any open poly later by splitting — keep continuous for demo simplicity.
@@ -519,10 +519,11 @@ const refLabel = computed(() => {
 })
 
 const legend = computed(() =>
-  cleaned.value.map(s => {
+  asArray(cleaned.value).map(s => {
     let latest = null
-    for (let i = s.values.length - 1; i >= 0; i--) {
-      if (s.values[i] != null) { latest = s.values[i]; break }
+    const vals = asArray(s.values)
+    for (let i = vals.length - 1; i >= 0; i--) {
+      if (vals[i] != null) { latest = vals[i]; break }
     }
     return { name: s.name, color: s.color, latest }
   })
