@@ -74,18 +74,18 @@
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="c in asArray(blockingChecks)" :key="c.id">
+            <tr v-for="c in asArray(blockingChecks)" :key="finiteText(asRecord(c).id)">
               <td style="width:28px"><span class="led err"></span></td>
               <td>
-                <strong>{{ checkLabel(c.id) }}</strong>
-                <div class="show-m sub">{{ checkFix(c.id) }}</div>
-                <div v-if="finiteText(c.detail, '')" class="show-m sub mono">{{ finiteText(c.detail) }}</div>
+                <strong>{{ checkLabel(asRecord(c).id) }}</strong>
+                <div class="show-m sub">{{ checkFix(asRecord(c).id) }}</div>
+                <div v-if="finiteText(asRecord(c).detail, '')" class="show-m sub mono">{{ finiteText(asRecord(c).detail) }}</div>
               </td>
-              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(c.detail) }}</td>
+              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(asRecord(c).id) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(asRecord(c).detail) }}</td>
               <td style="text-align:right">
                 <button
-                  v-if="c.id === 'forwarding'"
+                  v-if="asRecord(c).id === 'forwarding'"
                   class="tiny primary"
                   @click="fixForwarding"
                   :disabled="busy"
@@ -94,13 +94,13 @@
                      /etc/pf.conf in the order pf requires, which is exactly what
                      repairs a file pf is currently refusing. -->
                 <button
-                  v-else-if="c.id === 'nat' || c.id === 'pf_conf'"
+                  v-else-if="asRecord(c).id === 'nat' || asRecord(c).id === 'pf_conf'"
                   class="tiny primary"
                   @click="fixNat"
                   :disabled="busy"
                 >{{ t('wg.install') }}</button>
                 <button
-                  v-else-if="c.id === 'endpoint'"
+                  v-else-if="asRecord(c).id === 'endpoint'"
                   class="tiny"
                   @click="settingsOpen = true"
                   :disabled="busy"
@@ -129,18 +129,18 @@
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="c in asArray(warningChecks)" :key="c.id">
+            <tr v-for="c in asArray(warningChecks)" :key="finiteText(asRecord(c).id)">
               <td style="width:28px"><span class="led warn"></span></td>
               <td>
-                <strong>{{ checkLabel(c.id) }}</strong>
-                <div class="show-m sub">{{ checkFix(c.id) }}</div>
-                <div v-if="finiteText(c.detail, '')" class="show-m sub mono">{{ finiteText(c.detail) }}</div>
+                <strong>{{ checkLabel(asRecord(c).id) }}</strong>
+                <div class="show-m sub">{{ checkFix(asRecord(c).id) }}</div>
+                <div v-if="finiteText(asRecord(c).detail, '')" class="show-m sub mono">{{ finiteText(asRecord(c).detail) }}</div>
               </td>
-              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(c.id) }}</td>
-              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(c.detail) }}</td>
+              <td class="col-hide-m" style="font-size:11px;color:var(--sub)">{{ checkFix(asRecord(c).id) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ finiteText(asRecord(c).detail) }}</td>
               <td style="text-align:right">
                 <button
-                  v-if="c.id === 'boot'"
+                  v-if="asRecord(c).id === 'boot'"
                   class="tiny primary wg-fix-boot"
                   @click="fixDaemon"
                   :disabled="busy"
@@ -148,13 +148,13 @@
                 <!-- Installing the NAT rule ends with `pfctl -E`, which is what
                      turns pf on, so this is the same action as for the NAT row. -->
                 <button
-                  v-else-if="c.id === 'pf'"
+                  v-else-if="asRecord(c).id === 'pf'"
                   class="tiny primary"
                   @click="fixNat"
                   :disabled="busy"
                 >{{ t('wg.enable') }}</button>
                 <button
-                  v-else-if="c.id === 'wstunnel' || c.id === 'wstunnel_align'"
+                  v-else-if="asRecord(c).id === 'wstunnel' || asRecord(c).id === 'wstunnel_align'"
                   class="tiny primary wg-fix-wstunnel"
                   @click="fixWstunnel"
                   :disabled="busy"
@@ -300,50 +300,50 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in asArray(data?.peers)" :key="p.pubkey">
-              <td><span class="led" :class="p.active ? 'on' : (p.stale ? 'warn' : 'off')"></span></td>
+            <tr v-for="p in asArray(asRecord(data).peers)" :key="finiteText(asRecord(p).pubkey)">
+              <td><span class="led" :class="asRecord(p).active ? 'on' : (asRecord(p).stale ? 'warn' : 'off')"></span></td>
               <td>
-                <strong>{{ finiteText(p.name, '') || t('wg.unnamed') }}</strong>
-                <span v-if="p.psk" class="badge ok" style="margin-left:4px">PSK</span>
-                <span v-if="!p.reissuable" class="badge" style="margin-left:4px" :title="t('wg.no_stored_key')">
+                <strong>{{ finiteText(asRecord(p).name, '') || t('wg.unnamed') }}</strong>
+                <span v-if="asRecord(p).psk" class="badge ok" style="margin-left:4px">PSK</span>
+                <span v-if="!asRecord(p).reissuable" class="badge" style="margin-left:4px" :title="t('wg.no_stored_key')">
                   {{ t('wg.key_not_stored') }}
                 </span>
-                <div class="mono" style="font-size:9px;color:var(--sub)" :title="finiteText(p.pubkey)">
-                  {{ finiteText(p.pubkey, '').slice(0, 16) }}{{ finiteText(p.pubkey, '') ? '…' : '' }}
+                <div class="mono" style="font-size:9px;color:var(--sub)" :title="finiteText(asRecord(p).pubkey)">
+                  {{ finiteText(asRecord(p).pubkey, '').slice(0, 16) }}{{ finiteText(asRecord(p).pubkey, '') ? '…' : '' }}
                 </div>
-                <div v-if="p.endpoint" class="show-m sub mono">{{ finiteText(p.endpoint) }}</div>
-                <div class="show-m sub mono">↑{{ finiteText(p.tx_human) }} ↓{{ finiteText(p.rx_human) }}</div>
+                <div v-if="asRecord(p).endpoint" class="show-m sub mono">{{ finiteText(asRecord(p).endpoint) }}</div>
+                <div class="show-m sub mono">↑{{ finiteText(asRecord(p).tx_human) }} ↓{{ finiteText(asRecord(p).rx_human) }}</div>
                 <div class="show-m sub">
-                  <span v-if="p.active">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
-                  <span v-else-if="p.stale">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
-                  <span v-else-if="p.last_handshake">{{ relativeAge(p.handshake_age) }}</span>
+                  <span v-if="asRecord(p).active">{{ t('wg.connected') }} · {{ relativeAge(asRecord(p).handshake_age) }}</span>
+                  <span v-else-if="asRecord(p).stale">{{ t('wg.disconnected') }} · {{ relativeAge(asRecord(p).handshake_age) }}</span>
+                  <span v-else-if="asRecord(p).last_handshake">{{ relativeAge(asRecord(p).handshake_age) }}</span>
                 </div>
               </td>
-              <td class="mono">{{ finiteText(p.allowed_ips) }}</td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.endpoint) }}</td>
+              <td class="mono">{{ finiteText(asRecord(p).allowed_ips) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(asRecord(p).endpoint) }}</td>
               <td class="col-hide-m" style="font-size:11px">
-                <span v-if="p.active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(p.handshake_age) }}</span>
-                <span v-else-if="p.stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(p.handshake_age) }}</span>
-                <span v-else-if="p.last_handshake" class="badge">{{ relativeAge(p.handshake_age) }}</span>
+                <span v-if="asRecord(p).active" class="badge ok">{{ t('wg.connected') }} · {{ relativeAge(asRecord(p).handshake_age) }}</span>
+                <span v-else-if="asRecord(p).stale" class="badge warn">{{ t('wg.disconnected') }} · {{ relativeAge(asRecord(p).handshake_age) }}</span>
+                <span v-else-if="asRecord(p).last_handshake" class="badge">{{ relativeAge(asRecord(p).handshake_age) }}</span>
                 <span v-else style="color:var(--sub)">{{ t('wg.never') }}</span>
               </td>
               <td class="col-hide-m">
-                <span class="badge" :class="p.keepalive && p.keepalive !== 'off' && p.keepalive !== '0' ? 'ok' : 'warn'">
-                  {{ finiteText(p.keepalive, 'off') }}
+                <span class="badge" :class="asRecord(p).keepalive && asRecord(p).keepalive !== 'off' && asRecord(p).keepalive !== '0' ? 'ok' : 'warn'">
+                  {{ finiteText(asRecord(p).keepalive, 'off') }}
                 </span>
               </td>
-              <td class="mono col-hide-m" style="font-size:10px">↑{{ finiteText(p.tx_human) }} ↓{{ finiteText(p.rx_human) }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">↑{{ finiteText(asRecord(p).tx_human) }} ↓{{ finiteText(asRecord(p).rx_human) }}</td>
               <td class="actions">
-                <button class="tiny primary" @click="showPeer(p)" :disabled="busy || !p.reissuable">
+                <button class="tiny primary" @click="showPeer(p)" :disabled="busy || !asRecord(p).reissuable">
                   {{ t('wg.config') }}
                 </button>
                 <button class="tiny hide-m" @click="togglePsk(p)" :disabled="busy">
-                  {{ p.psk ? t('wg.psk_remove') : t('wg.psk_add') }}
+                  {{ asRecord(p).psk ? t('wg.psk_remove') : t('wg.psk_add') }}
                 </button>
                 <button class="tiny danger" @click="removePeer(p)" :disabled="busy">{{ t('common.delete') }}</button>
               </td>
             </tr>
-            <tr v-if="!asArray(data?.peers).length">
+            <tr v-if="!asArray(asRecord(data).peers).length">
               <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('wg.no_peers') }}</td>
             </tr>
           </tbody>
@@ -430,22 +430,22 @@
       </div>
 
       <div v-if="pingResult" class="tile" style="margin-top:12px">
-        <h2>{{ t('wg.ping_result', { ok: finiteN(pingResult.reachable), total: finiteN(pingResult.total) }) }}</h2>
+        <h2>{{ t('wg.ping_result', { ok: finiteN(asRecord(pingResult).reachable), total: finiteN(asRecord(pingResult).total) }) }}</h2>
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="r in asArray(pingResult.results)" :key="r.pubkey">
+            <tr v-for="r in asArray(asRecord(pingResult).results)" :key="finiteText(asRecord(r).pubkey)">
               <!-- Spell the per-row outcome, not just the LED colour: unlike
                    the peers table there is no textual badge here, so a screen
                    reader heard name and IP with nothing saying whether the
                    ping came back (same fix as the Network binding table). -->
               <td style="width:28px">
-                <span class="led" :class="r.reachable ? 'on' : 'err'"></span>
-                <span class="sr-only">{{ r.reachable ? t('wg.reachable') : t('wg.unreachable') }}</span>
+                <span class="led" :class="asRecord(r).reachable ? 'on' : 'err'"></span>
+                <span class="sr-only">{{ asRecord(r).reachable ? t('wg.reachable') : t('wg.unreachable') }}</span>
               </td>
-              <td>{{ finiteText(r.name, '') || t('wg.unnamed') }}</td>
-              <td class="mono">{{ finiteText(r.ip) }}</td>
-              <td class="mono">{{ withUnit(r.latency_ms, ' ms') }}</td>
+              <td>{{ finiteText(asRecord(r).name, '') || t('wg.unnamed') }}</td>
+              <td class="mono">{{ finiteText(asRecord(r).ip) }}</td>
+              <td class="mono">{{ withUnit(asRecord(r).latency_ms, ' ms') }}</td>
             </tr>
           </tbody>
         </table>
@@ -720,7 +720,7 @@ const cfgForm = ref({
 // once without.
 const SELF_EXPLAINING = new Set(['peer_origin'])
 const blockingChecks = computed(
-  () => asArray(readiness.value?.checks).filter(
+  () => asArray(asRecord(readiness.value).checks).map((row) => asRecord(row)).filter(
     (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
   ),
 )
@@ -729,7 +729,7 @@ const blockingChecks = computed(
 // same fact.
 const ALREADY_SHOWN = new Set([...SELF_EXPLAINING, 'running'])
 const warningChecks = computed(
-  () => asArray(readiness.value?.checks).filter(
+  () => asArray(asRecord(readiness.value).checks).map((row) => asRecord(row)).filter(
     (c) => !c.ok && c.level === 'warn' && !ALREADY_SHOWN.has(c.id),
   ),
 )
@@ -794,10 +794,18 @@ async function load(manual = false) {
       getWireguardReadiness().catch(() => readiness.value),
     ])
     if (generation !== loadGeneration) return
-    data.value = status
-    readiness.value = ready
+    data.value = {
+      ...asRecord(status),
+      peers: asArray(asRecord(status).peers).map((row) => asRecord(row)),
+      wstunnel: asRecord(asRecord(status).wstunnel),
+    }
+    readiness.value = {
+      ...asRecord(ready),
+      checks: asArray(asRecord(ready).checks).map((row) => asRecord(row)),
+      peer_origin: asRecord(asRecord(ready).peer_origin),
+    }
     loadError.value = ''
-    if (status.installed) {
+    if (asRecord(status).installed) {
       // Clear it on failure rather than leaving a stale suggestion: the address
       // field uses this as its placeholder, and an IP that was free minutes ago
       // may now be taken. An empty placeholder is honest; a wrong one is not.
@@ -807,7 +815,7 @@ async function load(manual = false) {
     }
   } catch (e) {
     if (generation !== loadGeneration) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // Background 20s ticks stay silent: LoadFailure already marks the state on
     // screen, and re-toasting every interval while the panel is down is noise.
     // The Refresh/retry buttons pass their click event as `manual`.
@@ -850,7 +858,10 @@ const ping = () => withBusy(async () => {
   const generation = loadGeneration
   const result = await pingWireguardPeers()
   if (generation !== loadGeneration || !pageAlive) return result
-  pingResult.value = result
+  pingResult.value = {
+    ...asRecord(result),
+    results: asArray(asRecord(result).results).map((row) => asRecord(row)),
+  }
   return result
 })
 
@@ -932,25 +943,28 @@ async function doImport() {
 }
 
 function removePeer(peer) {
-  if (!confirm(t('wg.confirm_delete', { name: finiteText(peer.name, '') || String(finiteText(peer.pubkey, '')).slice(0, 16) }))) return
-  return withBusy(() => deleteWireguardPeer(peer.pubkey), 'wg.peer_deleted')
+  const row = asRecord(peer)
+  if (!confirm(t('wg.confirm_delete', { name: finiteText(row.name, '') || String(finiteText(row.pubkey, '')).slice(0, 16) }))) return
+  return withBusy(() => deleteWireguardPeer(row.pubkey), 'wg.peer_deleted')
 }
 
 function togglePsk(peer) {
-  const op = peer.psk ? 'remove' : 'add'
+  const row = asRecord(peer)
+  const op = row.psk ? 'remove' : 'add'
   if (!confirm(t(op === 'add' ? 'wg.confirm_psk_add' : 'wg.confirm_psk_remove'))) return
-  return withBusy(() => setWireguardPsk(peer.pubkey, op), 'wg.psk_changed')
+  return withBusy(() => setWireguardPsk(row.pubkey, op), 'wg.psk_changed')
 }
 
 async function showPeer(peer) {
+  const row = asRecord(peer)
   const generation = loadGeneration
   try {
-    const result = await getWireguardPeerConfig(peer.pubkey, 'wg')
+    const result = asRecord(await getWireguardPeerConfig(row.pubkey, 'wg'))
     if (generation !== loadGeneration || !pageAlive) return
     peerDialog.value = {
-      pubkey: peer.pubkey,
+      pubkey: row.pubkey,
       name: result.name,
-      endpoint_configured: Boolean(data.value?.endpoint),
+      endpoint_configured: Boolean(asRecord(data.value).endpoint),
     }
     peerFormat.value = 'wg'
     peerContent.value = finiteText(result.content, '')
