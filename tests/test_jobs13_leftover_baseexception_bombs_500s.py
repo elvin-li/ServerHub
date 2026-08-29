@@ -275,12 +275,11 @@ class GuardContractTests(unittest.TestCase):
 
     def test_jsonable_launders_base_bomb_shapes(self):
         # The guard contract is the same for both modules: the bomb is
-        # laundered, never re-raised.  hub.jobs additionally recovers the
-        # perfectly walkable real storage underneath the override since the
-        # jobs14/maint14 unbound-snapshot sweep (the bookmarks14 recovered-shape
-        # rule); scheduler_svc keeps the guarded drop.
+        # laundered, never re-raised, and the walkable C-level storage
+        # underneath an ``__iter__`` override is recovered (jobs15 listing
+        # union with jobs14).
         self.assertEqual(jobs._jsonable(_IterBaseBombList([1])), [1])
-        self.assertIsNone(scheduler_svc._jsonable(_IterBaseBombList([1])))
+        self.assertEqual(scheduler_svc._jsonable(_IterBaseBombList([1])), [1])
         for module in (jobs, scheduler_svc):
             with self.subTest(module=module.__name__):
                 self.assertEqual(module._jsonable(_StrBaseBomb()), "")
@@ -461,7 +460,7 @@ class MaintenanceDecodeFidelityTests(unittest.TestCase):
         # unbound ``_str_text`` read (the bookmarks14 rule); a liar with no
         # decodable storage at all still degrades in both modules.
         self.assertEqual(jobs._decode_bytes("not bytes"), "not bytes")
-        self.assertEqual(scheduler_svc._decode_bytes("not bytes"), "")
+        self.assertEqual(scheduler_svc._decode_bytes("not bytes"), "not bytes")
         self.assertEqual(jobs._decode_bytes(12.5), "")
 
     def test_task_name_survives_the_lie_into_the_listing(self):

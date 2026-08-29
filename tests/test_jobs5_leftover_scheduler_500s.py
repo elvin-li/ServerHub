@@ -133,7 +133,7 @@ class SchedulerListLeftoverTests(_MountedClientMixin, unittest.TestCase):
         r = self._get({"schedules": _IterBombList([{"id": "a"}])})
         self.assert_utf8_json(r)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["jobs"], [])
+        self.assertEqual([j["id"] for j in r.json()["jobs"]], ["a"])
 
     def test_dict_subclass_row_whose_copy_raises_drops_only_its_row(self):
         r = self._get({"schedules": [
@@ -176,7 +176,7 @@ class SchedulerListLeftoverTests(_MountedClientMixin, unittest.TestCase):
              "enabled": False, "params": {"xs": _IterBombList([1])}}]})
         self.assert_utf8_json(r)
         self.assertEqual(r.status_code, 200)
-        self.assertIsNone(r.json()["jobs"][0]["params"]["xs"])
+        self.assertEqual(r.json()["jobs"][0]["params"]["xs"], [1])
 
     def test_str_subclass_id_strip_bomb_stays_200_and_serves_plain_text(self):
         r = self._get({"schedules": [{"id": _StripBomb("sb")}]})
@@ -370,7 +370,7 @@ class SchedulerModuleLayerPins(unittest.TestCase):
 
     def test_jsonable_nested_bombs_drop_to_none(self):
         self.assertIsNone(scheduler_svc._jsonable(_KeysIterBomb(a=1)))
-        self.assertIsNone(scheduler_svc._jsonable(_IterBombList([1])))
+        self.assertEqual(scheduler_svc._jsonable(_IterBombList([1])), [1])
         self.assertEqual(scheduler_svc._jsonable(_ItemsBomb(a=1)), {"a": 1})
         self.assertEqual(
             scheduler_svc._jsonable({"deep": {"params": _KeysIterBomb(x=1)}}),
