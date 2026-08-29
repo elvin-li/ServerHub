@@ -77,6 +77,10 @@ class PublicViewLeftoverTests(unittest.TestCase):
         self.assertIsNone(accounts_api._public_view(["kid"]))
         self.assertIsNone(accounts_api._public_view(None))
 
+    def test_missing_username_is_empty_string_not_none_word(self):
+        view = accounts_api._public_view({"role": "member", "resources": []})
+        self.assertEqual(view["username"], "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
