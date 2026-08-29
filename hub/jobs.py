@@ -869,6 +869,30 @@ def maintenance_tasks():
     return out
 
 
+def lookup_maintenance_task(tid):
+    """One configured task for POST /api/maintenance/{tid}/run.  Never raises.
+
+    The run route used to walk ``maintenance_tasks().get(tid)`` and then
+    ``if not task`` — a leftover dict-*subclass* listing whose bound
+    ``.get`` bombs (or a hash-shadowing key on the returned table) 500'd
+    every Run, and a leftover value whose ``__bool__`` bombs detonated the
+    emptiness probe the same way.  ``_mapping_get`` reads through the
+    unbound builtin; ``_plain_dict`` copies C-level storage so a subclass
+    row cannot fire on the caller; a raise or a non-mapping degrades to
+    None (unknown task), and only genuine control flow keeps propagating.
+    """
+    if not _isinst(tid, str):
+        return None
+    try:
+        tasks = maintenance_tasks()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    row = _plain_dict(_mapping_get(tasks, tid))
+    return row if row else None
+
+
 def _jobs_row(tid: str):
     """``_jobs.get(tid)`` that survives a leftover bomb *key* — or a leftover
     bomb *table*.
@@ -1224,8 +1248,8 @@ def start_job(task):
             # level keeps the "!! invalid command" diagnosis instead of an
             # opaque "!! error" for the whole job.
             timeout = _clamp_timeout(_mapping_get(task, "timeout"))
-            command = _mapping_get(task, "command")
-            if not _isinst(command, str) or not command.strip():
+            command = _str_text(_mapping_get(task, "command")) or ""
+            if not command.strip():
                 # A task with no usable command (missing from services.yaml,
                 # or a junk leftover _jsonable dropped to None) used to finish
                 # rc -1 with an EMPTY log: the modal showed "(waiting for

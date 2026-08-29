@@ -240,8 +240,11 @@ def api_maintenance():
 # is safe.
 @router.post("/api/maintenance/{tid:path}/run")
 def api_maintenance_run(tid: str, request: Request = None):
-    task = jobs.maintenance_tasks().get(tid)
-    if not task:
+    # ``lookup_maintenance_task``, not bound ``.get`` + ``if not task``:
+    # a leftover listing mapping whose ``.get`` / ``__bool__`` bombs used
+    # to 500 this route from the surface itself.  The helper never raises.
+    task = jobs.lookup_maintenance_task(tid)
+    if task is None:
         raise api_error("maintenance.unknown_task")
     jobs.start_job(task)
     audit.record(

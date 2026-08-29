@@ -133,4 +133,41 @@ describe('Maintenance filter with non-string task fields', () => {
     await wrapper.find('input[type="text"]').setValue('null')
     expect(wrapper.text()).toContain('common.no_match')
   })
+
+  it('does not blank the page when a leftover list cell is null', async () => {
+    api.getMaintenance.mockResolvedValue([
+      null,
+      { id: 'brew-up', name: 'Brew upgrade', desc: 'upgrade', running: false },
+    ])
+    const { wrapper } = await mountPage()
+    await wrapper.find('input[type="text"]').setValue('brew')
+    expect(wrapper.text()).toContain('Brew upgrade')
+    expect(wrapper.text()).not.toContain('common.no_match')
+  })
+
+  it('reads leftover {tasks: …} envelopes without throwing on .filter', async () => {
+    api.getMaintenance.mockResolvedValue({
+      tasks: [{ id: 'smart-scan', name: 'SMART scan', desc: 'Check disks' }],
+    })
+    const { wrapper } = await mountPage()
+    expect(wrapper.text()).toContain('SMART scan')
+    await wrapper.find('input[type="text"]').setValue('no-such-task')
+    expect(wrapper.text()).toContain('common.no_match')
+  })
+
+  it('fail-closes a leftover mapping that is not a task list', async () => {
+    api.getMaintenance.mockResolvedValue({ id: 'not-a-list', name: 'nope' })
+    const { wrapper } = await mountPage()
+    expect(wrapper.text()).toContain('maintenance.empty_hint')
+  })
+})
+
+describe('Maintenance leftover log mappings', () => {
+  it('does not throw when the log payload is a leftover list', async () => {
+    api.getMaintenanceLog.mockResolvedValue(['not', 'a', 'mapping'])
+    const { wrapper } = await mountPage()
+    await button(wrapper, 'maintenance.log').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('#maint-log-title').text()).toContain('Brew upgrade')
+  })
 })
