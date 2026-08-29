@@ -534,7 +534,7 @@
                 <option value="custom">{{ t('settings.ups_shutdown_stacks_custom') }}</option>
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
-                <div v-for="(row, i) in upsStackRows" :key="row.id" class="ups-pick-row">
+                <div v-for="(row, i) in asArray(upsStackRows)" :key="row.id" class="ups-pick-row">
                   <!-- Named after the visible display name, not the raw stack
                        id: a screen reader hearing "stack:immich" cannot match
                        it to the "Immich" the row shows. -->
@@ -545,15 +545,15 @@
                   </span>
                   <button class="btn" :disabled="i === 0" :aria-label="t('settings.ups_move_up')"
                           @click="moveStackRow(i, -1)">↑</button>
-                  <button class="btn" :disabled="i === upsStackRows.length - 1" :aria-label="t('settings.ups_move_down')"
+                  <button class="btn" :disabled="i === asArray(upsStackRows).length - 1" :aria-label="t('settings.ups_move_down')"
                           @click="moveStackRow(i, 1)">↓</button>
                 </div>
                 <p class="hint" style="margin:4px 0 0">{{ t('settings.ups_shutdown_order_hint') }}</p>
               </div>
             </div>
-            <label v-if="upsScriptChoices.length">{{ t('settings.ups_shutdown_scripts') }}</label>
-            <div v-if="upsScriptChoices.length">
-              <div v-for="s in upsScriptChoices" :key="s.id" class="ups-pick-row">
+            <label v-if="asArray(upsScriptChoices).length">{{ t('settings.ups_shutdown_scripts') }}</label>
+            <div v-if="asArray(upsScriptChoices).length">
+              <div v-for="s in asArray(upsScriptChoices)" :key="s.id" class="ups-pick-row">
                 <!-- Same rule as the stack rows: the checkbox must carry the
                      name the row displays, not the machine id. -->
                 <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.name, '') || finiteText(s.id)" />
@@ -580,7 +580,7 @@
               </template>
               <template v-else>{{ t('settings.ups_would_not_trigger') }}</template>
             </p>
-            <div v-for="s in upsDrill.steps" :key="s.kind + ':' + s.id"
+            <div v-for="s in asArray(upsDrill.steps)" :key="s.kind + ':' + s.id"
                  style="display:flex;align-items:center;gap:8px;padding:2px 0">
               <span class="badge" :class="s.running ? 'warn' : ''">
                 {{ s.running ? t('settings.ups_step_stop') : t('settings.ups_step_skip') }}

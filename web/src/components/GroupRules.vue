@@ -11,7 +11,7 @@
     <p class="hint" v-if="loaded && source === 'yaml'">{{ t('grules.source_yaml') }}</p>
     <p class="hint" v-else-if="loaded">{{ t('grules.source_seed') }}</p>
 
-    <div class="table-wrap" v-if="rows.length">
+    <div class="table-wrap" v-if="asArray(rows).length">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -21,7 +21,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="finiteText(row.id)">
+          <tr v-for="row in asArray(rows)" :key="finiteText(row.id)">
             <td>
               <strong>{{ finiteText(row.group) }}</strong>
               <div class="mono sub-line">{{ finiteText(row.id) }}</div>

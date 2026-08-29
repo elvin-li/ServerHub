@@ -368,7 +368,7 @@ describe('services and scheduler surface leftovers', () => {
     // poll's) only summary, and it changed silently for a screen reader —
     // same treatment as the VMs title-meta and Users/Apps toolbar counts.
     const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
-    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="jobsLoaded">\{\{ jobs\.length \}\}/)
+    expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="jobsLoaded">\{\{ asArray\(jobs\)\.length \}\}/)
     expect(scheduler).toMatch(/<span class="meta" role="status"[^>]*v-if="data">\{\{ finiteN\(data\.count\) \}\}/)
   })
 
@@ -377,7 +377,7 @@ describe('services and scheduler surface leftovers', () => {
     // history and lands after the dialog already holds focus, so it was
     // paint-only — same as the PhotosHub empty pending state.
     const scheduler = readFileSync(resolve(SRC, 'views/Scheduler.vue'), 'utf8')
-    expect(scheduler).toMatch(/v-else-if="!runs\.length" class="meta" role="status">\{\{ t\('sched\.runs_empty'\) \}\}/)
+    expect(scheduler).toMatch(/v-else-if="!asArray\(runs\)\.length" class="meta" role="status">\{\{ t\('sched\.runs_empty'\) \}\}/)
   })
 
   it('announces the job form stack-list load failure instead of swallowing it', () => {
@@ -781,7 +781,7 @@ describe('llm, photos, vpn and health surface leftovers', () => {
     // summary of the model list and changed silently for a screen reader —
     // same treatment as the VMs title-meta and Health summary counts.
     const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
-    expect(ollama).toMatch(/<span v-if="models\.length" class="meta" role="status">\{\{ t\('ollama\.models_count'/)
+    expect(ollama).toMatch(/<span v-if="asArray\(models\)\.length" class="meta" role="status">\{\{ t\('ollama\.models_count'/)
   })
 
   it('keeps the Ollama tables honest about a failed list read', () => {
@@ -2339,13 +2339,13 @@ describe('error live regions', () => {
 
   it('does not keep the Ollama chat log live while it is empty', () => {
     const ollama = readFileSync(resolve(SRC, 'views/Ollama.vue'), 'utf8')
-    expect(ollama).toMatch(/:aria-live="chatMessages\.length \? 'polite' : undefined"/)
+    expect(ollama).toMatch(/:aria-live="asArray\(chatMessages\)\.length \? 'polite' : undefined"/)
     expect(ollama).not.toMatch(/class="chat-log" aria-live="polite"/)
   })
 
   it('does not keep the assistant log live while it is empty', () => {
     const assist = readFileSync(resolve(SRC, 'components/AssistantDrawer.vue'), 'utf8')
-    expect(assist).toMatch(/:aria-live="turns\.length \? 'polite' : undefined"/)
+    expect(assist).toMatch(/:aria-live="asArray\(turns\)\.length \? 'polite' : undefined"/)
     expect(assist).not.toMatch(/class="assist-log" aria-live="polite"/)
   })
 })

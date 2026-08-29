@@ -225,7 +225,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('tools.image') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
-            <tr v-for="c in sizes" :key="c.name">
+            <tr v-for="c in asArray(sizes)" :key="c.name">
               <td>
                 <strong>{{ finiteText(c.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(c.image) }}</div>
@@ -270,7 +270,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in timers" :key="row.label">
+            <tr v-for="row in asArray(timers)" :key="row.label">
               <td class="mono">
                 {{ finiteText(row.label) }}
                 <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
@@ -541,7 +541,7 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('tools.credits') }}</h2>
           <ul class="hint" style="margin:0;padding-left:18px;line-height:1.7">
-            <li v-for="(x,i) in aboutCredits" :key="i">{{ finiteText(x) }}</li>
+            <li v-for="(x,i) in asArray(aboutCredits)" :key="i">{{ finiteText(x) }}</li>
           </ul>
           <div class="btns" style="margin-top:12px;flex-wrap:wrap">
             <router-link

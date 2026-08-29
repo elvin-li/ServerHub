@@ -282,7 +282,7 @@
           <div class="section-head">
             <h2>{{ t('photoshub.logs') }}</h2>
             <div class="tabs">
-              <button v-for="n in logNames" :key="finiteText(n)" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ finiteText(n) }}</button>
+              <button v-for="n in asArray(logNames)" :key="finiteText(n)" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ finiteText(n) }}</button>
             </div>
           </div>
           <p v-if="logError" class="hint bad" role="alert">{{ finiteText(logError) }}</p>

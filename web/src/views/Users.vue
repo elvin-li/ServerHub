@@ -88,7 +88,7 @@
             </tr>
           </thead>
           <tbody>
-            <template v-for="acct in accounts" :key="acct.username">
+            <template v-for="acct in asArray(accounts)" :key="acct.username">
               <tr>
                 <td>
                   <strong>{{ finiteText(acct.username) }}</strong>

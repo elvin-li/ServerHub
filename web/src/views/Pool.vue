@@ -40,7 +40,7 @@
       <h2 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h2>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
-        <span v-for="m in view.missing_members" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
+        <span v-for="m in asArray(view.missing_members)" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
       </p>
     </div>
 
@@ -111,7 +111,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in selectedMembers" :key="m.mount">
+          <tr v-for="m in asArray(selectedMembers)" :key="m.mount">
             <td class="mono">
               <strong>{{ finiteText(m.mount) }}</strong>
               <div class="show-m sub">{{ finiteText(m.disk_id) }} · {{ finiteText(m.filesystem) }}</div>
@@ -160,7 +160,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in availableCandidates" :key="c.mount">
+          <tr v-for="c in asArray(availableCandidates)" :key="c.mount">
             <td class="mono">
               <strong>{{ finiteText(c.mount) }}</strong>
               <div class="show-m sub">{{ finiteText(c.disk_id) }} · {{ finiteText(c.filesystem) }}</div>
@@ -208,7 +208,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in shownFaults" :key="r.mount">
+          <tr v-for="r in asArray(shownFaults)" :key="r.mount">
             <td class="mono">
               <strong>{{ finiteText(r.mount) }}</strong>
               <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>

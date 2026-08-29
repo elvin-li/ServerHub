@@ -134,7 +134,7 @@
             <tr><th class="col-hide-m">#</th><th>{{ t('network.th_service') }}</th><th class="col-hide-m">{{ t('network.th_device') }}</th><th class="col-hide-m">{{ t('network.th_status') }}</th><th class="col-hide-m">{{ t('network.th_mode_ip') }}</th><th>{{ t('network.th_ops') }}</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(s, idx) in orderList" :key="s.name">
+            <tr v-for="(s, idx) in asArray(orderList)" :key="s.name">
               <td class="mono col-hide-m">{{ idx + 1 }}</td>
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
@@ -281,7 +281,7 @@
         <div class="field-grid">
           <label>{{ t('network.th_nic') }}</label>
           <select v-model="aliasForm.device" :aria-label="t('network.th_nic')">
-            <option v-for="i in deviceOptions" :key="i" :value="i">{{ finiteText(i) }}</option>
+            <option v-for="i in asArray(deviceOptions)" :key="i" :value="i">{{ finiteText(i) }}</option>
           </select>
           <label>IP</label>
           <input v-model="aliasForm.ip" type="text" :placeholder="t('network.alias_ip_ph')"  :aria-label="t('network.alias_ip_ph')"/>
@@ -428,13 +428,13 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ asArray(data?.listening).length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredListen).length }} / {{ asArray(data?.listening).length }}</span>
       </div>
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('network.process') }}</th><th class="col-hide-m">PID</th><th class="col-hide-m">{{ t('tools.user') }}</th><th class="col-hide-m">{{ t('network.address') }}</th><th>{{ t('network.port') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(p,i) in filteredListen" :key="i">
+            <tr v-for="(p,i) in asArray(filteredListen)" :key="i">
               <td>
                 <strong>{{ finiteText(p.process) }}</strong>
                 <div class="show-m sub">{{ finiteText(p.user) }} · {{ finiteN(p.pid) }} · {{ finiteText(p.address) }}</div>
@@ -444,7 +444,7 @@
               <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
-            <tr v-if="!filteredListen.length && !loadError">
+            <tr v-if="!asArray(filteredListen).length && !loadError">
               <td colspan="5" class="empty-row">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
             </tr>
           </tbody>
@@ -494,7 +494,7 @@
               <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
-              <tr v-for="(p,i) in filteredDockerPorts" :key="i">
+              <tr v-for="(p,i) in asArray(filteredDockerPorts)" :key="i">
                 <td>
                   <strong>{{ finiteText(p.container) }}</strong>
                   <div class="show-m sub">{{ finiteText(p.status) }} · {{ finiteText(p.protocol) }}</div>
@@ -623,7 +623,7 @@
         <label style="font-size:12px;color:var(--sub)">{{ t('network.ctr_name') }}</label>
         <input v-model="connectContainer" type="text" list="ctr-list" style="width:100%;margin:8px 0 12px" :placeholder="t('network.ctr_name')"  :aria-label="t('network.ctr_name')"/>
         <datalist id="ctr-list">
-          <option v-for="c in containerNames" :key="c" :value="c" />
+          <option v-for="c in asArray(containerNames)" :key="c" :value="c" />
         </datalist>
         <div class="btns">
           <button class="primary" :disabled="busy || !connectContainer.trim()" @click="applyConnect">{{ t('common.confirm') }}</button>

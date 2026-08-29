@@ -74,7 +74,7 @@
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="c in blockingChecks" :key="c.id">
+            <tr v-for="c in asArray(blockingChecks)" :key="c.id">
               <td style="width:28px"><span class="led err"></span></td>
               <td>
                 <strong>{{ checkLabel(c.id) }}</strong>
@@ -129,7 +129,7 @@
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="c in warningChecks" :key="c.id">
+            <tr v-for="c in asArray(warningChecks)" :key="c.id">
               <td style="width:28px"><span class="led warn"></span></td>
               <td>
                 <strong>{{ checkLabel(c.id) }}</strong>

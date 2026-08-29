@@ -123,7 +123,7 @@
           <!-- role=status: the count is the 10s poll's (and a finished
                pull/delete's) only summary and changed silently for a screen
                reader — same treatment as the VMs and Health header counts. -->
-          <span v-if="models.length" class="meta" role="status">{{ t('ollama.models_count', { n: finiteN(models.length) }) }}</span>
+          <span v-if="asArray(models).length" class="meta" role="status">{{ t('ollama.models_count', { n: finiteN(asArray(models).length) }) }}</span>
         </div>
         <div class="table-wrap">
           <table class="dense fit-m">
@@ -157,7 +157,7 @@
                   <button class="tiny danger" @click="openDelete(m)">{{ t('ollama.act_delete') }}</button>
                 </td>
               </tr>
-              <tr v-if="!models.length">
+              <tr v-if="!asArray(models).length">
                 <td colspan="7" class="empty-row">
                   {{ emptyListText('ollama.models_empty') }}
                 </td>
@@ -203,11 +203,11 @@
           <span class="meta">{{ t('ollama.chat_hint') }}</span>
         </div>
         <p v-if="!data.reachable" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_unreachable') }}</p>
-        <p v-else-if="!models.length" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_no_model') }}</p>
-        <div ref="chatLog" class="chat-log" :aria-live="chatMessages.length ? 'polite' : undefined">
-          <div v-if="!chatMessages.length" class="meta">{{ t('ollama.chat_empty') }}</div>
+        <p v-else-if="!asArray(models).length" class="meta" style="margin:0 0 8px">{{ t('ollama.chat_no_model') }}</p>
+        <div ref="chatLog" class="chat-log" :aria-live="asArray(chatMessages).length ? 'polite' : undefined">
+          <div v-if="!asArray(chatMessages).length" class="meta">{{ t('ollama.chat_empty') }}</div>
           <div
-            v-for="(m, i) in chatMessages"
+            v-for="(m, i) in asArray(chatMessages)"
             :key="i"
             class="chat-msg"
             :class="m.role"
@@ -241,7 +241,7 @@
             :disabled="chatSendDisabled"
             @click="sendChat"
           >{{ chatBusy ? t('ollama.chat_sending') : t('ollama.chat_send') }}</button>
-          <button :disabled="!chatMessages.length || chatBusy" @click="clearChat">{{ t('ollama.chat_clear') }}</button>
+          <button :disabled="!asArray(chatMessages).length || chatBusy" @click="clearChat">{{ t('ollama.chat_clear') }}</button>
         </div>
       </div>
 

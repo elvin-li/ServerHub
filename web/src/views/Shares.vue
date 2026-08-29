@@ -7,7 +7,7 @@
            count pattern). -->
       <span class="meta" role="status">
         {{ data
-          ? t('shares.summary', { shares: shareCount, services: coreServices.length })
+          ? t('shares.summary', { shares: shareCount, services: asArray(coreServices).length })
           : t('shares.meta') }}
       </span>
     </div>
@@ -62,7 +62,7 @@
           </div>
           <div>
             <span>{{ t('shares.core_services') }}</span>
-            <strong>{{ activeCoreCount }}/{{ coreServices.length }}</strong>
+            <strong>{{ activeCoreCount }}/{{ asArray(coreServices).length }}</strong>
           </div>
         </div>
         <div class="host-links btns">
@@ -147,7 +147,7 @@
             </div>
           </div>
           <div class="service-list">
-            <article v-for="service in coreServices" :key="service.id" class="service-row">
+            <article v-for="service in asArray(coreServices)" :key="service.id" class="service-row">
               <div class="service-icon" :class="`service-${service.id}`">
                 <component :is="serviceIcon(service.id)" :size="17" />
               </div>
@@ -166,7 +166,7 @@
                 />
               </div>
             </article>
-            <p v-if="!coreServices.length" class="inline-empty">{{ t('shares.no_core_services') }}</p>
+            <p v-if="!asArray(coreServices).length" class="inline-empty">{{ t('shares.no_core_services') }}</p>
           </div>
         </div>
 
@@ -179,7 +179,7 @@
             <span class="badge accent">{{ t('shares.managed_by_macos') }}</span>
           </div>
           <div class="managed-grid">
-            <article v-for="service in managedServices" :key="service.id" class="managed-service">
+            <article v-for="service in asArray(managedServices)" :key="service.id" class="managed-service">
               <div class="service-icon" :class="`service-${service.id}`">
                 <component :is="serviceIcon(service.id)" :size="17" />
               </div>
@@ -189,7 +189,7 @@
               </div>
             </article>
           </div>
-          <p v-if="!managedServices.length" class="inline-empty">{{ t('shares.no_managed_services') }}</p>
+          <p v-if="!asArray(managedServices).length" class="inline-empty">{{ t('shares.no_managed_services') }}</p>
           <p v-else class="managed-note"><Settings :size="14" />{{ t('shares.managed_services_note') }}</p>
         </div>
       </section>
@@ -286,7 +286,7 @@
                  focus, so without it the failure text appears silently. -->
             <div v-else-if="aclError" class="acl-error" role="alert">{{ finiteText(aclError) }}</div>
             <template v-else-if="acl">
-              <div v-for="user in acl.users" :key="user.username" class="acl-user-row">
+              <div v-for="user in asArray(acl.users)" :key="user.username" class="acl-user-row">
                 <span class="acl-user">
                   <strong>{{ finiteText(user.username) }}</strong>
                   <small v-if="finiteText(user.real_name, '')">{{ finiteText(user.real_name) }}</small>
@@ -303,9 +303,9 @@
                   <option value="readwrite">{{ t('shares.acl_readwrite') }}</option>
                 </select>
               </div>
-              <details class="acl-entries" v-if="acl.entries.length">
-                <summary>{{ t('shares.acl_current', { n: finiteN(acl.entries.length) }) }}</summary>
-                <code v-for="entry in acl.entries" :key="entry.index" class="acl-entry mono">
+              <details class="acl-entries" v-if="asArray(acl.entries).length">
+                <summary>{{ t('shares.acl_current', { n: finiteN(asArray(acl.entries).length) }) }}</summary>
+                <code v-for="entry in asArray(acl.entries)" :key="entry.index" class="acl-entry mono">
                   {{ finiteN(entry.index) }}: {{ finiteText(entry.kind) }}:{{ finiteText(entry.name) }}
                   {{ entry.inherited ? 'inherited ' : '' }}{{ finiteText(entry.effect) }}
                   {{ asArray(entry.perms).map(p => finiteText(p, '')).filter(Boolean).join(',') }}

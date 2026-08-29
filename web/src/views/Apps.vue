@@ -23,7 +23,7 @@
              reader. Same pattern as the Services filter count. -->
         <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(catalog).length }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
-          <option v-for="c in categories" :key="c.id" :value="c.id">
+          <option v-for="c in asArray(categories)" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
           </option>
         </select>
@@ -40,7 +40,7 @@
 
       <div class="cat-pills">
         <button
-          v-for="c in quickCats"
+          v-for="c in asArray(quickCats)"
           :key="c.id"
           type="button"
           class="cat-pill"
@@ -309,7 +309,7 @@
       <LoadFailure v-if="autostartError" :detail="autostartError" :retry="() => loadAutostart(true)" :busy="loading" />
       <div v-else-if="!autostartLoaded" class="hint-line">{{ t('common.loading') }}</div>
       <template v-else>
-      <div v-for="grp in autostartGroups" :key="grp" class="auto-group">
+      <div v-for="grp in asArray(autostartGroups)" :key="grp" class="auto-group">
         <h2 class="section-title">{{ finiteText(grp) }}</h2>
         <div class="managed-table-wrap" style="margin-bottom:14px">
           <table class="managed-table">
@@ -682,7 +682,7 @@
         <p v-else class="path-line mono">→ ~/Services/{{ finiteText(installTpl.id) }}/docker-compose.yml</p>
 
         <div v-if="asArray(installTpl.vars).length" class="form-grid">
-          <template v-for="v in installTpl.vars" :key="v.name">
+          <template v-for="v in asArray(installTpl.vars)" :key="v.name">
             <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
             <div class="form-field">
 <!-- The form-label beside this grid cell is not associated (no for/id), so
@@ -769,7 +769,7 @@
         <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
           {{ summaryLine(remoteResult) }}
           <ul v-if="asArray(remoteResult.rejected).length" class="plain-list mono" style="margin-top:6px">
-            <li v-for="r in remoteResult.rejected" :key="r.id">
+            <li v-for="r in asArray(remoteResult.rejected)" :key="r.id">
               {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
             </li>
           </ul>
@@ -779,7 +779,7 @@
           <table class="mini-table">
             <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
-              <tr v-for="o in remoteInfo.overrides" :key="o.id">
+              <tr v-for="o in asArray(remoteInfo.overrides)" :key="o.id">
                 <td class="mono">{{ finiteText(o.id) }}</td>
                 <td class="mono">{{ finiteText(o.version) }}</td>
                 <td>

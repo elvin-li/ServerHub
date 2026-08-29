@@ -5,7 +5,7 @@
       <span class="meta">
         {{ t('pages.docker_meta') }} ·
         <template v-if="data">
-          {{ t('common.engine') }} {{ data.engine_up ? t('common.running') : t('common.stopped') }} · {{ containers.length }}
+          {{ t('common.engine') }} {{ data.engine_up ? t('common.running') : t('common.stopped') }} · {{ asArray(containers).length }}
           <span v-if="finiteText(data.update_checked_at, '')"> · {{ finiteText(data.update_checked_at) }}</span>
         </template>
       </span>
@@ -27,16 +27,16 @@
       <!-- role=status: the count is the only feedback the filter box and the
            hide-system toggle give, and it changed silently for a screen
            reader. Same pattern as the Services filter count. -->
-      <span class="meta-count" role="status">{{ filteredContainers.length }} / {{ containers.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filteredContainers).length }} / {{ asArray(containers).length }}</span>
       <button :disabled="busy" @click="doAll('start')">{{ t('docker.start_all') }}</button>
       <button :disabled="busy" @click="doAll('stop')">{{ t('docker.stop_all') }}</button>
       <button :disabled="busy" @click="doAll('pause')">{{ t('docker.pause_all') }}</button>
       <button :disabled="busy" @click="doAll('unpause')">{{ t('docker.unpause_all') }}</button>
       <button :disabled="busy" @click="checkUpdates">{{ t('docker.check_updates') }}</button>
-      <button :disabled="busy || !selected.length" @click="batchSel('start')">{{ t('docker.start_sel') }}</button>
-      <button :disabled="busy || !selected.length" @click="batchSel('stop')">{{ t('docker.stop_sel') }}</button>
-      <button :disabled="busy || !selected.length" @click="batchSel('restart')">{{ t('docker.restart_sel') }}</button>
-      <button class="danger" :disabled="busy || !selected.length" @click="batchSel('remove')">{{ t('docker.remove_sel') }}</button>
+      <button :disabled="busy || !asArray(selected).length" @click="batchSel('start')">{{ t('docker.start_sel') }}</button>
+      <button :disabled="busy || !asArray(selected).length" @click="batchSel('stop')">{{ t('docker.stop_sel') }}</button>
+      <button :disabled="busy || !asArray(selected).length" @click="batchSel('restart')">{{ t('docker.restart_sel') }}</button>
+      <button class="danger" :disabled="busy || !asArray(selected).length" @click="batchSel('remove')">{{ t('docker.remove_sel') }}</button>
       <button class="danger" :disabled="busy" @click="doPrune('system')">{{ t('docker.prune') }}</button>
       <button class="danger" :disabled="busy" @click="doPrune('containers')">{{ t('docker.prune_exited') }}</button>
       <label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px;margin-left:6px">
@@ -76,12 +76,12 @@
       <!-- An empty engine and a filter that misses are different answers
            (Tools/Scheduler pattern): before this the tab rendered nothing at
            all — no table, no message — for either state. -->
-      <div v-if="!containers.length" class="placeholder">{{ t('docker.no_containers') }}</div>
-      <div v-else-if="!filteredContainers.length" class="placeholder">{{ t('common.no_match') }}</div>
-      <template v-for="grp in displayGroups" :key="grp.name">
+      <div v-if="!asArray(containers).length" class="placeholder">{{ t('docker.no_containers') }}</div>
+      <div v-else-if="!asArray(filteredContainers).length" class="placeholder">{{ t('common.no_match') }}</div>
+      <template v-for="grp in asArray(displayGroups)" :key="grp.name">
         <h2 v-if="groupByProject" class="section-title">
           {{ finiteText(grp.name) }}
-          <span class="badge">{{ grp.items.length }}</span>
+          <span class="badge">{{ asArray(grp.items).length }}</span>
         </h2>
         <div class="table-wrap" :style="groupByProject ? 'margin-bottom:10px' : ''">
           <table class="dense fit-m">
@@ -103,7 +103,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in grp.items" :key="c.id">
+              <tr v-for="c in asArray(grp.items)" :key="c.id">
 <!-- Named after the container (Files/Services row-checkbox pattern):
                      anonymous checkboxes cannot be told apart in a form-controls list. -->
                 <td><input type="checkbox" :value="c.id" v-model="selected" :aria-label="t('common.select_row_name', { name: finiteText(c.name, '') || finiteText(c.id) })" /></td>

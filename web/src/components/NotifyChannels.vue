@@ -59,7 +59,7 @@
       <div class="form-grid">
         <label>{{ t('common.type') }}</label>
         <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
-          <option v-for="ty in typeIds" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
+          <option v-for="ty in asArray(typeIds)" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
         </select>
         <label>{{ t('common.name') }}</label>
         <input v-model="editing.name" type="text" maxlength="80" :aria-label="t('common.name')" />

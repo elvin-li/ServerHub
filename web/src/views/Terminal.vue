@@ -17,8 +17,8 @@
 
         <label v-if="target === 'container'" class="tsel">
           <span>{{ t('terminal.container') }}</span>
-          <select v-if="containers.length" v-model="container" :disabled="connected">
-            <option v-for="c in containers" :key="c.id" :value="c.id">{{ finiteText(c.label, '') || finiteText(c.id) }}</option>
+          <select v-if="asArray(containers).length" v-model="container" :disabled="connected">
+            <option v-for="c in asArray(containers)" :key="c.id" :value="c.id">{{ finiteText(c.label, '') || finiteText(c.id) }}</option>
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is

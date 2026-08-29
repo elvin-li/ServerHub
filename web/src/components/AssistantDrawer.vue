@@ -44,14 +44,14 @@
           {{ t('assistant.ollama_link') }}
         </router-link>
       </div>
-      <div ref="logEl" class="assist-log" :aria-live="turns.length ? 'polite' : undefined">
-        <p v-if="!turns.length" class="assist-empty">{{ t('assistant.empty') }}</p>
-        <article v-for="(turn, i) in turns" :key="i" class="assist-turn" :class="turn.role">
+      <div ref="logEl" class="assist-log" :aria-live="asArray(turns).length ? 'polite' : undefined">
+        <p v-if="!asArray(turns).length" class="assist-empty">{{ t('assistant.empty') }}</p>
+        <article v-for="(turn, i) in asArray(turns)" :key="i" class="assist-turn" :class="turn.role">
           <div class="assist-who">{{ turn.role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
           <pre class="assist-text">{{ finiteText(turn.content) }}</pre>
-          <div v-if="turn.panels?.length" class="assist-panels">
+          <div v-if="asArray(turn.panels).length" class="assist-panels">
             <button
-              v-for="p in turn.panels"
+              v-for="p in asArray(turn.panels)"
               :key="p.path"
               class="tiny"
               type="button"

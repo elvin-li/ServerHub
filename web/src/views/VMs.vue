@@ -7,7 +7,7 @@
            silently for a screen reader — same treatment as the Users and
            Apps toolbar counts. -->
       <span class="meta" role="status">
-        {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: finiteN(vms.length) }) }}
+        {{ t('vms.meta', { utm: data?.utm_available ? '✓' : '—', orb: data?.orb_available ? '✓' : '—', n: finiteN(asArray(vms).length) }) }}
       </span>
     </div>
 
@@ -26,7 +26,7 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="4" />
 
-    <div v-else-if="!vms.length && !loadError" class="placeholder">
+    <div v-else-if="!asArray(vms).length && !loadError" class="placeholder">
       {{ t('vms.empty') }}
       <span v-if="!data?.utm_available">{{ t('vms.no_utm') }}</span>
       <span v-if="!data?.orb_available">{{ t('vms.no_orb') }}</span>
@@ -59,7 +59,7 @@
             @click="consoleTarget=v"
           >{{ t('vms.console') }}</button>
           <button
-            v-for="a in displayActions(v)"
+            v-for="a in asArray(displayActions(v))"
             :key="a"
             class="tiny"
             :class="{ primary: a==='start'||a==='restart', danger: a==='delete'||a==='kill' }"

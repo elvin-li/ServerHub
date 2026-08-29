@@ -71,7 +71,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in arrayDevices" :key="d.mount">
+          <tr v-for="d in asArray(arrayDevices)" :key="d.mount">
             <td><span class="led on"></span></td>
             <td class="col-hide-m">
               <span class="badge" :class="d.kind === 'system' ? 'accent' : 'ok'">
@@ -120,7 +120,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in unassigned" :key="d.id">
+          <tr v-for="d in asArray(unassigned)" :key="d.id">
             <td><span class="led" :class="powerLed(d)"></span></td>
             <td class="mono">{{ finiteText(d.device) }}</td>
             <td>
@@ -142,7 +142,7 @@
               <button v-if="asArray(d.actions).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
-          <tr v-if="!unassigned.length && !loadError && !pendingFull">
+          <tr v-if="!asArray(unassigned).length && !loadError && !pendingFull">
             <td colspan="7" class="empty-row">{{ t('main_extra.empty_unassigned') }}</td>
           </tr>
         </tbody>
@@ -173,7 +173,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in powerDisks" :key="d.id">
+          <tr v-for="d in asArray(powerDisks)" :key="d.id">
             <td>
               <span
                 class="led"
@@ -245,30 +245,30 @@
          passthrough over USB or Thunderbolt bridges, so unknown is not broken.
          Grading lives in smartGrade(), which mirrors hub/alerts.py _smart_reasons()
          so this page and the alert list can never disagree about the same disk. -->
-    <div v-if="smartNotice.down.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--down)">
+    <div v-if="asArray(smartNotice.down).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--down)">
       <h3 style="margin:0 0 6px">
-        <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: smartNotice.down.length }) }}
+        <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: asArray(smartNotice.down).length }) }}
       </h3>
-      <div v-for="d in smartNotice.down" :key="d.id" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(smartNotice.down)" :key="d.id" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(d.label) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
       </div>
     </div>
-    <div v-if="smartNotice.warn.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
+    <div v-if="asArray(smartNotice.warn).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
       <h3 style="margin:0 0 6px">
-        <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: smartNotice.warn.length }) }}
+        <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: asArray(smartNotice.warn).length }) }}
       </h3>
-      <div v-for="d in smartNotice.warn" :key="d.id" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(smartNotice.warn)" :key="d.id" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(d.label) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_watch_hint') }}</p>
     </div>
-    <div v-if="smartNotice.unknown.length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--line)">
+    <div v-if="asArray(smartNotice.unknown).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--line)">
       <h3 style="margin:0 0 6px;color:var(--sub)">
-        <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: smartNotice.unknown.length }) }}
+        <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: asArray(smartNotice.unknown).length }) }}
       </h3>
-      <div v-for="d in smartNotice.unknown" :key="d.id" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(smartNotice.unknown)" :key="d.id" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(d.label) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
       </div>
@@ -397,7 +397,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in managedVols" :key="v.id">
+          <tr v-for="v in asArray(managedVols)" :key="v.id">
             <td class="mono">
               <strong>{{ finiteText(v.id) }}</strong>
               <div class="sub" style="font-size:10px" v-if="v.is_whole">{{ t('main_extra.whole') }}</div>
@@ -535,7 +535,7 @@
                 </tr>
               </thead>
               <tbody>
-                <template v-for="m in smartMerged" :key="m.id">
+                <template v-for="m in asArray(smartMerged)" :key="m.id">
                 <tr>
                   <td class="mono">
                     <strong>{{ finiteText(m.id) }}</strong>
@@ -593,15 +593,15 @@
                           <tr>
                             <th style="font-size:10px;width:40px">ID</th>
                             <th style="font-size:10px">{{ t('common.name') }}</th>
-                            <th style="font-size:10px" v-if="m.smart.attrs[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="m.smart.attrs[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
-                            <th style="font-size:10px">{{ m.smart.attrs[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
+                            <th style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th style="font-size:10px">{{ asArray(m.smart.attrs)[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          <tr v-for="a in m.smart.attrs" :key="a.id">
+                          <tr v-for="a in asArray(m.smart.attrs)" :key="a.id">
                             <td class="mono" style="font-size:10px">{{ finiteN(a.id) }}</td>
                             <td style="font-size:11px">
                               {{ finiteText(a.name) }}
@@ -637,7 +637,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(h, i) in smartData.history.slice(0, 15)" :key="i">
+                  <tr v-for="(h, i) in asArray(smartData.history).slice(0, 15)" :key="i">
                     <td class="mono" style="font-size:10px">{{ fmtTs(h.ts) }}</td>
                     <td class="mono" style="font-size:10px">
                       {{ finiteText(h.device) }}

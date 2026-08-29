@@ -6,7 +6,7 @@
         <!-- HTML Y labels — never stretched -->
         <div v-if="!quiet" class="y-axis">
           <span
-            v-for="(g, i) in ticks"
+            v-for="(g, i) in asArray(ticks)"
             :key="'yl'+i"
             class="y-lbl"
             :style="{ top: g.pct + '%' }"
@@ -22,7 +22,7 @@
           >
             <g v-if="!quiet" class="grid">
               <line
-                v-for="(g, i) in ticks"
+                v-for="(g, i) in asArray(ticks)"
                 :key="'g'+i"
                 :x1="0" :x2="W"
                 :y1="g.y" :y2="g.y"
@@ -32,9 +32,9 @@
               />
             </g>
 
-            <g v-for="(s, si) in drawn" :key="'s'+si">
+            <g v-for="(s, si) in asArray(drawn)" :key="'s'+si">
               <polygon
-                v-for="(area, ai) in s.polys"
+                v-for="(area, ai) in asArray(s.polys)"
                 :key="'p'+ai"
                 :points="area"
                 :fill="s.color"
@@ -42,7 +42,7 @@
                 stroke="none"
               />
               <polyline
-                v-for="(area, ai) in s.areas"
+                v-for="(area, ai) in asArray(s.areas)"
                 :key="'a'+ai"
                 :points="area"
                 :fill="s.color"
@@ -50,7 +50,7 @@
                 stroke="none"
               />
               <polyline
-                v-for="(line, li) in s.lines"
+                v-for="(line, li) in asArray(s.lines)"
                 :key="'l'+li"
                 :points="line"
                 fill="none"
@@ -84,22 +84,22 @@
       </div>
       <!-- HTML X labels — never stretched. Spacer matches the Y column so
            labels sit under the plot, first/last on the time extent ends. -->
-      <div v-if="xTicks.length" class="x-axis-row">
+      <div v-if="asArray(xTicks).length" class="x-axis-row">
         <div v-if="!quiet" class="x-spacer"></div>
         <div :ref="bindAxis" class="x-axis" :class="{ 'two-line': xAxisTwoLine }">
           <span
-            v-for="(g, i) in xTicks"
+            v-for="(g, i) in asArray(xTicks)"
             :key="'xl'+i"
             class="x-lbl"
-            :class="{ first: i === 0, last: i === xTicks.length - 1 }"
+            :class="{ first: i === 0, last: i === asArray(xTicks).length - 1 }"
             :style="{ left: g.pct + '%' }"
           >{{ finiteText(g.label) }}</span>
         </div>
       </div>
     </div>
 
-    <div class="lc-legend" v-if="legend.length && !quiet">
-      <span v-for="(s, i) in legend" :key="i" class="leg">
+    <div class="lc-legend" v-if="asArray(legend).length && !quiet">
+      <span v-for="(s, i) in asArray(legend)" :key="i" class="leg">
         <i :style="{ background: s.color }"></i>
         <span class="leg-name">{{ finiteText(s.name) }}</span>
         <b v-if="s.latest != null">{{ formatLegend(s.latest) }}</b>

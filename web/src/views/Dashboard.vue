@@ -567,7 +567,7 @@
       <div class="tile span-4">
         <h3>
           Docker
-          <span class="badge">{{ containers ? containers.length : '—' }}</span>
+          <span class="badge">{{ containers ? asArray(containers).length : '—' }}</span>
           <span v-if="cstatsStale" class="badge warn" :title="t('dashboard.stats_stale_hint')">
             {{ t('dashboard.stats_stale') }}
           </span>
@@ -612,7 +612,7 @@
                 <a v-if="c.url" class="btn tiny primary" :href="finiteText(c.url, '')" target="_blank">WebUI</a>
               </td>
             </tr>
-            <tr v-if="containers && !containers.length">
+            <tr v-if="containers && !asArray(containers).length">
               <td colspan="6" class="empty-row">{{ t('dashboard.no_containers') }}</td>
             </tr>
             <tr v-else-if="!containers">

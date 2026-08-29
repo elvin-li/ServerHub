@@ -22,7 +22,7 @@
         <!-- role=status: the count is Refresh's (and the running-jobs poll's)
              only summary and changed silently for a screen reader — same
              treatment as the VMs title-meta and Users/Apps toolbar counts. -->
-        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
+        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ asArray(jobs).length }} {{ t('sched.jobs_count') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -82,7 +82,7 @@
                 </div>
               </td>
             </tr>
-            <tr v-if="!jobs.length && !jobsError">
+            <tr v-if="!asArray(jobs).length && !jobsError">
               <td colspan="7" class="empty-row">{{ t('sched.no_jobs') }}</td>
             </tr>
           </tbody>
@@ -166,7 +166,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in filtered" :key="row.label">
+            <tr v-for="row in asArray(filtered)" :key="row.label">
               <td class="mono">
                 <strong>{{ finiteText(row.label) }}</strong>
                 <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
@@ -225,7 +225,7 @@
              of an empty history and lands after the dialog already holds
              focus, so the panel-focus read never covers it — same as the
              PhotosHub empty pending state. -->
-        <div v-else-if="!runs.length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
+        <div v-else-if="!asArray(runs).length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
         <div v-for="(run, i) in asArray(runs)" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
             <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>

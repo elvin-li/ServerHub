@@ -45,7 +45,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(a,i) in filtered" :key="i">
+          <tr v-for="(a,i) in asArray(filtered)" :key="i">
             <td class="mono col-hide-m">{{ fmt(a.t) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`

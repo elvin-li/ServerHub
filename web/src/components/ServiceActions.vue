@@ -33,7 +33,7 @@
       @change="onPowerChange"
     />
     <button
-      v-for="a in buttonActs"
+      v-for="a in asArray(buttonActs)"
       :key="a"
       type="button"
       :class="actClass(a)"
@@ -53,7 +53,7 @@
 <script setup>
 import { computed } from 'vue'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, finiteText } from '../lib/finite'
 import { canLogs, controlActs, primaryActs, serviceLabels } from '../lib/serviceActions'
 import MacSwitch from './MacSwitch.vue'
 

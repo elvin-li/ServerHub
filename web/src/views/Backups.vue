@@ -96,7 +96,7 @@
       <div v-else class="table-wrap">
       <table class="dense fit-m">
         <tbody>
-          <tr v-for="job in rsyncJobs" :key="job.id">
+          <tr v-for="job in asArray(rsyncJobs)" :key="job.id">
             <td>
               <strong>{{ finiteText(job.name) }}</strong>
               <div class="show-m sub mono">{{ finiteText(job.params.src) }} → {{ finiteText(job.params.dest) }}</div>
@@ -140,7 +140,7 @@
       <div v-else class="table-wrap">
       <table class="dense fit-m">
         <tbody>
-          <tr v-for="job in stackJobs" :key="job.id">
+          <tr v-for="job in asArray(stackJobs)" :key="job.id">
             <td>
               <strong>{{ finiteText(job.name) }}</strong>
               <div class="show-m sub mono">{{ finiteText(job.params.stack_id) }}</div>

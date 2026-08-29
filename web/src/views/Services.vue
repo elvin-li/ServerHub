@@ -33,11 +33,11 @@
       <input v-model="q" type="text" class="search" :placeholder="t('services.filter_ph')"  :aria-label="t('services.filter_ph')"/>
       <select v-model="kindF" class="cat-select" :aria-label="t('services.filter_kind')">
         <option value="">{{ t('services.kind_all') }}</option>
-        <option v-for="k in kindOptions" :key="k" :value="k">{{ kindLabel(k) }}</option>
+        <option v-for="k in asArray(kindOptions)" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
       <select v-model="groupF" class="cat-select" :aria-label="t('services.filter_group')">
         <option value="">{{ t('services.group_all') }}</option>
-        <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
+        <option v-for="g in asArray(groupOptions)" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
       <select v-model="sortBy" class="cat-select" :aria-label="t('common.sort_by')">
         <option value="group">{{ t('services.sort_group') }}</option>

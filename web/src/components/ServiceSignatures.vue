@@ -11,7 +11,7 @@
     <p class="hint" style="margin-top:0">{{ t('svcsig.hint') }}</p>
     <p class="hint" v-if="builtinCount">{{ t('svcsig.builtin', { n: builtinCount }) }}</p>
 
-    <div class="table-wrap" v-if="rows.length">
+    <div class="table-wrap" v-if="asArray(rows).length">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -22,7 +22,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="row.slug">
+          <tr v-for="row in asArray(rows)" :key="row.slug">
             <td>
               <strong>{{ finiteText(row.name) }}</strong>
               <div class="mono sub-line">{{ finiteText(row.slug) }}</div>
