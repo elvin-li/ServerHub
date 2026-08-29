@@ -211,7 +211,7 @@ async function send(action, preset = '') {
   const pending = { role: 'assistant', content: t('assistant.thinking'), pending: true, panels: [] }
   turns.value.push(pending)
   const dropStale = () => {
-    turns.value = turns.value.filter((row) => row !== pending && row !== userTurn)
+    turns.value = asArray(turns.value).filter((row) => row !== pending && row !== userTurn)
   }
   busy.value = true
   abortCtrl?.abort()

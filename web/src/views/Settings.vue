@@ -1300,10 +1300,11 @@ function fmtUpsTs(ts) {
 }
 
 function moveStackRow(i, delta) {
-  const rows = upsStackRows.value
+  const rows = asArray(upsStackRows.value).slice()
   const j = i + delta
   if (j < 0 || j >= rows.length) return
   ;[rows[i], rows[j]] = [rows[j], rows[i]]
+  upsStackRows.value = rows
 }
 
 function buildStackRows() {
@@ -1312,7 +1313,7 @@ function buildStackRows() {
   const custom = Array.isArray(saved)
   const rows = []
   if (custom) {
-    for (const id of saved) {
+    for (const id of asArray(saved)) {
       const hit = catalog.find((s) => s.id === id)
       rows.push({ id, name: finiteText(hit?.name, '') || id, selected: true, missing: !hit })
     }

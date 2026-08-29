@@ -325,7 +325,7 @@ function pollDelay() {
 }
 function schedulePoll() {
   if (pollStopped || pollTimer) return
-  if (!jobs.value.some(j => j.running)) return
+  if (!asArray(jobs.value).some(j => j.running)) return
   pollTimer = setTimeout(() => {
     pollTimer = null
     if (pollStopped) return

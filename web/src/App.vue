@@ -852,7 +852,7 @@ function onCmdKey(e) {
 }
 const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
-  const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
+  const items = asArray(nav.value).flatMap(n => n.children ? [n, ...asArray(n.children)] : [n])
   const matched = q
     ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
     : items
@@ -864,7 +864,7 @@ const cmdResults = computed(() => {
   // searchable and only the redundant second row is dropped.
   const seen = new Set()
   const fromNav = []
-  for (const n of matched) {
+  for (const n of asArray(matched)) {
     if (seen.has(n.to)) continue
     seen.add(n.to)
     fromNav.push(n)

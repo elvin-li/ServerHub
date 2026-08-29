@@ -435,7 +435,7 @@ function jobsPollDelay() {
 }
 function scheduleJobsPoll() {
   if (!pageAlive || jobsPollTimer) return
-  if (!jobs.value.some((j) => j.running)) return
+  if (!asArray(jobs.value).some((j) => j.running)) return
   jobsPollTimer = setTimeout(() => {
     jobsPollTimer = null
     if (!pageAlive) return
