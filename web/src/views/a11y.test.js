@@ -3716,6 +3716,9 @@ describe('leftover Infinity interpolations', () => {
     expect(logs).not.toMatch(/\{\{\s*displayText\s*\}\}/)
     expect(logs).toMatch(/finiteText\(displayText\)/)
     expect(logs).toMatch(/v-for="s in asArray\(sources\)"/)
+    expect(logs).toMatch(/asArray\(d\.sources\)\.map\(\(s\) => asRecord\(s\)\)/)
+    expect(logs).toMatch(/function asLogLines\(/)
+    expect(logs).toMatch(/jsonLoad\(text\)/)
   })
 
   it('Terminal leftover container labels and session ids go through finiteText', () => {
