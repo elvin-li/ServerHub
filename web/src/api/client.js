@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asRecord } from '../lib/finite.js'
+import { asRecord, jsonDump } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -154,17 +154,17 @@ export const getAuthStatus = () => json('/api/auth/status')
 export const getSetupToken = () => json('/api/auth/setup-token')
 export const setupAuth = (username, password, setupToken) => json('/api/auth/setup', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username, password, setup_token: setupToken }),
+  body: jsonDump({ username, password, setup_token: setupToken }),
 })
 export const loginAuth = (username, password) => json('/api/auth/login', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username, password }),
+  body: jsonDump({ username, password }),
 })
 export const logoutAuth = () => json('/api/auth/logout', { method: 'POST' })
 export const changeAuthPassword = (username, currentPassword, newPassword) =>
   json('/api/auth/change-password', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: jsonDump({
       username,
       current_password: currentPassword,
       new_password: newPassword,
@@ -174,32 +174,32 @@ export const changeAuthPassword = (username, currentPassword, newPassword) =>
 // ── two-factor (TOTP) ────────────────────────────────────────────────────────
 export const verifyTotpLogin = (pending, code) => json('/api/auth/totp/verify', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ pending, code }),
+  body: jsonDump({ pending, code }),
 })
 export const getTotpStatus = () => json('/api/auth/totp')
 export const enrollTotp = () => json('/api/auth/totp/enroll', { method: 'POST' })
 export const confirmTotp = (code) => json('/api/auth/totp/confirm', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ code }),
+  body: jsonDump({ code }),
 })
 export const disableTotp = (code) => json('/api/auth/totp/disable', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ code }),
+  body: jsonDump({ code }),
 })
 export const regenerateTotpRecovery = (code) => json('/api/auth/totp/recovery', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ code }),
+  body: jsonDump({ code }),
 })
 export const adminDisableTotp = (username) => json('/api/auth/totp/admin-disable', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username }),
+  body: jsonDump({ username }),
 })
 
 // ── API keys (admin browser session only; see hub/routers/api_keys_api.py) ──
 export const listApiKeys = () => json('/api/api-keys')
 export const createApiKey = ({ name, role, expiresDays }) => json('/api/api-keys', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
+  body: jsonDump({
     name,
     role,
     ...(expiresDays ? { expires_days: expiresDays } : {}),
@@ -214,17 +214,17 @@ export const listPanelAccounts = () => json('/api/auth/accounts')
 export const createPanelAccount = ({ username, password, resources }) =>
   json('/api/auth/accounts', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, resources: resources || [] }),
+    body: jsonDump({ username, password, resources: resources || [] }),
   })
 export const setPanelAccountResources = (username, resources) =>
   json(`/api/auth/accounts/${encodeURIComponent(username)}/resources`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ resources }),
+    body: jsonDump({ resources }),
   })
 export const resetPanelAccountPassword = (username, newPassword) =>
   json(`/api/auth/accounts/${encodeURIComponent(username)}/password`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ new_password: newPassword }),
+    body: jsonDump({ new_password: newPassword }),
   })
 export const deletePanelAccount = (username) =>
   json(`/api/auth/accounts/${encodeURIComponent(username)}`, { method: 'DELETE' })
@@ -235,7 +235,7 @@ export const doAction = async (target, action) => {
     const result = await json('/api/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target, action }),
+      body: jsonDump({ target, action }),
     })
     return { ...result, ok: result.ok !== false, status: 200 }
   } catch (error) {
@@ -260,7 +260,7 @@ export const doAction = async (target, action) => {
 const jsonBody = (method, body) => ({
   method,
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body),
+  body: jsonDump(body),
 })
 
 // Managed applications / autostart / credentials
@@ -465,7 +465,7 @@ export const brewAction = (name, action) =>
   json(`/api/brew/services/${encodeURIComponent(name)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: jsonDump({ action }),
   }, BREW_ACTION_TIMEOUT)
 
 // Launch-agent uninstall. Preview is read-only; the POST unregisters the agent
@@ -491,19 +491,19 @@ export const containerAction = (name, action) =>
   json(`/api/containers/${encodeURIComponent(name)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: jsonDump({ action }),
   })
 export const batchContainers = (action, names) =>
   json('/api/containers/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, names }),
+    body: jsonDump({ action, names }),
   }, CONTAINER_BATCH_TIMEOUT)
 export const containersAll = (action) =>
   json('/api/containers/all', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: jsonDump({ action }),
   }, CONTAINER_BATCH_TIMEOUT)
 export const checkContainerUpdates = () =>
   json('/api/containers/check-updates', { method: 'POST' })
@@ -513,13 +513,13 @@ export const execContainer = (name, command) =>
   json(`/api/containers/${encodeURIComponent(name)}/exec`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command }),
+    body: jsonDump({ command }),
   }, CONTAINER_EXEC_TIMEOUT)
 export const setRestartPolicy = (name, policy) =>
   json(`/api/containers/${encodeURIComponent(name)}/restart-policy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ policy }),
+    body: jsonDump({ policy }),
   })
 export const inspectContainer = (name) =>
   json(`/api/containers/${encodeURIComponent(name)}/inspect`)
@@ -527,52 +527,52 @@ export const runContainer = (body) =>
   json('/api/containers/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   }, CONTAINER_RUN_TIMEOUT)
 export const getImages = () => json('/api/images')
 export const pullImageApi = (image) =>
   json('/api/images/pull', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image }),
+    body: jsonDump({ image }),
   }, IMAGE_PULL_TIMEOUT)
 export const removeImage = (image, force = false) =>
   json('/api/images/remove', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image, force }),
+    body: jsonDump({ image, force }),
   }, IMAGE_REMOVE_TIMEOUT)
 export const getVolumes = () => json('/api/volumes')
 export const createVolume = (name) =>
   json('/api/volumes/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: jsonDump({ name }),
   })
 export const removeVolume = (name, force = false) =>
   json('/api/volumes/remove', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, force }),
+    body: jsonDump({ name, force }),
   }, VOLUME_REMOVE_TIMEOUT)
 export const getNetworks = () => json('/api/networks')
 export const createNetwork = (name) =>
   json('/api/networks/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: jsonDump({ name }),
   })
 export const removeNetwork = (name) =>
   json('/api/networks/remove', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: jsonDump({ name }),
   })
 export const prune = (kind = 'system') =>
   json('/api/prune', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind }),
+    body: jsonDump({ kind }),
   })
 
 // Compose editor
@@ -582,7 +582,7 @@ export const runStack = (id, action = 'update') =>
   json(`/api/stacks/${encodeURIComponent(id)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: jsonDump({ action }),
   })
 export const getStackJob = (jobId) =>
   json(`/api/stacks/jobs/${encodeURIComponent(jobId)}`)
@@ -592,19 +592,19 @@ export const putCompose = (stackId, content, check = true) =>
   json(`/api/compose/${encodeURIComponent(stackId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, check }),
+    body: jsonDump({ content, check }),
   }, COMPOSE_OPERATION_TIMEOUT)
 export const validateCompose = (content, cwd) =>
   json('/api/compose/validate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, cwd }),
+    body: jsonDump({ content, cwd }),
   }, COMPOSE_OPERATION_TIMEOUT)
 export const createCompose = (id, name, content) =>
   json('/api/compose', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, name, content }),
+    body: jsonDump({ id, name, content }),
   }, COMPOSE_OPERATION_TIMEOUT)
 
 export const getStorage = (light = false) => json(`/api/storage${light ? '?light=true' : ''}`)
@@ -626,13 +626,13 @@ export const planStoragePool = (mounts, policy) =>
   json('/api/storage/pool/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mounts, policy }),
+    body: jsonDump({ mounts, policy }),
   })
 export const saveStoragePool = (body) =>
   json('/api/storage/pool/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   })
 export const clearStoragePool = () => json('/api/storage/pool/clear', { method: 'POST' })
 
@@ -642,13 +642,13 @@ export const getShares = () => json('/api/shares')
 export const createShare = (body) => json('/api/shares/smb', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body),
+  body: jsonDump(body),
 }, SHARING_ADMIN_TIMEOUT)
 export const updateShare = (recordName, body) =>
   json(`/api/shares/smb/${encodeURIComponent(recordName)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   }, SHARING_ADMIN_TIMEOUT)
 export const removeShare = (recordName) =>
   json(`/api/shares/smb/${encodeURIComponent(recordName)}?confirm=true`, {
@@ -661,13 +661,13 @@ export const setShareAcl = (path, username, level) =>
   json('/api/shares/acl', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, username, level }),
+    body: jsonDump({ path, username, level }),
   }, SHARING_ADMIN_TIMEOUT)
 export const setSystemSharing = (serviceId, enabled) =>
   json(`/api/shares/system/${encodeURIComponent(serviceId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
+    body: jsonDump({ enabled }),
   }, SHARING_ADMIN_TIMEOUT)
 export const openSharingSettings = () =>
   json('/api/shares/open-system-settings', { method: 'POST' })
@@ -680,7 +680,7 @@ export const openLauncherApp = () => json('/api/launcher/open', { method: 'POST'
 export const setLauncherLogin = (enabled) => json('/api/launcher/login', {
   method: 'PUT',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ enabled }),
+  body: jsonDump({ enabled }),
 })
 export const controlPanelService = (action) =>
   json(`/api/launcher/panel/${encodeURIComponent(action)}`, { method: 'POST' })
@@ -688,7 +688,7 @@ export const putSettings = (body) =>
   json('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   })
 // Tiered history: backend picks the layer (raw 90s / 5m / 1h) for the span and
 // caps the point count; response adds { tier, since, until } next to points.
@@ -758,7 +758,7 @@ const CATALOG_INSTALL_TIMEOUT = 900000 // brew cask / pull can exceed 30s
 
 export async function installCatalog(id, variables = {}) {
   const url = `/api/catalog/${encodeURIComponent(id)}/install`
-  const body = JSON.stringify({ confirm: true, variables })
+  const body = jsonDump({ confirm: true, variables })
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await json(
       url,
@@ -799,7 +799,7 @@ export const uninstallCatalog = (id, { remove_data = true } = {}) =>
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, remove_data }),
+      body: jsonDump({ confirm: true, remove_data }),
     },
     CATALOG_INSTALL_TIMEOUT,
   )
@@ -828,13 +828,13 @@ export const createVm = (body) =>
   json('/api/vms/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   }, VM_OPERATION_TIMEOUT)
 export const vmAction = (vmId, body) =>
   json(`/api/vms/${encodeURIComponent(vmId)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   }, VM_OPERATION_TIMEOUT)
 export const createVmConsoleSession = (consoleId) =>
   json(`/api/vms/${encodeURIComponent(consoleId)}/console/session`, {
@@ -867,7 +867,7 @@ export const putIdentity = (body) =>
   json('/api/identity', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: jsonDump(body),
   })
 export const getDockerInfo = () => json('/api/docker/info')
 export const getScheduler = () => json('/api/scheduler')
@@ -926,7 +926,7 @@ export const powerAction = (action, confirm = true) =>
   json('/api/system/power/action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, confirm }),
+    body: jsonDump({ action, confirm }),
   })
 export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
   const q = new URLSearchParams({

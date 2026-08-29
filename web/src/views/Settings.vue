@@ -1145,7 +1145,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import qrcode from 'qrcode-generator'
-import { asArray, asRecord, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs, jsonText, withUnit } from '../lib/finite'
 import {
   changeAuthPassword, controlPanelService, forceAlertCheck, generateDiagnostics, getDockerInfo,
   getHost, getIdentity, getLauncherStatus, getSettings, getSystemSettings, getUps,
@@ -1481,23 +1481,19 @@ async function runDiagnostics() {
     diagMsg.value = saved
       ? `${t('settings.diag_saved')}: ${result.saved_path}`
       : t('settings.diag_save_failed', { error: finiteText(result.save_error, '') || t('common.failed') })
-    try {
-      diagPreview.value = JSON.stringify({
-        generated_at: result.generated_at,
-        hostname: result.hostname,
-        platform: result.platform,
-        docker: result.docker,
-        management: result.management,
-        other: result.other,
-        vms: result.vms,
-        metrics_latest: result.metrics_latest,
-        health_summary: Array.isArray(result.health?.checks)
-          ? result.health.checks.slice(0, 8)
-          : result.health,
-      }, null, 2)
-    } catch {
-      diagPreview.value = ''
-    }
+    diagPreview.value = jsonText({
+      generated_at: result.generated_at,
+      hostname: result.hostname,
+      platform: result.platform,
+      docker: result.docker,
+      management: result.management,
+      other: result.other,
+      vms: result.vms,
+      metrics_latest: result.metrics_latest,
+      health_summary: Array.isArray(result.health?.checks)
+        ? result.health.checks.slice(0, 8)
+        : result.health,
+    }, '', 2)
     toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + finiteText(diagMsg.value))
   } catch (e) {
     if (!pageAlive) return

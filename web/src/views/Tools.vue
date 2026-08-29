@@ -581,7 +581,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { asArray, asRecord, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtGb, jsonText, withUnit } from '../lib/finite'
 import {
   flushDns,
   generateDiagnostics,
@@ -712,12 +712,8 @@ function tileDesc(tile) {
 
 function formatCal(c) {
   if (!c) return '—'
-  if (typeof c !== 'object') return String(c)
-  try {
-    return JSON.stringify(c)
-  } catch {
-    return '—'
-  }
+  if (typeof c !== 'object') return finiteText(c)
+  return jsonText(c)
 }
 
 function fmtPct(v) {

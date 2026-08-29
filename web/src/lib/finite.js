@@ -50,13 +50,18 @@ export function barPct(value) {
 }
 
 /** Leftover circular/bigint mappings used to throw out of JSON.stringify. */
-export function jsonText(value, fallback = '—') {
+export function jsonDump(value, space) {
   try {
-    const text = JSON.stringify(value)
-    return text == null ? fallback : text
+    const text = JSON.stringify(value, null, space)
+    return text == null ? '' : text
   } catch {
-    return fallback
+    return ''
   }
+}
+
+export function jsonText(value, fallback = '—', space) {
+  const text = jsonDump(value, space)
+  return text === '' ? fallback : text
 }
 export function fmtTs(value, fallback = '—') {
   const n = finiteN(value, null)

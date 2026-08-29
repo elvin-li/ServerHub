@@ -3162,6 +3162,8 @@ describe('leftover Infinity interpolations', () => {
     expect(tools).toMatch(/finiteText\(dnsOut\)/)
     expect(tools).not.toMatch(/what: labels\[what\] \|\| what/)
     expect(tools).toMatch(/what: finiteText\(labels\[what\], ''\) \|\| finiteText\(what\)/)
+    expect(tools).toMatch(/function formatCal\([\s\S]*jsonText/)
+    expect(tools).not.toMatch(/JSON\.stringify\(c\)/)
   })
 
   it('Files leftover listing counts and mtimes reject Infinity', () => {
@@ -3189,6 +3191,8 @@ describe('leftover Infinity interpolations', () => {
     expect(modules).not.toMatch(/class="btn tiny">\{\{ r \}\}<\/router-link>/)
     expect(modules).toMatch(/finiteText\(r\)/)
     expect(modules).toMatch(/label === key \? finiteText\(cat\)/)
+    expect(modules).toMatch(/v-for="\(list, cat\) in asRecord\(byCat\)"/)
+    expect(modules).toMatch(/v-for="m in asArray\(list\)"/)
   })
 
   it('Health leftover summary counts go through finiteN', () => {
