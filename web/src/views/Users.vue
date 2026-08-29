@@ -88,39 +88,39 @@
             </tr>
           </thead>
           <tbody>
-            <template v-for="acct in asArray(accounts)" :key="acct.username">
+            <template v-for="acct in asArray(accounts)" :key="asRecord(acct).username">
               <tr>
                 <td>
-                  <strong>{{ finiteText(acct.username) }}</strong>
-                  <div class="show-m sub">2FA {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}</div>
+                  <strong>{{ finiteText(asRecord(acct).username) }}</strong>
+                  <div class="show-m sub">2FA {{ asRecord(acct).twofa_enabled ? t('common.on') : t('common.off') }}</div>
                   <div class="show-m sub">
-                    <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                    <template v-else-if="asArray(acct.resources).length">{{ resourceList(acct.resources) }}</template>
+                    <template v-if="asRecord(acct).role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                    <template v-else-if="asArray(asRecord(acct).resources).length">{{ resourceList(asRecord(acct).resources) }}</template>
                     <template v-else>{{ t('accounts.no_resources') }}</template>
                   </div>
                 </td>
                 <td>
-                  <span class="badge" :class="acct.role === 'admin' ? 'ok' : ''">
-                    {{ acct.role === 'admin' ? t('common.admin') : t('accounts.member') }}
+                  <span class="badge" :class="asRecord(acct).role === 'admin' ? 'ok' : ''">
+                    {{ asRecord(acct).role === 'admin' ? t('common.admin') : t('accounts.member') }}
                   </span>
                 </td>
                 <td class="col-hide-m">
-                  <span class="badge" :class="acct.twofa_enabled ? 'ok' : ''">
-                    {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}
+                  <span class="badge" :class="asRecord(acct).twofa_enabled ? 'ok' : ''">
+                    {{ asRecord(acct).twofa_enabled ? t('common.on') : t('common.off') }}
                   </span>
                 </td>
                 <td class="mono col-hide-m" style="font-size:11px">
-                  <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                  <template v-else-if="asArray(acct.resources).length">{{ resourceList(acct.resources) }}</template>
+                  <template v-if="asRecord(acct).role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                  <template v-else-if="asArray(asRecord(acct).resources).length">{{ resourceList(asRecord(acct).resources) }}</template>
                   <template v-else><span style="color:var(--sub)">{{ t('accounts.no_resources') }}</span></template>
                 </td>
                 <td style="text-align:right">
-                  <button v-if="acct.role !== 'admin'" class="tiny" @click="toggleEditor(acct)">
-                    {{ editing === acct.username ? t('common.close') : t('common.manage') }}
+                  <button v-if="asRecord(acct).role !== 'admin'" class="tiny" @click="toggleEditor(acct)">
+                    {{ editing === asRecord(acct).username ? t('common.close') : t('common.manage') }}
                   </button>
                 </td>
               </tr>
-              <tr v-if="editing === acct.username">
+              <tr v-if="editing === asRecord(acct).username">
                 <td colspan="5" class="account-editor">
                   <div class="editor-section">
                     <strong>{{ t('accounts.resources') }}</strong>
@@ -168,7 +168,7 @@
                   <div class="editor-section">
                     <strong>{{ t('accounts.danger_zone') }}</strong>
                     <div class="btns" style="margin-top:6px">
-                      <button v-if="acct.twofa_enabled" :disabled="accountsBusy" @click="resetTwofa(acct)">
+                      <button v-if="asRecord(acct).twofa_enabled" :disabled="accountsBusy" @click="resetTwofa(acct)">
                         {{ t('twofa.admin_reset_button') }}
                       </button>
                       <button class="danger" :disabled="accountsBusy" @click="removeAccount(acct)">
@@ -289,6 +289,10 @@ function resourceList(list) {
   return asArray(list).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
 }
 
+function accountName(acct) {
+  return finiteText(asRecord(acct).username, '')
+}
+
 function secretLen(value) {
   return typeof value === 'string' ? value.length : 0
 }
@@ -342,7 +346,7 @@ const serviceOptionsLoaded = ref(false)
 async function loadAccounts() {
   const generation = loadGeneration
   try {
-    const next = asArray(asRecord(await listPanelAccounts()).accounts)
+    const next = asArray(asRecord(await listPanelAccounts()).accounts).map((row) => asRecord(row))
     if (generation !== loadGeneration || !pageAlive) return
     accounts.value = next
     accountsError.value = ''
@@ -375,12 +379,13 @@ async function loadServiceOptions() {
 }
 
 function toggleEditor(acct) {
-  if (editing.value === acct.username) {
+  const name = accountName(acct)
+  if (editing.value === name) {
     editing.value = ''
     return
   }
-  editing.value = acct.username
-  editResources.value = [...asArray(acct.resources)]
+  editing.value = name
+  editResources.value = [...asArray(asRecord(acct).resources)]
   resetPassword.value = ''
 }
 
@@ -411,9 +416,9 @@ async function saveResources(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await setPanelAccountResources(acct.username, asArray(editResources.value))
+    await setPanelAccountResources(accountName(acct), asArray(editResources.value))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('accounts.resources_saved', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.resources_saved', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -425,14 +430,14 @@ async function saveResources(acct) {
 
 async function doResetPassword(acct) {
   // Resetting revokes every session the member still holds; make that explicit.
-  if (!confirm(t('accounts.reset_password_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('accounts.reset_password_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await resetPanelAccountPassword(acct.username, resetPassword.value)
+    await resetPanelAccountPassword(accountName(acct), resetPassword.value)
     if (generation !== loadGeneration || !pageAlive) return
     resetPassword.value = ''
-    toast('✅ ' + t('accounts.password_reset_done', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.password_reset_done', { name: accountName(acct) }))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -442,13 +447,13 @@ async function doResetPassword(acct) {
 }
 
 async function resetTwofa(acct) {
-  if (!confirm(t('twofa.admin_reset_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('twofa.admin_reset_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await adminDisableTotp(acct.username)
+    await adminDisableTotp(accountName(acct))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('twofa.admin_reset_toast', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('twofa.admin_reset_toast', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -459,14 +464,14 @@ async function resetTwofa(acct) {
 }
 
 async function removeAccount(acct) {
-  if (!confirm(t('accounts.delete_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('accounts.delete_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await deletePanelAccount(acct.username)
+    await deletePanelAccount(accountName(acct))
     if (generation !== loadGeneration || !pageAlive) return
     editing.value = ''
-    toast('✅ ' + t('accounts.deleted', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.deleted', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

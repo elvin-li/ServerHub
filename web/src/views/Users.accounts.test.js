@@ -291,6 +291,18 @@ describe('panel accounts section', () => {
     wrapper.unmount()
   })
 
+  it('does not throw when leftover account rows are JSON lists', async () => {
+    applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
+    api.listPanelAccounts.mockResolvedValue({
+      accounts: [['kid'], { username: 'mom', role: 'member', resources: 'jellyfin' }],
+    })
+    const wrapper = mountUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('mom')
+    expect(wrapper.text()).toContain('accounts.no_resources')
+    wrapper.unmount()
+  })
+
   it('does not throw when accounts leftover is a mapping', async () => {
     applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
     api.listPanelAccounts.mockResolvedValue({

@@ -56,10 +56,11 @@ class AccountPasswordBody(BaseModel):
 
 
 def _text(value) -> str:
+    """Panel JSON text.  None stays empty; else auth._cfg_text (ADDR belt)."""
     if value is None:
         return ""
     try:
-        return str(value)
+        return auth._cfg_text(value)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -68,14 +69,10 @@ def _text(value) -> str:
 
 def _resource_ids(raw) -> list:
     """JSON list of grant ids.  A leftover mapping/int used to 500 GET accounts."""
-    try:
-        items = list(list.__iter__(raw))
-    except _CONTROL_FLOW:
-        raise
-    except BaseException:
+    if not auth._isinst(raw, list):
         return []
     out = []
-    for item in items:
+    for item in auth._iter_list(raw):
         try:
             text = _text(item).strip()
         except _CONTROL_FLOW:
@@ -94,10 +91,10 @@ def _public_view(acct) -> dict | None:
     — never GET /api/auth/accounts for every sibling.
     """
     try:
-        if not isinstance(acct, dict):
+        if not auth._isinst(acct, dict):
             return None
-        username = _text(acct.get("username"))
-        role = _text(acct.get("role")) or auth.ROLE_MEMBER
+        username = _text(auth._mapping_get(acct, "username"))
+        role = _text(auth._mapping_get(acct, "role")) or auth.ROLE_MEMBER
         try:
             flag = bool(twofa_svc.enabled(username))
         except _CONTROL_FLOW:
@@ -107,7 +104,7 @@ def _public_view(acct) -> dict | None:
         return {
             "username": username,
             "role": role,
-            "resources": _resource_ids(acct.get("resources")),
+            "resources": _resource_ids(auth._mapping_get(acct, "resources")),
             "twofa_enabled": flag,
         }
     except _CONTROL_FLOW:
@@ -138,7 +135,10 @@ def accounts_list(request: Request):
     try:
         views.sort(
             # Admins first, then alphabetically — the shape the Users table shows.
-            key=lambda a: (str(a.get("role")) != auth.ROLE_ADMIN, str(a.get("username"))),
+            key=lambda a: (
+                _text(auth._mapping_get(a, "role")) != auth.ROLE_ADMIN,
+                _text(auth._mapping_get(a, "username")),
+            ),
         )
     except _CONTROL_FLOW:
         raise
@@ -168,7 +168,16 @@ def accounts_create(body: AccountCreateBody, request: Request):
         client=client_host(request),
         outcome="success",
     )
-    return {"ok": True, "account": {**created, "twofa_enabled": False}}
+    view = {
+        "username": _text(auth._mapping_get(created, "username") if auth._isinst(created, dict) else None),
+        "role": _text(auth._mapping_get(created, "role") if auth._isinst(created, dict) else None)
+        or auth.ROLE_MEMBER,
+        "resources": _resource_ids(
+            auth._mapping_get(created, "resources") if auth._isinst(created, dict) else None
+        ),
+        "twofa_enabled": False,
+    }
+    return {"ok": True, "account": view}
 
 
 @router.put("/api/auth/accounts/{username}/resources")
@@ -186,7 +195,7 @@ def accounts_set_resources(username: str, body: AccountResourcesBody, request: R
         client=client_host(request),
         outcome="success",
     )
-    return {"ok": True, "resources": granted}
+    return {"ok": True, "resources": _resource_ids(granted)}
 
 
 @router.post("/api/auth/accounts/{username}/password")
@@ -199,15 +208,15 @@ def accounts_reset_password(username: str, body: AccountPasswordBody, request: R
     """
     operator = require_admin_browser(request)
     target = auth.account(username)
-    if not target:
+    if not target or not auth._isinst(target, dict):
         raise api_error("accounts.not_found")
-    if str(target.get("role")) == auth.ROLE_ADMIN:
+    if _text(auth._mapping_get(target, "role")) == auth.ROLE_ADMIN:
         # The admin rotates their own credential through change-password,
         # which demands the current one.  A no-questions-asked reset endpoint
         # must not exist for administrator accounts.
         raise api_error("accounts.not_member")
     try:
-        auth.set_account_password(str(target["username"]), body.new_password)
+        auth.set_account_password(_text(auth._mapping_get(target, "username")), body.new_password)
     except ValueError as exc:
         raise _account_error(exc)
     audit.record(
