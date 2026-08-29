@@ -2793,7 +2793,7 @@ describe('leftover Infinity interpolations', () => {
     expect(dash).not.toMatch(/:href="c\.url"/)
     expect(dash).toMatch(/:href="finiteText\(c\.url, ''\)"/)
     expect(dash).not.toMatch(/:href="b\.url"/)
-    expect(dash).toMatch(/:href="finiteText\(b\.url, ''\)"/)
+    expect(dash).toMatch(/:href="finiteText\(asRecord\(b\)\.url, ''\)"/)
     expect(dash).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
     expect(dash).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
     expect(dash).not.toMatch(/\{\{\s*p\.process\s*\}\}/)
