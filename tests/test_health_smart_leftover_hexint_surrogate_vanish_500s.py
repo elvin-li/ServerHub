@@ -139,6 +139,17 @@ class HistoryJournalDigitTests(unittest.TestCase):
 class BrewRowDigitTests(unittest.TestCase):
     """One poisoned brew row must not drop every later brew check."""
 
+    def setUp(self):
+        # _collect_checks() stamps its answer into the module's 45s snapshot
+        # cache on the way out, and this suite's snapshot carries the mocked
+        # "no nginx" row: without the save/restore any later test that reads
+        # GET /api/health/checks inside the TTL window was served this
+        # suite's leftover instead of its own collection (the
+        # _HealthCacheSandbox convention in test_health4).
+        saved = dict(health_svc._cache)
+        self.addCleanup(lambda: health_svc._cache.update(saved))
+        health_svc._cache.update(t=0.0, v=None)
+
     def _collect(self, brew_rows):
         def serial_fan_out(fn, items, max_workers=None):
             return [fn(item) for item in items]

@@ -25,8 +25,10 @@ The battery also pins the hunted siblings that already survive this class:
   of leaking UnicodeEncodeError out of the spawn;
 * the per-share ``du -sm`` size on such a path answers None, not a raise;
 * a surrogate-bearing share record name (JSON bodies may carry ``\\ud800``)
-  passes name validation but the privileged spawn refuses the argv, so
-  ``create_smb_share`` returns the coded admin failure the router maps;
+  now earns the coded ``shares.bad_name`` refusal *before* any password
+  prompt or spawn — it used to reach the privileged spawn, whose refused
+  argv surfaced as the 500 "authorization failed" (see
+  test_leftover_shares_surrogate_500s for the HTTP-layer proof);
 * a raw non-UTF-8 ``/etc/exports`` is read with ``errors="replace"``, so
   GET /api/nfs renders every entry without a surrogate in the payload.
 """
@@ -135,28 +137,27 @@ class SharesUndecodablePathPinTests(unittest.TestCase):
             path = _undecodable_dir(Path(tmp))
             self.assertIsNone(shares_svc._dir_size_mb(path))
 
-    def test_surrogate_record_name_is_a_coded_admin_failure(self):
-        """JSON bodies may carry ``\\ud800``; _NAME_RE accepts it, the spawn
-        refuses it, and POST /api/shares/smb maps the coded failure.
+    def test_surrogate_record_name_is_the_coded_bad_name_refusal(self):
+        """JSON bodies may carry ``\\ud800``; _NAME_RE accepts it but no
+        filesystem can hold it, so it is refused as ``shares.bad_name``.
 
-        ``failed``, not ``unavailable``: the sudo-vanished classification now
-        requires a disk confirm (the vms/rsync rule), and a refused surrogate
-        argv with sudo still on disk is an operation failure — "authorization
-        is unavailable" sent the operator at the wrong repair."""
+        It used to reach the privileged spawn instead: as_argv refused the
+        surrogate argv and POST /api/shares/smb answered the 500
+        "authorization failed" — after the operator had already typed the
+        administrator password the dialog demanded for nothing."""
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             folder = Path(tmp) / "Media"
             folder.mkdir()
             with (
                 mock.patch.object(shares_svc, "_find_share", return_value=None),
                 use_admin_password("pw"),
+                self.assertRaises(shares_svc.ShareValidationError) as ctx,
             ):
-                result = shares_svc.create_smb_share(
+                shares_svc.create_smb_share(
                     path=str(folder), name="Media\ud800", smb_name="Media",
                     guest=False, readonly=False, encrypted=False,
                 )
-        self.assertFalse(result.get("ok"))
-        self.assertEqual(result.get("error"), "failed")
-        _starlette(result)
+        self.assertEqual(ctx.exception.code, "shares.bad_name")
 
 
 class NfsExportsRawBytesPinTests(unittest.TestCase):

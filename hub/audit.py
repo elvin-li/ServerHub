@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -272,21 +273,163 @@ _PUBLIC_EXCEPTIONS = (
     "publickey",
 )
 
+#: Longest string one field may contribute to a trail line.  Unbounded: a
+#: caller auditing a whole payload (a 300 KB shell-job command was the found
+#: case) wrote a line wider than any tail window.  _trim reads the last
+#: ``MAX_LINES * 1024`` bytes and refuses to rewrite when that window holds
+#: no complete line, so one runaway line past it turns the trail append-only
+#: forever — unbounded disk growth on the one file that must stay bounded
+#: unattended.  64 KB keeps the largest legitimate field (a pasted script,
+#: a compose fragment) intact while keeping every line far inside the
+#: windows both the trim and the reader use.
+_STR_CAP = 64 * 1024
+
+#: Real control flow must keep propagating through every bomb guard below:
+#: swallowing a Ctrl-C or an interpreter shutdown to save one trail line
+#: would turn the sanitizer into a hang.  Everything else BaseException-
+#: shaped that a leftover raises out of its own hooks is a bomb like any
+#: other — the modules12 rule, applied to the trail that must never break
+#: the request it audits.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never trail data (the
+#: bookmarks/assistant/notify13 rule).  Only the free-text *coercion* arm of
+#: ``_utf8_text`` is scrubbed with it; real str/bytes storage is data — an
+#: audited shell command may legitimately contain the pattern — and stays
+#: verbatim.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves: as the ``event`` argument it
+    blew ``_utf8_text`` inside record()'s *fallback* entry — the one spot
+    outside both nets — and raised into the request being audited; nested
+    in a set/frozenset field or planted as a mapping key it blew
+    ``_jsonable``'s rank gates and degraded the whole line to the minimal
+    ts+event shape, wiping the who/where detail the trail exists for (the
+    logs9 / vms_svc rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+
+    ``except BaseException``: the audit9 guard stopped at ``Exception``, so
+    a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (a watchdog/timeout-style leftover) sailed past this catch —
+    and past every sibling guard in this module — straight out of record()
+    into the JSON request being audited, a raw 500 from the one module
+    whose first guarantee is that logging never breaks the request.  Only
+    genuine control flow keeps propagating.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    try:
-        text = str(value)
-    except RecursionError:
-        try:
-            return type(value).__name__
-        except Exception:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Every read here goes through *unbound base-type* calls (``bytes.decode``,
+    ``str.encode``), the same shape as ``tools_svc._as_text``: a subclass
+    overriding ``decode``/``encode``/``__str__`` to raise used to blow this
+    scrub from inside record()'s shaping — outside the (ValueError, TypeError,
+    RecursionError) net — and 500 the request being audited.
+    """
+    if _isa(value, (bytes, bytearray)):
+        # Both bases, real storage first-come — not the claimed class.  The
+        # old arm picked the base off ``_isa(value, bytes)``, so a genuine
+        # bytearray whose ``__class__`` lied ``bytes`` was handed to
+        # ``bytes.decode``, rejected by the descriptor, and its perfectly
+        # decodable content vanished to "" — the who/where detail this
+        # line existed for, degraded at the wrong rank (the modules12
+        # decode-fidelity rule).  Now the descriptor matching the real
+        # layout wins; a total impostor still fails both and drops.
+        for base in (bytes, bytearray):
+            try:
+                text = base.decode(value, "utf-8", "replace")
+                break
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        else:
             return ""
-    except Exception:
-        return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    elif _isa(value, str):
+        try:
+            # Unbound base encode on the real str layout: a subclass bound
+            # ``encode``/``__str__`` bomb cannot run, and a lying
+            # ``__class__`` claiming str over foreign storage is refused by
+            # the descriptor and drops to "" instead of leaking anything.
+            text = str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    else:
+        # Only a type that renders *itself* may coerce.  This free-text arm
+        # ran ``str()`` on any leftover shape, and for a type that never
+        # overrode ``__str__``/``__repr__`` the answer is the default
+        # ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+        # address — which a junk field value, a mapping key and a set/list
+        # element each carried verbatim onto the 0600 disk trail *and* out
+        # through GET /api/audit/auth (the bookmarks/assistant slot-probe
+        # rule, sealed in notify13/files but never here).  A slot probe on
+        # the real ``type(value)``: a flickering ``__class__`` property
+        # cannot swap the real type out, and a ``__getattr__`` bomb never
+        # runs because nothing is looked up on the instance.
+        try:
+            cls = type(value)
+            if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        try:
+            text = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A ``__str__`` bomb raising a BaseException subclass used
+            # to sail past the old ``except Exception`` here and raise
+            # out of record()'s shaping — 500ing the audited request.
+            return ""
+        try:
+            # str() may hand back a *subclass* instance (it only checks the
+            # type, it does not copy), so the scrub itself must not trust
+            # bound methods either.
+            text = str.encode(text, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        # Belt for what the slot probe cannot see: a function / bound-method
+        # leftover (C-level ``__repr__`` override) and a custom ``__str__``
+        # whose *rendering* embeds a default repr (``{'x': <_Junk object at
+        # 0x...>}``) still answered an address.  Scrubbed before the cap so
+        # a truncation can never tear an address into an unmatchable tail.
+        # Only this coercion arm is scrubbed — real str/bytes storage above
+        # is data and stays verbatim.
+        if _ADDR_REPR_RE.search(text):
+            return ""
+    if len(text) > _STR_CAP:
+        # Same marker shape as util.py's log tailer.  Slicing is by code
+        # point, so the scrubbed text cannot gain a torn surrogate here.
+        text = text[:_STR_CAP] + " …[truncated]"
+    return text
 
 
 def _jsonable(value, depth: int = 0):
@@ -297,12 +440,48 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # Exact type, not isinstance: bool cannot be subclassed, so the only
+    # thing an isinstance gate admits that this one refuses is an impostor
+    # whose lying ``__class__`` property answers ``bool``.  Passed through
+    # raw, that impostor reached record()'s json.dumps (whose C encoder
+    # checks the real type), fell to ``default=str``, and its ``__str__``
+    # bomb then cost the *entire line* inside the disk net — a failed
+    # sign-in left no trace at all.  Refused here, it falls through to the
+    # int gate below, whose unbound ``int.__index__`` sheds it to None.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
-            str(value)
-        except ValueError:
+            # Shed a subclass first: an int subclass whose ``__str__`` raised
+            # (anything, not just ValueError) used to escape this probe and
+            # 500 the request record() was auditing.  ``int.__index__`` is the
+            # unbound base slot, so an override cannot reach it.
+            coerced = int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The unbound slot refused the operand, so the *claimed* ``int``
+            # was a lie — but the real storage may still be numeric.  The old
+            # arm returned None here, so a genuine finite float whose
+            # ``__class__`` property answered ``int`` vanished at the wrong
+            # rank while its value rendered fine one gate below (the
+            # modules13 claimed-base rule, mirrored from the audit12 decode
+            # fix).  Try the float base against the real layout; a total
+            # impostor fails that too and drops exactly as before.
+            try:
+                recovered = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+            if recovered != recovered or recovered in (float("inf"), float("-inf")):
+                return None
+            return recovered
+        try:
+            str(coerced)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render the
             # number at all — json.dumps raises the same ValueError.  YAML/plist
             # hex text loads uncapped (``int(x, 16)`` is a power-of-two base),
@@ -312,49 +491,142 @@ def _jsonable(value, depth: int = 0):
             # field keeps the event — the same probe as terminal_svc._jsonable
             # and hub.errors._jsonable_param.
             return None
-        return value
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+        return coerced
+    if _isa(value, float):
+        try:
+            # Base coercion before the finite probes: a float subclass whose
+            # ``__ne__``/``__eq__`` raised used to blow ``value != value``.
+            value = float.__float__(value)
+            if value != value or value in (float("inf"), float("-inf")):
+                return None
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, (str, bytes, bytearray)):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        try:
+            # Unbound base read: a dict-subclass ``items()`` bomb must cost
+            # this field, never the audit line (or the request behind it).
+            items = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The descriptor is bound to the real dict layout, so a refusal
+            # means the claimed ``dict`` was a lie.  A genuine sequence
+            # behind that lie used to degrade to ``{}`` — its perfectly
+            # renderable elements gone at the wrong rank — so try the
+            # sequence bases against the real storage first; a total
+            # impostor fails those too and keeps the old empty shape.
+            for base in (list, tuple, set, frozenset):
                 try:
-                    k = str(k)
-                except Exception:
+                    seq = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                return [_jsonable(v, depth + 1) for v in seq]
+            return out
+        for k, v in items:
+            if not _isa(k, (str, bytes, bytearray)):
+                # Through the scrubbed coercion arm, not bare ``str(k)``: a
+                # plain-object leftover key rendered its ``object.__repr__``
+                # — a raw heap address — as the field *name* on the disk
+                # trail and on the wire, because the exact-str result of
+                # ``str(k)`` then rode _utf8_text's verbatim str branch past
+                # the belt.  A key that coerces to nothing (default-render
+                # junk, a ``__str__`` bomb) costs its pair, never the line —
+                # the same drop the old ``continue`` applied.
+                k = _utf8_text(k)
+                if not k:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        # ``continue`` on rejection, not ``return []``: the old arm picked
+        # the iteration base off the *claimed* ``__class__``, so a genuine
+        # tuple whose ``__class__`` property lied ``list`` was handed to
+        # ``list.__iter__``, rejected by the descriptor, and its perfectly
+        # renderable elements vanished to ``[]`` — the wrong-rank degrade
+        # the audit12 decode fix (and hub.modules' sweep-13 arm) already
+        # shed.  Every base is tried against the real storage; the honest
+        # layout wins, a total impostor fails all four and keeps the old
+        # empty-list shape.  ``list(base.__iter__(...))`` snapshots pure C
+        # elements without running any leftover code, so a hook that
+        # resizes its parent container mid-walk cannot tear the walk.
+        for base in (list, tuple, set, frozenset):
+            try:
+                seq = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable(v, depth + 1) for v in seq]
+        return []
+    try:
+        # getattr, guarded: a leftover object whose ``__getattr__`` (or an
+        # ``isoformat`` property) raises non-AttributeError used to escape
+        # the default and 500 out of record()'s shaping — including one
+        # raising a BaseException subclass past the old ``except Exception``.
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/audit.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
 def _is_secret_key(key: str) -> bool:
-    lowered = str(key).lower()
+    try:
+        # Classify the text the *writer* will render, not what a bound
+        # ``__str__`` volunteers.  The old probe was ``str(key)``: a str
+        # subclass named ``password`` whose ``__str__`` raised made the
+        # classifier answer "no name here" — while ``_jsonable`` rendered
+        # that same key's real text through the unbound base encode
+        # (``_utf8_text`` never calls ``str()`` on a str instance) and the
+        # secret value landed on disk under its secret name.  The route's
+        # read-side re-redact kept it off the wire, but the on-disk trail —
+        # the copy an operator or an older build reads directly — carried
+        # the plaintext, breaking this module's first guarantee.  Going
+        # through ``_utf8_text`` keeps classifier and writer agreeing on
+        # the key's name for every shape: a str subclass reads via the
+        # unbound encode its bombs cannot reach, and a genuinely
+        # unrenderable key (a >4300-digit YAML int, whose str() is the
+        # digit-cap ValueError) still reads as "" — no name to match, and
+        # _jsonable drops it before disk regardless, so "not secret" stays
+        # the safe answer there.
+        #
+        # Unbound ``str.lower`` on the exact-str scrub result, as before:
+        # the substring probes below must never run ``in`` against a
+        # hostile bound ``lower()``/``__contains__``.
+        lowered = str.lower(_utf8_text(key))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
     if any(allowed in lowered for allowed in _PUBLIC_EXCEPTIONS):
         return False
     return any(hint in lowered for hint in _SECRET_HINTS)
 
 
-def redact(value: Any) -> Any:
+def redact(value: Any, _depth: int = 0) -> Any:
     """Drop secret-looking fields anywhere in a nested structure.
 
     Recurses into dicts and lists so a password nested inside a body dump is
@@ -367,13 +639,68 @@ def redact(value: Any) -> Any:
     the event, and a placeholder invites a later reader to treat the key as
     safe-by-construction and start logging a "shortened" or "hashed" variant of
     it.  An absent key cannot leak anything.
+
+    Depth-capped like ``_jsonable``: this runs before record()'s swallow-all,
+    so a leftover deeply-nested (or self-referential) detail dict used to
+    RecursionError out of record() and 500 the request being audited.  The
+    subtree past the cap is dropped, never passed through unredacted.
     """
-    if isinstance(value, dict):
-        return {
-            k: redact(v) for k, v in value.items() if not _is_secret_key(k)
-        }
-    if isinstance(value, (list, tuple)):
-        return [redact(v) for v in value]
+    if _depth > 32:
+        return None
+    if _isa(value, dict):
+        try:
+            # Unbound base read, like _jsonable's: redact() runs before
+            # record()'s swallow-all, so a dict-subclass ``items()`` bomb in
+            # a nested detail used to raise out of the request being audited.
+            items = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A refusal means the claimed ``dict`` was a lie; a genuine
+            # sequence behind it still holds entries worth redacting rather
+            # than dropping wholesale (the wrong-rank rule, as in
+            # _jsonable).  A total impostor fails the bases too and drops
+            # to None exactly as before.
+            for base in (list, tuple, set, frozenset):
+                try:
+                    seq = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+                return [redact(v, _depth + 1) for v in seq]
+            return None
+        out = {}
+        for k, v in items:
+            if _is_secret_key(k):
+                continue
+            try:
+                out[k] = redact(v, _depth + 1)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A key whose ``__hash__`` re-raises on the rebuild costs
+                # itself, never the sibling fields.
+                continue
+        return out
+    if _isa(value, (list, tuple, set, frozenset)):
+        # set/frozenset joined the bases: the old (list, tuple)-only walk
+        # passed a set field through the ``return value`` fallthrough
+        # untouched, and a hashable dict-subclass hiding inside it carried
+        # its secret-named fields past redaction entirely — _jsonable later
+        # expanded the set into a rendered list, so the plaintext landed on
+        # the 0600 disk trail under its secret name (the audit12 classifier
+        # slip's severity, through a different door).  Every base is tried
+        # against the real storage, same wrong-rank rule as _jsonable's arm.
+        for base in (list, tuple, set, frozenset):
+            try:
+                seq = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [redact(v, _depth + 1) for v in seq]
+        return []
     return value
 
 
@@ -407,19 +734,60 @@ def record(event: str, /, **fields: Any) -> dict:
     The returned dict is the redacted record, so a caller (or a test) can assert
     on exactly what reached disk rather than on what was passed in.
     """
-    extra = redact(fields)
-    if not isinstance(extra, dict):
-        extra = {}
-    # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
-    # clobber the stamp or the event name the trail is queried by.
-    extra.pop("ts", None)
-    extra.pop("event", None)
-    entry = _jsonable({
-        "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
-        "event": _utf8_text(event),
-        **extra,
-    })
+    try:
+        # Shape *before* the pop/merge below: redact() keeps the caller's
+        # key objects, and ``**kwargs`` admits str-subclass keys, so a
+        # hash-shadowing key whose ``__eq__`` raises used to detonate
+        # ``extra.pop("ts", ...)`` (and the ``**extra`` merge) and degrade
+        # the whole line to the minimal shape.  _jsonable rebuilds every
+        # key as an exact str first, so the dict operations here only ever
+        # touch plain keys.
+        #
+        # Redact *again* after shaping, not instead of before: _jsonable
+        # expands structures the first pass never walked — a leftover
+        # ``isoformat()`` answering a mapping, a set element rendered into
+        # a list — and a secret-named field born in that expansion used to
+        # land on the disk trail (and in the returned entry) in plaintext.
+        # The route's read-side re-redact kept it off the wire, but the
+        # on-disk copy — the one an operator or an older build reads
+        # directly — carried the value, breaking this module's first
+        # guarantee.  The post pass walks the exact-typed shaped tree, so
+        # classifier and writer see the same key text by construction; the
+        # pre pass stays because dropping a secret subtree before any
+        # rendering hook runs is the stronger order.
+        extra = redact(_jsonable(redact(fields)))
+        if not isinstance(extra, dict):
+            extra = {}
+        # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
+        # clobber the stamp or the event name the trail is queried by.
+        extra.pop("ts", None)
+        extra.pop("event", None)
+        entry = {
+            "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
+            "event": _utf8_text(event),
+            **extra,
+        }
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Shaping runs before the swallow-all below, so a poisoned field
+        # shape it cannot handle must degrade to a minimal line — losing the
+        # detail is acceptable, raising into (or losing) the sign-in being
+        # audited is not.  BaseException, not the audit9 ``Exception`` (nor
+        # the older (ValueError, TypeError, RecursionError) shortlist): a
+        # leftover subclass bomb raises whatever it likes — including a
+        # watchdog/timeout-shaped BaseException subclass that sailed past
+        # the Exception net straight into the JSON request being audited —
+        # and this module's first guarantee is that logging never breaks
+        # the request.  Genuine control flow re-raises above.
+        entry = None
     if not isinstance(entry, dict):
+        # This fallback runs *outside* both nets, so everything here must be
+        # total.  _utf8_text used to open with a bare isinstance: an event
+        # whose ``__class__`` property raised blew the shaping try above,
+        # landed here, and blew _utf8_text *again* — this time straight into
+        # the request being audited.  The _isa gates make _utf8_text
+        # non-raising for any input.
         entry = {
             "ts": strftime_now("%Y-%m-%dT%H:%M:%S%z"),
             "event": _utf8_text(event),
@@ -454,30 +822,81 @@ def record(event: str, /, **fields: Any) -> dict:
             if AUDIT_PATH.stat().st_mode & 0o777 != 0o600:
                 os.chmod(AUDIT_PATH, 0o600)
             _trim(AUDIT_PATH)
-    except (OSError, TypeError, ValueError, RecursionError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # An unwritable or unencodable log must never turn a valid sign-in
-        # into a 500. RecursionError: leftover nested audit row is not ValueError.
+        # into a 500.  BaseException (was Exception, before that OSError/
+        # TypeError/ValueError/RecursionError): the write path crosses
+        # locks, stat and chmod, and any surprise there belongs to the log,
+        # not to the request.  Ctrl-C and interpreter shutdown still
+        # propagate above.
         pass
     return entry
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole line, so one absurd number in a single
+    row (a hand-edited ``attempts``, a restored backup) used to make
+    :func:`recent` skip the entire row — silently hiding a sign-in or a
+    privileged mutation from the one trail that exists to answer "who did
+    this and when".  record() itself never writes such a number
+    (``_jsonable`` drops it before disk), so any occurrence is a leftover
+    from another writer; loading it as None keeps the rest of the row, the
+    same drop terminal_svc.recent_audit applies to the command trail.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def recent(limit: int = 100) -> list[dict]:
     """Tail of the audit trail, newest last."""
-    try:
-        n = max(1, min(int(limit), 1000))
-    except (TypeError, ValueError, OverflowError):
+    # _isa + except-Exception, the terminal_svc.recent_audit clamp verbatim:
+    # the route validates its own ``limit``, but this reader does not own its
+    # callers, and ``int()`` of a leftover runs the object's own ``__int__``/
+    # ``__index__`` — a subclass bomb there raises RuntimeError, which the old
+    # (TypeError, ValueError, OverflowError) shortlist let straight out of the
+    # one reader whose job is answering "who did this" no matter what.  A
+    # bool (or a bool-liar, which _isa fails closed on) reads as the default
+    # rather than as 1-row/0-row nonsense.
+    if _isa(limit, bool) or limit is None:
         n = 100
+    else:
+        try:
+            n = int(limit)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # ``int()`` runs the object's own ``__int__``/``__index__``; the
+            # audit11 clamp stopped at Exception, so a leftover whose slot
+            # raised a BaseException subclass still blew out of the one
+            # reader whose job is answering "who did this" no matter what.
+            n = 100
+    n = max(1, min(n, 1000))
     try:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/audit/auth.
         if not AUDIT_PATH.exists():
             return []
-        lines = tail_file_lines(AUDIT_PATH, n)
+        # The byte window must match what _trim legitimately keeps
+        # (MAX_LINES * 1024), not tail_file_lines' 256 KB default.  With the
+        # smaller window, one leftover fat line at the tail put the seek
+        # mid-line and the torn-row prefix-drop then discarded every complete
+        # row in the window — GET /api/audit/auth answered an empty trail
+        # while intact sign-in rows sat on disk right before the fat line.
+        # The same undersizing quietly under-filled honest requests: 500 rows
+        # of ~1 KB each need ~500 KB, so limit=500 returned ~250.
+        lines = tail_file_lines(AUDIT_PATH, n, max_bytes=MAX_LINES * 1024)
     except OSError:
         return []
     out: list[dict] = []
     for raw in lines:
         try:
-            parsed = safe_json_loads(raw)
+            parsed = safe_json_loads(raw, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, dict):

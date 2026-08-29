@@ -294,11 +294,14 @@ class StateReaderTolerance(_Corpses):
 
     def test_cloudflared_nested_tunnel_name_is_coded_not_500(self):
         """A mapping leftover in tunnel_name used to raise ``dict.strip`` on Restart."""
-        for value in ({"id": "home"}, ["home"], 1):
+        for value in ({"id": "home"}, ["home"], True):
             with self.subTest(value=value):
                 with self.assertRaises(HTTPException) as ctx:
                     cloudflared_svc._tunnel_argv(value)
                 self.assertEqual(ctx.exception.detail["code"], "cloudflared.invalid_name")
+        # An unquoted numeric tunnel name is a real id, not junk: the old
+        # isinstance gate silently refused to restart tunnel "1".
+        self.assertEqual(cloudflared_svc._tunnel_argv(1), "1")
         with self.assertRaises(HTTPException) as ctx:
             cloudflared_svc._tunnel_argv("")
         self.assertEqual(ctx.exception.detail["code"], "cloudflared.tunnel_required")

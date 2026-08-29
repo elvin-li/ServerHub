@@ -11,7 +11,7 @@
  * without binding this module to a component lifecycle.
  */
 
-import { finiteText } from './finite'
+import { asArray, finiteText, jsonText } from './finite'
 
 /** Verbs that mutate service state (as opposed to open/logs/detail). */
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
@@ -30,7 +30,8 @@ const ACT_ORDER = ['start', 'stop', 'restart', 'run', 'pause', 'unpause']
  */
 export function canAct(s, act) {
   if (!s) return false
-  if ((s.actions || []).includes(act)) return true
+  if (s.actions != null && !Array.isArray(s.actions)) return false
+  if (asArray(s.actions).includes(act)) return true
   if (Array.isArray(s.actions)) return false
   if (act === 'start' && (s.state === 'down' || s.state === 'stopped')) return true
   if (act === 'stop' && s.state === 'ok') return true
@@ -45,18 +46,18 @@ export function controlActs(s) {
 
 /** The card's compact subset: the server's own order, capped at three. */
 export function primaryActs(s) {
-  return (s.actions || []).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
+  return asArray(s.actions).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
 }
 
 export function canLogs(s) {
   if (!s) return false
   if (s.can_logs === false) return false
   if (s.can_logs === true) return true
-  if ((s.actions || []).includes('logs')) return true
+  if (asArray(s.actions).includes('logs')) return true
   // A served action list without `logs` is authoritative. Member rows are
   // stripped to open/detail and omit can_logs; guessing from kind painted
   // Logs (and 403'd) for those accounts.
-  if (Array.isArray(s.actions)) return false
+  if (Array.isArray(s.actions) || (s.actions != null && typeof s.actions === 'object')) return false
   return ['container', 'launchd', 'script'].includes(s.kind)
 }
 
@@ -82,12 +83,13 @@ export function portOf(s) {
     if (n != null && Number.isFinite(n) && !nums.includes(n)) nums.push(n)
   }
   if (s?.port != null) push(s.port)
-  if (Array.isArray(s?.ports)) {
-    for (const p of s.ports) push(p)
-    if (!nums.length && s.ports.length) {
-      const first = s.ports[0]
+  const ports = asArray(s?.ports)
+  if (ports.length) {
+    for (const p of ports) push(p)
+    if (!nums.length) {
+      const first = ports[0]
       if (typeof first === 'number' && !Number.isFinite(first)) return '—'
-      if (typeof first === 'object') return JSON.stringify(first)
+      if (typeof first === 'object') return jsonText(first)
       return String(finiteText(first))
     }
   }

@@ -14,7 +14,18 @@ originates in Python cannot be translated by the frontend, so handlers raise
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
+
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one error body would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other — and this module is the *last*
+#: sanitizer between a coded error and Starlette's encoder, so a raise out
+#: of any guard here is a raw HTTP 500 for the coded body by definition.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 # code -> (http status, English fallback).  ``{name}`` placeholders are filled
 # from params.  Keep codes stable: they are part of the public API contract.
@@ -78,11 +89,20 @@ CODES: dict[str, tuple[int, str]] = {
     "shares.verification_failed": (409, "macOS did not report the requested sharing state"),
     "shares.operation_failed": (500, "the macOS sharing operation failed"),
     "shares.settings_open_failed": (500, "System Settings could not be opened on this Mac"),
+    # Confirmed-vanished sharing CLI (fresh disk probe on the failure path
+    # only).  503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, usage.mdutil_missing).
+    "shares.sharing_missing": (503, "the macOS sharing tool is missing on this host"),
+    # Confirmed-vanished systemsetup / launchctl / AssetCacheManagerUtil /
+    # open (fresh disk probe on the failure path only).
+    "shares.system_tool_missing": (503, "a macOS system tool required for this operation is missing on this host"),
     # ── per-user share access (filesystem ACLs) ─────────────────────────────
     "shares.acl_not_share": (400, "this directory is not a current SMB share point"),
     "shares.acl_read_failed": (500, "the directory's access control list could not be read"),
     "shares.acl_bad_user": (400, "unknown local macOS user"),
     "shares.acl_bad_level": (400, "the access level must be none, read or readwrite"),
+    # Confirmed-vanished ls/chmod (fresh disk probe on the failure path only).
+    "shares.acl_tool_missing": (503, "the macOS ACL tools are missing on this host"),
     # ── terminal ─────────────────────────────────────────────────────────────
     "terminal.timeout": (504, "command timed out after {seconds} seconds"),
     "terminal.empty_command": (400, "command is empty"),
@@ -116,6 +136,12 @@ CODES: dict[str, tuple[int, str]] = {
     "files.upload_too_large": (400, "exceeds the {max_mb}MB upload limit"),
     "files.upload_would_overwrite": (409, "a file named {name} already exists"),
     "files.bad_filename": (400, "invalid file name"),
+    # The disk write itself failed mid-upload (ENOSPC on a full volume, EIO
+    # on a dying FUSE/SMB mount).  503 like compose.save_failed /
+    # settings.save_failed: a disk that cannot be written is a dependency
+    # state, not a defect in the upload — the raw OSError used to escape as
+    # an uncoded HTTP 500 after validation had already passed.
+    "files.upload_write_failed": (503, "the uploaded file could not be written: {error}"),
     # ── service uninstall ───────────────────────────────────────────────────
     "services.uninstall_unknown": (404, "no launch agent named {id}"),
     "services.uninstall_not_supported": (400, "{id} is not an uninstallable launch agent"),
@@ -136,6 +162,11 @@ CODES: dict[str, tuple[int, str]] = {
     "disk.whole_disk_only": (400, "eraseDisk only applies to a whole disk (diskN)"),
     "disk.unknown_action": (400, "unknown action: {action}"),
     "disk.invalid_device": (400, "invalid device id: {device}"),
+    # A diskutil confirmed vanished by a fresh disk probe on the mutation
+    # failure path.  503 like the other tool-absent states
+    # (raid.diskutil_missing, smart.smartctl_missing, snapshot.tmutil_missing);
+    # the bare "not found" body it replaced read like a missing *disk*.
+    "disk.diskutil_missing": (503, "diskutil is missing on this host"),
     # ── optional FileBrowser process ────────────────────────────────────────
     "files.fb_not_installed": (404, "FileBrowser is not installed (~/Services/filebrowser)"),
     "files.fb_start_failed": (500, "could not start FileBrowser"),
@@ -147,6 +178,13 @@ CODES: dict[str, tuple[int, str]] = {
     "storage_pool.bad_policy": (400, "unknown placement policy: {policy}"),
     "storage_pool.no_members": (400, "select at least one volume for the pool"),
     "storage_pool.not_poolable": (400, "{mount} cannot join a pool (system or unmounted)"),
+    # The pool name is persisted into services.yaml.  Unbounded, a multi-MB
+    # label was refused only by the whole-file save cap as a
+    # settings.save_failed 503 — blaming the disk for oversized input — and a
+    # label just under the cap ballooned services.yaml toward the 1MB read
+    # cap for every sibling writer.  400 like the other persisted-value caps
+    # (vms.name_too_long, identity.value_too_long, disk.name_required).
+    "storage_pool.name_too_long": (400, "the pool name is too long (max {max} characters)"),
     "files.fb_no_plist": (404, "local.filebrowser.plist not found"),
     "files.fb_bad_plist": (500, "local.filebrowser.plist is not a valid LaunchAgent"),
     # ── macOS administrator authorization ───────────────────────────────────
@@ -173,6 +211,10 @@ CODES: dict[str, tuple[int, str]] = {
     "nfs.map_conflict": (400, "maproot and mapall cannot both be set"),
     "nfs.duplicate_path": (409, "{path} is exported more than once"),
     "nfs.bad_action": (400, "unsupported nfsd action: {action}"),
+    # Confirmed-vanished nfsd (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, usage.mdutil_missing).
+    "nfs.nfsd_missing": (503, "nfsd is missing on this host"),
     # ── AppleRAID sets ──────────────────────────────────────────────────────
     "raid.bad_device": (400, "invalid device identifier: {device}"),
     "raid.duplicate_device": (400, "{device} is listed twice"),
@@ -190,12 +232,22 @@ CODES: dict[str, tuple[int, str]] = {
     "raid.stripe_not_growable": (400, "a stripe set cannot gain members"),
     "raid.member_not_found": (404, "no member with id {uuid} in this set"),
     "raid.last_redundant_member": (400, "removing this member would leave the mirror unprotected"),
+    # Confirmed-vanished diskutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (smart.smartctl_missing,
+    # backup.tool_missing, files.fb_missing, photoshub.ctl_missing).
+    "raid.diskutil_missing": (503, "diskutil is missing on this host"),
     # ── APFS snapshots / Time Machine ───────────────────────────────────────
     "snapshot.bad_token": (400, "invalid snapshot date"),
     "snapshot.confirm_required": (400, "deleting a restore point requires confirm=true"),
     "snapshot.bad_action": (400, "unsupported Time Machine action: {action}"),
     "snapshot.bad_urgency": (400, "snapshot thinning urgency must be 1-4"),
     "snapshot.bad_mount": (400, "unknown volume: {mount}"),
+    # Confirmed-vanished tmutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (nfs.nfsd_missing,
+    # raid.diskutil_missing, smart.smartctl_missing, usage.mdutil_missing) —
+    # the old shape was the generic admin.failed 500, which sent the operator
+    # back to a password dialog that cannot help.
+    "snapshot.tmutil_missing": (503, "tmutil is missing on this host"),
     # ── SMART self-tests ────────────────────────────────────────────────────
     "smart.bad_device": (400, "unknown disk device"),
     "smart.bad_kind": (400, "unsupported self-test type"),
@@ -208,6 +260,10 @@ CODES: dict[str, tuple[int, str]] = {
     "smart.smartctl_missing": (503, "smartctl is not installed on this host"),
     # ── usage explorer / Spotlight ──────────────────────────────────────────
     "usage.bad_volume": (400, "unknown volume"),
+    # Confirmed-vanished mdutil (fresh disk probe on the failure path only).
+    # 503 like the other tool-absent states (raid.diskutil_missing,
+    # smart.smartctl_missing, backup.tool_missing, files.fb_missing).
+    "usage.mdutil_missing": (503, "mdutil is missing on this host"),
     # ── settings export ──────────────────────────────────────────────────────
     "system_settings.export_failed": (500, "the configuration file could not be read for export"),
     "settings.invalid_locale": (400, "invalid locale: {locale}"),
@@ -216,6 +272,12 @@ CODES: dict[str, tuple[int, str]] = {
     "settings.invalid_resource_mode": (400, "invalid resource mode: {mode}"),
     "settings.empty_patch": (400, "empty patch"),
     "settings.save_failed": (503, "the configuration file could not be saved"),
+    # services.yaml exists but cannot be read back (grown past the 1MB read
+    # cap by a hand edit or a restored backup, torn to non-UTF-8 bytes,
+    # unparseable, or replaced whole by a stray paste).  Refusing the write
+    # is what keeps the on-disk file recoverable; a 503 names the dependency,
+    # not the input — the notify.secrets_unreadable shape for the main config.
+    "settings.config_unreadable": (503, "services.yaml cannot be read back; fix or restore it before saving"),
     "metrics.bad_window": (400, "until must be greater than since"),
     "metrics.bad_range": (400, "invalid range (expected e.g. 48h, 30d, 1y)"),
     "actions.bad_process_name": (400, "invalid application process name"),
@@ -237,6 +299,10 @@ CODES: dict[str, tuple[int, str]] = {
     "wg.bad_wstunnel_url": (400, "invalid wstunnel URL: {url}"),
     "wg.bad_wstunnel_target": (400, "invalid wstunnel restrict-to: {target}"),
     "wg.wstunnel_missing": (503, "wstunnel is not installed"),
+    # sh()'s vanished-binary sentinel confirmed by a fresh disk probe on the
+    # ping failure path only — the network.ping_missing / tools.ping_missing
+    # convention on the peer-ping surface.
+    "wg.ping_missing": (503, "ping is missing on this host"),
     "wg.wstunnel_install_unverified": (
         500,
         "the wstunnel daemon was not installed as requested; "
@@ -260,6 +326,10 @@ CODES: dict[str, tuple[int, str]] = {
         409, "peer {pubkey} has no stored private key, so its config cannot be regenerated",
     ),
     "wg.sync_failed": (500, "the running interface could not be reloaded"),
+    # A leftover non-empty directory occupying wg0.conf or a data/ staging
+    # file: nothing was written, so removing the occupant and retrying is
+    # the whole repair — a dependency problem, not an input one, hence 503.
+    "wg.write_failed": (503, "could not write {path}; remove whatever occupies that path and retry"),
     "wg.confirm_required": (400, "revoking a peer requires confirm=true"),
     "wg.bad_format": (400, "unsupported export format: {format}"),
     # ── containers / compose ────────────────────────────────────────────────
@@ -289,6 +359,12 @@ CODES: dict[str, tuple[int, str]] = {
     "compose.empty_content": (400, "compose file content is empty"),
     "compose.path_forbidden": (403, "compose path must be under ~/Services"),
     "compose.invalid": (400, "compose file is invalid: {detail}"),
+    # The live compose write itself failed (disk full, read-only or dying
+    # mount, permissions lost mid-request).  503 like settings.save_failed:
+    # a disk that cannot be written is a dependency state, not a defect in
+    # the operator's YAML — the raw OSError used to escape as HTTP 500
+    # *after* validation had already passed.
+    "compose.save_failed": (503, "the compose file could not be saved: {detail}"),
     "compose.exists": (409, "stack already exists: {path}"),
     "compose.file_missing": (404, "compose file not found: {path}"),
     "logs.unknown_source": (404, "unknown log source"),
@@ -323,6 +399,24 @@ CODES: dict[str, tuple[int, str]] = {
     "network.order_required": (400, 'the full service order list is required'),
     "network.unknown_service": (400, 'unknown network service: {service}'),
     "network.services_unreadable": (500, 'could not read network services'),
+    # networksetup vanished from disk (confirmed by a fresh on-disk probe on
+    # the empty-listing failure path only).  503 like the other tool-absent
+    # states (identity.scutil_missing, raid.diskutil_missing) — the old shape
+    # was the services_unreadable 500, which blamed the server for a missing
+    # host tool.
+    "network.networksetup_missing": (503, 'networksetup is missing on this host'),
+    "network.ifconfig_missing": (503, 'ifconfig is missing on this host'),
+    # The same confirmed-vanished rule for the remaining host tools the alias
+    # / failover / dns-lookup flows spawn: the disk probe runs on the spawn
+    # sentinel failure path only, and a present-but-failing tool keeps its
+    # honest answer.  Before these codes, a vanished /sbin/route churned the
+    # managed aliases and answered 200 "local route still broken", a vanished
+    # /sbin/ping read as "gateway unreachable" and switched the Wi-Fi radio
+    # on, and a vanished dscacheutil+dig pair answered 200 "not found" — which
+    # reads like the host does not resolve.
+    "network.route_missing": (503, 'the route tool is missing on this host'),
+    "network.ping_missing": (503, 'ping is missing on this host'),
+    "network.lookup_tools_missing": (503, 'the DNS lookup tools (dscacheutil/dig) are missing on this host'),
     "network.bad_profile": (400, 'profile must be one of: wifi | ethernet | wifi_only | ethernet_only'),
     "network.invalid_device": (400, 'invalid interface name: {device}'),
     "network.device_not_found": (404, 'no such interface: {device}'),
@@ -340,6 +434,7 @@ CODES: dict[str, tuple[int, str]] = {
     "cloudflared.token_fetch_failed": (400, 'could not fetch the tunnel token: {error}'),
     "cloudflared.invalid_token": (400, 'invalid Cloudflare tunnel token; paste the connector token from Zero Trust → Tunnels (it starts with eyJ)'),
     "cloudflared.start_failed": (503, 'the tunnel process died after start: {error}'),
+    "cloudflared.plist_write_failed": (503, 'could not write the tunnel LaunchAgent plist: {error}'),
     "cloudflared.no_token": (400, 'no tunnel token saved yet'),
     "cloudflared.invalid_name": (400, 'invalid tunnel name (letters, digits, . _ - only)'),
     "cloudflared.login_required": (400, 'sign in to Cloudflare first'),
@@ -359,6 +454,11 @@ CODES: dict[str, tuple[int, str]] = {
     "disk_power.unknown_action": (400, "unknown disk power action: {action}"),
     "disk_power.invalid_id": (400, "invalid disk id"),
     "disk_power.not_found": (404, "disk not found: {disk}"),
+    # A diskutil confirmed vanished by a fresh disk probe on the failure
+    # path.  503 like disk.diskutil_missing: the pre-fix answers — a bare
+    # "not found" body, or the 404 "disk not found" when the vanished binary
+    # emptied the listing — both misdirected the operator at the disk.
+    "disk_power.diskutil_missing": (503, "diskutil is missing on this host"),
     "credentials.bad_service_id": (400, 'invalid service id'),
     "credentials.username_required": (400, 'username is required'),
     "credentials.password_too_short": (400, 'the service password must be at least {min} characters'),
@@ -379,13 +479,39 @@ CODES: dict[str, tuple[int, str]] = {
     "autostart.bad_plist": (400, "the LaunchAgent plist for {label} is unreadable or has no Label"),
     "autostart.script_missing": (404, "autostart.sh not found"),
     "nginx.conf_missing": (404, "nginx.conf is missing"),
+    "nginx.not_found": (503, "nginx is not installed"),
     "power.unknown_action": (400, 'unknown power action: {action} (choose one of {choices})'),
     "power.confirm_required": (400, 'power actions require confirm=true'),
     "power.bad_key": (400, "unsupported power setting: {key}"),
     "power.bad_value": (400, "value must be an integer"),
     "power.value_range": (400, "value is out of range 0–180"),
+    # pmset vanished from disk between boot and the WOL toggle (confirmed by a
+    # fresh on-disk probe on the failure path).  503 like the other tool-absent
+    # states (identity.scutil_missing, network.networksetup_missing) — the old
+    # shape was an ok:false answer whose message told the operator to run
+    # ``sudo pmset`` by hand, blaming privileges for a binary that is gone.
+    "power.pmset_missing": (503, "pmset is missing on this host"),
     "identity.bad_name": (400, "computer name is invalid"),
+    # comment / host_ip are persisted into services.yaml.  Unbounded, a
+    # multi-MB value used to be refused only by the whole-file save cap as a
+    # settings.save_failed 503 — blaming the disk for oversized input (and a
+    # value just under the cap crowded every sibling writer toward it).  400
+    # like the other persisted-value caps (vms.name_too_long,
+    # notify.value_too_long).
+    "identity.value_too_long": (400, "{field} is too long (max {max} characters)"),
+    # scutil vanished from disk between boot and the rename (confirmed by a
+    # fresh on-disk probe on the failure path).  503 like the other
+    # tool-absent states (raid.diskutil_missing, vms.utm_unavailable) — the
+    # old shape was an ok:true answer whose message blamed missing
+    # administrator privileges, so the lost rename surfaced nowhere.
+    "identity.scutil_missing": (503, "scutil is missing on this host"),
     "vms.name_required": (400, 'a new name is required'),
+    # The display name is persisted into services.yaml overrides.  Unbounded, a
+    # multi-MB rename wrote a config larger than the 1MB read cap and every
+    # later cfg() answered {} — the admin account and every sibling key
+    # disappeared from the panel's view, and the next mutate() persisted the
+    # wipe.  64 matches the accounts/apikeys/disk name caps.
+    "vms.name_too_long": (400, "the display name must be 1-64 characters"),
     "vms.bad_id": (400, "invalid virtual machine id"),
     "vms.utm_unavailable": (503, 'utmctl is not available; install UTM'),
     "vms.utm_unsupported_action": (400, 'UTM does not support action: {action}'),
@@ -447,6 +573,17 @@ CODES: dict[str, tuple[int, str]] = {
     "notify.no_match": (404, "no notification channel matched"),
     "notify.type_immutable": (400, "the type of channel {id} cannot be changed; delete it and create a new one"),
     "notify.secret_control_chars": (400, "{field} contains control characters (a pasted newline or tab?)"),
+    # Unbounded channel values used to grow services.yaml (config fields) or
+    # notify-credentials.json (secrets) past their read caps — after which
+    # every read answered {} and the next write wiped every sibling row.
+    "notify.value_too_long": (400, "{field} is too long (max {max} characters)"),
+    "notify.list_too_long": (400, "{field} has too many entries (max {max})"),
+    "notify.too_many": (400, "too many notification channels — remove unused channels first"),
+    "notify.secrets_too_large": (400, "the stored notification secrets would exceed the size limit — remove unused channels first"),
+    # The credentials file exists but cannot be read back (oversized, torn,
+    # or a dying disk).  Refusing the write is what keeps the sibling
+    # channels' secrets on disk; a 503 names the dependency, not the input.
+    "notify.secrets_unreadable": (503, "the stored notification secrets cannot be read; fix or remove data/notify-credentials.json first"),
     # ── UPS / battery ────────────────────────────────────────────────────────
     "ups.empty_patch": (400, "the settings patch is empty"),
     "ups.policy_no_condition": (400, "enable at least one trigger condition (battery % or minutes remaining) before enabling the shutdown policy"),
@@ -467,6 +604,11 @@ CODES: dict[str, tuple[int, str]] = {
     "tools.not_a_git_checkout": (400, "this install is not a git checkout; re-run install.sh from a clone"),
     "tools.github_unreachable": (503, "could not reach GitHub: {error}"),
     "tools.brew_busy": (409, "Homebrew is busy or not installed; try again in a few minutes"),
+    # Confirmed-vanished net-helper CLIs (fresh disk probe on the spawn-
+    # sentinel failure path only — the network.ping_missing /
+    # network.lookup_tools_missing rule on the Tools tab's own routes).
+    "tools.ping_missing": (503, "the ping tool is missing on this host"),
+    "tools.dns_flush_tools_missing": (503, "the macOS DNS flush tools (dscacheutil/killall) are missing on this host"),
     # ── PhotosHub ────────────────────────────────────────────────────────────
     "photoshub.status_failed": (500, "PhotosHub status could not be read: {detail}"),
     "photoshub.pending_failed": (502, "could not list pending-delete photos: {detail}"),
@@ -496,71 +638,497 @@ CODES: dict[str, tuple[int, str]] = {
 }
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that never escapes a raising ``__class__`` property.
+
+    ``isinstance`` reads ``value.__class__`` when the concrete type is not an
+    exact/subtype match, so a leftover whose ``__class__`` is a *property that
+    raises* (the account8 class) blew the unguarded type dispatch below
+    straight out of the sanitizer — a raw HTTP 500 while building a coded
+    error's own body.  Treat such an object as "none of these types" and let
+    it fall through to the guarded ``str(value)`` tail, which launders it to a
+    renderable string or drops it — the code/message beside it still answer.
+
+    ``except BaseException``: the json8 guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    (the watchdog/timeout shape the modules12/logs12 sweeps sealed on their
+    own surfaces) sailed past this catch — and past every sibling guard in
+    this module, because each one stopped at ``Exception`` too — straight
+    out of the sanitizer while it was building a coded error's own body: a
+    raw HTTP 500 riding the very machinery that exists to prevent one.
+    Only genuine control flow keeps propagating.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap, so this is the probe for the recover-the-real-
+    storage fall-throughs below (the maint14/account14 rule): ``isinstance``
+    consults ``value.__class__`` only after the real-MRO check misses, so a
+    lying claim steered a leftover param into the arm of its claim, the
+    unbound descriptor there refused the real layout, and the old early
+    ``return None`` threw honest renderable storage away at the wrong rank.
+    After a claimed arm rejects the operand, only the arm the *real* layout
+    matches may pick the value up — the lie must not steer the walk a second
+    time.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>`` and the function /
+#: bound-method variants) — a raw heap address, never error-body data.
+#: Applied to the *coercion* arms only: real str storage is data (a param
+#: quoting a Python repr serves verbatim — the account14 rule).
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _default_repr(value) -> bool:
+    """True when rendering *value* can only answer ``object.__repr__``.
+
+    ``str()`` of a type that never overrode ``__str__``/``__repr__`` is the
+    default angle repr — ``<X object at 0x7f...>``, a raw heap address —
+    which the ``str(value)`` tail used to serve verbatim inside a coded
+    error's params (and ``str(k)`` as a JSON *key*).  The probe reads the
+    slots off the real ``type(value)``, which a flickering ``__class__``
+    property cannot swap.  Fail-closed: an unreadable slot is treated as
+    the leaking shape.
+    """
+    try:
+        cls = type(value)
+        return cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return True
+
+
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry.
+
+    Real-layout reads come first (the maint14 ``_key_text`` rule): a genuine
+    str key — even behind a lying ``__class__`` claiming bytes — keeps its
+    text through the unbound encode, and a genuine bytes/bytearray key —
+    even one claiming str — keeps its decode, instead of the old wrong-rank
+    entry drop.  A *total* lying impostor claiming str/bytes keeps the
+    established json9 drop.  Every other key is a coercion: the old path ran
+    bare ``str(k)``, and for a type that never overrode
+    ``__str__``/``__repr__`` the answer is the default ``object.__repr__`` —
+    ``<X object at 0x7f...>``, a raw heap address served verbatim as a JSON
+    key in the coded error's own body.  Slot probe + address belt drop just
+    that entry; an honestly-rendering key (an int, a date) keeps its text.
+    """
+    if _real(k, str):
+        try:
+            return str.encode(k, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _real(k, (bytes, bytearray)):
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(k, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        return None
+    if _isinst(k, (str, bytes, bytearray)):
+        # A lying claim with no text storage underneath: filing its value
+        # under whatever the impostor renders would launder junk into a
+        # real-looking key — keep the json9 entry drop.
+        return None
+    if _default_repr(k):
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if not _isinst(text, str):
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
+
+
 def _jsonable_param(value, depth: int = 0):
     """Coerce leftover params so Starlette's allow_nan=False encoder cannot 500.
 
     A coded 409 whose ``port`` was YAML ``.inf`` used to become HTTP 500 while
     encoding the error body.  ``bytes`` / dates / ``!!set`` in params did the
     same via TypeError.
+
+    json14 (the maint14/account14 shape): ``isinstance`` consults
+    ``value.__class__`` only after the real-MRO check misses, so a lying
+    ``__class__`` steered a param into the arm of its *claim*, the unbound
+    base operation there rejected the real layout, and the old early return
+    threw honest renderable storage away at the wrong rank — a genuine str
+    claiming int wiped to ``None``, a genuine int claiming bool dropped, a
+    genuine bytes name claiming str went dark.  The rejected arms now fall
+    through to the arm the *real* storage matches, probed via ``_real`` so
+    the lie cannot steer the walk twice; a total impostor — a claim with no
+    usable layout underneath — keeps its established json9 ``None`` drop.
+    The dict walk copies through the C-level storage and snapshots
+    ``list(dict.items(...))`` first (a real subclass's ``items()`` bomb used
+    to vaporise perfectly walkable entries, and a nested value mutating the
+    mapping mid-walk must never blow the iteration), keys go through
+    ``_key_text`` (a plain-object key used to serve its default
+    ``object.__repr__`` — a raw heap address — as a JSON key), the sequence
+    arm iterates through the unbound bases so a real subclass's ``__iter__``
+    bomb cannot vaporise its storage, and the ``str(value)`` tail carries
+    the slot probe + address belt so a leftover with no honest text cannot
+    leak a heap address into the response body.
     """
     if depth > 8:
         return None
-    if value is None or isinstance(value, bool):
+    # ``type(value) is bool``, not isinstance: bool is final, so the exact
+    # check is complete and never reads a leftover's ``__class__``.  A liar
+    # whose ``__class__`` merely *answers* bool (the modules9 bool-liar, which
+    # the old arm dropped) falls to the int arm's unbound coercion — a
+    # genuine int claiming bool now renders its number instead of vanishing.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
+        num = value if type(value) is int else None
+        if num is None:
+            try:
+                # Base coercion to an exact int first: an int *subclass* whose
+                # ``__index__``/``__str__`` bombs (the settings8/modules5
+                # class) used to raise past the ValueError-only digit-cap
+                # catch and turn the coded 4xx into a raw 500 while building
+                # its own error body.
+                num = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # Past CPython's int->str digit cap the encoder cannot render
+                # the number at all — ``json.dumps`` raises the same
+                # ValueError.  A str param is parse-capped before it can
+                # become an int, but YAML/plist hex text loads uncapped
+                # (``int(x, 16)`` is a power-of-two base), so an already-int
+                # leftover reached Starlette untouched.
+                return None
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming int/bool keeps the json9 None drop.
+            return None
+        # The descriptor refused the operand, so the claimed int/bool was a
+        # lie — but the real storage matches a later arm: fall through.
+    if _isinst(value, float):
+        num = value if type(value) is float else None
+        if num is None:
+            try:
+                # Base coercion to an exact float: a subclass
+                # ``__eq__``/``__ne__`` bomb used to blow the NaN/inf probes
+                # below (the modules5 rule).
+                num = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
+                return None
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            # A total impostor claiming float keeps the json9 None drop.
+            return None
+    if _isinst(value, str):
+        # Unbound str.encode, not the bound ``.encode``: ``str(x)`` of a str
+        # *subclass* whose ``__str__`` returns itself keeps the subclass, so a
+        # bound ``.encode`` dispatched into a leftover override — the json6
+        # self-``__str__`` encode bomb — and raised out of the error body.
+        # The unbound descriptor is bound to the real str layout, so a raise
+        # means "not really a str": a genuine bytes/container behind the
+        # lying claim falls through to the arm its real storage matches, and
+        # a total impostor keeps the json9 ``None`` drop.
         try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render the
-            # number at all — ``json.dumps`` raises the same ValueError this
-            # guard eats.  A str param is parse-capped before it can become an
-            # int, but YAML/plist hex text loads uncapped (``int(x, 16)`` is a
-            # power-of-two base), so an already-int leftover reached Starlette
-            # untouched and turned the coded 4xx into a 500 while encoding its
-            # own error body — the photoshub/immich ``_jsonable`` drop.
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+    if _isinst(value, (bytes, bytearray)):
+        # Unbound base decode, both bases first-come (the jobs13/nas13 rule):
+        # the old ``bytes(value)`` copy accepted *any* iterable of ints, so a
+        # genuine list claiming bytes rendered as garbage text instead of its
+        # own elements, while a total impostor's TypeError already dropped it.
+        # The unbound descriptors read the real byte storage — a subclass
+        # ``decode`` bomb cannot fire — and reject every foreign layout, so
+        # genuine container storage falls through to its own arm.
+        for base in (bytes, bytearray):
+            try:
+                return base.decode(value, "utf-8", "replace")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            # A total impostor claiming bytes keeps the json9 None drop.
             return None
-        return value
-    if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            if not isinstance(k, str):
-                try:
-                    k = str(k)
-                except Exception:
+    if _isinst(value, dict):
+        plain = value if type(value) is dict else None
+        if plain is None:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys(): a real subclass whose ``items()`` bombs used to
+            # vaporise its perfectly walkable entries to ``None`` even though
+            # the raise was absorbed (the json7 drop, recovered the maint14
+            # way), and one yielding non-pairs used to lose every entry.
+            try:
+                plain = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                plain = None
+        if plain is not None:
+            # Materialized (``list(...)``) before the walk: a nested value
+            # whose guarded hook mutates this mapping mid-walk must
+            # RuntimeError a live view iteration, never the snapshot.
+            try:
+                items = list(dict.items(plain))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
+                    # A key that cannot render (raising ``__str__``, a total
+                    # lying impostor, a default-repr heap address) drops just
+                    # this entry, keeps the rest of the mapping.
                     continue
-            k = k.encode("utf-8", "replace").decode("utf-8")
-            out[k] = _jsonable_param(v, depth + 1)
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable_param(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+                out[key] = _jsonable_param(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            # A total impostor claiming dict keeps the json9 None drop.
+            return None
+        # Genuine sequence storage behind a lying-dict ``__class__`` falls
+        # through: its elements render below instead of vanishing whole.
+    if _isinst(value, (list, tuple, set, frozenset)):
+        # Unbound base iteration, real layout first-come (the jobs13/nas13
+        # decode rule at sequence rank): the bound ``list(value)`` dispatched
+        # a real subclass's overridden ``__iter__``, so an iter-bomb whose
+        # C-level storage was perfectly walkable vaporised to ``None`` even
+        # though the raise was absorbed.  Materialized inside the try: an
+        # element whose hook mutates the container mid-walk cannot blow the
+        # comprehension below.  A total impostor (every base descriptor
+        # refuses it) keeps the json9 None drop.
+        for base in (list, tuple, set, frozenset):
+            try:
+                seq = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            return [_jsonable_param(v, depth + 1) for v in seq]
+        return None
+    try:
+        # getattr, not attribute access: a leftover whose ``isoformat`` is a
+        # *property that raises* (not a method) blew this lookup out of the
+        # sanitizer before ``callable`` ever ran — a raw 500 for the coded
+        # body.  A raising descriptor is not AttributeError, so the getattr
+        # default does not catch it; the try does.
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 a coded error body.
             return _jsonable_param(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
+    # The free-text tail is a *coercion*: a type that never overrode
+    # ``__str__``/``__repr__`` can only answer the default ``object.__repr__``
+    # — ``<X object at 0x7f...>``, a raw heap address — which used to serve
+    # verbatim inside the coded error's params.  The slot probe reads the
+    # real ``type(value)`` (a flickering ``__class__`` property cannot swap
+    # it) and the address belt drops a rendered heap address the probe cannot
+    # see (function / bound-method C-level reprs, a custom ``__repr__``
+    # embedding one).  Real str storage never reaches here — the str arm
+    # already returned it — so data quoting a repr stays verbatim.
+    if _default_repr(value):
+        return None
     try:
         text = str(value)
     except RecursionError:
         # Type name used to leak into params as ``"Recursing"`` and look like a
         # real stack id; drop the value instead.
         return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if not _isinst(text, str):
         return None
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+    return None if _ADDR_REPR_RE.search(text) else text
+
+
+def jsonable_error_detail(value):
+    """Sanitize a non-coded error body for Starlette's allow_nan=False encoder.
+
+    Coded errors go through ``error_payload`` and are cleaned there.  FastAPI's
+    own validation handler builds its body from the request, so it needs the
+    same treatment before the response is rendered.
+    """
+    return _jsonable_param(value)
+
+
+def _clean_code(code) -> str:
+    """Launder *code* to an exact, UTF-8-renderable str before it is used.
+
+    The code a caller hands ``error_payload`` used to reach the ``CODES``
+    lookup and the response body *raw*, so a leftover riding the code slot
+    500'd the error path four different ways:
+
+    * a str subclass whose ``__hash__`` raises blew ``CODES.get`` itself;
+    * a str subclass that hash-shadows a real code's slot and raises from
+      ``__eq__`` blew the same lookup during the collision probe (the dict
+      compares the *stored* exact key against the query, and the reflected
+      comparison dispatches into the subclass first);
+    * a lying-``__class__`` impostor claiming str skipped the str() coercion
+      and blew the unbound ``str.encode(message, ...)`` outside any try;
+    * a non-str object (or an exact str carrying a lone surrogate) rode into
+      ``detail["code"]`` untouched and 500'd Starlette's own render —
+      ``TypeError: not JSON serializable`` / ``UnicodeEncodeError``.
+
+    A genuine str subclass keeps its text (a hash-bomb wrapper around a real
+    code still answers that code's status), an impostor degrades through
+    ``str()``, and an unrenderable leftover drops to a stable placeholder —
+    the unknown-code 500 contract, but as valid JSON instead of a crash.
+
+    The ``str()`` degrade is a *coercion*, so it carries the json14 slot
+    probe + address belt (the account14 rule): a plain-object code used to
+    render its default ``object.__repr__`` — ``<X object at 0x7f...>``, a
+    raw heap address — verbatim into *both* the ``code`` and ``message``
+    slots of the built 500 body.  Real str storage stays data.
+    """
+    if _isinst(code, str):
+        try:
+            # Unbound str.encode: launders a genuine subclass to an exact str
+            # (dropping its __hash__/__eq__/encode overrides with it) and
+            # rejects a lying-``__class__`` impostor with TypeError.
+            return str.encode(code, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass  # not really a str — degrade through str() below
+    if _default_repr(code):
+        return "error.unrenderable"
+    try:
+        text = str(code)
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return "error.unrenderable"
+    return "error.unrenderable" if _ADDR_REPR_RE.search(text) else text
+
+
+class _FmtParam:
+    """One raw param, wrapped for ``str.format``'s eyes only.
+
+    ``error_payload`` formats the message template with *raw* params — the
+    clean loop runs after, and pre-coercing every value would change the
+    formatted text for healthy params (a datetime's ``__format__`` is not
+    its ``isoformat``).  But the format step is a *coercion* of every
+    non-str param it touches, and it used to run unbelted: a plain-object
+    param referenced by a ``{placeholder}`` rendered its default
+    ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap address —
+    straight into the coded error's ``message`` (json14, the account14
+    convention).  The proxy keeps healthy formatting byte-identical: real
+    str storage passes verbatim (data — an address-shaped substring in a
+    genuine str param stays), every other rendered text takes the slot
+    probe + address belt, and an unrenderable param raises so the caller's
+    existing net falls the message back to the raw template — exactly the
+    ``__format__``-bomb degrade the json7/json13 pins already fix.  Hook
+    raises (including BaseException bombs) propagate to that same net;
+    control flow keeps propagating out of it.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value):
+        self._value = value
+
+    def __format__(self, spec):
+        value = self._value
+        # The slot probe must also require a default ``__format__``: a type
+        # carrying its own ``__format__`` hook does *not* render the default
+        # repr, and pre-empting it would swallow the control flow the hook
+        # is allowed to raise (the json13 pass-through pin).
+        try:
+            fmt_default = type(value).__format__ is object.__format__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            fmt_default = True
+        if fmt_default and _default_repr(value):
+            raise ValueError("param can only render a heap address")
+        # A hook raise (the json7 __format__ bomb, its json13 BaseException
+        # twin, or genuine control flow) propagates to error_payload's net.
+        text = format(value, spec)
+        if _real(value, str):
+            return text
+        if _ADDR_REPR_RE.search(text):
+            raise ValueError("param formatted to a heap address")
+        return text
+
+    def __str__(self):
+        # ``{name!s}`` converts before formatting — same probe + belt.
+        return self.__format__("")
+
+    def __repr__(self):
+        # ``{name!r}`` (no CODES template uses it, but a laundered unknown
+        # code carrying one must not render the proxy's own default repr —
+        # that would be a heap address too).  A repr is always a coercion,
+        # so the belt applies unconditionally.
+        text = repr(self._value)
+        if _ADDR_REPR_RE.search(text):
+            raise ValueError("param reprs to a heap address")
+        return text
 
 
 def jsonable_error_detail(value):
@@ -580,22 +1148,49 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     it), so it needs the body directly.  Sharing this builder keeps middleware
     rejections translatable instead of falling back to hardcoded prose.
     """
+    # Launder first: CODES keys are exact strs, so once the code is one too
+    # the lookup below cannot dispatch into a leftover __hash__/__eq__.
+    code = _clean_code(code)
     status, template = CODES.get(code, (500, code))
     try:
-        message = template.format(**params) if params else template
-    except (KeyError, IndexError, ValueError, TypeError, RecursionError, OverflowError):
+        # ``_FmtParam`` wrappers: the format step coerces every referenced
+        # non-str param, and used to serve a default ``object.__repr__``
+        # heap address verbatim in the message (json14).  Unreferenced
+        # params stay dormant, exactly as before — ``str.format`` only
+        # renders the fields the template names.
+        if params:
+            message = template.format(
+                **{k: _FmtParam(v) for k, v in params.items()})
+        else:
+            message = template
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # RecursionError: leftover recursive ``__format__``/``__str__`` is not
-        # ValueError; OverflowError: leftover inf width/precision. Either used
-        # to 500 every coded error after callers already sanitized params.
+        # ValueError; OverflowError: leftover inf width/precision.  A leftover
+        # param referenced by a ``{placeholder}`` is formatted *raw*, before
+        # the clean loop below sees it, so a subclass ``__format__``/``__str__``
+        # bomb (RuntimeError, not one of the arithmetic errors) used to raise
+        # straight out here — a raw 500 for the coded error's own body.
+        # ``except BaseException``: the json9 guard stopped at ``Exception``,
+        # so the same bomb raising a *BaseException* subclass kept 500'ing
+        # every coded route that formatted the poisoned param — the format
+        # step runs before ``_jsonable_param`` can drop the value.
         message = template
     # Leftover ``\\ud800`` in a formatted param used to 500 the error body
     # under Starlette's UTF-8 encode even after params themselves were cleaned.
     if not isinstance(message, str):
         try:
             message = str(message)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             message = template if isinstance(template, str) else code
-    message = message.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode: ``str.format`` yields an exact str, but the
+    # ``str(message)`` fallback above keeps a str *subclass* whose ``__str__``
+    # returns itself, so a bound ``.encode`` could dispatch into a leftover
+    # override — the json6 self-``__str__`` encode bomb.
+    message = str.encode(message, "utf-8", "replace").decode("utf-8")
     detail: dict = {"code": code, "message": message}
     if params:
         clean = {}
@@ -603,9 +1198,11 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
             if not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            k = str.encode(k, "utf-8", "replace").decode("utf-8")
             clean[k] = _jsonable_param(v)
         detail["params"] = clean
     return status, {"detail": detail}
@@ -638,21 +1235,96 @@ def exc_detail(exc, cap: int = 200) -> str:
     # _nginx_pair().  Unwrap it: a bare code is what errText() translates, and
     # a params-bearing error keeps the already-formatted English message
     # because errText() would only surface its unfilled {placeholders}.
-    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
-        detail = exc.detail
-        picked = detail.get("message") if detail.get("params") else detail.get("code")
-        if isinstance(picked, str) and picked:
-            return picked.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
+    try:
+        # One read, inside a try: a leftover HTTPException subclass whose
+        # ``detail`` is a *raising property* used to blow the unwrap itself
+        # (and ``isinstance`` reads a raising ``__class__`` — the json8 rule).
+        detail = exc.detail if _isinst(exc, HTTPException) else None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        detail = None
+    if _isinst(detail, dict):
+        # Unbound dict.get, each lookup in its own try: a detail dict
+        # *subclass* whose bound ``.get`` is overridden to raise, and a stored
+        # key that hash-shadows "params"/"message"/"code" with a raising
+        # ``__eq__`` (the dict compares the *stored* key against the query)
+        # each used to raise straight out of the coded-error path.  Per-field
+        # guards keep the healthy siblings answering instead of dropping the
+        # whole unwrap to the repr tail.
+        try:
+            params = dict.get(detail, "params")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            params = None
+        try:
+            has_params = bool(params)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A params value whose ``__bool__`` bombs is still params-bearing
+            # — keep the already-formatted message like any coded error whose
+            # params filled its {placeholders}.
+            has_params = True
+        try:
+            picked = dict.get(detail, "message" if has_params else "code")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            picked = None
+        if picked is None and has_params:
+            # The message slot is missing or hash-shadowed by a bomb key —
+            # a bare code still beats the dict-repr tail below.
+            try:
+                picked = dict.get(detail, "code")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                picked = None
+        if _isinst(picked, str):
+            try:
+                text = str.encode(picked, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A lying-``__class__`` impostor claiming str rejects the
+                # unbound encode — fall through to the guarded str(exc) tail.
+                text = ""
+            # Truthiness on the laundered *exact* str: ``and picked`` used to
+            # dispatch into a str-subclass ``__bool__`` bomb.
+            if text:
+                return text[: max(0, cap)]
     try:
         text = str(exc)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "error"
     if not isinstance(text, str):
         try:
             text = str(text)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return "error"
-    return text.encode("utf-8", "replace").decode("utf-8")[: max(0, cap)]
+    # Unbound base encode: ``str(exc)`` hands back the exception's *message
+    # object* when it is already a str — a str-subclass ``encode`` bomb riding
+    # an exception message used to raise out of the coded-error path itself
+    # and turn the coded response into an uncoded 500.
+    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    if _ADDR_REPR_RE.search(text):
+        # ``str(exc)`` renders the exception's *message objects*, so a
+        # leftover raising with a junk arg answered the default
+        # ``object.__repr__`` — ``<X object at 0x7f...>``, a raw heap
+        # address — verbatim inside a coded error's own params (json14; the
+        # belt belongs at the seam where the exception is coerced).  Degrade
+        # to the same ``"error"`` token every other unreadable-message arm
+        # answers — the bookmarks14 ``_error_text`` seam builds on exactly
+        # that token.  Real str storage picked from a coded ``detail`` dict
+        # returned above, untouched.
+        return "error"
+    return text[: max(0, cap)]
 
 
 def api_error(code: str, /, **params) -> HTTPException:
@@ -661,5 +1333,90 @@ def api_error(code: str, /, **params) -> HTTPException:
     Unknown codes degrade to HTTP 500 with the code as the message rather than
     raising, so a typo in a rarely-hit branch never masks the real failure.
     """
+    status, body = error_payload(code, **params)
+    return HTTPException(status, body["detail"])
+
+
+def api_error_from(exc) -> HTTPException:
+    """:func:`api_error` from a typed service error's ``code``/``params`` slots.
+
+    Routers translate typed service errors (WireGuardError, NfsConfigError,
+    RaidError, ShareValidationError, ShareAclError) into coded HTTP errors
+    inside their ``except`` clauses.  The old shape read ``exc.code`` bare and
+    unpacked ``**exc.params`` *at the call site* — one step ahead of every
+    guard ``error_payload`` carries — so a leftover subclass riding the
+    typed-error seam turned the coded 4xx into a raw HTTP 500 four ways:
+
+    * ``code`` as a *raising property* blew the attribute read itself;
+    * ``params`` as a raising property did the same;
+    * a non-mapping ``params`` TypeError'd CPython's ``**`` keyword rebuild
+      before the call even began;
+    * a mapping carrying a non-str key blew the same rebuild with
+      "keywords must be strings".
+
+    Guarded reads instead: an unreadable/absent code takes the same
+    ``error.unrenderable`` placeholder as :func:`_clean_code` (the
+    unknown-code 500 contract, as valid JSON instead of a crash); the params
+    mapping is rebuilt over unbound ``dict.items`` — the C-level storage,
+    matching what a healthy ``**`` unpack reads, so a subclass ``items()``
+    bomb cannot vaporize honest entries — with each key laundered to an
+    exact str and each unusable entry dropped alone.  Values stay raw here:
+    ``error_payload`` already launders them, and pre-coercing would change
+    the formatted message for healthy params.
+
+    ``except BaseException`` on every guard (the modules12/logs12 rule): the
+    json12 seam stopped at ``Exception``, so the *same four shapes* raising a
+    BaseException subclass out of their hooks sailed past every catch above
+    and 500'd the same converted routes all over again — the property read,
+    the items rebuild and the key laundering each re-opened one step of the
+    seam they had just sealed.  Only genuine control flow keeps propagating.
+    """
+    try:
+        code = getattr(exc, "code", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``code`` property is not AttributeError, so the getattr
+        # default does not catch it; the try does.
+        code = None
+    if code is None:
+        code = "error.unrenderable"
+    try:
+        raw = getattr(exc, "params", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        raw = None
+    params: dict = {}
+    if _isinst(raw, dict):
+        try:
+            items = list(dict.items(raw))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying-``__class__`` impostor claiming dict rejects the
+            # unbound read — the code alone still answers its status.
+            items = []
+        for entry in items:
+            try:
+                k, v = entry
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            if not _isinst(k, str):
+                try:
+                    k = str(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            try:
+                key = str.encode(k, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            params[key] = v
     status, body = error_payload(code, **params)
     return HTTPException(status, body["detail"])

@@ -18,6 +18,9 @@ from pathlib import Path
 
 from hub import cli_args
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: One signature per known service.
 #:   procs: lowercase process-name tokens.  Matched exact or by prefix in
 #:          either direction, because `lsof` truncates COMMAND (e.g. a
@@ -186,18 +189,49 @@ _RUNTIMES = {
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 #: lsof/ps encode a space in COMMAND as ``\x20`` (hex) or ``\040`` (octal)
@@ -209,7 +243,7 @@ _C_OCT_ESC = re.compile(r"\\([0-7]{3})")
 
 def unescape_proc_name(name: str) -> str:
     """Decode C-style byte escapes that lsof and ps leave in a process name."""
-    raw = str(name or "")
+    raw = _utf8_text(name)
     if "\\" not in raw:
         return raw
 
@@ -341,7 +375,13 @@ def parse_signature(raw) -> dict | None:
     """Normalise one operator-defined signature, or None if it is unusable."""
     if not isinstance(raw, dict):
         return None
-    slug = re.sub(r"[^a-z0-9]+", "-", str(raw.get("slug") or "").lower()).strip("-")
+    # _utf8_text (a str() probe), not bare str(): a hand-edited hex slug
+    # (``slug: 0xfff…`` loads uncapped through YAML) raised the int->str
+    # digit-cap ValueError here, which 500'd GET/PUT/DELETE
+    # /api/services/signatures and silently wiped every discovery row that
+    # reads configured_signatures().  A numeric YAML slug (``slug: 123``)
+    # still coerces; the over-cap leftover drops only its own row.
+    slug = re.sub(r"[^a-z0-9]+", "-", _utf8_text(raw.get("slug") or "").lower()).strip("-")
     if not slug:
         return None
     raw_procs = raw.get("procs")
@@ -371,7 +411,9 @@ def parse_signature(raw) -> dict | None:
     http = raw.get("http")
     if http not in (True, False, None):
         http = None
-    brew = str(raw.get("brew") or "").strip()
+    # Same str() probe: an over-cap ``brew:`` leftover drops the field, not
+    # the row (and never the whole signatures listing).
+    brew = _utf8_text(raw.get("brew") or "").strip()
     if brew and not cli_args.is_safe_positional(brew):
         brew = ""
     return {
@@ -391,7 +433,9 @@ def configured_signatures() -> list[dict]:
         from hub.config import cfg
 
         raw = cfg().get("service_signatures") or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     if not isinstance(raw, list):
         return []
@@ -433,7 +477,9 @@ def control_commands(formula: str | None) -> dict:
         from hub.paths import BREW
 
         brew = BREW if Path(BREW).is_file() else "brew"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         brew = "brew"
     return {
         "via": "brew",

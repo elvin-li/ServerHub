@@ -26,6 +26,16 @@ from hub.util import read_text_capped
 
 security = HTTPBasic(auto_error=False)
 
+#: Real control flow must keep propagating even through the bomb guards
+#: (the modules12/logs12 convention): swallowing a Ctrl-C or an interpreter
+#: shutdown to save one config read would turn the sanitizer into a hang.
+#: Everything else BaseException-shaped that a leftover raises out of its
+#: own hooks is a bomb like any other — and these helpers back GET
+#: /api/auth/status, POST /api/auth/login, POST /api/auth/change-password
+#: and every session-cookie check at once, so a raise out of any one guard
+#: here is a raw HTTP 500 across the whole account surface by definition.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 COOKIE_NAME = "serverhub_session"
 MIN_PASSWORD_LENGTH = 10
 SESSION_TTL = 7 * 24 * 3600
@@ -47,12 +57,350 @@ _LOGIN_WINDOW = 300.0
 _LOGIN_SWEEP_AT = 512
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    The ``hub.jobs._isinst`` rule, which these auth readers never got:
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew every bare ``isinstance`` gate in this module —
+    at cfg root, ``settings``, ``settings.auth``, the ``accounts`` list, a
+    row, a row's ``resources`` and the ``session_epochs`` mapping/value
+    ranks — straight out of GET /api/auth/status, POST /api/auth/login,
+    every session-cookie check (``verify_session`` → ``accounts()``) and
+    the ``require_auth`` local-client path at once.  Fails closed to
+    False: a value that cannot even answer what it is, is junk.
+
+    ``except BaseException``: the earlier guard stopped at ``Exception``,
+    so a leftover whose ``__class__`` property raises a *BaseException*
+    subclass (the watchdog/timeout shape the modules12/logs12/json13
+    sweeps sealed on their own surfaces) sailed past this catch — and past
+    every sibling guard in this module, because each one stopped at
+    ``Exception`` too — planted at any config rank it 500'd GET
+    /api/auth/status, POST /api/auth/login, POST /api/auth/change-password
+    and every session-cookie check raw.  Only genuine control flow keeps
+    propagating.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage is this type.
+
+    The ``hub.jobs._real`` rule: ``type(value)`` reads the C-level type
+    slot, which a lying ``__class__`` property cannot swap, so this is the
+    probe for the recover-the-real-storage arms below.  ``_isinst`` honours
+    the lie (that is its job — a raising property must fail closed), which
+    means it must not gate an arm whose *absence* throws honest storage
+    away: a genuine int logout counter whose ``__class__`` lied ``bool``
+    used to read as 0 through ``_epoch_count`` and quietly un-revoke every
+    session its bump had revoked.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth test hidden in
+    ``a.get(key) or default`` used to detonate a junk config value whose
+    ``__bool__`` raises and 500 login / status.  Fails closed to False —
+    a bomb value is junk, not a credential or a name.
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__bool__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — one such leftover on
+        # the stored username slot 500'd the unauthenticated GET
+        # /api/auth/status and every login through ``_pick``.
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that a leftover ``__bool__`` bomb cannot 500."""
+    return value if _truthy(value) else fallback
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which these auth readers never
+    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get``
+    raises, and one such block planted as the config root / ``settings`` /
+    ``settings.auth`` used to raise out of :func:`_auth_cfg` and 500
+    GET /api/auth/status, POST /api/auth/login and — through
+    ``verify_session`` — every route behind a session cookie at once.
+    ``dict.get`` reads the real storage underneath the override, so a
+    subclass that only poisoned its method keeps its sane data.
+    """
+    if not _isinst(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``.get`` bomb raising a *BaseException* subclass used to sail
+        # past the ``except Exception`` here, one line ahead of the
+        # dict.get salvage below (the logs12/notify12 rule) — planted as
+        # the ``settings`` block it 500'd status/login/cookie checks raw.
+        try:
+            return dict.get(mapping, key)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+
+
+def _mapping_items(mapping) -> list:
+    """(key, value) pairs that a dict-subclass ``items()`` bomb cannot 500.
+
+    ``dict.items`` reads the C-level storage underneath the override (the
+    modules5 unbound convention), so a poisoned ``session_epochs`` mapping
+    keeps its real logout counters instead of 500ing every login.
+    """
+    if not _isinst(mapping, dict):
+        return []
+    try:
+        return list(mapping.items())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # An ``items()`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here — planted as the
+        # ``session_epochs`` mapping it 500'd every login and cookie
+        # check through ``account_session_version``.
+        try:
+            return list(dict.items(mapping))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return []
+
+
+def _iter_list(value) -> list:
+    """Elements of a list, guarded against both bomb shapes at once.
+
+    Unbound ``list.__iter__`` (the modules rule) reads the C-level storage,
+    so a list-*subclass* ``__iter__`` bomb as ``accounts`` / ``resources``
+    yields its real elements instead of 500ing login.  But the same unbound
+    call is a *descriptor* that type-checks its operand, so a leftover whose
+    ``__class__`` property lies ``list`` — passing the ``_isinst`` gate one
+    line up while its real type is not a list underneath — TypeError'd the
+    call itself (``descriptor '__iter__' requires a 'list' object``) and rode
+    that raise straight out of ``accounts`` / ``_account_rows``, 500ing every
+    login and session-cookie check through ``verify_session``.  The
+    ``_mapping_get`` / ``_mapping_items`` rule, which this reader never got:
+    fail closed to an empty walk, so a value that only pretends to be a list
+    is treated as no list at all rather than a server error.
+    """
+    try:
+        return list(list.__iter__(value))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Same union rule as every sibling guard: a raise the unbound walk
+        # cannot answer fails closed to an empty list, whatever its base.
+        return []
+
+
 def _auth_cfg() -> dict:
-    settings = cfg().get("settings")
-    if not isinstance(settings, dict):
+    """``settings.auth`` as a *plain* mapping — hostile subclasses laundered.
+
+    Bound ``.get`` on the config root / settings block used to detonate a
+    leftover dict-subclass ``.get`` bomb (see :func:`_mapping_get`), and the
+    block itself is rebuilt through unbound ``dict.items`` — the C-level
+    storage, same as ``config.settings_section`` — so every downstream
+    ``a.get(...)`` and ``or`` truth test in this module reads plain data.
+    Nested values (``session_epochs``, ``accounts`` rows) keep their own
+    guards.
+
+    The ``cfg()`` call is guarded (the ``config.settings_section`` /
+    ``jobs.maintenance_tasks`` union rule): a snapshot provider that raises
+    used to escape this helper and 500 GET /api/auth/status, login and every
+    cookie check while the guarded settings readers answered 200 over the
+    very same failure.
+
+    Keys are laundered to *exact* str: ``dict(auth)`` copied an exact-dict
+    source through the C level, which preserved a leftover str-*subclass*
+    key whose ``__eq__``/``__hash__`` raises — every later ``a.get("…")``
+    probe that landed on its hash slot then detonated the comparison from
+    inside a plain dict, 500ing login/status/cookie checks with no method
+    override left to bypass.  ``str.__str__`` reads the real text under the
+    override; non-str keys are junk for this block's string-keyed readers
+    and are dropped (``session_epochs``' own int keys live one level down,
+    untouched).
+    """
+    try:
+        root = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A snapshot provider raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 GET
+        # /api/auth/status, login and every cookie check while the guarded
+        # settings readers answered 200 over the very same failure.
         return {}
-    auth = settings.get("auth")
-    return auth if isinstance(auth, dict) else {}
+    settings = _mapping_get(root, "settings")
+    auth = _mapping_get(settings, "auth")
+    if not _isinst(auth, dict):
+        return {}
+    out: dict[str, object] = {}
+    for k, v in _mapping_items(auth):
+        if type(k) is str:
+            out[k] = v
+        elif _isinst(k, str):
+            try:
+                out[str.__str__(k)] = v
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    return out
+
+
+def _epoch_key(key) -> str:
+    """A ``session_epochs`` mapping key as the account name it stands for.
+
+    YAML round-trips an all-digit account name (``2024:``) as an *int* key
+    and true/false-ish names as bools, so the strict string ``.get()``
+    missed the row entirely: ``_session_epoch`` read 0 for that account and
+    every pre-logout token kept verifying, ``bump_session_epoch`` wrote a
+    second (string) spelling *below* the real counter, and
+    ``delete_account`` left the stale row behind.  The same ``str()`` probe
+    as :func:`accounts` usernames (``_cfg_text``): an over-cap hex int key
+    reads as "" and is dropped, and a lone-surrogate key is dropped rather
+    than carried into a lookup key nothing can ever match.
+    """
+    text = _cfg_text(key).strip()
+    return text if _utf8_ok(text) else ""
+
+
+def _epoch_count(raw) -> int:
+    """One ``session_epochs`` value as a usable logout counter.
+
+    Bool/None/inf/garbage read as 0.  An int past CPython's int->str digit
+    cap reads as 1, not 0: the account has logged out at least once, so
+    pre-logout tokens (whose version omits the epoch) must stay revoked.
+    """
+    # _real, not _isinst: isinstance consults ``raw.__class__`` when the
+    # real-type check misses, so a genuine *int* counter whose ``__class__``
+    # lied ``bool`` was steered into this arm and read as 0 — logout had
+    # answered 200 and recorded the bump, and every "revoked" cookie
+    # quietly went back to verifying for its full TTL.  ``type(raw)`` reads
+    # the C-level slot the lie cannot swap: honest int storage keeps its
+    # count, a real bool (a final type — nothing genuine hides behind the
+    # claim) still reads 0, and a raising ``__class__`` property no longer
+    # matters because the probe never consults it.
+    if raw is None or _real(raw, bool):
+        return 0
+    try:
+        value = int(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # TypeError/ValueError/OverflowError for ordinary junk, plus a
+        # leftover ``__int__`` / ``__index__`` bomb — junk counts as 0.
+        # An ``__int__`` bomb raising a *BaseException* subclass used to
+        # sail past the ``except Exception`` here and 500 every login and
+        # cookie check through ``_session_epoch``.
+        return 0
+    try:
+        str(value)
+    except ValueError:
+        return 1
+    return value
+
+
+def _clean_epochs(raw) -> dict:
+    """``session_epochs`` rows that YAML can re-dump, keyed by account name.
+
+    A leftover unrenderable-int epoch (or key) rode along untouched in every
+    auth write and ValueError'd ``yaml.safe_dump`` inside ``config.mutate`` --
+    setup, password changes and the TOTP epoch bump all 500'd on it.
+
+    Keys are normalised through :func:`_epoch_key`, so an int-keyed leftover
+    for a numeric account name folds onto its string spelling; when both
+    spellings exist the *larger* counter wins, so neither copy can quietly
+    un-revoke sessions the other had already revoked.
+    """
+    if not _isinst(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in _mapping_items(raw):
+        key = _epoch_key(k)
+        if not key:
+            continue
+        count = _epoch_count(v)
+        if key in out:
+            count = max(count, out[key])
+        out[key] = count
+    return out
+
+
+#: Sentinel for :func:`_renderable`: the row/element carrying the value is
+#: dropped rather than written back as None (a None epoch or resource would
+#: change meaning; a vanished junk row cannot).
+_DROP = object()
+
+
+def _renderable(value, depth: int = 0):
+    """The auth-block subtree with unrenderable-int leftovers dropped.
+
+    ``_clean_epochs`` already pins ``session_epochs``, but a leftover
+    over-cap int *anywhere else* in ``settings.auth`` (a stray hand-edited
+    field, an explicit-key ``? 0x…`` mapping key, junk inside an accounts
+    row) still rode along in every auth write and ValueError'd
+    ``yaml.safe_dump`` inside ``config.mutate``.  ``_dump`` degrades that to
+    a coded 503, which meant: change-password and setup could never succeed
+    again, TOTP confirm enabled 2FA and then *lost the recovery codes* in a
+    503, and logout answered 200 while the epoch bump silently failed — the
+    "revoked" cookie stayed valid for its full 7-day TTL.
+
+    Only ints past CPython's int->str digit cap are dropped: they cannot be
+    re-serialized at all, so keeping them makes every future auth write
+    fail.  Everything else (surrogates included — PyYAML escapes them) is
+    preserved byte-for-byte.
+    """
+    if depth > 32:
+        return value
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            return _DROP
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, int) and not isinstance(k, bool):
+                try:
+                    str(k)
+                except ValueError:
+                    continue
+            cleaned = _renderable(v, depth + 1)
+            if cleaned is _DROP:
+                continue
+            out[k] = cleaned
+        return out
+    if isinstance(value, (list, tuple)):
+        return [c for c in (_renderable(v, depth + 1) for v in value) if c is not _DROP]
+    return value
 
 
 def _renderable(value) -> bool:
@@ -93,6 +441,12 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
     ``setdefault("settings", {})`` returns a pre-existing list, and
     ``dict(settings.get("auth") or {})`` raises on ``auth: []``.  Password
     setup and account writes used to 500 in both cases.
+
+    The block is also passed through :func:`_renderable` so an over-cap int
+    leftover cannot poison ``yaml.safe_dump`` for every future auth write.
+    ``_clean_epochs`` runs first: it maps an unrenderable epoch *value* to 1
+    (the account has logged out at least once), which the generic scrub must
+    not pre-empt by dropping the row to 0.
     """
     settings = data.get("settings")
     if not isinstance(settings, dict):
@@ -102,17 +456,171 @@ def _auth_block(data: dict) -> tuple[dict, dict]:
     auth = dict(auth) if isinstance(auth, dict) else {}
     if "session_epochs" in auth:
         auth["session_epochs"] = _clean_epochs(auth.get("session_epochs"))
+    auth = _renderable(auth)
+    if auth is _DROP or not isinstance(auth, dict):
+        auth = {}
     return settings, auth
 
 
 def _account_rows(auth_cfg: dict) -> list[dict]:
-    rows = auth_cfg.get("accounts") if isinstance(auth_cfg, dict) else None
-    return [dict(e) for e in rows if isinstance(e, dict)] if isinstance(rows, list) else []
+    # _isinst at list and row rank: a ``__class__``-property bomb planted as
+    # the accounts value (or one row) used to raise out of the bare
+    # isinstance gates and 500 the account writers.
+    rows = _mapping_get(auth_cfg, "accounts")
+    if not _isinst(rows, list):
+        return []
+    out: list[dict] = []
+    # Unbound iteration + a laundered rebuild: a list-subclass __iter__
+    # bomb, or a row whose own keys()/__iter__ raises, costs itself only.
+    #
+    # Row *keys* are laundered to exact str, the :func:`_auth_cfg` rule this
+    # copy never got: ``dict(e)`` of an exact-dict row takes CPython's fast
+    # path — entries move over with their *cached* hashes, no ``__hash__`` /
+    # ``__eq__`` runs — so a leftover str-subclass key whose hash shadows
+    # ``"username"`` while its ``__eq__`` raises survived the copy intact.
+    # Every later plain ``row.get("username")`` probe that landed on its
+    # slot then detonated the comparison from inside the C-level lookup of
+    # an exact dict, with no method override left to bypass —
+    # ``set_account_password``'s accounts-list membership walk rode that
+    # raise straight out of POST /api/auth/change-password and the
+    # administrator reset endpoint as a raw 500.  ``str.__str__`` reads the
+    # real text underneath the override, so a bombed-but-clean key keeps
+    # its field; non-str keys (YAML int/bool spellings) pass through — they
+    # cannot shadow a string probe, and richcompare answers NotImplemented
+    # for them without consulting any override.
+    for e in _iter_list(rows):
+        if not _isinst(e, dict):
+            continue
+        pairs = _mapping_items(e)
+        if not pairs:
+            # No readable pairs: either a genuinely empty row (keep it,
+            # matching the old ``dict(e)`` copy) or junk that cannot even
+            # answer its items (drop it, matching the old failed copy).
+            try:
+                if dict.__len__(e) == 0:
+                    out.append({})
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                pass
+            continue
+        row: dict = {}
+        for k, v in pairs:
+            try:
+                if type(k) is str:
+                    row[k] = v
+                elif _isinst(k, str):
+                    row[str.__str__(k)] = v
+                else:
+                    row[k] = v
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A lying ``__class__`` that answers str (the unbound copy
+                # TypeErrors) or a key whose re-hash bombs: that one field
+                # is unreadable either way — drop it, keep its siblings,
+                # whatever base the raise rides on.
+                continue
+        out.append(row)
+    return out
 
 
 def _utf8(text: str) -> bytes:
-    """UTF-8 bytes of *text*.  Lone surrogates must not 500 login or setup."""
-    return str(text).encode("utf-8", "surrogatepass")
+    """UTF-8 bytes of *text*.  Lone surrogates must not 500 login or setup.
+
+    Unbound ``str.encode`` on an exact str (the json6 ``_utf8_text`` rule):
+    ``str(x)`` of a str *subclass* whose ``__str__`` returns itself keeps the
+    subclass, so the bound ``.encode`` dispatched into a leftover override —
+    a bomb there raised out of ``account_session_version`` past
+    ``verify_session``'s catch list and 500'd every cookie check.
+    """
+    value = text if isinstance(text, str) else str(text)
+    if type(value) is not str:
+        value = str.__str__(value)
+    return str.encode(value, "utf-8", "surrogatepass")
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f…>`` and the function /
+#: bound-method variants) — a raw heap address, never account or config data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _cfg_text(raw) -> str:
+    """``str()`` of a config value that cannot 500 login / status / setup.
+
+    YAML hex (``0x…``) parses through ``int(x, 16)``, which CPython's
+    str↔int digit cap does not bound, so a leftover >4300-digit integer in
+    ``settings.auth`` loads fine and then ValueError'd ``str()`` — every
+    login attempt (``accounts()``), the unclaimed GET /api/auth/status
+    (``suggested_setup_username``) and ``setup_token_mode`` returned 500.
+
+    Broad catch, not just ValueError (the ``backups._cfg_text`` rule): a
+    leftover int-subclass ``__str__`` bomb as a ``session_epochs`` key used
+    to raise past the digit-cap guard and 500 every login through
+    :func:`_session_epoch`.
+
+    Laundered to an *exact* str (the json6 ``panel_locale`` rule):
+    ``str(x)`` of a str subclass whose ``__str__`` returns itself keeps the
+    subclass, so every downstream bound dispatch reflected into leftover
+    overrides — ``.strip()`` in :func:`accounts` / :func:`_epoch_key` /
+    :func:`setup_token_mode`, ``.startswith`` in :func:`verify_password` /
+    :func:`verify_account_password`, ``in ROLES`` / ``not in ("",
+    "change-me")`` reflected ``__eq__``, and the resources walk — and one
+    such value planted anywhere in ``settings.auth`` 500'd GET
+    /api/auth/status, POST /api/auth/login and every session-cookie check
+    at once.
+
+    Real str storage reads through *unbound* ``str.__str__`` (the jobs14
+    ``_str_text`` rule, which this reader never got): the old dispatching
+    ``str(raw)`` ran the subclass override first, so a genuine str hash
+    riding a ``__str__`` bomb read as "" — the administrator's own
+    sessions stopped verifying and every login 401'd — and a genuine str
+    *username* of a member row read as "" and dropped the whole account,
+    even though the honest text was sitting in the C-level storage the
+    unbound descriptor reads.  Real str data stays verbatim: no repr belt
+    runs on this arm.
+
+    Only a type that renders *itself* may coerce (the jobs14 slot-probe
+    rule): the coercion arm ran ``str()`` on any leftover shape, and for a
+    type that never overrode ``__str__`` / ``__repr__`` the answer is the
+    default ``object.__repr__`` — ``<X object at 0x7f…>``, a raw heap
+    address — which rode verbatim into the *unauthenticated* GET
+    /api/auth/status suggested username, into GET /api/auth/accounts as an
+    account name and its resources, and into the POST /api/auth/login
+    response body.  The probe reads the real ``type(raw)`` slots, so a
+    flickering ``__class__`` property cannot steer it.  The address-regex
+    belt catches what the slot probe cannot see: a function / bound-method
+    leftover (C-level ``__repr__``) and an exception whose *message
+    object* renders a default repr (``RuntimeError(<X object at 0x…>)``).
+    Both scrubs run on the coercion arm only.
+    """
+    if _real(raw, str):
+        try:
+            return str.__str__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        cls = type(raw)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(raw)
+        if type(text) is not str:
+            text = str.__str__(text)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__str__`` bomb raising a *BaseException* subclass used to
+        # sail past the broad-but-Exception catch here — one such value on
+        # the stored hash slot 500'd status/login/cookie checks at once.
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _cfg_text(raw) -> str:
@@ -131,11 +639,19 @@ def _cfg_text(raw) -> str:
 
 
 def _utf8_ok(text: str) -> bool:
-    """False for leftover YAML ``\\ud800`` — Starlette's JSON encoder rejects it."""
+    """False for leftover YAML ``\\ud800`` — Starlette's JSON encoder rejects it.
+
+    Unbound ``str.encode`` + broad catch: a str-subclass ``encode`` bomb
+    used to raise past the UnicodeEncodeError-only catch.  The unbound call
+    reads the real text underneath the override, so a bombed-but-clean name
+    still answers True; anything else unanswerable fails closed to False.
+    """
     try:
-        text.encode("utf-8")
+        str.encode(text, "utf-8")
         return True
-    except UnicodeEncodeError:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -188,12 +704,14 @@ def accounts() -> dict[str, dict]:
     a = _auth_cfg()
     out: dict[str, dict] = {}
 
-    legacy_name = _cfg_text(a.get("username") or "admin").strip() or "admin"
+    # _pick, not ``or``: a leftover value whose ``__bool__`` raises used to
+    # detonate the truth test and 500 every login and cookie check.
+    legacy_name = _cfg_text(_pick(a.get("username"), "admin")).strip() or "admin"
     if not _utf8_ok(legacy_name):
         # Lone-surrogate leftover: keep the hash under the default name so
         # setup/status can still JSON-encode a suggested username.
         legacy_name = "admin"
-    legacy_hash = _cfg_text(a.get("password_hash") or a.get("password") or "")
+    legacy_hash = _cfg_text(_pick(a.get("password_hash"), _pick(a.get("password"), "")))
     if legacy_hash and ":" not in legacy_name:
         out[legacy_name] = {
             "username": legacy_name,
@@ -203,27 +721,32 @@ def accounts() -> dict[str, dict]:
         }
 
     rows = a.get("accounts")
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         rows = []
-    for raw in rows:
-        if not isinstance(raw, dict):
+    # _iter_list / _mapping_get / _pick / _isinst: a list-subclass
+    # ``__iter__`` bomb as the accounts list, a dict-subclass ``.get`` bomb
+    # as one row, a ``__bool__`` bomb in any field and a ``__class__``-
+    # property bomb at list/row/resources rank each used to 500 every login
+    # instead of costing (at most) the one poisoned row.
+    for raw in _iter_list(rows):
+        if not _isinst(raw, dict):
             continue
-        name = _cfg_text(raw.get("username") or "").strip()
+        name = _cfg_text(_pick(_mapping_get(raw, "username"), "")).strip()
         if not name or ":" in name or not _utf8_ok(name):
             continue
-        role = _cfg_text(raw.get("role") or ROLE_MEMBER)
+        role = _cfg_text(_pick(_mapping_get(raw, "role"), ROLE_MEMBER))
         if role not in ROLES:
             role = ROLE_MEMBER
-        raw_res = raw.get("resources")
+        raw_res = _mapping_get(raw, "resources")
         resources = [
-            _cfg_text(r) for r in raw_res
+            _cfg_text(r) for r in _iter_list(raw_res)
             if _cfg_text(r).strip() and _utf8_ok(_cfg_text(r))
-        ] if isinstance(raw_res, list) else []
+        ] if _isinst(raw_res, list) else []
         # An explicit entry wins over the legacy pair for the same name, so
         # promoting the admin into the accounts list is a safe migration.
         out[name] = {
             "username": name,
-            "password_hash": _cfg_text(raw.get("password_hash") or ""),
+            "password_hash": _cfg_text(_pick(_mapping_get(raw, "password_hash"), "")),
             "role": role,
             "resources": resources,
         }
@@ -282,12 +805,17 @@ def may_use_resource(username: str | None, resource: str | None) -> bool:
 
 
 def _auth_is_claimed(auth_cfg: dict) -> bool:
-    """Whether this auth mapping already has a usable credential."""
-    if not isinstance(auth_cfg, dict):
+    """Whether this auth mapping already has a usable credential.
+
+    _mapping_get / _truthy / _pick: a ``.get`` or ``__bool__`` bomb here
+    used to 500 the unauthenticated GET /api/auth/status.  A junk bomb
+    value reads as "no credential", same as any other unusable leftover.
+    """
+    if not _isinst(auth_cfg, dict):
         return False
-    if auth_cfg.get("password_hash"):
+    if _truthy(_mapping_get(auth_cfg, "password_hash")):
         return True
-    return _cfg_text(auth_cfg.get("password") or "") not in ("", "change-me")
+    return _cfg_text(_pick(_mapping_get(auth_cfg, "password"), "")) not in ("", "change-me")
 
 
 def setup_required() -> bool:
@@ -296,7 +824,7 @@ def setup_required() -> bool:
 
 def suggested_setup_username() -> str:
     """First-run username for GET /api/auth/status.  Must be JSON-encodable."""
-    raw = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
+    raw = _cfg_text(_pick(_auth_cfg().get("username"), "admin")).strip() or "admin"
     return raw if _utf8_ok(raw) else "admin"
 
 
@@ -339,13 +867,31 @@ def _read_capped_bytes(path: Path, cap: int) -> bytes:
     return data
 
 
+#: Process-local values for token paths that cannot be persisted (read-only
+#: data/, a leftover file squatting the directory).  Same rationale as the
+#: ``_secret_cache`` fallback: the value handed out by one call must be the
+#: value a later call in this process compares against, or the disclosed
+#: setup token could never complete a claim.
+_token_fallbacks: dict[str, str] = {}
+
+
 def _persistent_token(path: Path) -> str:
-    """Read or atomically create a mode-0600 random bearer token."""
+    """Read or atomically create a mode-0600 random bearer token.
+
+    Every branch degrades instead of raising: this helper sits behind
+    GET /api/auth/setup-token, POST /api/auth/setup and — through the
+    menu-bar local-client check inside ``require_auth`` — every protected
+    route a direct-loopback client calls with that header.  A read-only
+    ``data/`` directory (PermissionError out of the exclusive create) or a
+    leftover regular *file* squatting ``data/`` itself (FileExistsError out
+    of ``mkdir``) used to raise raw OSError out of all of them — a 500 on
+    the first-run claim, exactly like the shapes ``_secret()`` one screen
+    down already degrades.  When the token cannot be persisted, a
+    process-local value is minted and cached per path so the flow still
+    answers; it simply does not survive a restart.
+    """
     try:
         value = read_text_capped(path, _TOKEN_CAP, encoding="utf-8").strip()
-        if value:
-            path.chmod(0o600)
-            return value
     except FileNotFoundError:
         pass
     except (OSError, UnicodeDecodeError):
@@ -353,7 +899,27 @@ def _persistent_token(path: Path) -> str:
             path.unlink()
         except OSError:
             _drop_leftover_nonfile(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        if value:
+            try:
+                path.chmod(0o600)
+            except OSError:
+                # A read-only filesystem cannot change the mode, but the
+                # token itself read fine — discarding it here would strand
+                # the claim on a value the operator can still see on disk.
+                pass
+            return value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A leftover regular file squatting data/ raises FileExistsError
+        # (an OSError) out of mkdir even with exist_ok=True.
+        pass
+    # Reuse the process-local value for this path before minting another:
+    # a second call must agree with what the first one already handed out.
+    cached = _token_fallbacks.get(str(path))
+    if cached:
+        return cached
     value = secrets.token_urlsafe(32)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -364,7 +930,16 @@ def _persistent_token(path: Path) -> str:
         try:
             return read_text_capped(path, _TOKEN_CAP, encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
+            # Unreadable leftover that also refuses to unlink (read-only
+            # parent): remember the minted value so the next call answers
+            # the same token instead of a fresh mismatch.
+            _token_fallbacks[str(path)] = value
             return value
+    except OSError:
+        # Read-only data/ or a non-directory parent: the token cannot be
+        # persisted at all.  Answer with the process-local value.
+        _token_fallbacks[str(path)] = value
+        return value
 
 
 #: Loopback source addresses. A request from here originates on the machine
@@ -405,7 +980,9 @@ def setup_token() -> str:
 
 
 def setup_token_mode() -> str:
-    mode = _cfg_text((_auth_cfg() or {}).get("setup_token_mode") or "auto").strip().lower()
+    # _pick, not ``or``: a leftover ``__bool__``-bomb value here 500'd the
+    # unauthenticated GET /api/auth/status through setup_token_required().
+    mode = _cfg_text(_pick(_auth_cfg().get("setup_token_mode"), "auto")).strip().lower()
     return mode if mode in SETUP_TOKEN_MODES else "auto"
 
 
@@ -598,11 +1175,25 @@ def setup_token_required(request: Request | None = None) -> bool:
 
 
 def consume_setup_token() -> None:
-    """Remove the bootstrap secret after credentials are established."""
+    """Remove the bootstrap secret after credentials are established.
+
+    Runs *after* :func:`set_password` has already committed the credential,
+    so a raise here is the worst possible shape: the panel is claimed, the
+    administrator exists, and POST /api/auth/setup answers 500 without ever
+    setting the session cookie — the operator sees a failed claim on an
+    installation that is no longer claimable.  A read-only ``data/`` makes
+    ``unlink`` raise PermissionError, and a leftover directory occupying the
+    path raises IsADirectoryError/EPERM; both are OSError.  The token is a
+    one-time value whose window has closed either way (``setup_required()``
+    is now False, so :func:`complete_setup` refuses every later claim), so
+    failing to delete it must not cost the response.
+    """
     try:
         SETUP_TOKEN_FILE.unlink()
     except FileNotFoundError:
         pass
+    except OSError:
+        _drop_leftover_nonfile(SETUP_TOKEN_FILE)
 
 
 def complete_setup(
@@ -743,10 +1334,10 @@ def _verify_scrypt(encoded: str, password: str) -> bool:
 
 def verify_password(password: str) -> bool:
     a = _auth_cfg()
-    encoded = _cfg_text(a.get("password_hash") or "")
+    encoded = _cfg_text(_pick(a.get("password_hash"), ""))
     if encoded.startswith("scrypt$"):
         return _verify_scrypt(encoded, password)
-    legacy = _cfg_text(a.get("password") or "")
+    legacy = _cfg_text(_pick(a.get("password"), ""))
     return bool(legacy and legacy != "change-me" and constant_time_equals(password, legacy))
 
 
@@ -782,7 +1373,7 @@ def verify_account_password(username: str | None, password: str) -> bool:
     # Only the legacy admin pair may carry a plaintext password from very old
     # configs; accounts-list entries are always created hashed.
     if str(acct.get("role")) == ROLE_ADMIN:
-        legacy = _cfg_text(_auth_cfg().get("password") or "")
+        legacy = _cfg_text(_pick(_auth_cfg().get("password"), ""))
         return bool(
             legacy and legacy != "change-me" and constant_time_equals(password, legacy)
         )
@@ -851,12 +1442,24 @@ def _valid_username(name: str) -> bool:
 
 
 def _clean_resources(resources) -> list[str]:
-    """Resource ids that Starlette can JSON-encode.  Leftover inf / ``\\ud800`` 500'd create."""
-    if not isinstance(resources, list):
+    """Resource ids that Starlette can JSON-encode.  Leftover inf / ``\\ud800`` 500'd create.
+
+    ``_isinst`` + ``_iter_list``, not a bare ``isinstance``/walk: a leftover
+    mapping, a list-subclass ``__iter__`` bomb, or a ``__class__``-property
+    impostor as the grants list used to 500 PUT/POST on the Users panel
+    instead of failing closed to no grants.  One unanswerable id costs only
+    itself.
+    """
+    if not _isinst(resources, list):
         return []
     out = []
-    for raw in resources:
-        text = str(raw).strip()
+    for raw in _iter_list(resources):
+        try:
+            text = str(raw).strip()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
         if text and _utf8_ok(text):
             out.append(text)
     return out
@@ -916,7 +1519,12 @@ def set_account_resources(username: str, resources: list[str]) -> list[str]:
         settings, auth_cfg = _auth_block(data)
         entries = _account_rows(auth_cfg)
         for entry in entries:
-            if _cfg_text(entry.get("username") or "") == name:
+            # .strip(), matching set_account_password / delete_account and the
+            # accounts() presentation: a hand-edited row like ``username:
+            # "kid "`` resolves as account "kid" everywhere else, so the
+            # unstripped comparison here matched nothing — the PUT answered
+            # 200 with the granted list while the write was silently lost.
+            if _cfg_text(entry.get("username") or "").strip() == name:
                 entry["resources"] = clean
         auth_cfg["accounts"] = entries
         settings["auth"] = auth_cfg
@@ -939,8 +1547,12 @@ def set_account_password(username: str, password: str) -> None:
         raise ValueError("not_found")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError("password_too_short")
+    # The bare ``.get`` is sound only because ``_account_rows`` launders row
+    # keys to exact str: this walk reads the *snapshot* (``_auth_cfg()``),
+    # where a leftover hash-shadowing row key used to detonate the lookup
+    # and 500 the password-change routes (see the laundering note there).
     in_accounts_list = any(
-        _cfg_text(raw.get("username") or "").strip() == name
+        _cfg_text(_pick(raw.get("username"), "")).strip() == name
         for raw in _account_rows(_auth_cfg())
     )
     if not in_accounts_list:
@@ -1067,27 +1679,30 @@ def _secret() -> bytes:
 
 def _session_epoch(username: str) -> int:
     """Per-account logout counter.  Bumping it invalidates that account's
-    outstanding tokens without a server-side session store."""
+    outstanding tokens without a server-side session store.
+
+    Matches on the *normalised* key, not ``epochs.get(username)``: a YAML
+    round-trip stores a numeric account name as an int key (``2024: 5``) and
+    the strict string lookup read 0 for it, so logout-everywhere silently
+    stopped revoking that account's tokens.  When both spellings exist the
+    larger counter wins, same rule as :func:`_clean_epochs`.  A leftover
+    hex int past the digit cap reads as 1 via :func:`_epoch_count` — it
+    used to 500 the f-string in ``account_session_version`` on every login
+    and pending-TOTP token.
+    """
+    # _isinst: a ``__class__``-property bomb planted as the whole
+    # session_epochs mapping used to raise out of the bare isinstance here.
     epochs = _auth_cfg().get("session_epochs")
-    if not isinstance(epochs, dict):
+    if not _isinst(epochs, dict):
         return 0
-    try:
-        raw = epochs.get(username)
-        if raw is None or isinstance(raw, bool):
-            return 0
-        value = int(raw)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    try:
-        str(value)
-    except ValueError:
-        # A leftover YAML hex int past CPython's int->str digit cap cannot be
-        # rendered into the signed version; the f-string in
-        # account_session_version used to 500 every login and pending-TOTP
-        # token.  1, not 0: the account has logged out at least once, so
-        # pre-logout tokens (whose version omits the epoch) must stay revoked.
-        return 1
-    return value
+    target = str(username)
+    # _mapping_items, not epochs.items(): a dict-subclass ``items()`` bomb
+    # planted as this mapping used to 500 every login and cookie check via
+    # account_session_version.
+    matches = [
+        _epoch_count(v) for k, v in _mapping_items(epochs) if _epoch_key(k) == target
+    ]
+    return max(matches) if matches else 0
 
 
 def bump_session_epoch(username: str) -> None:
@@ -1100,28 +1715,24 @@ def bump_session_epoch(username: str) -> None:
     does.
     """
     def apply(data: dict) -> None:
-        settings = data.get("settings")
-        if not isinstance(settings, dict):
-            settings = {}
-            data["settings"] = settings
-        auth = settings.get("auth")
-        auth = dict(auth) if isinstance(auth, dict) else {}
-        raw_epochs = auth.get("session_epochs")
-        raw = raw_epochs.get(username) if isinstance(raw_epochs, dict) else None
-        epochs = _clean_epochs(raw_epochs)
-        try:
-            if raw is None or isinstance(raw, bool):
-                nxt = 1
-            else:
-                nxt = int(raw) + 1
-        except (TypeError, ValueError, OverflowError):
-            nxt = 1
+        # _auth_block, not a hand-rolled copy: it pins session_epochs through
+        # _clean_epochs *and* drops over-cap int leftovers elsewhere in the
+        # block, which used to ValueError yaml.safe_dump here — logout
+        # answered 200 while this revocation was silently lost, and TOTP
+        # confirm 503'd after 2FA was already enabled.
+        settings, auth = _auth_block(data)
+        epochs = _clean_epochs(auth.get("session_epochs"))
+        # The normalised (str-probed) counter, not raw_epochs.get(username):
+        # an int-keyed leftover for a numeric account name was invisible to
+        # the strict lookup, so the bump wrote a *lower* string-keyed copy
+        # beside it and the revocation the counter recorded was lost.  An
+        # unrenderable leftover reads back as 1 (_epoch_count), so the bump
+        # lands past it — yaml.safe_dump of the huge int used to 500 TOTP
+        # confirm before _clean_epochs pinned it.
+        nxt = epochs.get(str(username), 0) + 1
         try:
             str(nxt)
         except ValueError:
-            # An unrenderable leftover epoch reads back as 1 (_session_epoch),
-            # so the bump must land past it to keep revoking that window --
-            # and yaml.safe_dump of the huge int used to 500 TOTP confirm.
             nxt = 2
         epochs[username] = nxt
         auth["session_epochs"] = epochs
@@ -1530,7 +2141,7 @@ def require_auth(
         # The configured legacy username is admin even when accounts() has not
         # yet materialised a hash (setup-adjacent tests and a half-written
         # config); is_admin() alone would fail closed in that window.
-        legacy_name = _cfg_text(_auth_cfg().get("username") or "admin").strip() or "admin"
+        legacy_name = _cfg_text(_pick(_auth_cfg().get("username"), "admin")).strip() or "admin"
         if verify_account_password(credentials.username, credentials.password) and (
             is_admin(credentials.username)
             or constant_time_equals(credentials.username, legacy_name)

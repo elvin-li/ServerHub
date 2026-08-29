@@ -46,6 +46,9 @@ DIRECTIONS = ("push", "pull")
 
 #: ``user@host:path`` — the leading alphanumeric is what makes the whole spec
 #: unable to masquerade as an option, mirroring hub/cli_args.py.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _REMOTE_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9._-]{0,252}:(.+)\Z",
     re.DOTALL,
@@ -62,16 +65,49 @@ def _has_control_chars(text: str) -> bool:
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 rsync preview JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def probe_rsync() -> dict:
@@ -430,7 +466,9 @@ def _run_preview(argv: list[str], *, itemize: bool, timeout: int) -> dict:
         _kill_group(proc)
         try:
             proc.wait()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         drainer.join(timeout=2)
         # text=True wraps the pipes; leaving them open is the unittest
@@ -536,7 +574,9 @@ def run_job(params: dict, *, log: list[str], timeout: int = 3600,
     except RecursionError:
         log.append("!! rsync failed")
         return -1
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         detail = getattr(e, "detail", None)
         message = detail.get("message") if isinstance(detail, dict) else _as_text(e)
         log.append(f"!! {message}")

@@ -20,11 +20,20 @@ from __future__ import annotations
 import re
 import threading
 import time
+from pathlib import Path
+
 from hub.errors import api_error
 from hub.host_address import default_interface, host_ip
 from hub.util import LazyPool, port_open, sh
 
 _pool = LazyPool(3, "hub-power")
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+#: The binary every power probe and mutation spawns.  Module-level so the
+#: vanished-CLI probe re-checks the exact path the spawn used.
+PMSET = "/usr/bin/pmset"
 
 
 def shutdown_executor() -> None:
@@ -33,21 +42,49 @@ def shutdown_executor() -> None:
 
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -61,6 +98,15 @@ def _jsonable(value, depth: int = 0):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past CPython's int->str digit cap the encoder cannot render
+            # the number at all (YAML/plist hex loads uncapped, so an
+            # over-cap int arrives already-int) — same drop as its inf
+            # float sibling.  It used to leak through this sanitizer and
+            # 500 POST /api/system/screensharing/enable's ok payload.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -76,23 +122,34 @@ def _jsonable(value, depth: int = 0):
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/system/power.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 VNC_PORT = 5900
@@ -127,8 +184,28 @@ def _host_ip() -> str:
 
 # ─── Wake-on-LAN (womp) ──────────────────────────────────────────────────────
 
+def _pmset_missing(rc, err) -> bool:
+    """Whether an ``sh()`` result means pmset itself is gone.
+
+    ``sh`` reports a FileNotFoundError spawn as ``(-1, "", "not found")`` — a
+    sentinel, never a real pmset exit.  The sentinel alone must not classify:
+    rc -1 is also what a timeout or a signal-killed run reports, so the disk
+    is re-probed *on this failure path only* (the identity ``_scutil_missing``
+    / vms ``_cli_missing`` rule — a successful spawn never pays the stat).
+    Timeouts keep their own sentinel and are deliberately not classified;
+    a permission failure is a real pmset exit and never matches.
+    """
+    if rc != -1 or _as_text(err).strip() != "not found":
+        return False
+    try:
+        return not Path(PMSET).is_file()
+    except (OSError, ValueError):
+        # An unreadable /usr/bin must not upgrade the failure to a 503.
+        return False
+
+
 def _womp_enabled() -> bool | None:
-    rc, out, _ = sh(["/usr/bin/pmset", "-g"], timeout=5)
+    rc, out, _ = sh([PMSET, "-g"], timeout=5)
     if rc != 0:
         return None
     m = re.search(r"\bwomp\s+(\d)", _as_text(out))
@@ -137,9 +214,16 @@ def _womp_enabled() -> bool | None:
 
 def set_wol(enabled: bool) -> dict:
     val = "1" if enabled else "0"
-    rc, out, err = sh(["/usr/bin/pmset", "-a", "womp", val], timeout=8)
+    rc, out, err = sh([PMSET, "-a", "womp", val], timeout=8)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "womp", val], timeout=8)
+        if _pmset_missing(rc, err):
+            # A vanished pmset used to answer ok:false with a message telling
+            # the operator to run ``sudo pmset -a womp`` by hand — blaming
+            # privileges for a binary the disk confirm just proved is gone
+            # (the sudo fallback below cannot spawn it either).  Coded so the
+            # panel can say what actually happened.
+            raise api_error("power.pmset_missing")
+        rc, out, err = sh(["/usr/bin/sudo", "-n", PMSET, "-a", "womp", val], timeout=8)
     ok = rc == 0
     msg = (_as_text(out) or _as_text(err)).strip()
     if not ok:
@@ -161,7 +245,9 @@ def screensharing_status() -> dict:
     running = _screensharing_running()
     try:
         host = _as_text(_host_ip())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         host = ""
     return _jsonable({
         "running": running,
@@ -186,7 +272,7 @@ _last_power = {"action": None, "at": 0.0}
 def _do_power(action: str) -> None:
     """Run the actual power command (in a delayed thread)."""
     if action == "sleep":
-        sh(["/usr/bin/pmset", "sleepnow"], timeout=10)
+        sh([PMSET, "sleepnow"], timeout=10)
         return
     verb = "shut down" if action == "shutdown" else "restart"
     # Prefer osascript (no sudo). Fall back to `sudo -n shutdown`.
@@ -231,7 +317,9 @@ def power_action(action: str, confirm: bool = False, delay_sec: float = 2.0) -> 
         time.sleep(delay)
         try:
             _do_power(action)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     threading.Thread(target=job, daemon=True, name=f"power-{action}").start()
@@ -265,7 +353,9 @@ def power_overview() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; a wedged `pmset` must not drop the power tile.
@@ -280,7 +370,9 @@ def power_overview() -> dict:
         screen_sharing = {}
     try:
         host = screen_sharing.get("host") or _host_ip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         host = ""
     return _jsonable({
         "actions": list(_ACTIONS),

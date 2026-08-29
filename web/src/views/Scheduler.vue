@@ -22,7 +22,7 @@
         <!-- role=status: the count is Refresh's (and the running-jobs poll's)
              only summary and changed silently for a screen reader — same
              treatment as the VMs title-meta and Users/Apps toolbar counts. -->
-        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ jobs.length }} {{ t('sched.jobs_count') }}</span>
+        <span class="meta" role="status" style="color:var(--sub)" v-if="jobsLoaded">{{ asArray(jobs).length }} {{ t('sched.jobs_count') }}</span>
       </div>
 
       <div class="tile" style="margin-bottom:12px;border-left:3px solid var(--accent)">
@@ -45,24 +45,24 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="job in jobs" :key="job.id">
+            <tr v-for="job in asArray(jobs)" :key="asRecord(job).id">
               <td>
-                <strong>{{ finiteText(job.name) }}</strong>
-                <div class="show-m sub">{{ t(`sched.type_${job.type}`) }} · {{ finiteText(job.cron) }}</div>
-                <div v-if="job.enabled" class="show-m sub">{{ fmt(job.next_run) }}</div>
+                <strong>{{ finiteText(asRecord(job).name) }}</strong>
+                <div class="show-m sub">{{ t(`sched.type_${asRecord(job).type}`) }} · {{ finiteText(asRecord(job).cron) }}</div>
+                <div v-if="asRecord(job).enabled" class="show-m sub">{{ fmt(asRecord(job).next_run) }}</div>
                 <div class="show-m sub">
-                  <span v-if="job.running">{{ t('sched.running') }}</span>
-                  <span v-else-if="job.last">{{ t(`sched.status_${job.last.status}`) }} · {{ fmt(job.last.ts) }}</span>
+                  <span v-if="asRecord(job).running">{{ t('sched.running') }}</span>
+                  <span v-else-if="asRecord(job).last">{{ t(`sched.status_${asRecord(asRecord(job).last).status}`) }} · {{ fmt(asRecord(asRecord(job).last).ts) }}</span>
                   <span v-else>{{ t('sched.never') }}</span>
                 </div>
               </td>
-              <td class="col-hide-m"><span class="badge accent">{{ t(`sched.type_${job.type}`) }}</span></td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(job.cron) }}</td>
-              <td class="col-hide-m" style="font-size:12px">{{ job.enabled ? fmt(job.next_run) : '—' }}</td>
+              <td class="col-hide-m"><span class="badge accent">{{ t(`sched.type_${asRecord(job).type}`) }}</span></td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(asRecord(job).cron) }}</td>
+              <td class="col-hide-m" style="font-size:12px">{{ asRecord(job).enabled ? fmt(asRecord(job).next_run) : '—' }}</td>
               <td class="col-hide-m">
-                <span v-if="job.running" class="badge warn">{{ t('sched.running') }}</span>
-                <span v-else-if="job.last" class="badge" :class="job.last.status === 'ok' ? 'ok' : 'warn'">
-                  {{ t(`sched.status_${job.last.status}`) }} · {{ fmt(job.last.ts) }}
+                <span v-if="asRecord(job).running" class="badge warn">{{ t('sched.running') }}</span>
+                <span v-else-if="asRecord(job).last" class="badge" :class="asRecord(asRecord(job).last).status === 'ok' ? 'ok' : 'warn'">
+                  {{ t(`sched.status_${asRecord(asRecord(job).last).status}`) }} · {{ fmt(asRecord(asRecord(job).last).ts) }}
                 </span>
                 <span v-else class="meta">{{ t('sched.never') }}</span>
               </td>
@@ -70,19 +70,19 @@
                 <!-- Named per row, like the Services and Containers checkboxes:
                      a column of toggles all announced as "Enabled" cannot be
                      told apart in a screen reader's form-controls listing. -->
-                <input type="checkbox" :checked="job.enabled" :aria-label="t('sched.enable_name', { name: finiteText(job.name) })"
+                <input type="checkbox" :checked="asRecord(job).enabled" :aria-label="t('sched.enable_name', { name: finiteText(asRecord(job).name) })"
                        @change="toggle(job, $event.target.checked)" />
               </td>
               <td>
                 <div class="btns" style="gap:4px">
-                  <button class="tiny" :disabled="job.running" @click="runNow(job)">{{ t('sched.run_now') }}</button>
+                  <button class="tiny" :disabled="asRecord(job).running" @click="runNow(job)">{{ t('sched.run_now') }}</button>
                   <button class="tiny hide-m" @click="openRuns(job)">{{ t('sched.history') }}</button>
                   <button class="tiny" @click="openEdit(job)">{{ t('common.edit') }}</button>
                   <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
                 </div>
               </td>
             </tr>
-            <tr v-if="!jobs.length && !jobsError">
+            <tr v-if="!asArray(jobs).length && !jobsError">
               <td colspan="7" class="empty-row">{{ t('sched.no_jobs') }}</td>
             </tr>
           </tbody>
@@ -90,19 +90,19 @@
       </div>
 
       <!-- bridged system-managed schedules (read-only) -->
-      <div v-if="systemJobs.length" class="tile" style="margin-top:12px">
+      <div v-if="asArray(systemJobs).length" class="tile" style="margin-top:12px">
         <h2 style="margin-top:0">{{ t('sched.managed_title') }}</h2>
         <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
         <div class="table-wrap" style="margin-top:6px">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="s in systemJobs" :key="s.id">
+            <tr v-for="s in asArray(systemJobs)" :key="asRecord(s).id">
               <td>
-                <strong>{{ finiteText(s.name) }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
-                <div class="show-m sub">{{ s.enabled ? finiteText(s.interval) : t('sched.disabled') }}{{ s.enabled ? ' · ' + fmt(s.next_run) : '' }}</div>
+                <strong>{{ finiteText(asRecord(s).name) }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
+                <div class="show-m sub">{{ asRecord(s).enabled ? finiteText(asRecord(s).interval) : t('sched.disabled') }}{{ asRecord(s).enabled ? ' · ' + fmt(asRecord(s).next_run) : '' }}</div>
               </td>
-              <td class="col-hide-m">{{ s.enabled ? finiteText(s.interval) : t('sched.disabled') }}</td>
-              <td class="col-hide-m" style="font-size:12px">{{ s.enabled ? fmt(s.next_run) : '—' }}</td>
+              <td class="col-hide-m">{{ asRecord(s).enabled ? finiteText(asRecord(s).interval) : t('sched.disabled') }}</td>
+              <td class="col-hide-m" style="font-size:12px">{{ asRecord(s).enabled ? fmt(asRecord(s).next_run) : '—' }}</td>
               <td><router-link class="btn tiny" to="/main">{{ t('sched.managed_edit_link') }}</router-link></td>
             </tr>
           </tbody>
@@ -150,7 +150,7 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ (data?.timers || []).length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(asRecord(data).timers).length }}</span>
       </div>
 
       <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
@@ -166,26 +166,26 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in filtered" :key="row.label">
+            <tr v-for="row in asArray(filtered)" :key="asRecord(row).label">
               <td class="mono">
-                <strong>{{ finiteText(row.label) }}</strong>
-                <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
-                <div v-if="row.program" class="show-m sub">{{ finiteText(row.program) }}</div>
+                <strong>{{ finiteText(asRecord(row).label) }}</strong>
+                <div v-if="formatCal(asRecord(row).calendar)" class="show-m sub">{{ formatCal(asRecord(row).calendar) }}</div>
+                <div v-if="asRecord(row).program" class="show-m sub">{{ finiteText(asRecord(row).program) }}</div>
               </td>
               <td>
-                <span class="badge accent">{{ row.interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
+                <span class="badge accent">{{ asRecord(row).interval_sec ? t('scheduler.interval_type') : t('scheduler.calendar_type') }}</span>
               </td>
-              <td>{{ row.interval_sec ? formatInterval(row.interval_sec) : '—' }}</td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
-              <td class="mono col-hide-m" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="finiteText(row.program)">
-                {{ finiteText(row.program) }}
+              <td>{{ asRecord(row).interval_sec ? formatInterval(asRecord(row).interval_sec) : '—' }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(asRecord(row).calendar) }}</td>
+              <td class="mono col-hide-m" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;font-size:11px" :title="finiteText(asRecord(row).program)">
+                {{ finiteText(asRecord(row).program) }}
               </td>
             </tr>
             <!-- "None" was claimed even when the filter box was what emptied the
                  table; a host full of timers appeared to have none. -->
-            <tr v-if="!filtered.length && !loadError">
+            <tr v-if="!asArray(filtered).length && !loadError">
               <td colspan="5" class="empty-row">
-                {{ loading ? t('common.loading') : (q.trim() && (data?.timers || []).length ? t('common.no_match') : t('common.none')) }}
+                {{ loading ? t('common.loading') : (q.trim() && asArray(asRecord(data).timers).length ? t('common.no_match') : t('common.none')) }}
               </td>
             </tr>
           </tbody>
@@ -213,7 +213,7 @@
     <div ref="runsPanel" v-if="runsFor" class="modal-bg" @click.self="runsFor = null" role="presentation">
       <div class="modal" style="max-width:640px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="sched-runs-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(runsFor.name) }) }}</span>
+          <span id="sched-runs-title" class="name">{{ t('sched.runs_title', { name: finiteText(asRecord(runsFor).name) }) }}</span>
           <button class="tiny" @click="runsFor = null">{{ t('common.close') }}</button>
         </div>
         <!-- role=alert: the history loads *after* the dialog already holds
@@ -225,14 +225,14 @@
              of an empty history and lands after the dialog already holds
              focus, so the panel-focus read never covers it — same as the
              PhotosHub empty pending state. -->
-        <div v-else-if="!runs.length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
-        <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
+        <div v-else-if="!asArray(runs).length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
+        <div v-for="(run, i) in asArray(runs)" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
-            <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>
-            <span class="mono" style="margin-left:8px">{{ fmt(run.ts) }}</span>
-            <span class="meta" style="margin-left:8px">{{ t('sched.col_duration') }}: {{ withUnit(run.duration, 's') }} · rc={{ finiteN(run.rc) }} · {{ t(`sched.trigger_${run.trigger}`) }}</span>
+            <span class="badge" :class="asRecord(run).status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${asRecord(run).status}`) }}</span>
+            <span class="mono" style="margin-left:8px">{{ fmt(asRecord(run).ts) }}</span>
+            <span class="meta" style="margin-left:8px">{{ t('sched.col_duration') }}: {{ withUnit(asRecord(run).duration, 's') }} · rc={{ finiteN(asRecord(run).rc) }} · {{ t(`sched.trigger_${asRecord(run).trigger}`) }}</span>
           </div>
-          <pre v-if="run.tail" class="log" style="max-height:160px;font-size:11px;margin:0">{{ finiteText(run.tail) }}</pre>
+          <pre v-if="asRecord(run).tail" class="log" style="max-height:160px;font-size:11px;margin:0">{{ finiteText(asRecord(run).tail) }}</pre>
         </div>
       </div>
     </div>
@@ -252,7 +252,7 @@ import {
   updateSchedulerJob,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs, jsonText, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -288,14 +288,39 @@ function fmt(ts) {
   return fmtTs(ts)
 }
 
+function ingestJobRows(payload, field) {
+  // asArray of the named field first: the listing is a mapping envelope
+  // ``{jobs, system, types}``.  A leftover mapping used to throw on
+  // ``.length`` / ``.some`` / ``v-for``.  For ``jobs`` only, a whole-payload
+  // leftover list is the listing itself.  Each row is asRecord so a leftover
+  // null cell cannot throw later.  Nested ``last`` is asRecord too (a leftover
+  // list there used to throw on ``.status``).  Do not wrap a Set as asArray —
+  // this payload is never a Set.
+  const rec = asRecord(payload)
+  const fromEnvelope = asArray(rec[field])
+  const list = fromEnvelope.length
+    ? fromEnvelope
+    : (field === 'system' ? [] : asArray(payload))
+  return list.map((row) => {
+    const job = { ...asRecord(row) }
+    const last = job.last
+    if (last != null && typeof last === 'object' && !Array.isArray(last)) {
+      job.last = asRecord(last)
+    } else if (last != null && typeof last === 'object') {
+      job.last = null
+    }
+    return job
+  })
+}
+
 async function loadJobs() {
   if (pollStopped) return
   jobsBusy.value = true
   try {
     const d = await getSchedulerJobs()
     if (pollStopped) return
-    jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
-    systemJobs.value = Array.isArray(d?.system) ? d.system : []
+    jobs.value = ingestJobRows(d, 'jobs')
+    systemJobs.value = ingestJobRows(d, 'system')
     jobsError.value = ''
     pollFailures = 0
   } catch (e) {
@@ -325,7 +350,7 @@ function pollDelay() {
 }
 function schedulePoll() {
   if (pollStopped || pollTimer) return
-  if (!jobs.value.some(j => j.running)) return
+  if (!asArray(jobs.value).some(j => asRecord(j).running)) return
   pollTimer = setTimeout(() => {
     pollTimer = null
     if (pollStopped) return
@@ -361,7 +386,7 @@ function closeEditor() {
 async function saveJob(body) {
   jobsBusy.value = true
   try {
-    if (editing.value) await updateSchedulerJob(editing.value.id, body)
+    if (editing.value) await updateSchedulerJob(asRecord(editing.value).id, body)
     else await createSchedulerJob(body)
     if (pollStopped) return
     toast('✅ ' + t('sched.saved'))
@@ -377,7 +402,7 @@ async function saveJob(body) {
 
 async function toggle(job, enabled) {
   try {
-    await enableSchedulerJob(job.id, enabled)
+    await enableSchedulerJob(asRecord(job).id, enabled)
     if (pollStopped) return
     await loadJobs()
   } catch (e) {
@@ -388,16 +413,17 @@ async function toggle(job, enabled) {
 }
 
 async function runNow(job) {
-  const key = job.type === 'stack_backup'
+  const rec = asRecord(job)
+  const key = rec.type === 'stack_backup'
     ? 'backups.confirm_stack_run'
-    : job.type === 'rsync'
+    : rec.type === 'rsync'
       ? 'backups.confirm_rsync_run'
       : 'sched.confirm_run'
-  if (!confirm(t(key, { name: finiteText(job.name) }))) return
+  if (!confirm(t(key, { name: finiteText(rec.name) }))) return
   try {
-    await runSchedulerJobNow(job.id)
+    await runSchedulerJobNow(rec.id)
     if (pollStopped) return
-    toast('✅ ' + t('sched.started', { name: finiteText(job.name) }))
+    toast('✅ ' + t('sched.started', { name: finiteText(rec.name) }))
     await loadJobs()
   } catch (e) {
     if (pollStopped) return
@@ -406,9 +432,10 @@ async function runNow(job) {
 }
 
 async function removeJob(job) {
-  if (!confirm(t('sched.confirm_delete', { name: finiteText(job.name) }))) return
+  const rec = asRecord(job)
+  if (!confirm(t('sched.confirm_delete', { name: finiteText(rec.name) }))) return
   try {
-    await deleteSchedulerJob(job.id)
+    await deleteSchedulerJob(rec.id)
     if (pollStopped) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()
@@ -419,13 +446,13 @@ async function removeJob(job) {
 }
 
 async function openRuns(job) {
-  runsFor.value = job
+  runsFor.value = asRecord(job)
   runsLoaded.value = false
   runsError.value = ''
   try {
-    const d = await getSchedulerJobRuns(job.id, 30)
+    const d = await getSchedulerJobRuns(asRecord(job).id, 30)
     if (pollStopped) return
-    runs.value = Array.isArray(d?.runs) ? d.runs : []
+    runs.value = ingestJobRows(d, 'runs')
   } catch (e) {
     if (pollStopped) return
     runsError.value = finiteText(e.message || String(e), '')
@@ -443,21 +470,22 @@ const loadError = ref('')
 const q = ref('')
 
 const intervalCount = computed(() =>
-  (data.value?.timers || []).filter(t => t.interval_sec).length
+  asArray(asRecord(data.value).timers).filter(t => asRecord(t).interval_sec).length
 )
 const calendarCount = computed(() =>
-  (data.value?.timers || []).filter(t => t.calendar && !t.interval_sec).length
-    || (data.value?.timers || []).filter(t => t.calendar).length
+  asArray(asRecord(data.value).timers).filter(t => asRecord(t).calendar && !asRecord(t).interval_sec).length
+    || asArray(asRecord(data.value).timers).filter(t => asRecord(t).calendar).length
 )
 
 const filtered = computed(() => {
-  const list = data.value?.timers || []
+  const list = asArray(asRecord(data.value).timers)
   const qq = q.value.trim().toLowerCase()
   if (!qq) return list
-  return list.filter(t =>
-    (t.label || '').toLowerCase().includes(qq)
-    || (t.program || '').toLowerCase().includes(qq)
-  )
+  return list.filter(t => {
+    const rec = asRecord(t)
+    return String(rec.label ?? '').toLowerCase().includes(qq)
+    || String(rec.program ?? '').toLowerCase().includes(qq)
+  })
 })
 
 function formatInterval(sec) {
@@ -470,7 +498,7 @@ function formatInterval(sec) {
 }
 function formatCal(c) {
   if (!c) return '—'
-  if (typeof c === 'object') return JSON.stringify(c)
+  if (typeof c === 'object') return jsonText(c)
   return finiteText(c)
 }
 
@@ -479,7 +507,7 @@ async function load() {
   try {
     const next = await getScheduler()
     if (pollStopped) return
-    data.value = next
+    data.value = asRecord(next)
     loadError.value = ''
   } catch (e) {
     if (pollStopped) return

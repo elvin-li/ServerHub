@@ -35,12 +35,98 @@ from hub import secure_io, totp
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: Module-level so tests can point it at a scratch directory, same pattern as
 #: notify_channels.SECRETS_FILE.
 STORE_FILE = DATA_DIR / "twofa.json"
 #: Leftover multi-MB store used to OOM login / TOTP verify.
 _STORE_CAP = 256 * 1024
 _lock = threading.Lock()
+
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    The ``hub.auth._isinst`` / ``nas_common._isa`` rule, which the 2FA readers
+    never got: CPython consults ``value.__class__`` whenever the concrete-type
+    fast check misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare ``isinstance`` gates in :func:`_user_entry` /
+    :func:`_stored_recovery` / :func:`_as_int` — and rode that raise straight
+    out of :func:`enabled` / :func:`status`, 500ing GET /api/auth/accounts
+    (which reads ``enabled`` per account) and GET /api/auth/totp.  Fails closed
+    to False: a value that cannot say what it is, is junk.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False).
+
+    A leftover ``enabled`` / ``pending_secret`` whose ``__bool__`` raises used
+    to detonate the ``bool(entry.get(...))`` truth tests in :func:`enabled` /
+    :func:`status` and 500 the same two routes.  A bomb value is not a real
+    "enabled" flag, so it reads as off.
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb / lying impostor cannot 500.
+
+    The ``hub.auth._mapping_get`` rule: ``isinstance(x, dict)`` passes an odd
+    subclass whose ``.get`` raises, and a leftover store mapping (or a lying
+    ``__class__`` that answers ``dict`` while its real type is neither) planted
+    as the whole ``_load`` result used to 500 :func:`_user_entry`.  ``dict.get``
+    reads the C-level storage underneath the override; a lying impostor rejects
+    the unbound descriptor and falls through to ``None``.
+    """
+    if not _isinst(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            return dict.get(mapping, key)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+
+
+def _plain_dict(raw) -> dict:
+    """A leftover 2FA row as a *plain* dict — hostile subclasses laundered.
+
+    ``dict(raw)`` took the slow path (calling ``keys()`` / ``__getitem__``) on a
+    dict *subclass* that overrides ``__iter__`` / ``keys``, so a row bomb there
+    raised out of :func:`_user_entry` and 500'd the reader; a *lying*
+    ``__class__`` that answers ``dict`` while its real type is neither passed
+    the ``isinstance`` gate and then blew ``dict(raw)`` the same way.  Unbound
+    ``dict.items`` reads the real C-level storage (the modules5 rule), so a
+    method-override subclass keeps its data while a true impostor drops to ``{}``.
+    """
+    if type(raw) is dict:
+        return dict(raw)
+    if not _isinst(raw, dict):
+        return {}
+    try:
+        return dict(dict.items(raw))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
 
 
 def _drop_leftover_nonfile(path) -> None:
@@ -123,22 +209,68 @@ _RECOVERY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 _RECOVERY_GROUP = 5
 
 
+def _parse_capped_int(text):
+    """``json.loads`` integer hook for :func:`_load`.
+
+    A >4300-digit number literal is valid JSON, but the default ``int(text)``
+    conversion raises CPython's str->int digit-cap ValueError — a *plain*
+    ValueError, not JSONDecodeError — so ``_load``'s corrupt-document fallback
+    read the whole store as ``{}``: every account's 2FA was silently off (the
+    login form stopped asking for a code) and the next ``_save`` rewrote the
+    file without the enrollments, losing them for good.  The one oversized
+    field degrades to ``inf`` — which :func:`_as_int` and :func:`_json_safe`
+    already coerce — and the rest of the document survives.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float("inf")
+
+
 def _as_int(raw, default: int | None = 0) -> int | None:
     """Parse last_counter / confirmed_at.  JSON ``1e309`` is inf and must not 500."""
-    if raw is None or isinstance(raw, bool):
+    # _isinst, not a bare isinstance: a leftover ``__class__``-property bomb as
+    # confirmed_at / last_counter used to detonate the type gates here and 500
+    # GET /api/auth/totp (status) out of the reader.
+    if raw is None or _isinst(raw, bool):
         return default
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, float):
-        if raw != raw or raw in (float("inf"), float("-inf")):
-            return default
+    if _isinst(raw, int):
         try:
+            # Coerce a subclass to an *exact* int first, then guard the
+            # digit-cap probe with a broad catch: a leftover int-subclass whose
+            # ``__str__`` raises a *non*-ValueError (RuntimeError) rode past the
+            # ValueError-only catch and 500'd status; ``int()`` reads the real
+            # value underneath the override.
+            value = int(raw)
+            str(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # An already-int leftover past the digit cap (plist/YAML hex loads
+            # uncapped) cannot be JSON-encoded; passing it through used to
+            # ValueError json.dumps — GET /api/auth/totp 500'd on confirmed_at
+            # and _save silently dropped the whole write on last_counter.
+            return default
+        return value
+    if _isinst(raw, float):
+        try:
+            if raw != raw or raw in (float("inf"), float("-inf")):
+                return default
             return int(raw)
-        except (OverflowError, ValueError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A float-subclass ``__eq__`` / ``__int__`` bomb must not escape
+            # the NaN/inf probe — the modules5 rule for the float rank.
             return default
     try:
         return int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Broad, not (TypeError, ValueError, OverflowError): a leftover
+        # ``__int__`` / ``__index__`` / ``__class__`` bomb here used to 500
+        # status; ordinary junk still reads as the default.
         return default
 
 
@@ -151,9 +283,13 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return text.encode("utf-8", "replace").decode("utf-8")
 
@@ -176,6 +312,14 @@ def _json_safe(value, depth: int = 0):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # Past the int->str digit cap json.dumps raises the same
+            # ValueError; one leftover field used to cost the entire save
+            # (_save returns early), so a fresh last_counter never landed
+            # and the just-spent code stayed replayable.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -191,7 +335,9 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 enroll / TOTP verify.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _utf8_text(value)
 
@@ -207,7 +353,10 @@ def _persistable_entry(entry: dict) -> dict:
 
 def _load() -> dict[str, dict]:
     try:
-        raw = safe_json_loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"),
+            parse_int=_parse_capped_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); the login path reads this.
@@ -223,9 +372,18 @@ def _load() -> dict[str, dict]:
 
 
 def _user_entry(data: dict, username: str) -> dict:
-    """One account's 2FA row.  A list/string leftover must not 500 login."""
-    raw = data.get(str(username))
-    return dict(raw) if isinstance(raw, dict) else {}
+    """One account's 2FA row.  A list/string leftover must not 500 login.
+
+    Read through :func:`_mapping_get` / :func:`_plain_dict`, not a bound
+    ``data.get`` + ``dict(raw)``: a leftover store mapping whose ``.get`` bombs
+    (or a hash-shadowing ``__eq__`` key it holds), a lying ``__class__`` planted
+    as the whole store, and a dict-*subclass* row whose ``keys()`` / ``__iter__``
+    bombs (which sent ``dict(raw)`` down its slow, override-calling path) each
+    used to 500 :func:`enabled` / :func:`status` — GET /api/auth/accounts and
+    GET /api/auth/totp — instead of reading the account as "no 2FA".
+    """
+    raw = _mapping_get(data, str(username))
+    return _plain_dict(raw)
 
 
 def _save(data: dict[str, dict]) -> None:
@@ -277,15 +435,46 @@ def _new_recovery_codes() -> list[str]:
     return out
 
 
+def _stored_recovery(rec) -> list[str]:
+    """The digest rows a recovery spend can actually compare against.
+
+    One filter shared by :func:`status` and :func:`use_recovery_code`: a
+    leftover non-string row (a huge JSON int literal degraded to ``None`` by
+    the digit-cap hook, a number, a nested object) can never satisfy
+    ``_digest_eq``, so counting it in ``recovery_remaining`` overstated the
+    codes the operator still holds — the count is their cue to regenerate
+    before running out, and junk rows silently inflated it.
+
+    Iterated through unbound ``list.__iter__``, not a bare comprehension: a
+    leftover recovery value that is a list *subclass* whose ``__iter__`` /
+    ``__len__`` bombs (or a lying ``__class__`` answering ``list``) passed the
+    ``isinstance`` gate and then detonated the walk itself — a raw 500 out of
+    :func:`status` on GET /api/auth/totp.  The unbound descriptor reads the
+    C-level storage; a true impostor rejects it and yields an empty walk.
+    """
+    if not _isinst(rec, list):
+        return []
+    try:
+        rows = list(list.__iter__(rec))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    return [h for h in rows if isinstance(h, str)]
+
+
 def status(username: str) -> dict:
     """API-safe view: never contains the secret or any code material."""
     with _lock:
         entry = _user_entry(_load(), username)
-    rec = entry.get("recovery")
+    # _truthy, not bare bool(): a leftover ``enabled`` / ``pending_secret``
+    # whose ``__bool__`` bombs used to 500 GET /api/auth/totp out of these
+    # truth tests.  ``entry`` is already a plain dict (_user_entry), so .get
+    # is safe; only the value's own truthiness is hostile.
     return {
-        "enabled": bool(entry.get("enabled")),
-        "pending": bool(entry.get("pending_secret")) and not entry.get("enabled"),
-        "recovery_remaining": len(rec) if isinstance(rec, list) else 0,
+        "enabled": _truthy(entry.get("enabled")),
+        "pending": _truthy(entry.get("pending_secret")) and not _truthy(entry.get("enabled")),
+        "recovery_remaining": len(_stored_recovery(entry.get("recovery"))),
         "confirmed_at": _as_int(entry.get("confirmed_at"), default=None),
     }
 
@@ -293,7 +482,9 @@ def status(username: str) -> dict:
 def enabled(username: str) -> bool:
     with _lock:
         entry = _user_entry(_load(), username)
-    return bool(entry.get("enabled"))
+    # _truthy: an ``enabled`` value whose ``__bool__`` bombs used to 500 GET
+    # /api/auth/accounts, which reads this per listed account.
+    return _truthy(entry.get("enabled"))
 
 
 def begin_enrollment(username: str) -> dict:
@@ -379,8 +570,7 @@ def use_recovery_code(username: str, code: str) -> bool:
         entry = _user_entry(data, username)
         if not entry.get("enabled"):
             return False
-        rec = entry.get("recovery")
-        stored = [h for h in rec if isinstance(h, str)] if isinstance(rec, list) else []
+        stored = _stored_recovery(entry.get("recovery"))
         # Compare against every stored digest so the duration does not say
         # which position (if any) matched.  Wrong-type leftovers (plaintext
         # codes, numbers) used to raise ValueError on length mismatch and

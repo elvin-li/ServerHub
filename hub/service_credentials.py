@@ -6,6 +6,8 @@ generic-password item in the current user's login Keychain.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import errno
 import hashlib
 import json
@@ -71,9 +73,13 @@ def _as_text(val) -> str:
         except RecursionError:
             try:
                 return type(val).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return val.encode("utf-8", "replace").decode("utf-8")
 
@@ -105,7 +111,9 @@ def _json_safe(value, depth: int = 0):
         for k, v in value.items():
             try:
                 key = _as_text(k)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             if not key:
                 continue
@@ -119,11 +127,15 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/apps/credentials.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -180,9 +192,29 @@ def _keychain_service(service_id: str) -> str:
     return f"com.serverhub.credential.{digest}"
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned ``updated_at`` used
+    to make :func:`_load` return ``{}``, and the very next :func:`store` /
+    :func:`delete` rewrote service-credentials.json from that empty snapshot,
+    silently wiping every sibling service's index row (and orphaning its
+    keychain entry).  Dropping just the number keeps the file, same as the
+    notify_channels / twofa_svc hooks.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load() -> dict[str, dict]:
     try:
-        raw = safe_json_loads(read_text_capped(INDEX_FILE, _INDEX_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(INDEX_FILE, _INDEX_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError
         # (torn write leaving non-UTF-8 bytes); RecursionError is a leftover
@@ -190,7 +222,16 @@ def _load() -> dict[str, dict]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    # Scrub keys (and values) *on load*, before they become lookup keys.
+    # ``json.loads`` happily produces a lone-surrogate KEY from an escaped
+    # ``"\\ud800…"`` in the file; _save only sanitized row values, so the
+    # surrogate key rode along into json.dumps and the UTF-8 write raised
+    # UnicodeEncodeError — swallowed by _save's broad except — which made
+    # every subsequent store()/delete() a silent no-op on disk.
+    cleaned = _json_safe(raw)
+    if not isinstance(cleaned, dict):
+        return {}
+    return {str(k): v for k, v in cleaned.items() if isinstance(v, dict)}
 
 
 def _save(items: dict[str, dict]) -> None:
@@ -201,7 +242,12 @@ def _save(items: dict[str, dict]) -> None:
     for key, value in items.items():
         row = _json_safe(value) if isinstance(value, dict) else None
         if isinstance(row, dict):
-            cleaned[str(key)] = row
+            # _as_text, not str(): a lone-surrogate key survives str() and
+            # then no UTF-8 encode of the dumped document can succeed, so the
+            # whole write — every row, not just the bad key — silently failed.
+            key_text = _as_text(key)
+            if key_text:
+                cleaned[key_text] = row
     secure_io.drop_leftover_nonfile(INDEX_FILE)
     try:
         secure_io.replace_secret_text(
@@ -509,7 +555,9 @@ def apply_teslamate(username: str, password: str) -> dict:
             reloaded = nginx_svc.reload_nginx()
             if not reloaded.get("ok"):
                 raise RuntimeError(_as_text(reloaded.get("message") or "Nginx reload failed"))
-        except Exception as exc:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:
             if old is None:
                 TESLAMATE_HTPASSWD.unlink(missing_ok=True)
             else:

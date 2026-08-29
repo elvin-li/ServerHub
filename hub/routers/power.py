@@ -86,11 +86,20 @@ def _set_screen_sharing(request: Request, enabled: bool) -> dict:
     if result.get("ok"):
         cleaned = power_svc._jsonable(result)
         return cleaned if isinstance(cleaned, dict) else {"ok": True}
-    error = str(result.get("error") or "failed")
+    # A bare str() still crashed this failure path: a leftover over-cap int
+    # error raised CPython's int->str digit-cap ValueError and a recursive
+    # ``__str__`` raised RecursionError — both answered a raw uncoded 500
+    # one branch below the already-sanitized ok path.  _as_text also lets a
+    # leftover bytes ``b"cancelled"`` match its coded 409 instead of turning
+    # into the repr ``"b'cancelled'"``.
+    error = power_svc._as_text(result.get("error") or "failed").strip() or "failed"
     code = {
         "cancelled": "shares.authorization_cancelled",
         "unavailable": "shares.authorization_unavailable",
         "verification_failed": "shares.verification_failed",
+        # Confirmed-vanished launchctl (fresh disk probe on the failure path
+        # in shares_svc): the coded 503, not the generic 500.
+        "system_tool_missing": "shares.system_tool_missing",
         "password_required": "admin.password_required",
         "password_incorrect": "admin.password_incorrect",
     }.get(error, "shares.operation_failed")

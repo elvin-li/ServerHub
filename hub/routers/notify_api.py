@@ -8,6 +8,7 @@ Home Assistant token.
 """
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any, Optional
@@ -22,8 +23,25 @@ from hub.util import strftime_now
 
 router = APIRouter(tags=["notify"])
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 _LEVELS = ("info", "warn", "down")
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+
+#: Longest single config value (and list element, by its str() form).
+#: Channel records land in services.yaml, whose reader caps at 1MB: one
+#: unbounded value used to write a config every later cfg() answered {}
+#: for — the admin account and every sibling setting vanished from the
+#: panel's view, and the next mutate() persisted the wipe from that empty
+#: snapshot.  Same class (and same 400 shape) as vms.name_too_long.
+_VALUE_MAX = 1000
+#: Most entries in a list-valued config field (the email ``to`` list).
+_LIST_MAX = 100
+#: Backstop on one whole record, so many at-cap fields still stay small.
+_RECORD_MAX = 8 * 1024
+#: Ceiling on stored channels: unbounded rows are the same services.yaml
+#: growth path as unbounded values (see accounts.too_many).
+_MAX_CHANNELS = 100
 
 
 class ChannelBody(BaseModel):
@@ -55,6 +73,28 @@ def _generate_id(name: str | None) -> str:
     return cid if notify_channels.valid_channel_id(cid) else f"channel-{suffix}"
 
 
+def _capped_value(field: str, value):
+    """One config value, refused (coded 400) before it can outgrow the store."""
+    if isinstance(value, (bool, int)):
+        # JSON-body ints are parse-capped well below the int->str digit
+        # limit, so they are always renderable and always small.
+        return value
+    if isinstance(value, list):
+        if len(value) > _LIST_MAX:
+            raise api_error("notify.list_too_long", field=field, max=_LIST_MAX)
+        for item in value:
+            if item is None or isinstance(item, (bool, int, float)):
+                continue
+            text = item if isinstance(item, str) else str(item)
+            if len(text) > _VALUE_MAX:
+                raise api_error("notify.value_too_long", field=field, max=_VALUE_MAX)
+        return value
+    text = str(value).strip()
+    if len(text) > _VALUE_MAX:
+        raise api_error("notify.value_too_long", field=field, max=_VALUE_MAX)
+    return text
+
+
 def _validated_record(body: ChannelBody, cid: str) -> tuple[dict, dict]:
     """(channel record for services.yaml, secrets patch) — or raise."""
     spec = _spec_for(body.type)
@@ -73,7 +113,17 @@ def _validated_record(body: ChannelBody, cid: str) -> tuple[dict, dict]:
         value = body.config.get(field)
         if value is None or value == "":
             continue
-        record[field] = value if isinstance(value, (int, bool, list)) else str(value).strip()
+        record[field] = _capped_value(field, value)
+
+    # Backstop on the whole record: per-field caps still allow a list of
+    # at-cap entries to add up, and services.yaml must stay far below its
+    # 1MB read cap even with _MAX_CHANNELS records in it.
+    try:
+        serialized = json.dumps(record, ensure_ascii=False, default=str)
+    except (TypeError, ValueError, RecursionError):
+        serialized = ""
+    if len(serialized) > _RECORD_MAX:
+        raise api_error("notify.value_too_long", field="config", max=_RECORD_MAX)
 
     secrets_patch = {
         k: v for k, v in body.secrets.items() if k in spec["secrets"] and v is not None
@@ -137,19 +187,43 @@ def create_channel(body: ChannelBody, request: Request):
         raise api_error("notify.bad_id")
     if notify_channels.get_channel(cid) is not None:
         raise api_error("notify.exists", id=cid)
+    if len(notify_channels.channels()) >= _MAX_CHANNELS:
+        raise api_error("notify.too_many")
     record, secrets_patch = _validated_record(body, cid)
     # A half-completed delete (config gone, credentials write failed) can
     # leave orphaned secrets under this id; a new channel must never silently
     # inherit them, so the slate is wiped before the new values land.
     notify_channels.drop_channel_secrets(cid)
-    notify_channels.set_channel_secrets(cid, secrets_patch)
+    # require= rejects a missing mandatory secret before the write; the
+    # after-write check below stays as the backstop for a write the disk
+    # swallowed (EIO), where "created" would otherwise mean "secretless".
+    notify_channels.set_channel_secrets(
+        cid, secrets_patch, require=_spec_for(body.type)["secret_required"]
+    )
     try:
         _require_secrets(cid, body.type)
-    except Exception:
-        # Don't leave orphaned secrets for a channel that was never created.
-        notify_channels.drop_channel_secrets(cid)
+        # save_channel sits inside the same cleanup net: a services.yaml
+        # that turned unreadable refuses this write with the coded 503
+        # (config.mutate -> _read_disk_for_mutate), and the mandatory
+        # secret just written for the never-created channel used to stay
+        # behind in notify-credentials.json — an orphaned live credential
+        # no channel row references, invisible to the list and unreachable
+        # by DELETE.  The half-completed *delete* mirror of this is exactly
+        # what the pre-write wipe above exists for.
+        notify_channels.save_channel(record)
+    except _CONTROL_FLOW:
         raise
-    notify_channels.save_channel(record)
+    except BaseException:
+        # Don't leave orphaned secrets for a channel that was never created.
+        # The drop itself is best-effort: masking the coded 503 with a raise
+        # out of the cleanup would trade an orphan for a 500.
+        try:
+            notify_channels.drop_channel_secrets(cid)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+        raise
     audit.record(audit.NOTIFY_CHANNEL_CREATED,
                  username=request_username(request),
                  client=request_client_id(request), **_audit_fields(record))
@@ -169,7 +243,14 @@ def update_channel(cid: str, body: ChannelBody, request: Request):
     if str(existing.get("type")) != body.type:
         raise api_error("notify.type_immutable", id=cid)
     record, secrets_patch = _validated_record(body, cid)
-    notify_channels.set_channel_secrets(cid, secrets_patch)
+    # require= refuses inside the secrets lock, before the write: clearing a
+    # mandatory secret (``secrets: {"url": ""}``) used to persist the wipe
+    # and *then* 400 on the after-write check — the "rejected" edit left the
+    # channel secretless, and every later alert dispatch on it failed
+    # silently.  The after-write check stays as the dying-disk backstop.
+    notify_channels.set_channel_secrets(
+        cid, secrets_patch, require=_spec_for(body.type)["secret_required"]
+    )
     _require_secrets(cid, body.type)
     notify_channels.save_channel(record)
     audit.record(audit.NOTIFY_CHANNEL_UPDATED,

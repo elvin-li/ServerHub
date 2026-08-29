@@ -6,8 +6,8 @@
     </div>
     <div class="toolbar">
       <select v-model="sourceId" :aria-label="t('logs.source_label')" @change="load(true)">
-        <option v-for="s in sources" :key="s.id" :value="s.id">
-          {{ finiteText(s.name) }}{{ s.exists ? ' · ' + fmtSize(s.size) : t('logs.missing') }}
+        <option v-for="s in asArray(sources)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">
+          {{ finiteText(asRecord(s).name) }}{{ asRecord(s).exists ? ' · ' + fmtSize(asRecord(s).size) : t('logs.missing') }}
         </option>
       </select>
       <select v-model.number="lines" :aria-label="t('logs.lines_label')" @change="load(true)">
@@ -26,13 +26,13 @@
       <button class="tiny hide-m" @click="downloadLog">{{ t('logs.download') }}</button>
     </div>
     <div v-if="meta" class="detail" style="margin-bottom:8px;white-space:normal">
-      <span class="mono">{{ finiteText(meta.path) }}</span>
-      · {{ fmtSize(meta.size) }}
-      · {{ t('logs.lines_n', { n: fmtCount(meta.lines) }) }}
+      <span class="mono">{{ finiteText(asRecord(meta).path) }}</span>
+      · {{ fmtSize(asRecord(meta).size) }}
+      · {{ t('logs.lines_n', { n: fmtCount(asRecord(meta).lines) }) }}
       <!-- Always-rendered live region, text gated inside: typing in the filter
            otherwise changes nothing a screen reader is told about, so there
            was no way to hear whether the filter matched anything at all. -->
-      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(displayLines.length) }) }}</template></span>
+      <span role="status"><template v-if="filter"> · {{ t('logs.matched', { n: finiteN(asArray(displayLines).length) }) }}</template></span>
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="retry" :busy="loading" />
     <pre v-if="!loaded" class="log-viewer" role="status" aria-live="polite">{{ t('common.loading') }}</pre>
@@ -49,7 +49,7 @@
     <!-- Filter-miss and empty-file are different answers: "(empty)" on a
          full log whose filter matched nothing told the operator the file
          has no lines. Same split Brew/Health pinned (common.no_match). -->
-    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ filter.trim() && text ? t('common.no_match') : t('logs.empty') }}</pre>
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ finiteText(filter, '').trim() && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
@@ -58,7 +58,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonLoad, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -78,13 +78,40 @@ let timer = null
 let loadGeneration = 0
 let pageAlive = true
 
+function lineText(value) {
+  const rendered = finiteText(value, '')
+  if (typeof rendered === 'string') return rendered
+  if (typeof rendered === 'number') return String(rendered)
+  return jsonText(value, '')
+}
+
+function asLogLines(raw) {
+  if (Array.isArray(raw)) {
+    return asArray(raw).map((l) => lineText(l))
+  }
+  if (raw != null && typeof raw === 'object') {
+    const rec = asRecord(raw)
+    if (rec.lines !== undefined && rec.lines !== raw) return asLogLines(rec.lines)
+    if (rec.log !== undefined && rec.log !== raw) return asLogLines(rec.log)
+    const dumped = jsonText(raw, '')
+    return dumped ? [dumped] : []
+  }
+  const text = lineText(raw)
+  if (!text) return []
+  const parsed = jsonLoad(text)
+  if (Array.isArray(parsed)) return asLogLines(parsed)
+  if (parsed != null && typeof parsed === 'object') return asLogLines(parsed)
+  return text.split('\n')
+}
+
 const displayLines = computed(() => {
-  const f = filter.value.trim().toLowerCase()
-  const all = (text.value || '').split('\n')
+  const rawFilter = filter.value
+  const f = typeof rawFilter === 'string' ? rawFilter.trim().toLowerCase() : ''
+  const all = asArray(asLogLines(text.value))
   if (!f) return all
-  return all.filter(l => l.toLowerCase().includes(f))
+  return all.filter((l) => lineText(l).toLowerCase().includes(f))
 })
-const displayText = computed(() => displayLines.value.map((l) => finiteText(l, '')).join('\n'))
+const displayText = computed(() => asArray(displayLines.value).map((l) => finiteText(l, '')).join('\n'))
 
 function fmtSize(n) {
   if (n == null || n === 0) return '0 B'
@@ -103,15 +130,16 @@ function fmtCount(n) {
 async function loadSources() {
   const generation = loadGeneration
   try {
-    const d = await getLogSources()
+    const d = asRecord(await getLogSources())
     if (generation !== loadGeneration || !pageAlive) return false
-    sources.value = d.sources || []
-    if (!sourceId.value && sources.value.length) sourceId.value = sources.value[0].id
+    sources.value = asArray(d.sources).map((s) => asRecord(s))
+    const first = asRecord(asArray(sources.value)[0])
+    if (!sourceId.value && asArray(sources.value).length && first.id) sourceId.value = first.id
     loadError.value = ''
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
     return false
   }
@@ -127,15 +155,15 @@ async function load(manual = false) {
   const requestedLines = lines.value
   loading.value = true
   try {
-    const d = await getLogTail(requestedSource, requestedLines)
+    const d = asRecord(await getLogTail(requestedSource, requestedLines))
     if (generation !== loadGeneration || !pageAlive || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
-    meta.value = d
-    text.value = d.log || ''
+    meta.value = asRecord(d)
+    text.value = asRecord(d).log
     loadError.value = ''
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // Same convention as the Audit/Alerts pollers: the 6-second auto-refresh
     // stays silent on failure — LoadFailure already marks the state on screen,
     // and re-toasting every tick while the panel is unreachable interrupts a
@@ -152,7 +180,7 @@ async function load(manual = false) {
 }
 
 function retry() {
-  if (sources.value.length) return load(true)
+  if (asArray(sources.value).length) return load(true)
   return loadSources().then((ok) => { if (ok) return load(true) })
 }
 

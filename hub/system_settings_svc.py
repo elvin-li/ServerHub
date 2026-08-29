@@ -9,15 +9,17 @@ Inspired by:
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import platform
 import re
 import time
-from hub import __version__
+from hub import __version__, power_svc
 from hub.config import cfg, settings_section
 from hub.host_address import configured_host, host_ip
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR
-from hub.errors import soft_fail
+from hub.errors import api_error, soft_fail
 from hub.secure_io import replace_bytes
 from hub.util import LazyPool, cached_snapshot, fan_out, sh, strftime_now, ttl_memo
 
@@ -28,94 +30,421 @@ def shutdown_executor() -> None:
     _pool.shutdown()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the sanitizer gates themselves — one step ahead of every
+    scrub in this module (the dash9 host_address / nas8 rule).  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` probes in :func:`set_power_pref` — a raw 500 on
+    POST /api/settings/power after the pmset spawn had already run (the
+    identity_svc / health9 rule).  ``-255`` is no honest exit status, so a
+    bomb keeps the failure branch — and it is never the ``-1`` spawn
+    sentinel, so junk cannot forge the vanished-pmset 503 either.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The bare ``rc, out, err = sh(...)`` unpack in :func:`set_power_pref`
+    dispatched into the *answer's* own iteration: a tuple/list subclass
+    whose bound ``__iter__`` bombs, a lying-``__class__`` sequence
+    impostor, or a torn two-field answer each raised straight out of
+    POST /api/settings/power — a raw 500 one step before any rc probe
+    (the vms/system ``_sh3`` rule).  Junk degrades to ``(-255, "", "")``:
+    nonzero, and never the ``-1`` sentinel the vanished-pmset classifier
+    trusts.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    try:
+        if len(items) != 3:
+            return (-255, "", "")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises, but this module does not own it,
+    and :func:`set_power_pref` called it bare on the request path: a
+    leftover runner that raises instead of answering 500'd
+    POST /api/settings/power after validation had already passed (the
+    vms11 / identity runner-seam rule).  A raising runner reads as
+    ``(-255, "", "")`` — nonzero, never the ``-1`` spawn sentinel — so it
+    can neither claim success nor forge the vanished-pmset 503, which
+    stays reserved for an honest sentinel plus the on-disk confirm.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return (-255, "", "")
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    # _isa, not a bare isinstance: a ``__class__``-property bomb riding a
+    # timer row used to detonate this gate itself and 500 the scheduler trio.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode (the tools_svc._as_text rule): the old
+            # ``bytes(value)`` copy dispatched into a subclass's own
+            # ``__bytes__``, so a leftover ``__bytes__`` bomb raised out of
+            # the sanitizer just like the decode() bomb it was guarding
+            # against.  The base read survives both and salvages the real
+            # bytes.  The try is for a *lying* ``__class__`` (claims bytes,
+            # is not): the unbound call TypeErrors and the impostor renders
+            # like any other junk object below instead of 500ing.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode, not text.encode: ``str(x)`` of a str *subclass*
+    # whose ``__str__`` returns itself keeps the subclass, so the bound
+    # ``.encode`` dispatched into a leftover override — a bomb there raised
+    # out of the sanitizer and 500'd GET /api/settings/other, /thresholds
+    # and /disk (the jobs6 class, sealed elsewhere).
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
-    if isinstance(value, str):
+    # _isa on every rank gate: a ``__class__``-property bomb used to
+    # detonate the first bare isinstance and raise out of the scrub itself.
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
-    if value is None or isinstance(value, (dict, list, tuple, set, bool)):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.  The try is for a lying
+            # ``__class__`` impostor, which renders as junk text below.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    if _isa(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        return _utf8_text(value)
+    if value is None or _isa(value, (dict, list, tuple, set, bool)):
         return ""
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that neither a dict-subclass ``.get`` bomb nor a leftover
+    *hash-shadowing* key can detonate.
+
+    ``dict.get`` (unbound) bypasses a subclass's own ``.get`` override, but
+    the C-level lookup still calls the *stored* key's ``__eq__`` when the
+    probe's hash lands on its slot — so a leftover key carrying
+    ``hash("label")`` / ``hash("server_comment")`` with a raising ``__eq__``
+    used to 500 GET /api/settings/scheduler, /disk, /other and
+    /api/identity straight out of the compare (the alerts/notify_channels
+    ``_mapping_get`` rule, which these host surfaces never got).
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
 
 
 def _finite_number(value, default=None):
     """YAML leftover ``.inf`` / a date used to 500 GET /api/settings/other."""
-    if isinstance(value, bool) or value is None:
+    # type-is for the bool gate and _isa for the ranks: a ``__class__``-
+    # property bomb used to detonate the first bare isinstance itself and
+    # 500 GET /api/settings/other on the metrics_interval read.
+    if type(value) is bool or value is None:
         return default
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__index__``/``__str__`` bombs (the modules5 class) used to
+            # raise past the ValueError-only digit-cap catch and 500
+            # GET /api/settings/thresholds and /other.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A >4300-digit leftover int is unrenderable by json.dumps
             # (CPython's int->str digit cap) — fall back like inf.
             return default
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
         if value != value or value in (float("inf"), float("-inf")):
             return default
         return value
     return default
 
 
+def _truthy(value) -> bool:
+    """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
+    stored flag must degrade to False, never raise out of a settings read."""
+    # ``type(value) is bool``, not isinstance: a *bool-liar* (lying
+    # ``__class__`` claims bool, is not) passed isinstance and was returned
+    # raw into the payload, where the C encoder's exact-type check refused
+    # it — a raw 500 on GET /api/settings/system.  bool() below coerces the
+    # liar to an honest True/False without ever consulting ``__class__``.
+    if type(value) is bool:
+        return value
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _as_map(value) -> dict:
+    """A plain-dict copy of *value*, or ``{}``.
+
+    ``dict(subclass)`` copies through CPython's C-level storage, bypassing
+    a leftover's overridden ``.get``/``.items``/``keys`` (the bomb class
+    usage5/json5 sealed elsewhere), so every read on the returned map is on
+    a plain dict.
+    """
+    # _isa: a ``__class__``-property bomb handed in as a row used to
+    # detonate the gate itself instead of degrading to {}.
+    if not _isa(value, dict):
+        return {}
+    try:
+        return dict(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+
+
+def _as_list(value) -> list:
+    """A plain-list copy of *value*, or ``[]``.
+
+    ``list.__iter__`` (unbound) reads CPython's C-level storage, bypassing
+    a leftover list-subclass's own ``__iter__``/``__len__``/``__getitem__``
+    overrides — so honest rows in a subclass wrapper survive while a bomb
+    costs only the copy, never the route.  A lying-``__class__`` impostor
+    (claims list over no real list storage) TypeErrors the unbound read and
+    degrades to empty the same way.
+    """
+    if not _isa(value, list):
+        return []
+    try:
+        return list(list.__iter__(value))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+
+
+def _settings_map() -> dict:
+    """Laundered ``settings`` mapping off ``cfg()`` for the readers here.
+
+    ``cfg().get("settings") or {}`` reflected into the leftover itself
+    twice: a config root that is a dict *subclass* with a bombing ``.get``
+    raised on the read, and a ``settings`` value whose ``__bool__`` bombs
+    raised on the ``or`` — each a raw 500 on GET /api/settings/other (the
+    same reads inside get_management_access degraded that section of the
+    Settings bundle to an error row).
+    """
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    # _isa, not a bare isinstance (the settings_section host12 rule): a
+    # snapshot root whose ``__class__`` is a *raising property* detonated
+    # this gate itself and 500'd GET /api/settings/other one step ahead of
+    # the laundering — the raising-provider try above never saw it because
+    # the answer, not the call, is the bomb.
+    if not _isa(data, dict):
+        return {}
+    # _mapping_get, not a bare ``dict.get``: the unbound read dodges a
+    # subclass ``.get`` bomb but a hash-shadowing "settings" key still
+    # raised inside the C lookup and 500'd GET /api/settings/other.
+    return _as_map(_mapping_get(data, "settings"))
+
+
 def _json_bool(value, default: bool = True) -> bool:
-    return value if isinstance(value, bool) else default
+    # ``type(value) is bool``: a bool-liar (lying ``__class__``) passed
+    # isinstance and rode raw into the payload — the C encoder's exact-type
+    # check refused it and 500'd GET /api/settings/other.  A class-bomb
+    # (raising ``__class__``) detonated the isinstance itself.  type() never
+    # dispatches into the leftover.
+    return value if type(value) is bool else default
 
 
 def _json_atom(value):
     """Drop leftover inf/bytes/dates/sets/``\\ud800`` so Starlette cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, str):
+    # _isa on every rank gate (the dash9 rule): a ``__class__``-property
+    # bomb used to detonate the first bare isinstance and 500 every rider.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, float):
+    if _isa(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, (dict, list, tuple, set, frozenset)):
+    if _isa(value, (dict, list, tuple, set, frozenset)):
         return None
-    iso = getattr(value, "isoformat", None)
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``isoformat`` property used to blow the probe itself
+        # (the _plist_jsonable rule from host7): getattr's default only
+        # swallows AttributeError, so the bomb 500'd every _json_atom rider.
+        iso = None
     if callable(iso):
         try:
             stamped = iso()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
         if stamped is value:
             return None
         return _json_atom(stamped)
-    if isinstance(value, int) and not isinstance(value, bool):
+    if _isa(value, int) and type(value) is not bool:
         try:
+            # Base coercion first: an int subclass ``__index__``/``__str__``
+            # bomb used to raise past the ValueError-only digit-cap catch.
+            # A *bool-liar* (lying ``__class__`` claims bool) lands here too
+            # — bool subclasses int — and the coercion TypeErrors it into
+            # the same drop instead of returning it raw.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
+        # ``type(value) is bool``, not ``_isa``: a bool-liar passed the
+        # lying-``__class__`` check and was returned raw, and Starlette's
+        # C encoder — which checks the exact type — refused it with a
+        # TypeError: a raw 500 on every _json_atom rider.
         return value
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -129,47 +458,131 @@ def _json_tree(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
+        # ``type(value) is bool``, not ``_isa``: a *bool-liar* (lying
+        # ``__class__`` claims bool, is not) passed this gate and was
+        # returned raw — Starlette's C encoder checks the exact type and
+        # TypeError'd it, a raw 500 on GET /api/scheduler and
+        # /api/system/scheduler.  The liar now falls through to the int
+        # gate (bool subclasses int), where ``int.__index__`` refuses it
+        # and it drops to null like any other unrenderable.
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
+            # Base coercion first: an int subclass ``__index__``/``__str__``
+            # bomb used to raise past the ValueError-only digit-cap catch.
+            value = int.__index__(value)
             str(value)
-        except ValueError:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Past CPython's int->str digit cap the encoder cannot render
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return None
-    if isinstance(value, float):
+    if _isa(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes below.
+            value = float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
         return value
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, str):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
+            # bomb (and the bound ``.decode`` was the subclass's own) — either
+            # one raised out of the sanitizer.
+            base = bytes if isinstance(value, bytes) else bytearray
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+        try:
+            items = list(value.items())
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A dict *subclass* whose items() raises must not 500 the
+            # settings bundle — drop the node like an unrenderable scalar;
+            # healthy siblings around it are untouched.
+            return None
+        for pair in items:
+            try:
+                k, v = pair
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A subclass items() answering torn pairs (three-tuples, a
+                # bombing pair iterator) used to ValueError out of the walk
+                # itself; the torn entry drops and its siblings survive.
+                continue
+            # _isa on the key rank too: a ``__class__``-property bomb as a
+            # mapping key used to detonate this gate and 500 the walk.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    # Unbound base decode, matching the value arm: a key-rank
+                    # ``__bytes__`` bomb used to raise out of the walk.
+                    kbase = bytes if isinstance(k, bytes) else bytearray
+                    k = kbase.decode(k, "utf-8", "replace")
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    # A lying-``__class__`` key cannot be rendered: the
+                    # entry drops, its siblings stay.
+                    continue
             else:
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _json_tree(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_tree(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        try:
+            seq = list(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A list/set subclass whose __iter__ raises drops to null rather
+            # than raising out of the encode; the structure survives.
+            return None
+        return [_json_tree(v, depth + 1) for v in seq]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``isoformat`` property used to blow the probe itself
+        # (the _plist_jsonable rule from host7): getattr's default only
+        # swallows AttributeError, so the bomb 500'd GET /api/scheduler,
+        # GET /api/system/scheduler and every other _json_tree rider.
+        iso = None
     if callable(iso):
         try:
             return _json_tree(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -232,7 +645,9 @@ def get_datetime_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     now, tz, ntp_on, ntp_server = fan_out(
@@ -252,7 +667,13 @@ def get_datetime_info() -> dict:
         unix = 0
     return _json_tree({
         "now": _as_text(now),
-        "timezone": _as_text(tz or ""),
+        # _truthy, not a bare ``or``: the timezone answer comes from a seam
+        # this module does not own (identity_svc.time_zone, patched by
+        # tests and tooling), and a leftover ``__bool__`` bomb answered
+        # into ``tz or ""`` detonated the truth test itself — a raw 500 on
+        # GET /api/settings/datetime before _as_text ever saw the value
+        # (the get_identity ``_pick`` rule this route never got).
+        "timezone": _as_text(tz) if _truthy(tz) else "",
         "ntp_enabled": ntp_on,
         "ntp_server": _as_text(ntp_server) if ntp_server is not None else None,
         "unix": unix,
@@ -317,7 +738,9 @@ def _pmset_settings() -> dict:
                         settings[key] = int(val)
                     else:
                         settings[key] = val
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     settings[key] = val
     return settings
 
@@ -362,7 +785,9 @@ def get_power_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     settings, sleep_prevented_by, ups = fan_out(
@@ -404,9 +829,26 @@ def set_power_pref(key: str, value: int) -> dict:
         return soft_fail("power.bad_value")
     if value < 0 or value > 180:
         return soft_fail("power.value_range")
-    rc, out, err = sh(["/usr/bin/pmset", "-a", key, str(value)], timeout=8)
+    # _spawn + _rc_int on every probe: a raising or shape-junk sh answer
+    # used to blow the bare unpack, and an rc-subclass ``__ne__``/``__eq__``
+    # bomb detonated the bare ``rc != 0`` / ``rc == 0`` reads — each a raw
+    # 500 on POST /api/settings/power after the spawn had already run.
+    rc, out, err = _spawn([power_svc.PMSET, "-a", key, str(value)], 8)
+    rc = _rc_int(rc)
     if rc != 0:
-        rc, out, err = sh(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", key, str(value)], timeout=8)
+        # The laundered rc feeds the classifier: junk reads as -255, never
+        # the honest ``-1`` sentinel, so the coded 503 below still fires
+        # only after a real vanished-spawn answer plus the disk confirm.
+        if power_svc._pmset_missing(rc, err):
+            # A vanished pmset used to answer ok:false with a message telling
+            # the operator to run ``sudo pmset -a`` by hand — blaming
+            # privileges for a binary the disk confirm just proved is gone
+            # (the sudo fallback below cannot spawn it either).  Coded 503
+            # like set_wol; the sentinel alone never classifies, and the disk
+            # probe runs on this failure path only.
+            raise api_error("power.pmset_missing")
+        rc, out, err = _spawn(["/usr/bin/sudo", "-n", power_svc.PMSET, "-a", key, str(value)], 8)
+        rc = _rc_int(rc)
     msg = _as_text(out) or _as_text(err)
     if rc != 0:
         msg = (msg or "failed") + f" · run manually: sudo pmset -a {key} {value}"
@@ -424,7 +866,9 @@ def _storage_snapshot() -> tuple[dict, list]:
         st = storage_svc.collect_storage(force=False)
         smart = (st.get("system") or {}).get("smart") or st.get("smart") or {}
         return smart, st.get("disks") or []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}, []
 
 
@@ -432,7 +876,9 @@ def _power_disks() -> list:
     try:
         from hub import disk_power_svc
         return disk_power_svc.list_power_disks()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
 
 
@@ -450,35 +896,67 @@ def get_disk_settings() -> dict:
             [get_power_info, _storage_snapshot, _power_disks],
             max_workers=3,
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         power, storage, power_disks = {}, ({}, []), []
-    if not isinstance(power, dict):
-        power = {}
-    if isinstance(storage, (tuple, list)) and len(storage) >= 2:
-        smart, disks = storage[0], storage[1]
-    else:
+    # _as_map, not the bare isinstance gate: a leftover dict-*subclass*
+    # power snapshot with a bombing ``.get`` passed the gate and raised on
+    # the disksleep read — a raw 500 on GET /api/settings/disk.
+    power = _as_map(power)
+    # _isa + guarded indexing: a class-bomb storage answer used to blow the
+    # bare isinstance itself, and a sequence subclass whose ``__len__`` /
+    # ``__getitem__`` bombs passed the gate and raised on the unpack.
+    try:
+        if _isa(storage, (tuple, list)) and len(storage) >= 2:
+            smart, disks = storage[0], storage[1]
+        else:
+            smart, disks = {}, []
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         smart, disks = {}, []
-    if not isinstance(disks, list):
-        disks = []
-    if not isinstance(power_disks, list):
-        power_disks = []
+    # _as_list on both inventories: a list *subclass* answer passed the old
+    # isinstance gates whole, and its bombing ``__len__`` detonated the
+    # ``len(disks) or len(power_disks)`` count below while a bombing
+    # ``__getitem__``/``__iter__`` blew the ``power_disks[:20]`` slice —
+    # raw 500s on GET /api/settings/disk one step past the row laundering.
+    # The plain-list copy reads the C-level storage, so honest rows in a
+    # subclass wrapper survive untouched.
+    disks = _as_list(disks)
+    power_disks = _as_list(power_disks)
     rows = []
     for d in power_disks[:20]:
-        if not isinstance(d, dict):
+        # _isa: a class-bomb row used to blow the gate itself and 500
+        # GET /api/settings/disk before the laundering ever ran.
+        if not _isa(d, dict):
             continue
+        # Launder each row: a power-disk row that is a dict subclass with a
+        # bombing ``.get`` (the jobs/metrics row-bomb class) used to raise
+        # out of the field reads below and 500 GET /api/settings/disk.
+        # _mapping_get on the field reads: a hash-shadowing "id"/"name" key
+        # survives the plain-dict copy and used to detonate the C-level
+        # compare under the laundered ``.get`` — the same 500.
+        d = _as_map(d)
         rows.append({
-            "id": _json_atom(d.get("id")),
-            "name": _json_atom(d.get("name")) or _json_atom(d.get("id")),
-            "power_state": _json_atom(d.get("power_state")),
-            "size_gb": _finite_number(d.get("size_gb")),
+            "id": _json_atom(_mapping_get(d, "id")),
+            "name": _json_atom(_mapping_get(d, "name")) or _json_atom(_mapping_get(d, "id")),
+            "power_state": _json_atom(_mapping_get(d, "power_state")),
+            "size_gb": _finite_number(_mapping_get(d, "size_gb")),
         })
-    return {
-        "disksleep_minutes": _finite_number(power.get("disksleep")),
+    cleaned = _json_tree({
+        # ``smart`` used to pass through raw — the one section of this
+        # payload the sanitizer never touched.  A leftover ``\ud800`` /
+        # over-cap int / non-UTF-8 bytes / items()-bomb subclass inside the
+        # SMART snapshot 500'd GET /api/settings/disk while the same data
+        # rendered fine inside the bundle (which _json_tree's everything).
+        "disksleep_minutes": _finite_number(_mapping_get(power, "disksleep")),
         "smart": smart,
         "disk_count": len(disks) or len(power_disks),
         "power_disks": rows,
         "hint": "Sleep / wake HDDs from the Storage Array page; this adjusts the system disksleep policy.",
-    }
+    })
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _panel_update_snapshot() -> dict:
@@ -486,26 +964,31 @@ def _panel_update_snapshot() -> dict:
     try:
         from hub.tools_svc import github_update_status
         snap = github_update_status(fetch=False, checkout=False)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
     return snap if isinstance(snap, dict) else {}
 
 
 def get_management_access() -> dict:
     """Unraid Management Access style summary."""
-    s = cfg().get("settings") or {}
-    if not isinstance(s, dict):
-        s = {}
+    # The old ``cfg().get("settings") or {}`` read was dead (nothing below
+    # consumed it) and reflected into a leftover dict-subclass ``.get`` /
+    # ``__bool__`` bomb — degrading this whole section of the Settings
+    # bundle to an error row.
     auth = settings_section("auth")
-    username = _json_atom(auth.get("username"))
+    # _mapping_get: a hash-shadowing key in the stored auth section used to
+    # detonate the bare ``.get`` reads and degrade this whole section.
+    username = _json_atom(_mapping_get(auth, "username"))
     if not isinstance(username, str) or not username:
         username = "admin"
     # leftover ``\ud800`` in host_ip() / configured_host() used to 500
     # GET /api/settings/system and the Management Access tile.
     cleaned = _json_tree({
         "panel_port": 8086,
-        "auth_enabled": bool(auth.get("enabled")),
-        "allow_localhost": _json_bool(auth.get("allow_localhost", True), True),
+        "auth_enabled": _truthy(_mapping_get(auth, "enabled")),
+        "allow_localhost": _json_bool(_mapping_get(auth, "allow_localhost", True), True),
         "username": username,
         "host_ip": host_ip(),
         "host_ip_config": configured_host(),
@@ -542,10 +1025,41 @@ def get_thresholds() -> dict:
     s = settings_section("thresholds")
     out = dict(DEFAULT_THRESHOLDS)
     for k, v in s.items():
-        if v is None:
+        # Scrub mapping keys before they become response keys: a leftover
+        # ``\ud800`` YAML key blew up Starlette's UTF-8 encode, and a
+        # >4300-digit int key ValueError'd the encoder's key stringify —
+        # both 500'd GET /api/settings/thresholds.
+        # _isa on the key gates (the _json_tree key-arm rule): a
+        # ``__class__``-property bomb as a key detonated the first bare
+        # isinstance itself and 500'd the route one step ahead of the scrub.
+        if _isa(k, (bytes, bytearray)):
+            try:
+                # Unbound base decode: the old ``bytes(k)`` copy ran a
+                # subclass ``__bytes__`` bomb and 500'd GET
+                # /api/settings/thresholds and /other.  The try is for a
+                # lying ``__class__`` (claims bytes, is not): the entry
+                # drops, its siblings stay.
+                k = (bytes if isinstance(k, bytes) else bytearray).decode(
+                    k, "utf-8", "replace",
+                )
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        elif not _isa(k, str):
+            try:
+                k = str(k)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        k = _utf8_text(k)
+        if not k or v is None:
             continue
         if k in ("enabled", "smart_enabled"):
-            if isinstance(v, bool):
+            # type-is, not isinstance: a class-bomb value detonated the
+            # gate and a bool-liar rode raw into the payload.
+            if type(v) is bool:
                 out[k] = v
             continue
         n = _finite_number(v)
@@ -556,31 +1070,49 @@ def get_thresholds() -> dict:
 
 def get_other_settings() -> dict:
     """Unraid Other Settings + OMV-style toggles."""
-    s = cfg().get("settings") or {}
-    if not isinstance(s, dict):
-        s = {}
+    # _settings_map, not ``cfg().get("settings") or {}``: a leftover config
+    # root / settings map that is a dict subclass with a bombing ``.get`` /
+    # ``__bool__`` used to 500 GET /api/settings/other on the very first
+    # read (the json5 bomb class, already laundered in settings_api).
+    s = _settings_map()
     alias = settings_section("ip_aliases")
-    ips = alias.get("ips")
+    # _mapping_get on every stored read: the section maps are plain-dict
+    # copies but a leftover *hash-shadowing* key inside them (same hash as
+    # "ips"/"adaptive"/…, raising ``__eq__``) survived the laundering copy
+    # and detonated the C-level compare under a bare ``.get`` — a raw 500
+    # on GET /api/settings/other.
+    ips = _mapping_get(alias, "ips")
     clean_ips = []
-    if isinstance(ips, list):
-        for item in ips:
+    # _isa: a class-bomb ips value used to blow the gate itself.
+    if _isa(ips, list):
+        try:
+            items = list(ips)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A list *subclass* whose __iter__ raises passes the isinstance
+            # gate; iterating it 500'd GET /api/settings/other.
+            items = []
+        for item in items:
             text = _json_atom(item)
             if isinstance(text, str) and text:
                 clean_ips.append(text)
-    netmask = _json_atom(alias.get("netmask")) or "255.255.255.255"
+    netmask = _json_atom(_mapping_get(alias, "netmask")) or "255.255.255.255"
     if not isinstance(netmask, str):
         netmask = "255.255.255.255"
+    # _as_text first, then membership: the raw tuple compare gave a
+    # str-subclass ``__eq__`` bomb (and any non-str leftover's reflected
+    # ``__eq__``) priority — a raw 500 where every sibling degraded fine.
+    resource_mode = _as_text(_mapping_get(s, "resource_mode"))
     return {
-        "adaptive": _json_bool(s.get("adaptive", True), True),
-        "metrics_interval": _finite_number(s.get("metrics_interval"), 90),
-        "alert_interval": _finite_number(s.get("alert_interval"), 90),
-        "resource_mode": (
-            s.get("resource_mode") if s.get("resource_mode") in ("low", "high") else "low"
-        ),
+        "adaptive": _json_bool(_mapping_get(s, "adaptive", True), True),
+        "metrics_interval": _finite_number(_mapping_get(s, "metrics_interval"), 90),
+        "alert_interval": _finite_number(_mapping_get(s, "alert_interval"), 90),
+        "resource_mode": resource_mode if resource_mode in ("low", "high") else "low",
         "ip_aliases": {
-            "auto_bind": _json_bool(alias.get("auto_bind", True), True),
-            "prefer_wired": _json_bool(alias.get("prefer_wired", True), True),
-            "interval": _finite_number(alias.get("interval"), 60),
+            "auto_bind": _json_bool(_mapping_get(alias, "auto_bind", True), True),
+            "prefer_wired": _json_bool(_mapping_get(alias, "prefer_wired", True), True),
+            "interval": _finite_number(_mapping_get(alias, "interval"), 60),
             "ips": clean_ips,
             "netmask": netmask,
         },
@@ -595,22 +1127,51 @@ def get_other_settings() -> dict:
     }
 
 
+def _first_truthy(mapping: dict, *keys):
+    """First truthy ``mapping[key]``, with a leftover ``__bool__`` bomb in a
+    value degrading to "not it" instead of raising out of the ``or`` chain.
+
+    _mapping_get, not a bare ``.get``: the rows are laundered plain dicts
+    but a hash-shadowing key (same hash as "label"/"interval"/…, raising
+    ``__eq__``) survives the copy and used to detonate the C-level compare
+    — a raw 500 on GET /api/settings/scheduler.
+    """
+    for key in keys:
+        value = _mapping_get(mapping, key)
+        if _truthy(value):
+            return value
+    return None
+
+
 def get_scheduler_summary() -> dict:
     try:
+        # ``list(...)`` inside the same try: a timers value that is a list
+        # *subclass* whose ``__iter__``/``__getitem__``/``__len__`` bombs
+        # passed the old ``or []`` and blew the slice / len below.
         from hub.tools_svc import launchd_timers
-        timers = launchd_timers() or []
-    except Exception as e:
+        timers = list(launchd_timers() or [])
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # leftover ``str(e)`` RecursionError / ``\\ud800`` used to 500 GET /api/settings.
         return {"timers": [], "count": 0, "error": _as_text(e)}
     slim = []
     for t in timers[:40]:
-        if not isinstance(t, dict):
+        # _isa: a class-bomb row used to blow this gate itself and 500
+        # GET /api/settings/scheduler ahead of the laundering.
+        if not _isa(t, dict):
             continue
+        # Launder the row: a timer row that is a dict subclass with a bombing
+        # ``.get`` passed the isinstance gate and raised out of the field
+        # reads — a raw 500 on GET /api/settings/scheduler.  The bare ``or``
+        # chains reflected into a leftover value's own ``__bool__`` the same
+        # way; _first_truthy keeps the fallback order without the dispatch.
+        t = _as_map(t)
         slim.append({
-            "label": _json_atom(t.get("label") or t.get("id") or t.get("name")),
-            "interval": _finite_number(t.get("interval") or t.get("StartInterval")),
-            "calendar": _json_tree(t.get("calendar") or t.get("StartCalendarInterval")),
-            "path": _json_atom(t.get("path") or t.get("plist")),
+            "label": _json_atom(_first_truthy(t, "label", "id", "name")),
+            "interval": _finite_number(_first_truthy(t, "interval", "StartInterval")),
+            "calendar": _json_tree(_first_truthy(t, "calendar", "StartCalendarInterval")),
+            "path": _json_atom(_first_truthy(t, "path", "plist")),
         })
     return {
         "timers": slim,
@@ -687,7 +1248,9 @@ def get_vm_settings() -> dict:
             "items": items[:20],
             "hint": "UTM + OrbStack virtual machines",
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"error": _as_text(e), "total": 0, "running": 0, "items": []}
 
 
@@ -697,28 +1260,42 @@ def _diag_host() -> dict:
     Goes through ``identity_svc.platform_string`` rather than ``platform.platform()``
     so that this and the ``identity`` section beside it -- which also wants it -- share
     one answer instead of racing to shell out twice.
-    """
-    from hub.identity_svc import platform_string
 
-    return {
-        "platform": _as_text(platform_string()),
-        "python": _as_text(platform.python_version()),
-        "hostname": _as_text(platform.node()),
-    }
+    Absorbs its own failure like every ``_diag_*`` sibling: this header rides
+    the same fan-out as the sections, whose ``ex.map`` re-raises on iteration,
+    so a raise here used to 500 the whole GET /api/diagnostics — the one
+    collector in the wave without the try the module docstring promises.
+    """
+    try:
+        from hub.identity_svc import platform_string
+
+        return {
+            "platform": _as_text(platform_string()),
+            "python": _as_text(platform.python_version()),
+            "hostname": _as_text(platform.node()),
+        }
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        return {"platform": "", "python": "", "hostname": "", "host_error": _as_text(e)}
 
 
 def _diag_identity() -> dict:
     try:
         from hub import identity_svc
         return {"identity": identity_svc.get_identity()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"identity": {"error": _as_text(e)}}
 
 
 def _diag_datetime() -> dict:
     try:
         return {"datetime": get_datetime_info()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"datetime": {"error": _as_text(e)}}
 
 
@@ -730,7 +1307,9 @@ def _diag_power() -> dict:
     """
     try:
         info = get_power_info()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"power": {"error": _as_text(e)}}
     return {"power": {
         **{k: v for k, v in info.items() if k != "assertions"},
@@ -741,14 +1320,18 @@ def _diag_power() -> dict:
 def _diag_management() -> dict:
     try:
         return {"management": get_management_access()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"management": {"error": _as_text(e)}}
 
 
 def _diag_other() -> dict:
     try:
         return {"other": get_other_settings()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"other": {"error": _as_text(e)}}
 
 
@@ -762,7 +1345,9 @@ def _diag_docker() -> dict:
             "containers_running": (di.get("info") or {}).get("ContainersRunning"),
             "orb_version": di.get("orb_version"),
         }}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"docker": {"error": _as_text(e)}}
 
 
@@ -770,7 +1355,9 @@ def _diag_alias_auto() -> dict:
     try:
         from hub import network_svc
         return {"alias_auto": network_svc.alias_auto_status()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"alias_auto": {"error": _as_text(e)}}
 
 
@@ -778,7 +1365,9 @@ def _diag_alerts() -> dict:
     try:
         from hub import alerts
         return {"recent_alerts": alerts.list_alerts(20)}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"recent_alerts": []}
 
 
@@ -786,7 +1375,9 @@ def _diag_health() -> dict:
     try:
         from hub import health_svc
         return {"health": health_svc.run_checks()}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"health": {"error": _as_text(e)}}
 
 
@@ -796,7 +1387,9 @@ def _diag_metrics() -> dict:
         hist = metrics.history(30)
         latest = hist[-1] if hist else None
         return {"metrics_latest": _json_tree(latest) if isinstance(latest, dict) else None}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {"metrics_latest": None}
 
 
@@ -810,7 +1403,9 @@ def _diag_vms() -> dict:
     try:
         vm = get_vm_settings()
         return {"vms": {"total": vm.get("total"), "running": vm.get("running")}}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
@@ -887,7 +1482,9 @@ def _persist_diagnostics(bundle: dict) -> tuple[str | None, str | None]:
             ).encode("utf-8"),
         )
         return str(path), None
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         # Assigned onto the JSON body after ``_json_tree``; leftover ``\\ud800``
         # / RecursionError on ``str(e)`` used to 500 GET /api/diagnostics.
         return None, _as_text(e) or "save failed"
@@ -921,47 +1518,69 @@ def unraid_settings_bundle(force: bool = False) -> dict:
 
     try:
         identity = f_identity.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         identity = {"error": _as_text(e)}
     try:
         alias = f_alias.result()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         alias = None
     try:
         shares = f_shares.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         shares = {"error": _as_text(e), "smb_running": False, "share_count": 0}
     try:
         sched = f_sched.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         sched = {"timers": [], "count": 0, "error": _as_text(e)}
     try:
         vms = f_vms.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         vms = {"total": 0, "running": 0, "items": [], "error": _as_text(e)}
     try:
         datetime_info = f_datetime.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         datetime_info = {"error": _as_text(e)}
     try:
         power = f_power.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         power = {"error": _as_text(e)}
     try:
         disk = f_disk.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         disk = {"error": _as_text(e)}
     try:
         mgmt = f_mgmt.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         mgmt = {"error": _as_text(e)}
     try:
         other = f_other.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         other = {"error": _as_text(e)}
     try:
         thresholds = f_thresholds.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         thresholds = {**DEFAULT_THRESHOLDS, "error": _as_text(e)}
 
     v = {

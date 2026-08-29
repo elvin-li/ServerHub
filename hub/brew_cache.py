@@ -8,6 +8,8 @@ concurrent callers into a single invocation.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import re
@@ -54,24 +56,178 @@ _DISK = DATA_DIR / "brew-services.cache.json"
 _DISK_CAP = 256 * 1024
 
 
+def _isinstance(value, types) -> bool:
+    """isinstance that survives a leftover raising ``__class__`` property.
+
+    When the type check fails, CPython's isinstance consults
+    ``value.__class__`` — so a leftover object whose ``__class__`` is a
+    raising property used to blow ``_plain_rc`` / ``_services_from_output``
+    / ``_json_safe`` and discard the *fresh* snapshot (or the last-good one)
+    instead of costing only the poisoned value.  A real subclass never
+    reaches the ``__class__`` lookup (the type check answers first), so
+    degrading the raise to False only reclassifies impostors — the
+    brew_svc._isinstance convention.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot detonate.
+
+    The ups_svc/vms_svc/health11 rule, which this module's bare
+    ``_cache["v"]`` / ``_cache["t"]`` subscripts never got: even a
+    plain-dict lookup still runs the *stored keys'* own ``__eq__`` during
+    the hash probe, so a leftover str-subclass key whose hash shadows
+    ``v``/``t`` and whose ``__eq__`` raises used to raise straight out of
+    :func:`_fresh` / :func:`_stale_memory` — the raise escaped
+    :func:`brew_services` into ``brew_svc.list_services``' broad except and
+    silently wiped every brew row from GET /api/brew/services (and out of
+    :func:`invalidate_brew_services` it 500'd POST
+    /api/brew/services/{name}/action outright).  Only the shadowed field
+    degrades to its default; siblings keep their sane data.
+    """
+    if not _isinstance(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _cache_store(**fields) -> None:
+    """Write cache slots through a hostile *key* already in the table.
+
+    A hash-shadowing junk key raises out of the C-level insert compare
+    (never out of a plain ``t``/``v`` overwrite), so ``_cache.update`` and
+    ``_cache["t"] = 0.0`` used to raise out of :func:`_publish` /
+    :func:`invalidate_brew_services` after the snapshot work had already
+    succeeded.  ``clear()`` never compares keys, so evicting the poison and
+    rewriting always lands (the health11 rule).  Callers hold ``_lock``.
+    """
+    try:
+        _cache.update(**fields)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            _cache.clear()
+            _cache.update(**fields)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+
+
+def _sh_answer(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The docker11/health11 answer-shape rule: this module does not own
+    ``sh`` (tests and tooling patch it), and the bare ``rc, out, _ = sh(…)``
+    unpack in :func:`_load` dispatched into the answer's *own* iteration — a
+    tuple/list subclass whose ``__iter__`` raises, or a lying-``__class__``
+    impostor over no real sequence storage.  Only ``TypeError`` /
+    ``ValueError`` were caught, so a ``RuntimeError`` bomb raised out of
+    ``_load`` and discarded the last-good snapshot: every brew row vanished
+    from GET /api/brew/services where the keep-last-good tail should have
+    answered.  Unbound base reads keep an honest answer inside a subclass
+    wrapper intact; junk degrades to ``(None, None, None)``, which
+    :func:`_plain_rc` reads as failure — never ``0``, and never the ``-1``
+    vanished-spawn sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinstance(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (None, None, None)
+    elif _isinstance(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (None, None, None)
+    else:
+        return (None, None, None)
+    if len(items) != 3:
+        return (None, None, None)
+    return items
+
+
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, str):
+    # Unbound through the base types, like brew_svc._as_text: a leftover
+    # bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
+    # ``.encode`` does) used to raise out of _services_from_output and cost
+    # the whole fresh snapshot instead of nothing.  Guarded isinstance:
+    # a ``__class__`` property bomb used to blow the chain itself.
+    #
+    # The unbound base calls run inside a ``try`` (the health10 rule): a
+    # *lying*-``__class__`` impostor — ``isinstance`` answers bytes/str, the
+    # real object is neither — passes the gate but makes the unbound
+    # descriptor itself raise TypeError, discarding the fresh snapshot and
+    # the last-good rows the same way.  A liar falls through to the generic
+    # guarded ``str()`` probe instead.
+    text = None
+    if _isinstance(value, bytes):
+        try:
+            text = bytes.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            text = None
+    elif _isinstance(value, bytearray):
+        try:
+            text = bytearray.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            text = None
+    elif _isinstance(value, str):
         text = value
     elif value is None:
         return ""
-    else:
+    if text is None:
         try:
             text = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A str-liar rode the ``_isinstance(value, str)`` branch as *text*
+        # itself; one last guarded ``str()`` renders its honest ``__str__``.
+        try:
+            return str.encode(str(value), "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            try:
+                return type(value).__name__
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
 
 
 def _json_safe(value, depth: int = 0):
@@ -81,12 +237,55 @@ def _json_safe(value, depth: int = 0):
     field with Inf/bytes still landed in the snapshot, so ``_write_disk``
     silently skipped (allow_nan=False) and any caller that returned the
     row 500'd.  A leftover ``\\ud800`` in ``name`` still 500'd the UTF-8 encode.
+
+    Base-type coercions throughout (unbound ``dict.items`` / ``__iter__``,
+    ``int.__index__``, ``float.__float__``, unbound ``str.encode`` /
+    ``bytes.decode``): a leftover subclass whose ``items``/``__iter__``/
+    ``__eq__``/``__str__``/``encode``/``decode`` bombs used to raise out of
+    ``_copy_items`` and wipe every brew row from the whole snapshot instead
+    of costing only the poisoned value — the docker_cli/modules ``_jsonable``
+    convention.
+
+    Guarded isinstance throughout (see :func:`_isinstance`): a leftover
+    value — or a leftover mapping *key* — whose ``__class__`` property
+    raises used to blow the probes here and wipe every sibling row.
+
+    The unbound base calls run inside a ``try`` (the health10/modules9
+    rule): a *lying*-``__class__`` impostor — ``isinstance`` answers the
+    claimed type, the real object is something else — passes the gate but
+    makes the unbound descriptor itself raise TypeError.  A bool-liar field
+    used to ride through the old ``return value`` arm raw, survive both
+    launderers and 500 Starlette's encoder on GET /api/brew/services; a
+    str/bytes/dict/list-liar (value, element, or mapping key) raised out of
+    ``_copy_items`` and wiped the whole fresh snapshot instead of costing
+    only the poisoned value.
     """
     if depth > 16:
         return None
-    if isinstance(value, bool) or value is None:
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isinstance(value, bool):
+        if type(value) is bool:
+            return value
+        # Only a lying ``__class__`` property lands here (bool is final).
+        # It used to ride through as-is and 500 Starlette's encoder.
+        try:
+            return bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError
+                # was caught).
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -97,54 +296,220 @@ def _json_safe(value, depth: int = 0):
             # sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isinstance(value, str):
+        # Unbound base encode: a str-subclass ``.encode`` bomb cannot fire.
+        # Guarded: a str-liar the descriptor refuses drops to None instead
+        # of raising out of _copy_items and wiping the whole snapshot.
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, bytes):
+        try:
+            return bytes.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, bytearray):
+        try:
+            return bytearray.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, dict):
+        # Unbound base view: reads the C-level storage, so a dict-subclass
+        # row whose ``items``/``keys``/``__iter__``/``get`` raises still
+        # yields its real pairs.  Key probes guarded too: one mapping key
+        # whose ``__class__`` property raises used to wipe the whole row.
+        # The view call itself runs in a try: a dict-liar the unbound
+        # descriptor refuses used to TypeError out of _copy_items and wipe
+        # every sibling row; it degrades to None like any other impostor.
+        try:
+            pairs = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
         out = {}
-        for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                key = k.decode("utf-8", "replace")
-            else:
+        for k, v in pairs:
+            key = None
+            if _isinstance(k, bytes):
+                # Guarded unbound decode: a bytes-liar key used to
+                # TypeError here and wipe the whole row; it falls through
+                # to the generic ``str()`` probe below.
                 try:
-                    key = k if isinstance(k, str) else str(k)
+                    key = bytes.decode(k, "utf-8", "replace")
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    key = None
+            elif _isinstance(k, bytearray):
+                try:
+                    key = bytearray.decode(k, "utf-8", "replace")
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    key = None
+            elif _isinstance(k, str):
+                key = k
+            if key is None:
+                try:
+                    key = str(k)
                 except RecursionError:
                     try:
                         key = type(k).__name__
-                    except Exception:
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
                         continue
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
-                key = key.encode("utf-8", "replace").decode("utf-8")
-            except Exception:
-                continue
+                key = str.encode(key, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A str-liar rode the str gate as *key* itself; render its
+                # honest ``__str__`` instead of dropping the pair.
+                try:
+                    key = str.encode(str(k), "utf-8", "replace").decode("utf-8")
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
             out[key] = _json_safe(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isinstance(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if _isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot fire and the real elements still survive.  In a
+                # try: a sequence-liar the descriptor refuses used to
+                # TypeError out of _copy_items and wipe the snapshot; it
+                # drops to None like the other impostors.
+                try:
+                    elems = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    return None
+                return [_json_safe(v, depth + 1) for v in elems]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/brew/services.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return None
 
 
+def _plain_rc(value):
+    """Exact-type spawn rc for :func:`_load`'s success gate.
+
+    ``if rc == 0`` used to dispatch into a leftover numeric-subclass
+    ``__eq__`` bomb and raise out of ``_load`` — discarding the *fresh*
+    snapshot the spawn had just produced and wiping every brew row for the
+    caller.  Unbound base-type calls dodge the override; anything
+    non-numeric degrades to None (reads as failure), the
+    brew_svc/autostart_svc ``_plain_rc`` convention.  Guarded isinstance:
+    a leftover rc whose ``__class__`` property raises used to blow the
+    first probe here, raise out of ``_load`` and discard the fresh snapshot.
+    The bool arm's coercion is guarded too (bool is final, so only a
+    *lying*-``__class__`` impostor can fail it): ``int(liar)`` used to
+    TypeError out of ``_load`` and discard the last-good snapshot.
+    """
+    if _isinstance(value, bool):
+        try:
+            return int(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, int):
+        try:
+            return int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, float):
+        try:
+            return float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return None
+
+
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned ``exit_code`` in
+    `brew services list --json` output used to make
+    :func:`_services_from_output` return None, so :func:`_load` discarded the
+    *fresh* snapshot and republished the stale last-good with a new TTL —
+    every start/stop stayed invisible while brew kept printing that number.
+    The same literal in the on-disk snapshot made :func:`_read_disk_file`
+    treat the whole journal as corrupt.  Dropping just the number keeps the
+    document, same as the docker_cli / notify_channels hooks, and matches
+    the drop ``_json_safe`` applies to an already-int leftover.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _copy_items(items) -> list[dict]:
-    if not isinstance(items, list):
+    if not _isinstance(items, list):
         return []
     cleaned = []
-    for x in items:
-        if not isinstance(x, dict):
+    # Unbound base iteration: a primed list-subclass ``__iter__`` bomb
+    # cannot cost the snapshot its real rows.  Guarded element probe: one
+    # ``__class__``-bomb element used to blow the filter and cost them all.
+    # The descriptor call runs in a try: a list-liar the unbound
+    # ``list.__iter__`` refuses used to TypeError out of every caller
+    # (_fresh/_publish/_load) instead of reading as "no rows".
+    try:
+        rows = list.__iter__(items)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    for x in rows:
+        if not _isinstance(x, dict):
             continue
         row = _json_safe(x)
         if isinstance(row, dict):
@@ -157,23 +522,48 @@ def invalidate_brew_services() -> None:
     global _disk_ok, _generation
     with _lock:
         _generation += 1
-        _cache["t"] = 0.0
-        _cache["v"] = None
+        # _cache_store, not the bare ``_cache["t"] = 0.0`` assignments: a
+        # leftover hash-shadowing str-subclass key planted in the module
+        # cache raised out of the C-level insert compare and 500'd POST
+        # /api/brew/services/{name}/action *after* the start/stop had
+        # already run — this call sits outside its spawn try.
+        _cache_store(t=0.0, v=None)
         _disk_ok = False
 
 
 def _fresh() -> list[dict] | None:
     with _lock:
-        raw = _cache["v"]
-        if raw is not None and time.time() - _cache["t"] < _TTL:
-            # Copy: callers annotate the dicts they get back.
-            return _copy_items(raw)
+        # _mapping_get, not the bare subscripts: a hash-shadowing junk key
+        # in the module cache used to raise here and wipe every brew row
+        # (the raise escaped into list_services' broad except).  An
+        # unreadable slot reads as "no snapshot" and re-loads instead.
+        raw = _mapping_get(_cache, "v")
+        stamp = _mapping_get(_cache, "t", 0.0)
+        if raw is not None and _isinstance(stamp, (int, float)):
+            try:
+                stamp = float(stamp)
+                # Finite check first: a leftover ``.inf`` stamp makes
+                # ``now - stamp`` ``-inf``, which reads as *infinitely
+                # fresh* and freezes the brew rows the panel shows for the
+                # life of the process.  ``float()`` of an over-cap int
+                # OverflowErrors, and a non-numeric stamp TypeError'd the
+                # subtraction outright.
+                fresh = stamp == stamp and abs(stamp) != float("inf") and (
+                    time.time() - stamp < _TTL
+                )
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                fresh = False
+            if fresh:
+                # Copy: callers annotate the dicts they get back.
+                return _copy_items(raw)
     return None
 
 
 def _stale_memory() -> list[dict] | None:
     with _lock:
-        raw = _cache["v"]
+        raw = _mapping_get(_cache, "v")
         if raw is None:
             return None
         return _copy_items(raw)
@@ -187,7 +577,9 @@ def _read_disk_file() -> list[dict] | None:
     `[]` as a fresh hit — every brew row vanished for the whole TTL.
     """
     try:
-        parsed = safe_json_loads(read_text_capped(_DISK, _DISK_CAP))
+        parsed = safe_json_loads(
+            read_text_capped(_DISK, _DISK_CAP), parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested cache is not ValueError.
         return None
@@ -250,7 +642,10 @@ def _publish(items: list[dict], *, write_disk: bool, gen: int | None = None) -> 
             # A start/stop invalidated while this load ran; publishing would
             # put the pre-action snapshot back and give it a fresh TTL.
             return items
-        _cache.update(t=time.time(), v=items)
+        # Guarded write: a hash-shadowing junk key raised out of this
+        # insert compare at the very end of a successful load, discarding
+        # rows the spawn had already produced.
+        _cache_store(t=time.time(), v=items)
         _disk_ok = True
     if write_disk:
         _write_disk(items)
@@ -262,20 +657,33 @@ def _services_from_output(out) -> list[dict] | None:
 
     Distinguishes a real empty install (`[]`) from garbage/timeouts (None).
     A stub that already returned a list used to AttributeError on ``.strip``.
+    Guarded probes: a stdout — or one element — whose ``__class__`` property
+    raises used to raise out of ``_load`` and cost the whole fresh snapshot.
     """
-    if isinstance(out, list):
+    if _isinstance(out, list):
         parsed = out
     else:
         text = _as_text(out).strip()
         if not text:
             return None
         try:
-            parsed = safe_json_loads(text)
+            parsed = safe_json_loads(text, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             return None
-    if not isinstance(parsed, list):
+    if not _isinstance(parsed, list):
         return None
-    return [x for x in parsed if isinstance(x, dict)]
+    # Unbound base iteration, like _copy_items: a stub that returned a
+    # list-*subclass* whose ``__iter__`` raises used to raise out of _load
+    # and cost the whole fresh snapshot instead of nothing.  In a try: a
+    # list-liar stdout the descriptor refuses used to TypeError out of
+    # _load the same way; it reads as "not a successful list" so the
+    # last-good snapshot survives.
+    try:
+        return [x for x in list.__iter__(parsed) if _isinstance(x, dict)]
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 def _brew_argv_patterns() -> tuple[str, str]:
@@ -314,10 +722,20 @@ def _brew_busy() -> bool:
                     env=utf8_env(),
                 )
                 captured = getattr(proc, "stdout", None)
-                if isinstance(captured, (bytes, bytearray)):
-                    text = bytes(captured)[:_PGREP_CAP]
-                elif isinstance(captured, str):
-                    text = captured.encode("utf-8", "replace")[:_PGREP_CAP]
+                if _isinstance(captured, (bytes, bytearray)):
+                    try:
+                        # bytes() dispatches a subclass ``__bytes__`` bomb —
+                        # RuntimeError from one escaped the except tuple
+                        # below and raised out of _load via _brew_busy.
+                        text = bytes(memoryview(captured))[:_PGREP_CAP]
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        text = b""
+                elif _isinstance(captured, str):
+                    # Unbound base encode: a str-subclass ``.encode`` bomb
+                    # cannot fire.
+                    text = str.encode(captured, "utf-8", "replace")[:_PGREP_CAP]
                 else:
                     # Live path: stdout is the TemporaryFile, not a buffer
                     # on the CompletedProcess.  Treating the file object as
@@ -327,10 +745,33 @@ def _brew_busy() -> bool:
                         text = out.read(_PGREP_CAP)
                     except OSError:
                         text = b""
-        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
-            # Leftover ``\\ud800`` pattern UnicodeEncodeError is ValueError, not OSError.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Leftover ``\\ud800`` pattern UnicodeEncodeError is ValueError,
+            # not OSError.  Broad, not the old
+            # (OSError/TimeoutExpired/ValueError/TypeError) tuple: this
+            # module does not own ``subprocess.run`` (tests and tooling
+            # patch it), and a leftover raising anything else out of the
+            # spawn — a ``RuntimeError`` from the answer's own attribute
+            # access, say — used to raise out of ``_brew_busy`` and 500
+            # POST /api/tools/updates/brew, whose only lock probe this is.
+            # An unreadable probe reads as "not busy", the same answer a
+            # missing /usr/bin/pgrep already gives.
             continue
-        if proc.returncode == 0 and bool(text.strip()):
+        # _plain_rc, not the bare ``proc.returncode == 0`` compare: the
+        # answer object is not ours either, so an rc *subclass* whose
+        # ``__eq__`` raises (or a returncode attribute that raises at all)
+        # detonated this probe *outside* the spawn try above — a raw 500 on
+        # POST /api/tools/updates/brew.  Junk reads as "not busy" so the
+        # panel still tries the command and reports brew's own answer.
+        try:
+            rc = _plain_rc(proc.returncode)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if rc == 0 and bool(text.strip()):
             return True
     return False
 
@@ -345,10 +786,24 @@ def _load() -> list[dict]:
         # Do not cache emptiness: that made every brew row vanish for `_TTL`
         # after invalidate + a still-held Homebrew lock.
         return []
-    rc, out, _ = sh(
-        [BREW, "services", "list", "--json"], timeout=20, env=_brew_env(),
-    )
-    if rc == 0:
+    try:
+        answer = sh(
+            [BREW, "services", "list", "--json"], timeout=20, env=_brew_env(),
+        )
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A malformed spawn result (wrong-arity/non-iterable stub tuple)
+        # used to raise out of the unpack and wipe the last-good snapshot;
+        # it must degrade to the keep-last-good tail like any other failure.
+        answer = None
+    # _sh_answer, not a bare unpack in a two-exception try: a tuple-subclass
+    # ``__iter__`` bomb raises RuntimeError, which escaped the old
+    # (TypeError, ValueError) tuple and discarded the last-good snapshot —
+    # every brew row vanished from GET /api/brew/services.  The unbound
+    # read also keeps an *honest* answer riding inside such a wrapper.
+    rc, out, _err = _sh_answer(answer)
+    if _plain_rc(rc) == 0:
         items = _services_from_output(out)
         if items is not None:
             return _publish(items, write_disk=True, gen=gen)
@@ -375,7 +830,9 @@ def _kick_refresh() -> None:
             with _refresh_lock:
                 if _fresh() is None:
                     _load()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         finally:
             with _bg_lock:
@@ -408,7 +865,7 @@ def brew_services(force: bool = False) -> list[dict]:
         disk = _read_disk()
         if disk is not None:
             with _lock:
-                _cache.update(t=0.0, v=disk)
+                _cache_store(t=0.0, v=disk)
             _kick_refresh()
             return [dict(x) for x in disk]
 

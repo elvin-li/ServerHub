@@ -606,11 +606,17 @@ class CloudflaredLoginFsTests(unittest.TestCase):
         json.dumps(out, allow_nan=False)
 
     def test_login_start_missing_binary_is_false_not_500(self):
+        """cf6 reclassified this: a binary the disk re-check confirms gone is
+        the same coded 503 the up-front ``_bin()`` probe raises, not an
+        uncoded ok:false the SPA cannot map.  A spawn failure with the binary
+        still present keeps the raw result (see test_cf6_leftover_500s)."""
         self._login_patches(_bin=mock.Mock(return_value="/no/such/cloudflared-bin"))
-        out = cloudflared_svc.login_start()
-        self.assertFalse(out["ok"])
-        self.assertIn("Could not start", out["message"])
-        json.dumps(out, allow_nan=False)
+        with self.assertRaises(HTTPException) as ctx:
+            cloudflared_svc.login_start()
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(
+            ctx.exception.detail["code"], "cloudflared.not_installed",
+        )
 
     def test_login_start_surrogate_env_is_not_500(self):
         """Leftover ``\\ud800`` in os.environ UnicodeEncodeError'd POST /login."""

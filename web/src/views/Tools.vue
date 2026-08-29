@@ -26,10 +26,10 @@
         <p v-if="catalog.hint_key || catalog.hint" class="hint" style="margin-top:0">
           {{ catalog.hint_key ? t(catalog.hint_key) : finiteText(catalog.hint) }}
         </p>
-        <div v-if="!(catalog.tiles || []).length" class="placeholder">{{ t('common.none') }}</div>
+        <div v-if="!asArray(catalog.tiles).length" class="placeholder">{{ t('common.none') }}</div>
         <div v-else class="tool-grid">
           <button
-            v-for="tile in catalog.tiles || []"
+            v-for="tile in asArray(catalog.tiles)"
             :key="tile.id"
             type="button"
             class="tool-tile"
@@ -52,7 +52,7 @@
             <div class="k">CPU</div><div class="mono" style="font-size:11px">{{ finiteText(diag.cpu) }}</div>
             <div class="k">{{ t('tools.cores') }}</div><div>{{ finiteN(diag.ncpu) }}</div>
             <div class="k">{{ t('tools.memory') }}</div><div>{{ fmtGb(diag.mem_gb) }}</div>
-            <div class="k">{{ t('tools.load') }}</div><div class="mono">{{ (diag.load||[]).map(n => finiteN(n)).join(' / ') }}</div>
+            <div class="k">{{ t('tools.load') }}</div><div class="mono">{{ asArray(diag.load).map(n => finiteN(n)).join(' / ') }}</div>
             <div class="k">{{ t('tools.uptime') }}</div><div class="mono">{{ finiteText(diag.uptime_human) }}</div>
             <div class="k">{{ t('tools.root_disk') }}</div>
             <div class="mono">{{ withUnit(diag.root_disk_pct, '%') }} · {{ t('common.free') }} {{ fmtGb(diag.root_disk_free_gb) }}</div>
@@ -124,13 +124,13 @@
              keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1). Same
              treatment as the Logs viewer. -->
         <div
-          v-if="(syslog.lines||[]).length"
+          v-if="asArray(syslog.lines).length"
           class="log-box mono"
           tabindex="0"
           role="region"
           :aria-label="t('tools.tab_syslog')"
         >
-          <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
+          <div v-for="(ln,i) in asArray(syslog.lines)" :key="i">{{ finiteText(ln) }}</div>
         </div>
         <div v-else-if="!tabError.syslog" class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
       </template>
@@ -143,7 +143,7 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredProc.length }} / {{ processes.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredProc).length }} / {{ asArray(processes).length }}</span>
       </div>
       <SkeletonLoader v-if="!tabLoaded.proc" :cols="6" :rows="8" />
       <LoadFailure v-else-if="tabError.proc" :detail="tabError.proc" :retry="reload" :busy="loading" />
@@ -155,7 +155,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in filteredProc" :key="p.pid + p.command">
+            <tr v-for="p in asArray(filteredProc)" :key="p.pid + p.command">
               <td class="mono">{{ finiteN(p.pid) }}</td>
               <td class="col-hide-m">{{ finiteText(p.user) }}</td>
               <td class="mono">{{ fmtPct(p.cpu) }}</td>
@@ -166,7 +166,7 @@
             <!-- "No match" is only true while a filter is applied; with the box
                  empty a bare list means the host reported no processes, which is
                  a different (and stranger) fact worth stating as itself. -->
-            <tr v-if="!filteredProc.length">
+            <tr v-if="!asArray(filteredProc).length">
               <td colspan="6" class="empty-row">{{ procQ.trim() ? t('common.no_match') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -191,7 +191,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(l,i) in (df.lines||[])" :key="i">
+            <tr v-for="(l,i) in asArray(df.lines)" :key="i">
               <td>
                 {{ finiteText(l.type) }}
                 <div class="show-m sub">{{ t('tools.col_active') }} {{ finiteText(l.active) }}</div>
@@ -201,7 +201,7 @@
               <td>{{ finiteText(l.size) }}</td>
               <td>{{ finiteText(l.reclaimable) }}</td>
             </tr>
-            <tr v-if="!(df.lines||[]).length && !tabError.docker">
+            <tr v-if="!asArray(df.lines).length && !tabError.docker">
               <td colspan="5" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -225,7 +225,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('tools.image') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
-            <tr v-for="c in sizes" :key="c.name">
+            <tr v-for="c in asArray(sizes)" :key="c.name">
               <td>
                 <strong>{{ finiteText(c.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(c.image) }}</div>
@@ -238,7 +238,7 @@
                  engine (or its CLI) gone this list is empty because docker is
                  unreachable, not because zero containers exist, and "no data"
                  next to an "engine down" df row contradicted it. -->
-            <tr v-if="!sizes.length">
+            <tr v-if="!asArray(sizes).length">
               <td colspan="4" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -254,7 +254,7 @@
         <!-- role=status: the timer count is the answer to the Refresh click,
              and it changed silently for a screen reader. Same pattern as the
              syslog line count and the listening-port count. -->
-        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: timers.length }) }}</span>
+        <span class="meta" style="color:var(--sub)" role="status">{{ t('tools.tasks_n', { n: asArray(timers).length }) }}</span>
       </div>
       <h2 class="section-title">{{ t('tools.timers') }}</h2>
       <SkeletonLoader v-if="!tabLoaded.sched" :cols="4" :rows="5" />
@@ -270,7 +270,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in timers" :key="row.label">
+            <tr v-for="row in asArray(timers)" :key="row.label">
               <td class="mono">
                 {{ finiteText(row.label) }}
                 <div v-if="formatCal(row.calendar)" class="show-m sub">{{ formatCal(row.calendar) }}</div>
@@ -280,7 +280,7 @@
               <td class="mono col-hide-m" style="font-size:11px">{{ formatCal(row.calendar) }}</td>
               <td class="mono col-hide-m" style="max-width:360px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(row.program)">{{ finiteText(row.program) }}</td>
             </tr>
-            <tr v-if="!timers.length && !tabError.sched">
+            <tr v-if="!asArray(timers).length && !tabError.sched">
               <td colspan="4" class="empty-row">{{ t('tools.no_timers') }}</td>
             </tr>
           </tbody>
@@ -308,7 +308,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="a in (agents.agents||[])" :key="a.label">
+            <tr v-for="a in asArray(agents.agents)" :key="a.label">
               <td class="mono" style="font-size:11px">
                 {{ finiteText(a.label) }}
                 <div class="show-m sub">{{ a.run_at_load ? 'RunAtLoad' : '' }}{{ a.keep_alive ? (a.run_at_load ? ' · ' : '') + 'KeepAlive' : '' }}</div>
@@ -319,7 +319,7 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
-            <tr v-if="!(agents.agents||[]).length">
+            <tr v-if="!asArray(agents.agents).length">
               <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
             </tr>
           </tbody>
@@ -331,7 +331,7 @@
     <!-- Hardware -->
     <template v-else-if="tab==='hw'">
       <div class="two-col" v-if="hw">
-        <div class="card" v-for="(sec, key) in (hw.sections||{})" :key="key">
+        <div class="card" v-for="(sec, key) in asRecord(hw.sections)" :key="key">
           <h2 class="section-title" style="margin-top:0">{{ finiteText(key) }} · {{ finiteText(sec.data_type) }}</h2>
           <!-- tabindex=0: system_profiler output overflows the 240px cap, and a
                scrollable region a keyboard cannot reach cannot be scrolled by
@@ -339,13 +339,13 @@
           <pre class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText(key)">{{ finiteText(sec.text) }}</pre>
         </div>
       </div>
-      <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
+      <div class="card" style="margin-top:12px" v-if="asArray(hw?.disks).length">
         <h2 class="section-title" style="margin-top:0">{{ t('tools.disks') }}</h2>
         <div class="table-wrap">
         <table class="dense fit-m">
           <thead><tr><th>ID</th><th>{{ t('common.name') }}</th><th>{{ t('common.size') }}</th><th class="col-hide-m">SSD</th><th>{{ t('common.status') }}</th></tr></thead>
           <tbody>
-            <tr v-for="d in hw.disks" :key="d.id">
+            <tr v-for="d in asArray(hw.disks)" :key="d.id">
               <td class="mono">{{ finiteText(d.id) }}</td>
               <td>
                 {{ finiteText(d.name) }}
@@ -429,8 +429,8 @@
           <p class="hint" style="margin-top:0">
             {{ t('tools.outdated_n', { n: finiteN(updates.brew?.count, 0) }) }}
           </p>
-          <ul class="mono update-list" v-if="(updates.brew?.outdated||[]).length">
-            <li v-for="(ln,i) in updates.brew.outdated" :key="i">{{ finiteText(ln) }}</li>
+          <ul class="mono update-list" v-if="asArray(updates.brew?.outdated).length">
+            <li v-for="(ln,i) in asArray(updates.brew.outdated)" :key="i">{{ finiteText(ln) }}</li>
           </ul>
           <div v-else class="sub">{{ t('tools.up_to_date') }}</div>
           <div class="btns" style="margin-top:10px" v-if="finiteN(updates.brew?.count, 0) > 0">
@@ -440,7 +440,7 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">macOS</h2>
           <div class="mono" style="font-size:12px;white-space:pre-wrap;max-height:280px;overflow:auto">
-            {{ (updates.macos?.lines||[]).map(n => finiteText(n, '')).filter(Boolean).join('\n') || finiteText(updates.macos?.raw) }}
+            {{ asArray(updates.macos?.lines).map(n => finiteText(n, '')).filter(Boolean).join('\n') || finiteText(updates.macos?.raw) }}
           </div>
           <p class="hint">{{ t('tools.macos_install_hint') }}</p>
         </div>
@@ -497,7 +497,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(p,i) in (ports.ports||[])" :key="i">
+            <tr v-for="(p,i) in asArray(ports.ports)" :key="i">
               <td class="mono">
                 {{ finiteText(p.command) }}
                 <div class="show-m sub">{{ finiteText(p.user) }} · {{ finiteN(p.pid) }}</div>
@@ -506,7 +506,7 @@
               <td class="col-hide-m">{{ finiteText(p.user) }}</td>
               <td class="mono">{{ finiteText(p.name) }}</td>
             </tr>
-            <tr v-if="!(ports.ports||[]).length">
+            <tr v-if="!asArray(ports.ports).length">
               <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -541,11 +541,11 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('tools.credits') }}</h2>
           <ul class="hint" style="margin:0;padding-left:18px;line-height:1.7">
-            <li v-for="(x,i) in aboutCredits" :key="i">{{ finiteText(x) }}</li>
+            <li v-for="(x,i) in asArray(aboutCredits)" :key="i">{{ finiteText(x) }}</li>
           </ul>
           <div class="btns" style="margin-top:12px;flex-wrap:wrap">
             <router-link
-              v-for="l in (about.links||[])"
+              v-for="l in asArray(about.links)"
               :key="l.href"
               class="btn"
               :to="l.href"
@@ -581,7 +581,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtGb, jsonText, withUnit } from '../lib/finite'
 import {
   flushDns,
   generateDiagnostics,
@@ -687,8 +687,9 @@ const tabs = [
 
 const filteredProc = computed(() => {
   const q = procQ.value.trim().toLowerCase()
-  if (!q) return processes.value
-  return processes.value.filter(p =>
+  const list = asArray(processes.value)
+  if (!q) return list
+  return list.filter(p =>
     (p.command || '').toLowerCase().includes(q)
     || (p.user || '').toLowerCase().includes(q)
     || String(p.pid).includes(q)
@@ -696,9 +697,9 @@ const filteredProc = computed(() => {
 })
 
 const aboutCredits = computed(() => {
-  const a = about.value || {}
-  if (a.credit_keys?.length) return a.credit_keys.map((k) => t(k))
-  return a.credits || []
+  const a = asRecord(about.value)
+  if (asArray(a.credit_keys).length) return asArray(a.credit_keys).map((k) => t(k))
+  return asArray(a.credits)
 })
 
 function tileLabel(tile) {
@@ -712,12 +713,8 @@ function tileDesc(tile) {
 
 function formatCal(c) {
   if (!c) return '—'
-  if (typeof c !== 'object') return String(c)
-  try {
-    return JSON.stringify(c)
-  } catch {
-    return '—'
-  }
+  if (typeof c !== 'object') return finiteText(c)
+  return jsonText(c)
 }
 
 function fmtPct(v) {
@@ -820,7 +817,7 @@ async function loadProc() {
   try {
     const j = await getSystemProcesses(40)
     if (generation !== reloadGeneration || !pageAlive) return
-    processes.value = Array.isArray(j.processes) ? j.processes : []
+    processes.value = asArray(j.processes)
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('proc', e)
@@ -836,7 +833,7 @@ async function loadDocker() {
     ])
     if (generation !== reloadGeneration || !pageAlive) return
     df.value = a
-    sizes.value = b.containers || []
+    sizes.value = asArray(b.containers)
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     noteTabError('docker', e)
@@ -879,7 +876,7 @@ async function loadSched() {
       j = await getSystemScheduler()
     }
     if (generation !== reloadGeneration || !pageAlive) return
-    timers.value = j.timers || []
+    timers.value = asArray(j.timers)
     const nextAgents = await getToolsAgents()
     if (generation !== reloadGeneration || !pageAlive) return
     agents.value = nextAgents
@@ -1055,7 +1052,7 @@ async function doDns() {
     const j = await lookupDns(dnsName.value)
     if (generation !== reloadGeneration || !pageAlive) return
     if (j.ok) {
-      dnsOut.value = (j.results || []).map(x => `${finiteText(x.family, '')} ${finiteText(x.ip, '')}`).filter(s => s.trim()).join('\n')
+      dnsOut.value = asArray(j.results).map(x => `${finiteText(x.family, '')} ${finiteText(x.ip, '')}`).filter(s => s.trim()).join('\n')
         + (finiteText(j.dig, '') ? `\n\ndig:\n${finiteText(j.dig)}` : '')
     } else {
       dnsOut.value = softText(j)
@@ -1074,7 +1071,7 @@ async function doFlushDns() {
     const j = await flushDns()
     if (generation !== reloadGeneration || !pageAlive) return
     toast(j.ok ? '✅ ' + t('tools.flush_ok') : '❌ ' + t('tools.flush_partial'))
-    dnsOut.value = (j.detail || []).map(n => finiteText(n, '')).filter(Boolean).join('\n')
+    dnsOut.value = asArray(j.detail).map(n => finiteText(n, '')).filter(Boolean).join('\n')
   } catch (e) {
     if (generation !== reloadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

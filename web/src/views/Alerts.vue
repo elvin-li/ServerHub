@@ -12,13 +12,13 @@
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
-    <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
+    <div v-else-if="!asArray(alerts).length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
     <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
          the else-branch rendered the level tabs and a table whose only row said
          "no alerts match this filter" — a filter excuse for an API failure. The
          banner above is the whole story; stale rows still render when a re-poll
          fails, which is the LoadFailure contract. -->
-    <template v-else-if="alerts.length">
+    <template v-else-if="asArray(alerts).length">
     <!-- Same level tabs the Health page uses: with 100 mixed rows, finding the
          one that is red should not require scanning past every resolved ok. -->
     <div class="tabs">
@@ -30,7 +30,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ filtered.length }} / {{ alerts.length }}
+        {{ asArray(filtered).length }} / {{ asArray(alerts).length }}
       </span>
     </div>
     <div class="table-wrap">
@@ -45,22 +45,25 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(a,i) in filtered" :key="i">
-            <td class="mono col-hide-m">{{ fmt(a.t) }}</td>
+          <tr v-for="(a,i) in asArray(filtered)" :key="i">
+            <td class="mono col-hide-m">{{ fmt(asRecord(a).t) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`
                  lands on the same red .badge.down as a service down. The kind tag
                  below says what broke without competing with that. -->
-            <td><span class="badge" :class="a.level === 'ok' ? 'ok' : a.level">{{ finiteText(a.level) }}</span></td>
+            <td><span class="badge" :class="asRecord(a).level === 'ok' ? 'ok' : asRecord(a).level">{{ finiteText(asRecord(a).level) }}</span></td>
             <td>
               <span v-if="kindLabel(a)" class="badge" style="margin-right:4px">{{ kindLabel(a) }}</span>
-              <strong>{{ finiteText(a.name) }}</strong>
-              <div class="show-m sub">{{ fmt(a.t) }}</div>
-              <div v-if="a.event" class="show-m sub">{{ finiteText(a.event) }}</div>
-              <div v-if="a.message" class="show-m sub">{{ finiteText(a.message) }}</div>
+              <strong>{{ finiteText(asRecord(a).name) }}</strong>
+              <div class="show-m sub">{{ fmt(asRecord(a).t) }}</div>
+              <div v-if="asRecord(a).event" class="show-m sub">{{ finiteText(asRecord(a).event) }}</div>
+              <div v-if="asRecord(a).message" class="show-m sub">{{ finiteText(asRecord(a).message) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(a.event) }}</td>
-            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(a.message) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(a).event) }}</td>
+            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(asRecord(a).message) }}</td>
+          </tr>
+          <tr v-if="!asArray(filtered).length">
+            <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
           </tr>
           <tr v-if="!filtered.length">
             <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
@@ -76,7 +79,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, finiteText, fmtTs } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -93,10 +96,10 @@ const loadError = ref('')
 // down | warn.  'ok' rows are resolutions, useful context but never urgent.
 const filter = ref('all')
 const filtered = computed(() => {
-  const rows = alerts.value
-  if (filter.value === 'issues') return rows.filter((a) => a?.level !== 'ok')
+  const rows = asArray(alerts.value).map((a) => asRecord(a))
+  if (filter.value === 'issues') return rows.filter((a) => a.level !== 'ok')
   if (filter.value === 'down' || filter.value === 'warn') {
-    return rows.filter((a) => a?.level === filter.value)
+    return rows.filter((a) => a.level === filter.value)
   }
   return rows
 })
@@ -115,7 +118,7 @@ function fmt(t) {
 const KIND_LABELS = { service: 'kind_service', resource: 'kind_resource', smart: 'kind_smart' }
 
 function kindLabel(a) {
-  const leaf = KIND_LABELS[a?.kind]
+  const leaf = KIND_LABELS[asRecord(a).kind]
   return leaf ? t(`alerts.${leaf}`) : ''
 }
 
@@ -126,7 +129,7 @@ async function refresh(manual = false) {
   try {
     const d = await getAlerts(100)
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
+    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
@@ -149,12 +152,12 @@ async function check() {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const r = await forceAlertCheck()
+    const r = asRecord(await forceAlertCheck())
     if (generation !== loadGeneration || !pageAlive) return
-    toast(t('alerts.inspect_done', { n: finiteN(r.emitted?.length, 0) }))
+    toast(t('alerts.inspect_done', { n: asArray(r.emitted).length }))
     const d = await getAlerts(100)
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = Array.isArray(d.alerts) ? d.alerts : []
+    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

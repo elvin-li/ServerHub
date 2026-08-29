@@ -11,7 +11,7 @@
            total unlabeled, and Refresh updated both counts silently for a
            screen reader. Reuses the summary tiles' keys (Tools ports pattern). -->
       <span class="meta" style="color:var(--sub)" v-if="data" role="status">
-        {{ finiteN(data.count) }} {{ t('users.total') }} · {{ finiteN(data.admins) }} {{ t('users.admins') }}
+        {{ finiteN(asRecord(data).count) }} {{ t('users.total') }} · {{ finiteN(asRecord(data).admins) }} {{ t('users.admins') }}
       </span>
     </div>
 
@@ -42,10 +42,10 @@
                region a keyboard cannot reach cannot be scrolled by one
                (WCAG 2.1.1). Same treatment as the Tools log boxes. -->
           <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
-            <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
-              <input type="checkbox" :value="opt.id" v-model="createForm.resources" />
-              <span>{{ finiteText(opt.name) }}</span>
-              <code class="mono">{{ finiteText(opt.id) }}</code>
+            <label v-for="opt in asArray(serviceOptions)" :key="finiteText(asRecord(opt).id)" class="resource-option">
+              <input type="checkbox" :value="asRecord(opt).id" v-model="createForm.resources" />
+              <span>{{ finiteText(asRecord(opt).name) }}</span>
+              <code class="mono">{{ finiteText(asRecord(opt).id) }}</code>
             </label>
             <!-- role=alert: the picker is the only place this failure shows,
                  and without it the empty checkbox list reads like "no
@@ -54,11 +54,11 @@
             <!-- type=button: this retry sits inside the create <form>, and a
                  bare <button> would submit it instead of refetching. -->
             <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
-            <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+            <span v-else-if="serviceOptionsLoaded && !asArray(serviceOptions).length" class="hint">{{ t('accounts.no_services') }}</span>
           </div>
         </div>
         <div class="btns" style="margin-top:10px">
-          <button class="primary" :disabled="accountsBusy || !createForm.username || createForm.password.length < 10">
+          <button class="primary" :disabled="accountsBusy || !createForm.username || secretLen(createForm.password) < 10">
             {{ t('accounts.create') }}
           </button>
         </div>
@@ -70,7 +70,7 @@
            surfaced nowhere — loadAccounts() never toasts. Stale rows still
            render below, which is the LoadFailure contract. -->
       <LoadFailure
-        v-if="accountsError && accounts.length"
+        v-if="accountsError && asArray(accounts).length"
         :detail="accountsError"
         :retry="loadAccounts"
         :busy="accountsBusy"
@@ -88,53 +88,53 @@
             </tr>
           </thead>
           <tbody>
-            <template v-for="acct in accounts" :key="acct.username">
+            <template v-for="acct in asArray(accounts)" :key="asRecord(acct).username">
               <tr>
                 <td>
-                  <strong>{{ finiteText(acct.username) }}</strong>
-                  <div class="show-m sub">2FA {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}</div>
+                  <strong>{{ finiteText(asRecord(acct).username) }}</strong>
+                  <div class="show-m sub">2FA {{ asRecord(acct).twofa_enabled ? t('common.on') : t('common.off') }}</div>
                   <div class="show-m sub">
-                    <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                    <template v-else-if="(acct.resources || []).length">{{ resourceList(acct.resources) }}</template>
+                    <template v-if="asRecord(acct).role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                    <template v-else-if="asArray(asRecord(acct).resources).length">{{ resourceList(asRecord(acct).resources) }}</template>
                     <template v-else>{{ t('accounts.no_resources') }}</template>
                   </div>
                 </td>
                 <td>
-                  <span class="badge" :class="acct.role === 'admin' ? 'ok' : ''">
-                    {{ acct.role === 'admin' ? t('common.admin') : t('accounts.member') }}
+                  <span class="badge" :class="asRecord(acct).role === 'admin' ? 'ok' : ''">
+                    {{ asRecord(acct).role === 'admin' ? t('common.admin') : t('accounts.member') }}
                   </span>
                 </td>
                 <td class="col-hide-m">
-                  <span class="badge" :class="acct.twofa_enabled ? 'ok' : ''">
-                    {{ acct.twofa_enabled ? t('common.on') : t('common.off') }}
+                  <span class="badge" :class="asRecord(acct).twofa_enabled ? 'ok' : ''">
+                    {{ asRecord(acct).twofa_enabled ? t('common.on') : t('common.off') }}
                   </span>
                 </td>
                 <td class="mono col-hide-m" style="font-size:11px">
-                  <template v-if="acct.role === 'admin'">{{ t('accounts.all_resources') }}</template>
-                  <template v-else-if="(acct.resources || []).length">{{ resourceList(acct.resources) }}</template>
+                  <template v-if="asRecord(acct).role === 'admin'">{{ t('accounts.all_resources') }}</template>
+                  <template v-else-if="asArray(asRecord(acct).resources).length">{{ resourceList(asRecord(acct).resources) }}</template>
                   <template v-else><span style="color:var(--sub)">{{ t('accounts.no_resources') }}</span></template>
                 </td>
                 <td style="text-align:right">
-                  <button v-if="acct.role !== 'admin'" class="tiny" @click="toggleEditor(acct)">
-                    {{ editing === acct.username ? t('common.close') : t('common.manage') }}
+                  <button v-if="asRecord(acct).role !== 'admin'" class="tiny" @click="toggleEditor(acct)">
+                    {{ editing === asRecord(acct).username ? t('common.close') : t('common.manage') }}
                   </button>
                 </td>
               </tr>
-              <tr v-if="editing === acct.username">
+              <tr v-if="editing === asRecord(acct).username">
                 <td colspan="5" class="account-editor">
                   <div class="editor-section">
                     <strong>{{ t('accounts.resources') }}</strong>
                     <!-- tabindex=0: same 220px scroll cap as the create form's
                          copy, so the same keyboard reachability fix. -->
                     <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
-                      <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
-                        <input type="checkbox" :value="opt.id" v-model="editResources" />
-                        <span>{{ finiteText(opt.name) }}</span>
-                        <code class="mono">{{ finiteText(opt.id) }}</code>
+                      <label v-for="opt in asArray(serviceOptions)" :key="finiteText(asRecord(opt).id)" class="resource-option">
+                        <input type="checkbox" :value="asRecord(opt).id" v-model="editResources" />
+                        <span>{{ finiteText(asRecord(opt).name) }}</span>
+                        <code class="mono">{{ finiteText(asRecord(opt).id) }}</code>
                       </label>
                       <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
                       <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
-                      <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+                      <span v-else-if="serviceOptionsLoaded && !asArray(serviceOptions).length" class="hint">{{ t('accounts.no_services') }}</span>
                     </div>
                     <div class="btns" style="margin-top:8px">
                       <button class="primary" :disabled="accountsBusy" @click="saveResources(acct)">
@@ -160,7 +160,7 @@
                         :aria-label="t('settings.new_password')"
                         style="max-width:240px"
                       />
-                      <button :disabled="accountsBusy || resetPassword.length < 10" @click="doResetPassword(acct)">
+                      <button :disabled="accountsBusy || secretLen(resetPassword) < 10" @click="doResetPassword(acct)">
                         {{ t('accounts.reset_password') }}
                       </button>
                     </div>
@@ -168,7 +168,7 @@
                   <div class="editor-section">
                     <strong>{{ t('accounts.danger_zone') }}</strong>
                     <div class="btns" style="margin-top:6px">
-                      <button v-if="acct.twofa_enabled" :disabled="accountsBusy" @click="resetTwofa(acct)">
+                      <button v-if="asRecord(acct).twofa_enabled" :disabled="accountsBusy" @click="resetTwofa(acct)">
                         {{ t('twofa.admin_reset_button') }}
                       </button>
                       <button class="danger" :disabled="accountsBusy" @click="removeAccount(acct)">
@@ -179,7 +179,7 @@
                 </td>
               </tr>
             </template>
-            <tr v-if="!accounts.length">
+            <tr v-if="!asArray(accounts).length">
               <td colspan="5" class="empty-row">
                 <!-- The failure text gets its own role=alert span: loadAccounts()
                      does not toast, so this cell is the only place the error
@@ -232,27 +232,27 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="u in data?.users || []" :key="u.uid">
+          <tr v-for="u in asArray(asRecord(data).users)" :key="finiteN(asRecord(u).uid)">
             <!-- aria-hidden: the LED repeats the Role badge's Admin/Standard
                  text in colour only (same as the Gateway and VMs LEDs). -->
-            <td><span class="led" :class="u.admin ? 'on' : 'off'" aria-hidden="true"></span></td>
+            <td><span class="led" :class="asRecord(u).admin ? 'on' : 'off'" aria-hidden="true"></span></td>
             <td>
-              <strong>{{ finiteText(u.name) }}</strong>
-              <div v-if="finiteText(u.gecos, '')" class="show-m sub">{{ finiteText(u.gecos) }}</div>
-              <div class="show-m sub mono">{{ finiteText(u.home) }} · {{ finiteText(u.shell) }}</div>
+              <strong>{{ finiteText(asRecord(u).name) }}</strong>
+              <div v-if="finiteText(asRecord(u).gecos, '')" class="show-m sub">{{ finiteText(asRecord(u).gecos) }}</div>
+              <div class="show-m sub mono">{{ finiteText(asRecord(u).home) }} · {{ finiteText(asRecord(u).shell) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(u.gecos) }}</td>
-            <td class="mono">{{ finiteN(u.uid) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(u.home) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(u.shell) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(u).gecos) }}</td>
+            <td class="mono">{{ finiteN(asRecord(u).uid) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(u).home) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(u).shell) }}</td>
             <td>
-              <span class="badge" :class="u.admin ? 'ok' : ''">{{ u.admin ? t('common.admin') : t('common.standard') }}</span>
+              <span class="badge" :class="asRecord(u).admin ? 'ok' : ''">{{ asRecord(u).admin ? t('common.admin') : t('common.standard') }}</span>
             </td>
-            <td class="mono col-hide-m" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="(u.groups||[]).map(g => finiteText(g, '')).filter(Boolean).join(', ')">
-              {{ (u.groups || []).map(g => finiteText(g, '')).filter(Boolean).slice(0, 6).join(', ') }}{{ (u.groups||[]).length > 6 ? '…' : '' }}
+            <td class="mono col-hide-m" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:10px" :title="asArray(asRecord(u).groups).map(g => finiteText(g, '')).filter(Boolean).join(', ')">
+              {{ asArray(asRecord(u).groups).map(g => finiteText(g, '')).filter(Boolean).slice(0, 6).join(', ') }}{{ asArray(asRecord(u).groups).length > 6 ? '…' : '' }}
             </td>
           </tr>
-          <tr v-if="!(data?.users||[]).length && !loadError">
+          <tr v-if="!asArray(asRecord(data).users).length && !loadError">
             <td colspan="8" class="empty-row">{{ loading ? t('common.loading') : t('users.empty') }}</td>
           </tr>
         </tbody>
@@ -269,7 +269,7 @@ import {
   setPanelAccountResources,
 } from '../api/client'
 import { authState } from '../lib/authState'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -286,7 +286,15 @@ function finiteDiff(a, b) {
 }
 
 function resourceList(list) {
-  return (list || []).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
+  return asArray(list).map((r) => finiteText(r, '')).filter(Boolean).join(', ')
+}
+
+function accountName(acct) {
+  return finiteText(asRecord(acct).username, '')
+}
+
+function secretLen(value) {
+  return typeof value === 'string' ? value.length : 0
 }
 
 const loading = ref(false)
@@ -302,7 +310,7 @@ async function load() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getUsers()
+    const next = asRecord(await getUsers())
     if (generation !== loadGeneration || !pageAlive) return
     data.value = next
     loadError.value = ''
@@ -338,7 +346,7 @@ const serviceOptionsLoaded = ref(false)
 async function loadAccounts() {
   const generation = loadGeneration
   try {
-    const next = (await listPanelAccounts()).accounts || []
+    const next = asArray(asRecord(await listPanelAccounts()).accounts).map((row) => asRecord(row))
     if (generation !== loadGeneration || !pageAlive) return
     accounts.value = next
     accountsError.value = ''
@@ -353,10 +361,13 @@ async function loadAccounts() {
 async function loadServiceOptions() {
   const generation = loadGeneration
   try {
-    const status = await getServices()
+    const status = asRecord(await getServices())
     if (generation !== loadGeneration || !pageAlive) return
-    serviceOptions.value = (status.groups || []).flatMap((group) =>
-      (group.services || []).map((svc) => ({ id: svc.id, name: finiteText(svc.name, '') || finiteText(svc.id) })),
+    serviceOptions.value = asArray(status.groups).flatMap((group) =>
+      asArray(asRecord(group).services).map((svc) => {
+        const rec = asRecord(svc)
+        return { id: rec.id, name: finiteText(rec.name, '') || finiteText(rec.id) }
+      }),
     )
     serviceOptionsError.value = ''
   } catch (e) {
@@ -368,12 +379,13 @@ async function loadServiceOptions() {
 }
 
 function toggleEditor(acct) {
-  if (editing.value === acct.username) {
+  const name = accountName(acct)
+  if (editing.value === name) {
     editing.value = ''
     return
   }
-  editing.value = acct.username
-  editResources.value = [...(acct.resources || [])]
+  editing.value = name
+  editResources.value = [...asArray(asRecord(acct).resources)]
   resetPassword.value = ''
 }
 
@@ -384,7 +396,7 @@ async function createAccount() {
     await createPanelAccount({
       username: createForm.value.username,
       password: createForm.value.password,
-      resources: createForm.value.resources,
+      resources: asArray(createForm.value.resources),
     })
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('accounts.created', { name: finiteText(createForm.value.username) }))
@@ -404,9 +416,9 @@ async function saveResources(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await setPanelAccountResources(acct.username, editResources.value)
+    await setPanelAccountResources(accountName(acct), asArray(editResources.value))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('accounts.resources_saved', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.resources_saved', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -418,14 +430,14 @@ async function saveResources(acct) {
 
 async function doResetPassword(acct) {
   // Resetting revokes every session the member still holds; make that explicit.
-  if (!confirm(t('accounts.reset_password_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('accounts.reset_password_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await resetPanelAccountPassword(acct.username, resetPassword.value)
+    await resetPanelAccountPassword(accountName(acct), resetPassword.value)
     if (generation !== loadGeneration || !pageAlive) return
     resetPassword.value = ''
-    toast('✅ ' + t('accounts.password_reset_done', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.password_reset_done', { name: accountName(acct) }))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -435,13 +447,13 @@ async function doResetPassword(acct) {
 }
 
 async function resetTwofa(acct) {
-  if (!confirm(t('twofa.admin_reset_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('twofa.admin_reset_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await adminDisableTotp(acct.username)
+    await adminDisableTotp(accountName(acct))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('twofa.admin_reset_toast', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('twofa.admin_reset_toast', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -452,14 +464,14 @@ async function resetTwofa(acct) {
 }
 
 async function removeAccount(acct) {
-  if (!confirm(t('accounts.delete_confirm', { name: finiteText(acct.username) }))) return
+  if (!confirm(t('accounts.delete_confirm', { name: accountName(acct) }))) return
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await deletePanelAccount(acct.username)
+    await deletePanelAccount(accountName(acct))
     if (generation !== loadGeneration || !pageAlive) return
     editing.value = ''
-    toast('✅ ' + t('accounts.deleted', { name: finiteText(acct.username) }))
+    toast('✅ ' + t('accounts.deleted', { name: accountName(acct) }))
     await loadAccounts()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

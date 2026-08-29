@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from hub import audit, wireguard_export, wireguard_net_svc, wireguard_svc
-from hub.errors import api_error
+from hub.errors import api_error, api_error_from
 from hub.routers.nas_common import (
     client_host,
     raise_for_admin_result,
@@ -42,7 +42,13 @@ def _call(fn, **kwargs):
     try:
         return fn(**kwargs)
     except wireguard_svc.WireGuardError as exc:
-        raise api_error(exc.code, **exc.params)
+        # api_error_from, not bare ``api_error(exc.code, **exc.params)``: a
+        # leftover subclass whose ``code``/``params`` is a raising property —
+        # or whose params slot is a non-mapping / carries a non-str key —
+        # used to detonate this except clause itself (the attribute read or
+        # CPython's ``**`` keyword rebuild), a raw HTTP 500 in place of the
+        # coded refusal on every route funnelled through here.
+        raise api_error_from(exc)
 
 
 def _check_format(fmt: str) -> str:
@@ -374,7 +380,9 @@ def api_wireguard_sync(request: Request):
 @router.post("/api/wireguard/ping")
 def api_wireguard_ping(request: Request):
     _guard(request)
-    return wireguard_svc.ping_peers()
+    # _call: a confirmed-vanished /sbin/ping raises the typed service error,
+    # which must arrive as the coded 503, not a raw ValueError 500.
+    return _call(wireguard_svc.ping_peers)
 
 
 # ── macOS readiness remediation ──────────────────────────────────────────────
@@ -438,4 +446,7 @@ def api_wireguard_remediate(body: WgRemediateBody, request: Request):
         "bad_wstunnel_url": "wg.bad_wstunnel_url",
         "bad_wstunnel_target": "wg.bad_wstunnel_target",
         "wstunnel_install_unverified": "wg.wstunnel_install_unverified",
+        # A leftover node occupying a staging file under data/ is a coded
+        # 503 naming the path, not a raw IsADirectoryError 500.
+        "stage_write_failed": "wg.write_failed",
     })

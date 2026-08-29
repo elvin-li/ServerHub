@@ -3,8 +3,11 @@
     <h2 class="section-title" style="margin-top:0">{{ t('notifych.title') }}</h2>
     <p class="hint" style="margin-top:0">{{ t('notifych.hint') }}</p>
 
+    <!-- The error banner sits *above* the last known rows instead of
+         replacing them: a failed refresh must not blank a list the operator
+         was just reading (same rule as the bookmarks card). -->
     <div v-if="loadError" class="sub" style="color:var(--down-text)" role="alert">{{ finiteText(loadError) }}</div>
-    <div class="table-wrap" v-else-if="channels.length">
+    <div class="table-wrap" v-if="asArray(channels).length">
     <table class="dense fit-m">
       <thead>
         <tr>
@@ -16,20 +19,20 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in channels" :key="c.id">
+        <tr v-for="c in asArray(channels)" :key="finiteText(asRecord(c).id)">
           <td>
-            <strong>{{ finiteText(c.name) }}</strong>
-            <div class="mono sub-line">{{ finiteText(c.id) }}</div>
-            <div class="show-m sub">{{ typeLabel(c.type) }} · {{ t(`notifych.level_${c.min_level}`) }}</div>
+            <strong>{{ finiteText(asRecord(c).name) }}</strong>
+            <div class="mono sub-line">{{ finiteText(asRecord(c).id) }}</div>
+            <div class="show-m sub">{{ typeLabel(asRecord(c).type) }} · {{ t(`notifych.level_${asRecord(c).min_level}`) }}</div>
           </td>
-          <td class="col-hide-m">{{ typeLabel(c.type) }}</td>
+          <td class="col-hide-m">{{ typeLabel(asRecord(c).type) }}</td>
           <td class="col-hide-m">
-            <span class="badge" :class="levelBadge(c.min_level)">{{ t(`notifych.level_${c.min_level}`) }}</span>
-            <span v-if="c.notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
+            <span class="badge" :class="levelBadge(asRecord(c).min_level)">{{ t(`notifych.level_${asRecord(c).min_level}`) }}</span>
+            <span v-if="asRecord(c).notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
           </td>
           <td>
-            <span class="badge" :class="c.enabled ? 'ok' : 'warn'">
-              {{ c.enabled ? t('common.enabled') : t('common.disabled') }}
+            <span class="badge" :class="asRecord(c).enabled ? 'ok' : 'warn'">
+              {{ asRecord(c).enabled ? t('common.enabled') : t('common.disabled') }}
             </span>
           </td>
           <td class="row-btns">
@@ -41,8 +44,10 @@
       </tbody>
     </table>
     </div>
-    <div v-else-if="loaded" class="sub">{{ t('notifych.empty') }}</div>
-    <div v-else class="sub">{{ t('common.loading') }}</div>
+    <!-- Empty only when a load actually succeeded: an error with no rows is
+         the error state, not "no channels configured". -->
+    <div v-else-if="loaded && !loadError" class="sub">{{ t('notifych.empty') }}</div>
+    <div v-else-if="!loaded" class="sub" aria-live="polite">{{ t('common.loading') }}</div>
 
     <div class="btns" style="margin-top:10px" v-if="!editing">
       <button class="primary" :disabled="!loaded" @click="startAdd">{{ t('notifych.add') }}</button>
@@ -50,11 +55,11 @@
     </div>
 
     <div v-if="editing" class="editor">
-      <h2 class="section-title">{{ editing.existing ? t('notifych.edit_title', { name: finiteText(editing.name, '') || finiteText(editing.id) }) : t('notifych.add') }}</h2>
+      <h2 class="section-title">{{ asRecord(editing).existing ? t('notifych.edit_title', { name: finiteText(asRecord(editing).name, '') || finiteText(asRecord(editing).id) }) : t('notifych.add') }}</h2>
       <div class="form-grid">
         <label>{{ t('common.type') }}</label>
         <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
-          <option v-for="ty in typeIds" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
+          <option v-for="ty in asArray(typeIds)" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
         </select>
         <label>{{ t('common.name') }}</label>
         <input v-model="editing.name" type="text" maxlength="80" :aria-label="t('common.name')" />
@@ -112,7 +117,7 @@ import {
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -178,11 +183,11 @@ function softText(j, fallbackKey = 'common.fail') {
 }
 
 function fieldsFor(ty) {
-  return types.value[ty]?.fields || []
+  return asArray(types.value[ty]?.fields)
 }
 
 function secretsFor(ty) {
-  return types.value[ty]?.secrets || []
+  return asArray(types.value[ty]?.secrets)
 }
 
 async function load() {
@@ -190,8 +195,8 @@ async function load() {
   try {
     const r = await getNotifyChannels()
     if (generation !== loadGeneration || !pageAlive) return
-    channels.value = Array.isArray(r?.channels) ? r.channels : []
-    types.value = r?.types && typeof r.types === 'object' ? r.types : {}
+    channels.value = asArray(asRecord(r).channels).map((c) => asRecord(c))
+    types.value = asRecord(asRecord(r).types)
     typeIds.value = Object.keys(types.value)
     loadError.value = ''
   } catch (e) {
@@ -219,17 +224,18 @@ function startAdd() {
 }
 
 function startEdit(c) {
+  const row = asRecord(c)
   editing.value = {
     existing: true,
-    id: c.id,
-    type: c.type,
-    name: c.name,
-    enabled: c.enabled,
-    min_level: c.min_level,
-    notify_resolve: c.notify_resolve,
-    config: { ...(c.config || {}) },
+    id: row.id,
+    type: row.type,
+    name: row.name,
+    enabled: row.enabled,
+    min_level: row.min_level,
+    notify_resolve: row.notify_resolve,
+    config: { ...asRecord(row.config) },
     secrets: {},
-    has: { ...(c.has || {}) },
+    has: { ...asRecord(row.has) },
   }
 }
 
@@ -242,7 +248,7 @@ async function save() {
     // An untouched (empty) secret input means "keep the stored value"; the
     // API treats an empty string as "clear", so those are dropped here.
     const secrets = {}
-    for (const [k, v] of Object.entries(e.secrets)) {
+    for (const [k, v] of Object.entries(asRecord(e.secrets))) {
       if (v) secrets[k] = v
     }
     const body = {
@@ -269,10 +275,11 @@ async function save() {
 }
 
 async function testChannel(c) {
+  const row = asRecord(c)
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = await testNotifyChannel(c.id)
+    const r = asRecord(await testNotifyChannel(row.id))
     if (generation !== loadGeneration || !pageAlive) return
     toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
   } catch (e) {
@@ -284,14 +291,15 @@ async function testChannel(c) {
 }
 
 async function removeChannel(c) {
-  if (!confirm(t('notifych.delete_confirm', { name: finiteText(c.name) }))) return
+  const row = asRecord(c)
+  if (!confirm(t('notifych.delete_confirm', { name: finiteText(row.name) }))) return
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteNotifyChannel(c.id)
+    await deleteNotifyChannel(row.id)
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.delete'))
-    if (editing.value?.id === c.id) editing.value = null
+    if (asRecord(editing.value).id === row.id) editing.value = null
     await load()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

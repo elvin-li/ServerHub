@@ -22,8 +22,11 @@ how a panel becomes the reason the machine is slow.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import hashlib
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -90,23 +93,107 @@ _SCAN_WORKERS = 4
 _LEASE = 4096
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``scan_roots``' per-row gates 500'd all four
+    usage routes on one poisoned root/share row, and ``set_spotlight``'s
+    result gate blew POST /api/storage/spotlight one line ahead of the
+    laundering built to absorb junk shapes.  A real subclass still matches
+    through the C-level type check; only a value that cannot answer what
+    it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """JSON-safe text. Leftover ``\\ud800`` in a filename used to 500 usage JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if _isa(value, (bytes, bytearray)):
+        # Unbound base decode (the modules5 / nas_common rule): a leftover
+        # bytes-subclass whose bound ``.decode`` raises used to 500
+        # GET /api/storage/usage out of _spotlight_query.  In a try (the
+        # modules9 rule): a *lying* ``__class__`` claiming bytes passes the
+        # gate but is no bytes underneath, and the descriptor's TypeError
+        # rode the same paths — it falls through to the str() probe so a
+        # legible impostor still renders.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the nas_common._utf8_text / modules6 rule):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+    # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
+    # the subclass override — a leftover encode bomb raised out of
+    # set_spotlight's vanish classification and 500'd
+    # POST /api/storage/spotlight, and an encode that *returned* a hostile
+    # buffer walked its own str back out and 500'd GET /api/storage/usage
+    # at ``blob.lower()``.  The base pair answers an exact str always.
+    return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _exact_str(value) -> str | None:
+    """*value* as an exact ``str`` (surrogates preserved), or None.
+
+    Unlike :func:`_as_text` this never scrubs: a real path read off
+    ``os.scandir`` carries surrogateescape'd bytes that must round-trip to
+    ``open()``.  What it does refuse is a str-*subclass* keeping its
+    overrides: a leftover whose ``__hash__`` answers a real key's bucket
+    while its ``__eq__`` raises detonates *every* later probe of that
+    bucket (the wave-10 hash-shadowing class), and one whose ``__lt__``
+    raises blows the sort it rides into.  The unbound base encode/decode
+    pair walks the real C-level buffer, so the copy carries no override; a
+    lying ``__class__`` claiming str fails the base call and reads as
+    not-text.
+    """
+    if type(value) is str:
+        return value
+    if not _isa(value, str):
+        return None
+    try:
+        return bytes.decode(
+            str.encode(value, "utf-8", "surrogatepass"),
+            "utf-8", "surrogatepass",
+        )
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 def _safe_bytes(value) -> int:
@@ -119,11 +206,21 @@ def _safe_bytes(value) -> int:
     /duplicates after the walk had already finished.  ``float()`` rejects
     anything beyond float range, the same junk test files_svc._finite_int
     and logs_svc._stat_size apply to their stat numbers.
+
+    The except is total, not the conversion tuple: a leftover ``st_size``
+    whose ``__int__``/``__index__`` *raises RuntimeError* (a raising
+    descriptor riding a poisoned stat result) sailed past the old
+    ``(TypeError, ValueError, OverflowError, OSError)`` list and out of the
+    walk loops, whose per-entry catches were just as narrow — a raw 500 on
+    /tree and a dead ``_walk_parallel`` worker on /largest and /duplicates.
+    Junk of any spelling reads as 0 bytes here.
     """
     try:
         n = int(value)
         float(n)
-    except (TypeError, ValueError, OverflowError, OSError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
     return n if n > 0 else 0
 
@@ -196,17 +293,61 @@ def scan_roots() -> list[dict]:
             "path": _as_text(text),
         })
 
-    incoming = files_svc.default_roots()
+    try:
+        incoming = files_svc.default_roots()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # The guard below covered *iteration* but not the call: a
+        # default_roots that raised outright (a seam replacement, a leftover
+        # that slips its own guards) still 500'd GET /api/storage/usage,
+        # /tree, /largest and /duplicates at once — the storage_pool_svc
+        # _candidates rule, one seam earlier than the iteration bomb.  The
+        # sibling seam (shares_svc.list_smb_shares) has carried this guard
+        # all along; the volumes and shares below still contribute.
+        incoming = []
     # None/int leftover used to TypeError GET /api/storage/usage.
-    if not isinstance(incoming, (list, tuple)):
+    if not _isa(incoming, (list, tuple)):
+        incoming = []
+    try:
+        incoming = list(incoming)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A roots listing that refuses *iteration* (odd list subclass passing
+        # the isinstance gate above) used to raise out of this loop and 500
+        # GET /api/storage/usage, /tree, /largest and /duplicates — the
+        # ups_svc/storage_svc materialize-under-guard rule.  The volumes and
+        # shares below still contribute their roots.
         incoming = []
     for entry in incoming:
-        if not isinstance(entry, dict):
+        # _isa: a ``__class__``-property bomb row used to detonate this
+        # gate itself and 500 all four usage routes, where every other
+        # junk row already drops alone.
+        if not _isa(entry, dict):
             continue
-        path = entry.get("path")
-        if not isinstance(path, str) or not path:
+        try:
+            # Per-row guard, the storage_pool_svc._candidates class: a dict
+            # *subclass* passes the isinstance gate with a ``.get`` that
+            # raises (or a value whose ``__bool__`` raises under the ``or``),
+            # and one such row used to 500 all four usage routes while every
+            # healthy sibling root was droppable collateral.  The hostile row
+            # drops alone; its siblings keep contributing.
+            path = entry.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            # _as_text is a str() probe, not a bare str(): a leftover root id
+            # or name that is *already* a >4300-digit int (YAML/plist hex
+            # loads with int(x, 16), exempt from the int(str) parse cap) made
+            # the old bare str() raise the digit-cap ValueError out of
+            # scan_roots and 500 every usage route; sane numeric ids keep
+            # their string form.
+            rid = _as_text(entry.get("id") or "root") or "root"
+            add(rid, _as_text(entry.get("name") or ""), path)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
-        add(str(entry.get("id") or "root"), str(entry.get("name") or ""), path)
 
     volumes = Path("/Volumes")
     try:
@@ -229,21 +370,50 @@ def scan_roots() -> list[dict]:
     try:
         from hub import shares_svc
 
-        for share in shares_svc.list_smb_shares(include_sizes=False) or []:
-            if not isinstance(share, dict):
-                continue
+        listed = shares_svc.list_smb_shares(include_sizes=False) or []
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Share enumeration is a convenience here, never a hard dependency.
+        listed = []
+    if not _isa(listed, (list, tuple)):
+        listed = []
+    try:
+        listed = list(listed)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Same class as the roots listing above: a share listing that passes
+        # the isinstance gate but refuses iteration must cost the shares
+        # section, never the request — the roots already gathered survive.
+        listed = []
+    for share in listed:
+        # _isa, same class as the roots loop above: a ``__class__``-bomb
+        # share row must drop alone, never 500 the usage routes.
+        if not _isa(share, dict):
+            continue
+        try:
+            # Per-row guard, same class as the roots loop above: a dict
+            # subclass whose ``.get`` raises passed the isinstance gate and
+            # 500'd every usage route; the hostile share drops alone and its
+            # sibling shares keep contributing.
             path = share.get("path")
             # Path() TypeError'd a non-str share path and 500'd the usage page.
             if not isinstance(path, str) or not path.startswith("/"):
                 continue
-            add(
-                f"share-{(share.get('name') or 'share')}",
-                str(share.get("name") or path),
-                path,
-            )
-    except Exception:
-        # Share enumeration is a convenience here, never a hard dependency.
-        pass
+            # _as_text is a str() probe, not an isinstance gate: a numeric
+            # leftover name keeps behaving as its string form, while a
+            # >4300-digit *already-int* (plist/YAML hex loads with int(x, 16),
+            # exempt from the int(str) parse cap) scrubs to "" and takes the
+            # fallback.  The old bare f-string/str() raised the digit-cap
+            # ValueError into the loop-wide except, which silently dropped
+            # every share after it from the usage roots.
+            name = _as_text(share.get("name"))
+            add(f"share-{name or 'share'}", name or path, path)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
 
     return roots
 
@@ -426,34 +596,56 @@ def _walk_parallel(target: Path, budget: _Budget, make_sink, on_file, *,
     def run(_index: int):
         sink = make_sink()
         spender = budget.spender()
-        while True:
-            current = _next()
-            if current is None:
-                return sink
-            if spender.expired():
-                _stop()
-                return sink
-            subdirs: list[Path] = []
-            try:
-                with os.scandir(current) as it:
-                    for entry in it:
-                        if not spender.spend():
-                            _stop()
-                            return sink
-                        try:
-                            if entry.is_symlink():
+        # The backstop except is the difference between a degraded walk and
+        # a hung route: a worker that raises out of this loop never reaches
+        # the all-idle rule, so its siblings wait on the condition forever
+        # and the request hangs past every budget (the deadline cannot fire
+        # a thread parked in ``cond.wait``).  A leftover ``st_size`` whose
+        # ``__int__`` raises RuntimeError did exactly that to /largest and
+        # /duplicates: the per-entry catch below was a narrow tuple, the
+        # raise killed one worker, and the other three waited forever.
+        try:
+            while True:
+                current = _next()
+                if current is None:
+                    return sink
+                if spender.expired():
+                    _stop()
+                    return sink
+                subdirs: list[Path] = []
+                try:
+                    with os.scandir(current) as it:
+                        for entry in it:
+                            if not spender.spend():
+                                _stop()
+                                return sink
+                            try:
+                                if entry.is_symlink():
+                                    continue
+                                if entry.is_dir(follow_symlinks=False):
+                                    child = Path(entry.path)
+                                    if not _is_never_walk(child):
+                                        subdirs.append(child)
+                                elif entry.is_file(follow_symlinks=False):
+                                    on_file(entry, sink)
+                            except _CONTROL_FLOW:
+                                raise
+                            except BaseException:
+                                # Total, not (OSError, ValueError, TypeError):
+                                # a poisoned entry whose stat fields raise
+                                # RuntimeError must cost its own row, never
+                                # the worker (and with it the request).
                                 continue
-                            if entry.is_dir(follow_symlinks=False):
-                                child = Path(entry.path)
-                                if not _is_never_walk(child):
-                                    subdirs.append(child)
-                            elif entry.is_file(follow_symlinks=False):
-                                on_file(entry, sink)
-                        except (OSError, ValueError, TypeError):
-                            continue
-            except (OSError, PermissionError, ValueError, TypeError):
-                pass
-            _push(subdirs)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    pass
+                _push(subdirs)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            _stop()
+            return sink
 
     # fan_out builds a pool of exactly len(items) threads here, which is what the
     # all-idle termination rule counts on.
@@ -489,9 +681,17 @@ def _dir_size(path: Path, spender: _Spender) -> tuple[int, int]:
                         elif entry.is_file(follow_symlinks=False):
                             total += _safe_bytes(entry.stat(follow_symlinks=False).st_size)
                             files += 1
-                    except (OSError, ValueError, TypeError):
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        # Total, matching _walk_parallel: a poisoned entry
+                        # raising RuntimeError out of a stat descriptor used
+                        # to escape the old tuple, ride fan_out's re-raise
+                        # and 500 GET /api/storage/usage/tree.
                         continue
-        except (OSError, PermissionError, ValueError, TypeError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
     return total, files
 
@@ -518,6 +718,13 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
     except NotADirectoryError:
         raise api_error("files.not_a_dir")
     except OSError:
+        raise api_error("files.permission_denied", path=str(target))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A scandir iterator dying mid-listing with a non-OSError (a
+        # leftover FUSE seam raising RuntimeError) used to 500 the route
+        # raw; an unlistable directory is the permission_denied class.
         raise api_error("files.permission_denied", path=str(target))
 
     # Split the listing first, then size the directories concurrently.  Sizing
@@ -546,23 +753,44 @@ def tree(path: str | None = None, root_id: str | None = None) -> dict:
                     "gb": _gb(size),
                     "files": 1,
                 })
-        except (OSError, ValueError, TypeError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Total, not (OSError, ValueError, TypeError): a poisoned entry
+            # whose ``name``/``path``/stat fields raise RuntimeError used to
+            # escape the tuple and 500 GET /api/storage/usage/tree; the
+            # hostile entry drops alone, its siblings keep rendering.
             continue
 
-    sizes = fan_out(
-        lambda e: _dir_size(Path(e.path), budget.spender()),
-        subdirs,
-        max_workers=_SCAN_WORKERS,
-    )
+    def _sized(e) -> tuple[int, int]:
+        # Guarded per subdir: ``Path(e.path)`` on a poisoned entry raised
+        # inside the fan_out worker, and fan_out re-raises on iteration —
+        # one hostile subdir used to 500 the whole tree listing.
+        try:
+            return _dir_size(Path(e.path), budget.spender())
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return 0, 0
+
+    sizes = fan_out(_sized, subdirs, max_workers=_SCAN_WORKERS)
     for entry, (size, files) in zip(subdirs, sizes):
-        children.append({
-            "name": _as_text(entry.name),
-            "path": _as_text(entry.path),
-            "kind": "dir",
-            "bytes": size,
-            "gb": _gb(size),
-            "files": files,
-        })
+        try:
+            children.append({
+                "name": _as_text(entry.name),
+                "path": _as_text(entry.path),
+                "kind": "dir",
+                "bytes": size,
+                "gb": _gb(size),
+                "files": files,
+            })
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Same class one loop later: the row build reads the entry's
+            # properties again, and a raising descriptor here sat outside
+            # any guard.
+            continue
 
     children.sort(key=lambda c: c["bytes"], reverse=True)
     total = sum(c["bytes"] for c in children)
@@ -612,13 +840,28 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
         return {"seen": 0, "top": []}
 
     def _on_file(entry, sink: dict) -> None:
+        # One guard over every read, not just the stat call: a poisoned
+        # entry whose ``st_size`` / ``st_mtime`` / ``path`` descriptors
+        # raise RuntimeError used to escape the old bare ``except OSError``,
+        # kill its _walk_parallel worker and hang the request (see run()).
+        # _exact_str on the path: a str-subclass path keeping its overrides
+        # would ride the top tuples into ``found.sort`` and ``Path(p)``
+        # below; the base copy preserves surrogateescape'd bytes so a real
+        # odd filename still renders.
         try:
             st = entry.stat(follow_symlinks=False)
-        except OSError:
+            size = _safe_bytes(st.st_size)
+            path = _exact_str(entry.path)
+            mtime = st.st_mtime
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return
+        if path is None:
             return
         sink["seen"] += 1
         top = sink["top"]
-        top.append((_safe_bytes(st.st_size), entry.path, st.st_mtime))
+        top.append((size, path, mtime))
         if len(top) > cap * 20:
             top.sort(key=lambda x: x[0], reverse=True)
             del top[cap:]
@@ -631,16 +874,27 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
     for size, p, mtime in found[:cap]:
         try:
             stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        except (OverflowError, OSError, ValueError, TypeError):
-            # Corrupt mtimes (network FS, FAT) used to 500 this endpoint.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Corrupt mtimes (network FS, FAT) used to 500 this endpoint;
+            # total, not a tuple: a poisoned mtime whose ``__float__``
+            # raises RuntimeError rode the top tuple past the old catch.
             stamp = ""
-        items.append({
-            "path": _as_text(p),
-            "name": _as_text(Path(p).name),
-            "bytes": size,
-            "gb": _gb(size),
-            "mtime": stamp,
-        })
+        try:
+            items.append({
+                "path": _as_text(p),
+                "name": _as_text(Path(p).name),
+                "bytes": size,
+                "gb": _gb(size),
+                "mtime": stamp,
+            })
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # ``Path(p)`` on a junk path must cost its own row, not the
+            # report the walk already finished.
+            continue
     return {
         "path": _as_text(target),
         "items": items,
@@ -653,8 +907,28 @@ def largest_files(path: str | None = None, root_id: str | None = None, limit: in
 def _hash_file(path: Path, *, partial: bool) -> str | None:
     """SHA-256 of the first chunk, or of the whole file when *partial* is False."""
     digest = hashlib.sha256()
+    fd = -1
     try:
-        with open(path, "rb") as fh:
+        # O_NONBLOCK + the regular-file check (the files_svc read rule): the
+        # walk only queues regular files, but the hash stages run after the
+        # whole walk finished, and a leftover FIFO occupying the path by then
+        # used to park the plain open() until a writer appeared — hanging a
+        # fan_out worker and GET /api/storage/usage/duplicates with it, past
+        # every budget (the deadline cannot fire inside a blocked syscall).
+        # O_NONBLOCK changes nothing for reads of a regular file, and
+        # O_NOFOLLOW refuses a symlink swapped in over the same window (the
+        # walk never followed one).  A non-regular occupant costs its own
+        # hash, exactly like an unreadable file, never the request.
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # fdopen owns the descriptor now
             if partial:
                 digest.update(fh.read(_HASH_CHUNK))
             else:
@@ -667,6 +941,12 @@ def _hash_file(path: Path, *, partial: bool) -> str | None:
         # ValueError: leftover ``\\ud800`` in a FUSE name. open() encodes
         # strictly; the duplicates walk used to 500 GET /api/storage/usage/duplicates.
         return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return digest.hexdigest()
 
 
@@ -679,9 +959,18 @@ def _hash_group(paths: list[str], budget: _Budget, *, partial: bool) -> list[str
     which the caller treats the same way it treats an unreadable file.
     """
     def _one(p: str) -> str | None:
-        if budget.expired():
+        # Guarded whole: ``Path(p)`` sat *outside* _hash_file's try, so a
+        # junk path raised inside the fan_out worker and fan_out re-raises
+        # on iteration — one unhashable candidate must read as unreadable
+        # (None), never 500 GET /api/storage/usage/duplicates.
+        try:
+            if budget.expired():
+                return None
+            return _hash_file(Path(p), partial=partial)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
-        return _hash_file(Path(p), partial=partial)
 
     return fan_out(_one, paths, max_workers=_SCAN_WORKERS)
 
@@ -708,12 +997,22 @@ def duplicates(path: str | None = None, root_id: str | None = None, min_mb: floa
         return {}
 
     def _on_file(entry, sink: dict[int, list[str]]) -> None:
+        # Same guard as largest_files._on_file: every entry read under one
+        # total except (a raising stat descriptor used to kill the walk
+        # worker and hang the request), and the queued path is an exact-str
+        # base copy so the sort and ``sorted(matches)`` downstream run base
+        # comparisons only.
         try:
             size = _safe_bytes(entry.stat(follow_symlinks=False).st_size)
-        except OSError:
+            path = _exact_str(entry.path)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return
+        if path is None:
             return
         if size >= floor:
-            sink.setdefault(size, []).append(entry.path)
+            sink.setdefault(size, []).append(path)
 
     by_size: dict[int, list[str]] = {}
     for partial_sink in _walk_parallel(target, budget, _sink, _on_file):
@@ -782,9 +1081,19 @@ def _spotlight_query(volume: str) -> tuple[int, str]:
     """
     try:
         rc, text, err = sh([MDUTIL, "-s", volume], timeout=8)
-    except Exception as exc:  # noqa: BLE001
+        # ``_as_text(text) or _as_text(err)``, never ``text or err``: the old
+        # bare ``or`` on the raw output sat *outside* this guard and called
+        # ``__bool__`` on the leftover — a bool-bomb (or decode-bomb bytes
+        # subclass) in sh() output raised out of fan_out and 500'd
+        # GET /api/storage/usage and POST /api/storage/spotlight.  Everything
+        # now happens under the guard, and rc is base-coerced so an odd
+        # int subclass cannot bomb the ``rc == 0`` reads downstream.
+        blob = (_as_text(text) or _as_text(err)).strip()
+        return (int.__index__(rc) if isinstance(rc, int) else 1), blob
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001
         return 1, _as_text(exc)
-    return rc, _as_text(text or err).strip()
 
 
 def spotlight_status() -> list[dict]:
@@ -832,24 +1141,187 @@ def spotlight_status() -> list[dict]:
     return out
 
 
+def _mdutil_on_disk() -> bool:
+    """Fresh disk probe for the mutation-failure path only (raid/smart rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/bin is not confirmably carrying it.
+    """
+    try:
+        return Path(MDUTIL).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+#: What a spawn of a gone binary reads like through run_admin: the shell's own
+#: refusal (``sh: /usr/bin/mdutil: command not found`` / ``No such file or
+#: directory``) or sh()'s FileNotFoundError sentinel (``not found``).  Purely a
+#: message-pattern gate: classification additionally requires the fresh
+#: :func:`_mdutil_on_disk` probe to confirm the binary is really gone.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
 def set_spotlight(volume: str, enabled: bool) -> dict:
     """Turn Spotlight indexing on or off for one volume (requires authorization)."""
     from hub.macos_admin import run_admin
 
-    target = str(volume or "").strip()
-    known = {
-        v.get("volume")
-        for v in spotlight_status()
-        if isinstance(v, dict) and isinstance(v.get("volume"), str)
-    }
+    # _as_text is a str() probe, not an isinstance gate: the route hands the
+    # volume over as str through Pydantic, but the service is also called
+    # in-process, and a leftover YAML/plist hex int arrives *already-int*
+    # (``int(x, 16)`` is exempt from CPython's 4300-digit parse cap) — the
+    # bare ``str()`` here raised the int->str digit-cap ValueError where
+    # every other junk volume earns the coded ``bad_volume`` refusal (the
+    # raid_svc._req_text / smart_test_svc._schedule_text convention).
+    target = _as_text(volume).strip()
+    # _truthy on the flag: the route hands over a Pydantic StrictBool, but
+    # the service is also called in-process, and a leftover ``__bool__``-bomb
+    # flag detonated the ``"on" if enabled else "off"`` argv choice — a raw
+    # raise where the coded refusals below are the contract.
+    wanted = _truthy(enabled)
+    # Guarded call + unbound reads (the nas_storage._known_mount rule): the
+    # old set comprehension consumed the status listing raw, so a leftover
+    # list-*subclass* whose ``__iter__`` raises, a dict-subclass row whose
+    # bound ``.get`` raises, or a str-subclass volume whose ``__hash__`` /
+    # ``__eq__`` detonated inside the set build all 500'd
+    # POST /api/storage/spotlight ahead of the coded ``bad_volume`` refusal
+    # — and a status listing that raised outright took the route with it.
+    # ``base.__iter__`` walks the real C-level storage so healthy rows still
+    # serve, ``dict.get`` cannot run a subclass override, and ``_as_text``
+    # answers an exact str so the set's hash/eq are the base ops.  "/" is
+    # pinned because spotlight_status always reports the boot volume first,
+    # so it stays toggleable while a hostile listing drops row by row.
+    try:
+        listing = spotlight_status()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        listing = []
+    if not _isa(listing, (list, tuple)):
+        listing = []
+    known = {"/"}
+    base = list if _isa(listing, list) else tuple
+    try:
+        # The unbound walk in a try (the modules9 rule): a *lying*
+        # ``__class__`` claiming list/tuple passed the gate above and the
+        # descriptor's TypeError raised raw — a 500 on
+        # POST /api/storage/spotlight ahead of the coded ``bad_volume``.
+        status_rows = list(base.__iter__(listing))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        status_rows = []
+    for v in status_rows:
+        # _isa on both reads: a ``__class__``-bomb status row (or volume
+        # field) used to detonate the gates themselves ahead of the coded
+        # ``bad_volume`` refusal.  The ``dict.get`` in a try: a dict-liar
+        # row passes the gate and the descriptor rejects it — the row
+        # drops alone, "/" and its siblings stay toggleable.
+        if not _isa(v, dict):
+            continue
+        try:
+            vol = dict.get(v, "volume")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if _isa(vol, str):
+            known.add(_as_text(vol))
     if target not in known:
         return {"ok": False, "error": "bad_volume"}
-    result = run_admin([MDUTIL, "-i", "on" if enabled else "off", target], timeout=60)
-    if not isinstance(result, dict):
+    try:
+        result = run_admin([MDUTIL, "-i", "on" if wanted else "off", target], timeout=60)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        # Guarded call (the scan_roots default_roots / usage8 spotlight_status
+        # rule, one seam later): run_admin answers coded dicts for everything
+        # it anticipates, but a seam replacement or a leftover that slips its
+        # own guards still raised *out of the call itself* and 500'd
+        # POST /api/storage/spotlight raw — the only unguarded seam left on
+        # the route.  The synthesized failure keeps the funnel's contract:
+        # the vanish classification below still reads the message, so a
+        # spawn-of-a-gone-binary raise ("No such file or directory") earns
+        # the coded 503 only after the fresh disk probe confirms mdutil is
+        # really gone, exactly like the sentinel-shaped failure.
+        result = {"ok": False, "error": "failed", "message": _as_text(exc)}
+    # _isa: a ``__class__``-property bomb result detonated the bare gate
+    # itself — a raw 500 on POST /api/storage/spotlight one line ahead of
+    # the laundering built to absorb junk shapes.
+    if not _isa(result, dict):
         return {"ok": False, "error": "failed"}
-    if result.get("ok"):
+    try:
+        # dict() copies through the C-level storage (nas_common._plain_result
+        # rule): a dict-*subclass* result whose ``.get`` or ``__setitem__``
+        # raises passed the isinstance gate above and 500'd
+        # POST /api/storage/spotlight before the router funnel's own
+        # laundering could run.  A subclass whose copy itself raises is junk.
+        result = dict(result)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+    # Exact-str keys only (the wave-10 hash-shadowing rule): the plain copy
+    # above still *carries* a hostile key — a leftover str-subclass whose
+    # ``__hash__`` answers a real key's bucket while its ``__eq__`` raises
+    # detonated every later probe of that bucket: ``result["volume"] =
+    # target`` and ``result["enabled"]`` on the ok path, ``result.get("ok")``
+    # (and the ``result["ok"] = False`` *inside its own except handler*),
+    # and the ``result.get("error")`` / ``result.get("message")`` reads of
+    # the vanish classification — each a raw 500 on POST
+    # /api/storage/spotlight after run_admin had already answered, and the
+    # same bomb rode the returned dict into the route funnel's
+    # ``result.get("ok")``.  ``dict.items`` walks the C-level storage and
+    # ``_exact_str`` strips the overrides, so every bucket probe from here
+    # on runs base ``__hash__``/``__eq__``; a torn pair drops alone while
+    # its sibling keys keep serving.
+    plain: dict = {}
+    try:
+        for k, v in dict.items(result):
+            try:
+                key = _exact_str(k)
+                if key is not None:
+                    plain[key] = v
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {"ok": False, "error": "failed"}
+    result = plain
+    try:
+        ok = bool(result.get("ok"))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__bool__``-bomb ok value reads as failure (nas_common._truthy
+        # rule) instead of raising out of the service as a 500 — and the
+        # unreadable flag must not ride along either: the route reads
+        # ``bool(result.get("ok"))`` for its audit row, where the same bomb
+        # would just fire one frame later.
+        ok = False
+        result["ok"] = False
+    if ok:
         result["volume"] = target
-        result["enabled"] = bool(enabled)
+        result["enabled"] = wanted
+        return result
+    # An mdutil that vanished (OS update mid-flight, dying system volume) used
+    # to surface as the generic 500 ``admin.failed`` — "the privileged macOS
+    # operation failed" sends the operator to a password dialog that cannot
+    # help.  The coded 503 fires only after a fresh disk probe confirms mdutil
+    # is gone (the raid/smart/vms rule); timeouts and authorization failures
+    # (``password_required`` / ``password_incorrect`` / ``unavailable``) keep
+    # their original shape.  The probe runs only on this failure path, never
+    # on a successful toggle.
+    # _as_text on both reads, no bare ``or``: a ``__bool__``-bomb message (or
+    # an error value with a hostile reflected ``__eq__``) on this failure
+    # path used to raise out of the vanish classification and 500 the route
+    # in place of the coded refusal.
+    if _as_text(result.get("error")) == "failed":
+        message = _as_text(result.get("message")).lower()
+        if any(marker in message for marker in _VANISH_MARKERS) and not _mdutil_on_disk():
+            return {"ok": False, "error": "mdutil_missing"}
     return result
 
 

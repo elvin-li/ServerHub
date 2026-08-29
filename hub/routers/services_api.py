@@ -1,6 +1,8 @@
 """Services page management APIs."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -25,9 +27,13 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
     return value.encode("utf-8", "replace").decode("utf-8")
 
@@ -316,7 +322,9 @@ def services_bulk(body: BulkActionBody, request: Request = None):
                 "message": _as_text(msg)[:300],
                 "code": detail.get("code") if isinstance(detail, dict) else None,
             })
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             results.append({
                 "id": _as_text(sid),
                 "ok": False,

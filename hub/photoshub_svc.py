@@ -6,6 +6,8 @@ patch operator-facing fields in config.json (names, album titles, URLs).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import re
@@ -94,28 +96,48 @@ def installed() -> bool:
         return False
 
 
+def _decode_bytes(value: Any) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value: Any) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Unbound ``str.encode`` (the ``_decode_bytes`` convention): a str-subclass
+    ``encode`` bomb — including a subclass whose ``__str__`` returns itself,
+    and a non-str value whose ``__str__`` returns one — used to raise through
+    the *bound* encode here, out of ``_jsonable``, and 500 the route.  A str
+    instance also skips ``str()`` entirely, so a subclass ``__str__`` bomb
+    keeps its real text instead of degrading to "".
+    """
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    try:
-        text = str(value)
-    except RecursionError:
+        return _decode_bytes(value)
+    if not isinstance(value, str):
         try:
-            return type(value).__name__
-        except Exception:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
-        return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif not isinstance(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``encode`` bomb cannot 500.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value: Any, depth: int = 0) -> Any:
@@ -125,12 +147,29 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
     YAML timestamps, ``!!binary`` bytes, and tuple-inf still leaked into
     GET /api/photoshub and PATCH /api/photoshub/config. A leftover ``\\ud800``
     in a person name still 500'd the same encoder.
+
+    Probes are unbound base-type calls (``int.__index__``, ``float.__float__``,
+    ``bytes``/``bytearray.decode``, ``dict.items``, ``base.__iter__``, guarded
+    getattr — the modules5 convention): the *bound* probes this carried before
+    blew on the subclass-bomb classes, so an int-subclass ``__str__`` bomb rc
+    from the run_watchdog seam raised out of here and turned POST
+    /api/photoshub/action into the catch-all coded 500 ``action_failed`` —
+    the sanitizer built to prevent the 500 was what caused it.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -144,36 +183,64 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500 and the real entries still survive.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -197,11 +264,32 @@ def _iso_now() -> Any:
     return _jsonable(stamp)
 
 
+def _json_int(digits: str) -> int | None:
+    """``json.loads`` int hook: null the one number the encoder cannot hold.
+
+    Past CPython's ~4300-digit int<->str cap the decoder's own ``int()``
+    conversion raises *bare ValueError* — not JSONDecodeError — and the
+    except-ValueError fallbacks below read that as a corrupt document.  One
+    over-cap counter written by an operator script used to wipe a whole
+    state journal to ``{}`` (``gate_ready: true`` silently read back as
+    False), block every config save with ``photoshub.bad_config``, and 502
+    the pending-delete listing.  A ``str()``-probe-style guard, not an
+    isinstance gate: every renderable numeric id still parses as an int.
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _load_json(path: Path, default: Any = None) -> Any:
     try:
         if not path.exists():
             return default
-        return _jsonable(safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8")))
+        return _jsonable(safe_json_loads(
+            read_text_capped(path, _JSON_CAP, encoding="utf-8"),
+            parse_int=_json_int,
+        ))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested status JSON is not ValueError.
         return default
@@ -223,7 +311,10 @@ def _cfg_strict() -> dict:
     try:
         if not CFG_PATH.exists():
             return {}
-        data = _jsonable(safe_json_loads(read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8")))
+        data = _jsonable(safe_json_loads(
+            read_text_capped(CFG_PATH, _JSON_CAP, encoding="utf-8"),
+            parse_int=_json_int,
+        ))
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested config.json is not ValueError.
         raise api_error("photoshub.bad_config")
@@ -365,7 +456,9 @@ def _handbook_name() -> str:
 def _log_relpath(path: Path) -> str:
     try:
         rel = str(path.resolve().relative_to(HUB.resolve()))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rel = path.name
     # An on-disk log whose name holds undecodable bytes reaches here as lone
     # surrogates (os surrogateescape); ``recent_logs`` returns this field raw
@@ -377,12 +470,17 @@ def _log_relpath(path: Path) -> str:
 def _immich_key() -> str:
     p = HUB / "config" / "immich_api_key"
     try:
-        # Cap the read: leftover multi-MB junk used to OOM GET /api/photoshub.
-        # strict: ``errors=replace`` turned a torn key into a truthy string and
-        # GET /api/photoshub claimed Immich was configured.  UnicodeDecodeError
-        # is already the missing-key path below.
-        with p.open(encoding="utf-8") as fh:
-            return fh.read(4096).strip()
+        # read_text_capped, not a bare ``p.open()``: a leftover FIFO occupying
+        # the key file used to park ``open()`` until a writer appeared —
+        # hanging GET /api/photoshub/config (and every Immich call) forever
+        # instead of raising the OSError this handler already eats.  The cap
+        # also refuses leftover multi-MB junk that used to OOM GET
+        # /api/photoshub — and refuses it as *missing* (EFBIG) rather than
+        # truncating it into a truthy 4096-char junk key that made
+        # ``has_api_key`` claim Immich was configured.
+        # strict: ``errors=replace`` turned a torn key into a truthy string;
+        # UnicodeDecodeError is already the missing-key path below.
+        return read_text_capped(p, 4096, encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -390,9 +488,17 @@ def _immich_key() -> str:
 def _public_href(raw: Any) -> str:
     """Operator-facing link: http(s) only, never javascript: or file:."""
     text = _as_text(raw).strip()
-    parts = urlsplit(text)
-    if parts.scheme in ("http", "https") and parts.hostname:
-        return text
+    try:
+        parts = urlsplit(text)
+        if parts.scheme in ("http", "https") and parts.hostname:
+            return text
+    except ValueError:
+        # ``urlsplit("http://[torn")`` raises "Invalid IPv6 URL" on 3.12
+        # (the http_guard ``_url_parts`` precedent).  A torn paste in a
+        # PATCH body used to 500 the save past the coded bad_link_url
+        # check, and the same leftover in config.json 500'd every GET
+        # /api/photoshub/status and /config until hand-edited out.
+        pass
     return ""
 
 
@@ -466,7 +572,7 @@ def _immich_api(method: str, path: str, body: Any = None) -> Any:
     if len(raw) > _API_MAX:
         raise api_error("photoshub.immich_response", detail="payload too large")
     try:
-        parsed = safe_json_loads(raw, loads=json.loads)
+        parsed = safe_json_loads(raw, loads=json.loads, parse_int=_json_int)
     except (ValueError, RecursionError):
         # RecursionError is leftover deeply-nested Immich JSON — not ValueError
         # (JSONDecodeError).  `_jsonable` depth-caps *after* the parse.
@@ -497,7 +603,9 @@ def asset_thumbnail(asset_id: str) -> tuple[bytes, str]:
             raw = resp.read(_THUMB_MAX + 1)
     except _ImmichRedirect:
         raise api_error("photoshub.bad_immich_url")
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         raise api_error("photoshub.thumb_failed", detail=exc_detail(e, 160))
     if len(raw) > _THUMB_MAX or not raw:
         raise api_error("photoshub.thumb_failed", detail="empty or too large")
@@ -760,6 +868,37 @@ def remove_from_pending(ids: list[str]) -> dict:
     return {"removed": len(clean), "album_id": album_id}
 
 
+def _rc_int(rc: Any) -> Any:
+    """Launder an int-subclass rc to a plain int before it is compared.
+
+    ``run_watchdog`` collapses every spawn to an int rc, and photos6 sealed an
+    rc-subclass whose ``__str__`` bombs inside ``_jsonable`` via the unbound
+    ``int.__index__``.  But ``run_action`` tests the *raw* rc (``rc == -1`` /
+    ``rc == 0``) before it ever reaches ``_jsonable``, so those ran the *bound*
+    ``__eq__``: an int-subclass whose ``__eq__`` raises — the ``__str__`` bomb's
+    sibling from the identical ``run_watchdog`` seam — raised out of the route
+    and turned POST /api/photoshub/action into the catch-all coded 500
+    ``photoshub.action_failed``.  Coerce via the unbound ``int.__index__`` (the
+    ``_jsonable`` convention) so the equality tests and the ``exit_code`` field
+    run on a plain int; an over-cap value survives coercion and is dropped to
+    null by ``_jsonable`` exactly like its plain-int sibling.
+
+    Only *int* values are laundered.  A non-int rc (photos7's str-subclass
+    ``encode`` bomb rc flows through this seam as well) keeps its own value:
+    its ``__eq__`` against ``0`` / ``-1`` does not raise, and ``_jsonable``
+    still scrubs it for the ``exit_code`` field.  ``bool`` is left alone so a
+    true/false rc renders as itself rather than 1/0.
+    """
+    if type(rc) is int or not isinstance(rc, int) or isinstance(rc, bool):
+        return rc
+    try:
+        return int(int.__index__(rc))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -1
+
+
 def _ctl_on_disk(binary: Any) -> bool:
     """True when the just-spawned binary is still present on disk.
 
@@ -805,7 +944,10 @@ def run_action(action: str, timeout: int = 600) -> dict:
 
     started = _iso_now()
     log: list[str] = []
-    rc = run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB))
+    # Launder the rc to a plain int: run_action compares it (rc == -1 / rc == 0)
+    # before _jsonable ever sees it, so a leftover subclass whose __eq__ bombs
+    # would raise straight out of the route.
+    rc = _rc_int(run_watchdog(cmd, timeout=timeout, log=log, env=env, cwd=str(HUB)))
     if rc == -1 and not _ctl_on_disk(cmd[0]):
         # The installed()/script gate blessed this binary moments ago;
         # vanished between the check and the spawn, the answer used to be
@@ -857,6 +999,8 @@ def recent_logs(name: str = "bridge", lines: int = 40) -> dict:
     rel = _log_relpath(path)
     try:
         content = tail_file_lines(path, lines)
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"name": name, "path": rel, "lines": [exc_detail(e, 200)]}
     return {"name": name, "path": rel, "lines": content}

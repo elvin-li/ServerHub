@@ -1,14 +1,19 @@
 """Host + Docker network management (macOS networksetup + docker)."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
+
+from fastapi import HTTPException
 
 from hub import cli_args
 from hub.docker_cli import docker, engine_up, inspect_object
-from hub.errors import api_error
+from hub.errors import api_error, exc_detail
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
 from hub.service_signatures import unescape_proc_name
@@ -48,40 +53,249 @@ _INTERFACE_CACHE_TTL = 6.0
 _ORDER_CACHE_TTL = 6.0
 
 NS = "/usr/sbin/networksetup"
+#: Module-level so the vanished-CLI probe re-checks the exact path the
+#: alias/interface spawns used (the identity ``SCUTIL`` convention).
+IFCONFIG = "/sbin/ifconfig"
+#: Same convention for the remaining host tools the alias / failover /
+#: dns-lookup flows spawn: the confirmed-vanished disk probes below must
+#: re-check the exact path the spawn used.
+ROUTE = "/sbin/route"
+PING = "/sbin/ping"
+DSCACHEUTIL = "/usr/bin/dscacheutil"
+DIG = "/usr/bin/dig"
+
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a stored value whose ``__class__`` is a
+    raising property blew straight through every bare type-gate here —
+    ``_truthy``'s bool gate, ``_as_text``'s bytes gate, ``_alias_settings``'
+    str/list ladder — before any of the earlier hardening could run: raw
+    500s on GET /api/system/network/alias/auto, GET/POST failover and
+    POST alias/auto/run (the bookmarks8/modules8 rule).  A *lying*
+    ``__class__`` (real type X, claims str/bytes/list) still reports its
+    claim here; each caller's unbound base call then degrades it in its own
+    try instead of TypeErroring out of the route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if _isinst(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
 
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/system/network cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
-        return ""
-    else:
+    if _isinst(value, (bytes, bytearray)):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound base decode; junk answers "" like every other
+            # unreadable leftover instead of 500ing the caller.
             return ""
-    try:
-        return value.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
+    if value is None:
         return ""
+    try:
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # RecursionError: leftover ``str(e)`` on a nested exception is not ValueError.
+        return ""
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line into a 500 on every ``_sh`` consumer (the whole
+    # Network page inherits this scrub through ``_sh``).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth tests hidden in
+    ``bool(s.get("auto_bind", True))`` / ``settings.get("enabled", False)``
+    used to detonate a junk stored value whose ``__bool__`` raises and 500
+    GET /api/system/network/alias/auto and GET/POST failover.  Fails closed
+    to False — a bomb flag is junk, not consent to rebind interfaces or to
+    toggle the Wi-Fi radio.
+
+    Identity, not ``isinstance(value, bool)``: a ``__class__`` bomb raised
+    out of the old gate, and a *lying* ``__class__`` (claims bool, is not)
+    passed it and rode a non-bool into the response JSON — both raw 500s on
+    the same routes.  ``bool`` cannot be subclassed, so identity is exact.
+    """
+    if value is True or value is False:
+        return value
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _pick(value, fallback):
+    """``value or fallback`` that survives a leftover ``__bool__`` bomb."""
+    try:
+        return value if value else fallback
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return fallback
+
+
+def _mapping_get(mapping, key, default=None):
+    """``dict.get`` that a leftover mapping cannot 500 through.
+
+    The row readers below (``preferred_active_device``, ``_iface_usable``,
+    ``find_ip_locations``, the settings readers…) all reach into dicts that
+    an in-process caller last populated, so the bound ``mapping.get`` used to
+    dispatch into a dict *subclass*' own bombing ``.get`` — or TypeError on a
+    lying ``__class__`` that claims dict over no mapping storage — a raw 500
+    on GET /api/system/network/alias/auto, POST alias/auto/run and the
+    failover routes (the config._settings / vms _mapping_get rule).
+
+    The unbound builtin reads the C-level storage past the override, but it
+    still runs the hash lookup, so a *hash-shadowing* leftover key (same hash
+    as ``key``, raising ``__eq__``) detonated the compare inside the C lookup
+    itself — the host10 vector the task calls out.  The try fails that closed
+    to ``default`` like every other unreadable leftover.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _rows(value) -> list:
+    """Exact list storage from a possibly-poisoned listing.
+
+    ``interfaces()`` / ``hardware_ports()`` / ``_network_service_order_entries``
+    normally answer plain lists of plain dicts, but the row loops iterate
+    whatever an in-process caller last stored: a list *subclass* whose bound
+    ``__iter__`` bombs — or a lying ``__class__`` claiming list over no
+    sequence storage — used to raise straight out of the loop header (the
+    ``_sh_triple`` unbound-read rule).  The unbound base slice sees the real
+    elements, so an honest listing in a subclass wrapper survives untouched
+    and junk degrades to ``[]``.
+    """
+    if type(value) is list:
+        return value
+    if not _isinst(value, list):
+        return []
+    try:
+        return list.__getitem__(value, slice(None))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+
+
+def _as_rc(value) -> int:
+    """Exact int exit status from a possibly-poisoned ``rc``.
+
+    A real spawn always answers an exact int, but ``sh`` is stubbed
+    in-process and an rc *subclass* whose ``__eq__`` bombs detonated the
+    very first ``rc == 0`` / ``_spawn_sentinel`` compare — raw 500s on
+    every route below (dhcp/manual/dns/enabled, dns-lookup, wifi…).  An
+    over-cap exact int (YAML hex leftovers skip CPython's digit cap) blew
+    the ``f"exit {rc}"`` message renders the same way.  Junk degrades to
+    ``-255``: nonzero (a poisoned rc is not consent to claim success) and
+    never ``-1`` (the vanished-spawn sentinel must stay unforgeable).
+    """
+    if type(value) is not int:
+        try:
+            value = int(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return -255
+        if type(value) is not int:
+            return -255
+    try:
+        str(value)
+    except ValueError:
+        return -255
+    return value
+
+
+def _sh_triple(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but ``sh`` is stubbed
+    in-process, and the bare ``rc, out, err = sh(...)`` unpack dispatched
+    into the answer's own iteration: a tuple/list *subclass* whose bound
+    ``__iter__`` bombs — or a lying ``__class__`` that claims tuple/list
+    over no real sequence storage at all (the modules9/bookmarks9 impostor
+    class) — raised straight out of ``_sh`` before the per-slot laundering
+    below could run, a raw 500 on every spawning route in this module at
+    once (dhcp/manual/dns/enabled/order, wifi, alias add/remove,
+    dns-lookup…).  The unbound base reads see the real C-level storage, so
+    an honest answer in a subclass wrapper survives untouched — the
+    vanished-spawn sentinel included — while junk degrades to
+    ``(-255, "", "")``: nonzero (a poisoned answer is not consent to claim
+    success) and never the ``-1`` sentinel (an unusable answer cannot
+    forge the coded 503 either).
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
-    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
-    return rc, _as_text(out), _as_text(err)
+    rc, out, err = _sh_triple(sh(cmd, timeout=timeout, **kwargs))
+    return _as_rc(rc), _as_text(out), _as_text(err)
 
 
 def _hex_netmask_to_dotted(mask: str) -> str:
     """0xffffff00 → 255.255.255.0"""
-    if not isinstance(mask, str):
+    if type(mask) is not str:
+        # Exact-type gate, not isinstance: a str-*subclass* leftover runs its
+        # own ``startswith`` through the probe below, and a bomb there used
+        # to 500 the interface parsers.  ``_as_text`` launders it to an
+        # exact str (and still covers the bytes/None/date leftovers).
         mask = _as_text(mask)
     if not mask:
         return ""
@@ -98,7 +312,7 @@ def _hex_netmask_to_dotted(mask: str) -> str:
 
 def _interfaces_uncached() -> list:
     items = []
-    rc, out, _ = _sh(["/sbin/ifconfig", "-a"], timeout=8)
+    rc, out, _ = _sh([IFCONFIG, "-a"], timeout=8)
     if rc != 0:
         return items
     cur = None
@@ -348,6 +562,26 @@ def network_services(force: bool = False) -> list:
         return list(services)
 
 
+def network_services_listing(force: bool = False) -> list:
+    """The GET /api/system/network/services read, vanished-tool honest.
+
+    A vanished ``networksetup`` empties the listing (``sh`` answers its
+    spawn sentinel and the parser returns ``[]``), so the route answered
+    200 ``{"services": []}`` — which reads like a Mac with no network
+    services, a configuration that does not exist.  Same rule as the
+    mutation siblings (``set_service_order`` / ``switch_profile``): the
+    disk is probed on the empty-listing failure path only, so a readable
+    listing never pays the stat, and a present-but-empty answer keeps the
+    honest 200.  Only this route uses the wrapper — the overview collector
+    keeps its own ``services_error`` seam and internal callers keep the
+    plain listing.
+    """
+    services = network_services(force)
+    if not services and _networksetup_missing():
+        raise api_error("network.networksetup_missing")
+    return services
+
+
 def service_info(service: str) -> dict:
     """Parse networksetup -getinfo / DNS for one service."""
     rc, out, err = _sh([NS, "-getinfo", service], timeout=8)
@@ -408,6 +642,7 @@ def _service_actions(name: str, info: dict, disabled: bool) -> list:
 def set_service_dhcp(service: str) -> dict:
     service = _validate_service(service)
     rc, out, err = _sh([NS, "-setdhcp", service], timeout=15)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Switched to DHCP" if rc == 0 else f"exit {rc}")}
 
@@ -425,6 +660,7 @@ def set_service_manual(service: str, ip: str, subnet: str, router: str = "") -> 
         # networksetup requires router for setmanual on some versions — use 0.0.0.0
         args.append(router or "0.0.0.0")
     rc, out, err = _sh(args, timeout=15)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("Static IP configured" if rc == 0 else f"exit {rc}")}
 
@@ -449,21 +685,22 @@ def set_service_dns(service: str, servers: list[str] | None = None) -> dict:
             if not _valid_dns_server(s):
                 raise api_error("network.invalid_dns", server=s)
         rc, out, err = _sh([NS, "-setdnsservers", service, *servers], timeout=10)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {"ok": rc == 0, "message": out or err or ("DNS updated" if rc == 0 else f"exit {rc}")}
 
 
 def _wifi_devices() -> list[str]:
     devices = []
-    for port in hardware_ports():
-        if not isinstance(port, dict):
+    # ``_rows`` + ``_mapping_get`` + ``_as_text``: a poisoned ``hardware_ports()``
+    # listing or a row whose stored port/device is a bomb, liar or surrogate
+    # used to raise out of this reader — a raw 500 on POST /wifi/{state} and
+    # (through ``wifi_power_status``) the failover routes.
+    for port in _rows(hardware_ports()):
+        if not _isinst(port, dict):
             continue
-        label = port.get("port") or ""
-        device = port.get("device") or ""
-        if not isinstance(label, str):
-            label = str(label)
-        if not isinstance(device, str):
-            continue
+        label = _as_text(_mapping_get(port, "port"))
+        device = _as_text(_mapping_get(port, "device"))
         if device and re.search(r"wi-?fi|airport|无线", label, re.I):  # cjk-input: networksetup port names are localized
             devices.append(device)
     return devices
@@ -491,10 +728,23 @@ def set_wifi_power(on: bool) -> dict:
     arg = "on" if on else "off"
     devices = _wifi_devices()
     if not devices:
+        if not hardware_ports() and _networksetup_missing():
+            # A vanished networksetup empties the hardware-port listing, so
+            # POST /wifi/{state} used to answer 200 "No Wi-Fi adapter found"
+            # — blaming the adapter for a missing host tool.  Same rule as
+            # its dhcp/manual/dns/enabled/order siblings: the disk is probed
+            # on the empty-listing failure path only, and a listing that
+            # names ports (just no Wi-Fi one) keeps the honest answer.
+            raise api_error("network.networksetup_missing")
         return {"ok": False, "on": None, "device": None, "message": "No Wi-Fi adapter found"}
     device = devices[0]
     rc, out, err = _sh([NS, "-setairportpower", device, arg], timeout=10)
     if rc != 0:
+        # Before the sudo fallback (the flush-dns rule): a networksetup
+        # that vanished after the hardware listing named a Wi-Fi port must
+        # not be re-spawned under sudo, and the 200 ok:false "not found"
+        # answer read like the radio toggle failed for an unknown reason.
+        _raise_if_networksetup_vanished(rc, out, err)
         rc, out, err = _sh(
             ["/usr/bin/sudo", "-n", NS, "-setairportpower", device, arg], timeout=10
         )
@@ -514,6 +764,7 @@ def set_service_enabled(service: str, enabled: bool) -> dict:
         [NS, "-setnetworkserviceenabled", service, "on" if enabled else "off"],
         timeout=15,
     )
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {
         "ok": rc == 0,
@@ -527,6 +778,11 @@ def set_service_order(services: list[str]) -> dict:
         raise api_error("network.order_required")
     # validate all names
     current = network_services()
+    if not current and _networksetup_missing():
+        # An empty listing with the binary confirmed absent used to blame the
+        # first requested name with the 400 ``network.unknown_service``; the
+        # profile route's twin (switch_profile) already answers the coded 503.
+        raise api_error("network.networksetup_missing")
     names = [s["name"] for s in current]
     cleaned = []
     for s in services:
@@ -542,6 +798,7 @@ def set_service_order(services: list[str]) -> dict:
         if n not in cleaned:
             cleaned.append(n)
     rc, out, err = _sh([NS, "-ordernetworkservices", *cleaned], timeout=20)
+    _raise_if_networksetup_vanished(rc, out, err)
     _bust()
     return {
         "ok": rc == 0,
@@ -550,11 +807,101 @@ def set_service_order(services: list[str]) -> dict:
     }
 
 
+def _cli_gone(path: str) -> bool:
+    """Fresh disk probe: True only for a confirmed-absent binary at *path*.
+
+    Run on a failure path only (the identity ``_scutil_missing`` / docker
+    ``cli_on_disk`` rule — a successful spawn never pays the stat).  An
+    unreadable parent directory (EIO/ESTALE on a dying mount) must not
+    upgrade the failure to the coded 503, so a stat that raises reads as
+    "still present".
+    """
+    try:
+        return not Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _spawn_sentinel(rc, out: str, err: str) -> bool:
+    """True when ``(rc, out, err)`` is ``sh``'s FileNotFoundError sentinel.
+
+    ``run_capped``/``sh`` collapse every failed spawn of a missing binary
+    into exactly ``(-1, "", "not found")`` — never a real CLI exit.  A
+    genuine run whose output merely reads "not found" is disambiguated by
+    the :func:`_cli_gone` disk confirm every caller pairs with this check.
+    """
+    return rc == -1 and (err or out or "").strip() == "not found"
+
+
+def _networksetup_missing() -> bool:
+    """Whether an empty service listing means networksetup itself is gone.
+
+    An empty ``network_services()`` flattens two very different failures: a
+    vanished ``/usr/sbin/networksetup`` (``sh`` answers its spawn sentinel and
+    the parser returns ``[]``) and a readable-but-empty listing.  The disk is
+    probed *on this failure path only* (the identity ``_scutil_missing`` /
+    docker ``cli_on_disk`` rule — a successful listing never pays the stat) so
+    the tool-absent case can answer the coded 503 its siblings do instead of a
+    500 that blames the server — or, on the per-service mutation routes, a
+    404 that blames the caller's service name.
+    """
+    return _cli_gone(NS)
+
+
+def _ifconfig_missing() -> bool:
+    """The ``_networksetup_missing`` twin for the alias routes' ifconfig.
+
+    A vanished ``/sbin/ifconfig`` empties ``interfaces()`` the same way, so
+    POST alias/add and alias/remove used to answer the coded 404
+    ``network.device_not_found`` — "no such interface: en0" for a missing
+    host tool.  Same rule: the disk is probed on the empty-listing failure
+    path only, and only a confirmed-absent binary answers the coded 503.
+    """
+    return _cli_gone(IFCONFIG)
+
+
+def _raise_if_networksetup_vanished(rc, out: str, err: str) -> None:
+    """The mutation-*spawn* twin of the empty-listing probes above.
+
+    a11y4–a11y8 sealed the listing side: an empty service/hardware listing
+    with networksetup confirmed absent answers the coded 503 instead of a
+    404/200 lie.  But the binary can also vanish *after* the listing
+    validated the name — the listings are cached for 6s — and the mutation
+    spawn itself then answered ``sh``'s sentinel: POST dhcp/manual/dns/
+    enabled/order and wifi/{state} all returned 200
+    ``{"ok": false, "message": "not found"}``, which reads like the
+    *configuration change* failed for an unknown reason.  Same rule as
+    everywhere else: the disk probe runs on the spawn-sentinel failure
+    path only, and a present-but-failing networksetup (a genuine nonzero
+    exit, even one whose output says "not found") keeps its honest answer.
+    """
+    if _spawn_sentinel(rc, out, err) and _networksetup_missing():
+        raise api_error("network.networksetup_missing")
+
+
+def _raise_if_ifconfig_vanished(rc, out: str, err: str) -> None:
+    """The same mutation-spawn rule for the alias routes' ifconfig.
+
+    POST alias/add and alias/remove validate the device against the cached
+    ``interfaces()`` listing, so an ifconfig that vanished inside the TTL
+    still reached the spawn — 200 ``{"ok": false, "message": "not found"}``
+    (plus a "run manually: sudo ifconfig …" hint for a binary that is not
+    there to run).  Callers check *before* their sudo fallback, the
+    flush-dns precedent: nothing re-spawns over a confirmed-gone binary.
+    """
+    if _spawn_sentinel(rc, out, err) and _ifconfig_missing():
+        raise api_error("network.ifconfig_missing")
+
+
 def switch_profile(profile: str) -> dict:
     """Quick switch: wifi | ethernet (wired preferred) | ethernet_only | wifi_only."""
     profile = (profile or "").strip().lower()
     svcs = network_services()
     if not svcs:
+        if _networksetup_missing():
+            # A vanished networksetup used to answer the services_unreadable
+            # 500 — the panel toasted a server fault for a missing host tool.
+            raise api_error("network.networksetup_missing")
         raise api_error("network.services_unreadable")
 
     def is_wifi(s: dict) -> bool:
@@ -647,8 +994,14 @@ def switch_profile(profile: str) -> dict:
     try:
         time.sleep(1.5)  # allow link/DHCP to settle slightly
         alias_r = ensure_aliases_on_preferred(force=True)
-    except Exception as e:
-        alias_r = {"ok": False, "message": _as_text(e)}
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # exc_detail, not str(): the rebind can now raise the coded
+        # network.ifconfig_missing HTTPException (ifconfig vanished after
+        # the service listing succeeded), and str() on that renders the
+        # detail dict's Python repr into this non-critical step's message.
+        alias_r = {"ok": False, "message": exc_detail(e)}
     record("rebind aliases", alias_r, critical=False)
 
     return {
@@ -669,21 +1022,23 @@ def switch_profile(profile: str) -> dict:
 
 
 def interface_addresses() -> list:
-    """All IPv4 addresses per interface, mark primary vs alias (host netmask or secondary)."""
-    ifaces = interfaces()
+    """All IPv4 addresses per interface, mark primary vs alias (host netmask or secondary).
+
+    ``_rows`` / ``_mapping_get`` / ``_as_text`` throughout: a poisoned
+    ``interfaces()`` listing or a row whose stored ip / broadcast is a bomb,
+    surrogate or over-cap int used to raise out of the loop — or ride raw into
+    the JSON render of GET /api/system/network/addresses and the alias-auto
+    status page.  Each unrenderable field costs its own value, never the read.
+    """
     out = []
-    for iface in ifaces if isinstance(ifaces, list) else []:
-        if not isinstance(iface, dict):
+    for iface in _rows(interfaces()):
+        if not _isinst(iface, dict):
             continue
         addrs = []
-        raw_v4 = iface.get("ipv4")
-        ipv4s = [x for x in (raw_v4 if isinstance(raw_v4, list) else []) if isinstance(x, dict)]
+        ipv4s = [x for x in _rows(_mapping_get(iface, "ipv4")) if _isinst(x, dict)]
         for idx, a in enumerate(ipv4s):
-            raw_mask = a.get("netmask") or ""
-            mask = raw_mask if isinstance(raw_mask, str) else str(raw_mask)
-            first_mask = ipv4s[0].get("netmask") or "" if idx > 0 else ""
-            if not isinstance(first_mask, str):
-                first_mask = str(first_mask)
+            mask = _as_text(_mapping_get(a, "netmask"))
+            first_mask = _as_text(_mapping_get(ipv4s[0], "netmask")) if idx > 0 else ""
             # /32 or 255.255.255.255 typically alias; first non-/32 is primary-ish
             is_alias = mask in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF") or (
                 idx > 0 and mask == first_mask
@@ -694,9 +1049,9 @@ def interface_addresses() -> list:
             if idx == 0 and mask not in ("255.255.255.255", "0xffffffff", "0xFFFFFFFF"):
                 is_alias = False
             addrs.append({
-                "ip": a.get("ip"),
+                "ip": _as_text(_mapping_get(a, "ip")),
                 "netmask": mask,
-                "broadcast": a.get("broadcast") or "",
+                "broadcast": _as_text(_mapping_get(a, "broadcast")),
                 "alias": is_alias or (idx > 0),
                 "primary": idx == 0 and not (mask in ("255.255.255.255", "0xffffffff")),
             })
@@ -705,14 +1060,14 @@ def interface_addresses() -> list:
             if not a["alias"]:
                 a["primary"] = True
                 break
-        name = iface.get("name")
-        if not isinstance(name, str) or not name:
+        name = _as_text(_mapping_get(iface, "name"))
+        if not name:
             continue
         out.append({
             "device": name,
-            "up": iface.get("up"),
-            "mac": iface.get("mac"),
-            "status": iface.get("status"),
+            "up": _truthy(_mapping_get(iface, "up")),
+            "mac": _as_text(_mapping_get(iface, "mac")) or None,
+            "status": _as_text(_mapping_get(iface, "status")) or None,
             "addresses": addrs,
         })
     return out
@@ -726,10 +1081,11 @@ def add_ip_alias(device: str, ip: str, netmask: str = "255.255.255.255") -> dict
     if not _valid_ip(netmask):
         raise api_error("network.invalid_netmask")
     # try without sudo first
-    rc, out, err = _sh(["/sbin/ifconfig", device, "alias", ip, "netmask", netmask], timeout=10)
+    rc, out, err = _sh([IFCONFIG, device, "alias", ip, "netmask", netmask], timeout=10)
     if rc != 0:
+        _raise_if_ifconfig_vanished(rc, out, err)
         rc, out, err = _sh(
-            ["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "alias", ip, "netmask", netmask],
+            ["/usr/bin/sudo", "-n", IFCONFIG, device, "alias", ip, "netmask", netmask],
             timeout=10,
         )
     _bust()
@@ -744,9 +1100,10 @@ def remove_ip_alias(device: str, ip: str) -> dict:
     device = _validate_device(device)
     if not _valid_ip(ip):
         raise api_error("network.invalid_ip")
-    rc, out, err = _sh(["/sbin/ifconfig", device, "-alias", ip], timeout=10)
+    rc, out, err = _sh([IFCONFIG, device, "-alias", ip], timeout=10)
     if rc != 0:
-        rc, out, err = _sh(["/usr/bin/sudo", "-n", "/sbin/ifconfig", device, "-alias", ip], timeout=10)
+        _raise_if_ifconfig_vanished(rc, out, err)
+        rc, out, err = _sh(["/usr/bin/sudo", "-n", IFCONFIG, device, "-alias", ip], timeout=10)
     _bust()
     msg = out or err
     if rc != 0:
@@ -781,9 +1138,15 @@ def _coerce_int(value, default: int) -> int:
     """
     try:
         coerced = int(value)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # YAML ``.inf`` / ``.nan``: ``int(inf)`` is OverflowError, not ValueError,
-        # and both settings readers sit on GET /api/system/network.
+        # and both settings readers sit on GET /api/system/network.  Broader
+        # than the (TypeError, ValueError, OverflowError) net it replaces:
+        # ``int()`` reflects into the stored value's own ``__int__`` /
+        # ``__index__`` / ``__trunc__``, and a leftover bomb there raised
+        # straight past the tuple and 500'd the same GETs.
         return default
     try:
         str(coerced)
@@ -800,25 +1163,66 @@ def _alias_settings() -> dict:
     from hub.config import settings_section
 
     s = settings_section("ip_aliases")
-    ips = s.get("ips") or []
-    if isinstance(ips, str):
-        ips = [x.strip() for x in ips.replace(",", " ").split() if x.strip()]
-    elif not isinstance(ips, list):
+    # ``_pick`` / unbound base views throughout: ``settings_section`` launders
+    # the *section* to an exact dict, but the nested values are whatever an
+    # in-process caller last stored, and a subclass ``__bool__`` /
+    # ``replace`` / ``__iter__`` bomb there used to raise out of this reader
+    # and 500 GET /api/system/network/alias/auto, the alias PUT/run routes
+    # and the autobind loop at once.
+    # No truth test on ``ips`` at all: the ``or []`` this replaces only
+    # existed to turn None into [], which the isinstance ladder already does
+    # — and it ran a list-subclass ``__bool__`` bomb whose real elements the
+    # unbound iteration below can still read.
+    #
+    # ``_isinst`` + the trys around the unbound base calls: a ``__class__``
+    # bomb raised out of the bare isinstance ladder, and a lying
+    # ``__class__`` (claims str/list, is neither) TypeErrored ``str.split``
+    # / ``list.__iter__`` — raw 500s on GET /api/system/network/alias/auto,
+    # PUT/POST alias/auto and the autobind loop's settings read.
+    # ``_mapping_get``, not ``s.get(...)``: ``settings_section`` hands back a
+    # shallow ``dict(raw)`` copy, so a *hash-shadowing* leftover key (same
+    # hash as "ips"/"netmask"/…, raising ``__eq__``) survives the copy and
+    # detonated the bound ``.get`` lookup here — a raw 500 on GET
+    # /api/system/network/alias/auto and the alias run/PUT routes (the
+    # host10/config rule).
+    ips = _mapping_get(s, "ips")
+    if _isinst(ips, str):
+        try:
+            ips = str.split(str.replace(ips, ",", " "))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            ips = []
+    elif not _isinst(ips, list):
         ips = []
+    try:
+        rows = list.__iter__(ips)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        rows = iter(())
     # sanitize
     clean = []
-    for ip in ips:
-        if _valid_ip(str(ip)):
-            clean.append(str(ip).strip())
-    netmask = s.get("netmask") or "255.255.255.255"
+    for ip in rows:
+        # `_as_text` is the str() probe: a YAML hex/octal int past CPython's
+        # 4300-digit cap raises ValueError from bare ``str(ip)`` and used to
+        # 500 GET /api/system/network/alias/auto (and silently skip every
+        # autobind pass).  Bytes (`!!binary`) decode instead of becoming
+        # "b'…'" junk, and lone surrogates are scrubbed the same way.
+        text = _as_text(ip).strip()
+        if _valid_ip(text):
+            clean.append(text)
+    # `_valid_ip` accepts bytes, so a YAML ``!!binary`` netmask used to ride
+    # through here *as bytes* and TypeError the JSON encoder on the same GETs.
+    netmask = _as_text(_mapping_get(s, "netmask")).strip()
     if not _valid_ip(netmask):
         netmask = "255.255.255.255"
     return {
-        "auto_bind": bool(s.get("auto_bind", True)),
+        "auto_bind": _truthy(_mapping_get(s, "auto_bind", True)),
         "ips": clean,
         "netmask": netmask,
-        "interval": _coerce_int(s.get("interval") or 60, 60),
-        "prefer_wired": bool(s.get("prefer_wired", True)),
+        "interval": _coerce_int(_pick(_mapping_get(s, "interval"), 60), 60),
+        "prefer_wired": _truthy(_mapping_get(s, "prefer_wired", True)),
     }
 
 
@@ -826,54 +1230,60 @@ def _failover_settings() -> dict:
     from hub.config import settings_section
 
     settings = settings_section("network_failover")
+    # Same nested-bomb rule as ``_alias_settings`` — plus ``_mapping_get`` for
+    # the hash-shadowing key: these truth tests used to 500 GET
+    # /api/system/network/failover and POST /failover/run.
     return {
-        "enabled": bool(settings.get("enabled", False)),
-        "power_save_wifi": bool(settings.get("power_save_wifi", True)),
-        "interval": max(10, min(300, _coerce_int(settings.get("interval") or 15, 15))),
-        "fail_threshold": max(1, min(10, _coerce_int(settings.get("fail_threshold") or 2, 2))),
-        "recover_threshold": max(1, min(10, _coerce_int(settings.get("recover_threshold") or 2, 2))),
-        "probe_timeout_ms": max(500, min(5000, _coerce_int(settings.get("probe_timeout_ms") or 1200, 1200))),
+        "enabled": _truthy(_mapping_get(settings, "enabled", False)),
+        "power_save_wifi": _truthy(_mapping_get(settings, "power_save_wifi", True)),
+        "interval": max(10, min(300, _coerce_int(_pick(_mapping_get(settings, "interval"), 15), 15))),
+        "fail_threshold": max(1, min(10, _coerce_int(_pick(_mapping_get(settings, "fail_threshold"), 2), 2))),
+        "recover_threshold": max(1, min(10, _coerce_int(_pick(_mapping_get(settings, "recover_threshold"), 2), 2))),
+        "probe_timeout_ms": max(500, min(5000, _coerce_int(_pick(_mapping_get(settings, "probe_timeout_ms"), 1200), 1200))),
     }
 
 
 def _iface_by_name(name: str) -> dict | None:
-    for i in interfaces():
-        if i.get("name") == name:
+    # ``_rows`` + ``_mapping_get`` + ``_as_text`` compare: a poisoned
+    # ``interfaces()`` listing (iter bomb / lying list) or a row whose stored
+    # name ``__eq__`` bombs used to raise out of the bare ``i.get("name") ==
+    # name`` loop that GET failover and the alias routes lean on.
+    for i in _rows(interfaces()):
+        if _isinst(i, dict) and _as_text(_mapping_get(i, "name")) == name:
             return i
     return None
 
 
 def _iface_usable(iface: dict | None) -> bool:
-    if not isinstance(iface, dict):
+    if not _isinst(iface, dict):
         return False
-    if not iface.get("up"):
+    if not _truthy(_mapping_get(iface, "up")):
         return False
-    st = iface.get("status") or ""
-    if not isinstance(st, str):
-        st = str(st)
-    st = st.lower()
+    # ``_as_text`` launders a bomb/liar status to an exact str; ``.lower`` is
+    # then a plain-str call.  ``_truthy``/``_mapping_get`` above kill the
+    # ``iface.get("up")`` bool bomb and the dict-subclass ``.get`` bomb.
+    st = _as_text(_mapping_get(iface, "status")).lower()
     if st in ("inactive", "not present"):
         return False
     # need at least one IPv4 (primary or already has connectivity)
-    ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
+    ipv4 = _rows(_mapping_get(iface, "ipv4"))
     if not ipv4:
         return False
-    # skip pure virtual without real en status active when marked
-    if st and st not in ("active", "") and "active" not in st:
-        # status field sometimes empty on macOS
-        if st not in ("active",):
-            # still allow if RUNNING flag implied by up=True and has IP
-            pass
     return True
 
 
 def _is_junk_service(s: dict) -> bool:
-    n = " ".join(
-        v for v in (s.get("name"), s.get("hardware_port"), s.get("port"))
-        if isinstance(v, str) and v
-    )
-    d = s.get("device") if isinstance(s.get("device"), str) else ""
-    d = d.lower()
+    parts = []
+    for key in ("name", "hardware_port", "port"):
+        value = _mapping_get(s, key)
+        # Only real strings, like the original ``isinstance(v, str) and v``;
+        # ``_as_text`` then scrubs a str-subclass bomb / surrogate to text.
+        if _isinst(value, str):
+            text = _as_text(value)
+            if text:
+                parts.append(text)
+    n = " ".join(parts)
+    d = _as_text(_mapping_get(s, "device")).lower()
     if re.search(r"modem|monitor|iphone|ipad|apple.?watch|thunderbolt bridge", n, re.I):
         return True
     if "modem" in d or d.startswith("bridge"):
@@ -888,23 +1298,35 @@ def preferred_active_device() -> dict | None:
     """
     try:
         svcs = _network_service_order_entries()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         svcs = []
-    iface_map = {
-        iface.get("name"): iface
-        for iface in interfaces()
-        if isinstance(iface, dict)
-    }
-    candidates = []
-    for order, s in enumerate(svcs):
-        if not isinstance(s, dict):
+    # ``_rows`` + ``_mapping_get`` + ``_as_text`` throughout: a poisoned
+    # ``interfaces()`` / order listing (iter bomb / lying list), a row that is
+    # a dict *subclass* with a bombing ``.get`` or a lying ``__class__``, an
+    # unhashable / hash-shadowing / ``__eq__``-bomb device name, and a
+    # bomb/surrogate/over-cap field all used to raise straight out of this
+    # collector — a raw 500 on GET /api/system/network/alias/auto, POST
+    # alias/auto/run and the failover routes that all read it.  Every field
+    # that reaches the response JSON is laundered so an unrenderable leftover
+    # costs its own value, never the whole route.
+    iface_map = {}
+    for iface in _rows(interfaces()):
+        if not _isinst(iface, dict):
             continue
-        if s.get("disabled"):
+        name = _as_text(_mapping_get(iface, "name"))
+        if name:
+            iface_map[name] = iface
+    candidates = []
+    for order, s in enumerate(_rows(svcs)):
+        if not _isinst(s, dict):
+            continue
+        if _truthy(_mapping_get(s, "disabled")):
             continue
         if _is_junk_service(s):
             continue
-        device = s.get("device") if isinstance(s.get("device"), str) else ""
-        device = device.strip()
+        device = _as_text(_mapping_get(s, "device")).strip()
         if not device:
             continue
         iface = iface_map.get(device)
@@ -912,27 +1334,25 @@ def preferred_active_device() -> dict | None:
             continue
         # prefer interfaces with a non-/32 primary address
         primary_ip = None
-        ipv4 = iface.get("ipv4") if isinstance(iface.get("ipv4"), list) else []
+        ipv4 = _rows(_mapping_get(iface, "ipv4"))
         for a in ipv4:
-            if not isinstance(a, dict):
+            if not _isinst(a, dict):
                 continue
-            mask = a.get("netmask") or ""
-            if not isinstance(mask, str):
-                mask = str(mask)
+            mask = _as_text(_mapping_get(a, "netmask"))
             dotted = _hex_netmask_to_dotted(mask)
             if dotted not in ("255.255.255.255",) and mask.lower() not in ("0xffffffff",):
-                primary_ip = a.get("ip")
+                primary_ip = _as_text(_mapping_get(a, "ip"))
                 break
-        if not primary_ip and ipv4 and isinstance(ipv4[0], dict):
-            primary_ip = ipv4[0].get("ip")
+        if not primary_ip and ipv4 and _isinst(ipv4[0], dict):
+            primary_ip = _as_text(_mapping_get(ipv4[0], "ip"))
         candidates.append({
             "order": order,
-            "service": s.get("name"),
+            "service": _as_text(_mapping_get(s, "name")),
             "device": device,
             "primary_ip": primary_ip,
-            "hardware_port": s.get("port"),
-            "status": iface.get("status"),
-            "up": iface.get("up"),
+            "hardware_port": _as_text(_mapping_get(s, "port")),
+            "status": _as_text(_mapping_get(iface, "status")),
+            "up": _truthy(_mapping_get(iface, "up")),
         })
     if not candidates:
         return None
@@ -948,27 +1368,40 @@ def find_ip_locations(ip: str, addresses: list | None = None) -> list[dict]:
     per IP and then discard every row that did not match.
     """
     found = []
-    for iface in addresses if addresses is not None else interface_addresses():
-        if not isinstance(iface, dict):
+    for iface in _rows(addresses if addresses is not None else interface_addresses()):
+        if not _isinst(iface, dict):
             continue
-        raw = iface.get("addresses")
-        rows = raw if isinstance(raw, list) else []
-        for a in rows:
-            if not isinstance(a, dict):
+        for a in _rows(_mapping_get(iface, "addresses")):
+            if not _isinst(a, dict):
                 continue
-            if a.get("ip") == ip:
+            # ``_as_text`` on both sides, not ``a.get("ip") == ip``: a stored
+            # ip whose ``__eq__`` bombs (or a surrogate/over-cap ip that would
+            # 500 the JSON render) used to raise out of this compare / into the
+            # locations the alias routes echo back.
+            if _as_text(_mapping_get(a, "ip")) == ip:
                 found.append({
-                    "device": iface.get("device"),
-                    "alias": bool(a.get("alias")),
-                    "netmask": a.get("netmask"),
-                    "up": iface.get("up"),
+                    "device": _as_text(_mapping_get(iface, "device")),
+                    "alias": _truthy(_mapping_get(a, "alias")),
+                    "netmask": _as_text(_mapping_get(a, "netmask")),
+                    "up": _truthy(_mapping_get(iface, "up")),
                 })
     return found
 
 
 def _alias_local_route(ip: str) -> dict:
     """Return whether macOS considers an alias a real local address."""
-    rc, out, err = _sh(["/sbin/route", "-n", "get", ip], timeout=5)
+    rc, out, err = _sh([ROUTE, "-n", "get", ip], timeout=5)
+    if _spawn_sentinel(rc, out, err) and _cli_gone(ROUTE):
+        # A vanished /sbin/route made every lookup read "not found", so
+        # POST /alias/auto/run tore the alias down and re-added it every
+        # pass, then answered 200 "local route still broken" — churning the
+        # alias and blaming the route for a missing host tool.  Same rule as
+        # the networksetup/ifconfig probes: disk-confirmed on the spawn
+        # sentinel failure path only, and a present-but-failing route keeps
+        # the honest repair answer.  The status readers wrap this call
+        # (alias_auto_status catches into the row; overview wraps in _safe),
+        # so only the mutating routes surface the coded 503.
+        raise api_error("network.route_missing")
     interface = ""
     flags = ""
     if rc == 0:
@@ -1021,6 +1454,17 @@ def _ensure_aliases_on_preferred(force: bool = False) -> dict:
         result["message"] = "No managed IPs configured (settings.ip_aliases.ips)"
         return result
     if not preferred:
+        # "Check the Ethernet cable" is only honest while the listing tools
+        # exist.  A vanished /sbin/ifconfig empties interfaces() and a
+        # vanished networksetup empties the service order, and either way
+        # POST /alias/auto/run used to answer 200 with this message —
+        # blaming the cable for a missing host tool.  Both disk probes run
+        # on this no-candidate failure path only (the a11y4
+        # _validate_device/_validate_service rule).
+        if not interfaces() and _ifconfig_missing():
+            raise api_error("network.ifconfig_missing")
+        if not _network_service_order_entries() and _networksetup_missing():
+            raise api_error("network.networksetup_missing")
         result["ok"] = False
         result["message"] = "No usable preferred network (check the Ethernet cable / Wi-Fi)"
         return result
@@ -1148,7 +1592,14 @@ def alias_auto_status() -> dict:
         """Never raises: one bad route lookup should not drop the whole page."""
         try:
             return _alias_local_route(ip)
-        except Exception as exc:  # noqa: BLE001 - surfaced in the row
+        except HTTPException as exc:
+            # exc_detail, not str(): the lookup can now raise the coded
+            # network.route_missing HTTPException, and str() on that renders
+            # the detail dict's Python repr into this 200 status row.
+            return {"ok": False, "reason": "route lookup failed: " + exc_detail(exc)}
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - surfaced in the row
             return {"ok": False, "reason": "route lookup failed: " + _as_text(exc)}
 
     # `route -n get` is genuinely per IP, so those overlap; order follows the
@@ -1177,15 +1628,15 @@ def alias_auto_status() -> dict:
 
 
 def _primary_ipv4_for_device(device: str, iface: dict | None = None) -> str | None:
-    iface = iface or _iface_by_name(device)
-    if not isinstance(iface, dict) or str(iface.get("status") or "").lower() != "active":
+    if not _isinst(iface, dict):
+        iface = _iface_by_name(device)
+    if not _isinst(iface, dict) or _as_text(_mapping_get(iface, "status")).lower() != "active":
         return None
-    addrs = iface.get("ipv4")
-    for address in addrs if isinstance(addrs, list) else []:
-        if not isinstance(address, dict):
+    for address in _rows(_mapping_get(iface, "ipv4")):
+        if not _isinst(address, dict):
             continue
-        ip = str(address.get("ip") or "")
-        mask = _hex_netmask_to_dotted(str(address.get("netmask") or ""))
+        ip = _as_text(_mapping_get(address, "ip"))
+        mask = _hex_netmask_to_dotted(_as_text(_mapping_get(address, "netmask")))
         if ip and not ip.startswith("169.254.") and mask != "255.255.255.255":
             return ip
     return None
@@ -1194,14 +1645,16 @@ def _primary_ipv4_for_device(device: str, iface: dict | None = None) -> str | No
 def _wired_devices() -> list[dict]:
     """Discover physical LAN adapters; never assumes a fixed en-number."""
     devices = []
-    for port in hardware_ports():
-        if not isinstance(port, dict):
+    # Same ``_rows`` / ``_mapping_get`` / ``_as_text`` laundering as
+    # ``_wifi_devices``: a poisoned hardware-port row used to 500 POST
+    # /failover/run before any probe ran, and ``{"device": device, ...}``
+    # rides into the tick result JSON.
+    for port in _rows(hardware_ports()):
+        if not _isinst(port, dict):
             continue
-        label = port.get("port") or ""
-        device = port.get("device") or ""
-        if not isinstance(label, str):
-            label = str(label)
-        if not isinstance(device, str) or not device:
+        label = _as_text(_mapping_get(port, "port"))
+        device = _as_text(_mapping_get(port, "device"))
+        if not device:
             continue
         if re.search(r"wi-?fi|airport|无线|bridge|thunderbolt", label, re.I):  # cjk-input: networksetup port names are localized
             continue
@@ -1211,20 +1664,25 @@ def _wired_devices() -> list[dict]:
 
 
 def _service_gateway_for_device(device: str) -> dict:
-    entry = next(
-        (item for item in _network_service_order_entries() if item.get("device") == device),
-        None,
-    )
+    # ``_rows`` + ``_mapping_get`` + ``_as_text``: a poisoned order listing or a
+    # row whose stored device ``__eq__`` bombs used to raise out of the ``next``
+    # generator on the failover probe path.
+    entry = None
+    for item in _rows(_network_service_order_entries()):
+        if _isinst(item, dict) and _as_text(_mapping_get(item, "device")) == device:
+            entry = item
+            break
     if not entry:
         return {"service": None, "gateway": None}
-    rc, out, _ = _sh([NS, "-getinfo", entry["name"]], timeout=8)
+    service_name = _as_text(_mapping_get(entry, "name"))
+    rc, out, _ = _sh([NS, "-getinfo", service_name], timeout=8)
     gateway = None
     if rc == 0:
         match = re.search(r"^Router:\s*(\S+)", out, re.M | re.I)
         candidate = match.group(1) if match else ""
         if _valid_ip(candidate) and candidate != "0.0.0.0":
             gateway = candidate
-    return {"service": entry["name"], "gateway": gateway}
+    return {"service": service_name, "gateway": gateway}
 
 
 def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None) -> dict:
@@ -1245,7 +1703,7 @@ def _probe_wired_device(device: str, timeout_ms: int, iface: dict | None = None)
     ms = _coerce_int(timeout_ms, 1200)
     rc, out, err = _sh(
         [
-            "/sbin/ping", "-c", "1", "-W", str(ms),
+            PING, "-c", "1", "-W", str(ms),
             "-S", ip, gateway,
         ],
         timeout=max(3, ms // 1000 + 2),
@@ -1270,7 +1728,23 @@ def network_failover_tick(force: bool = False) -> dict:
             return result
 
         wired = _wired_devices()
-        iface_map = {iface.get("name"): iface for iface in interfaces()}
+        if not wired and not hardware_ports() and _networksetup_missing():
+            # An empty hardware-port listing with networksetup confirmed
+            # absent is the tool gone, not a Mac without wired adapters —
+            # POST /failover/run used to answer 200 ok:false with the nested
+            # "No Wi-Fi adapter found" lie.  The background loop wraps this
+            # tick in its own try, so the coded raise only reaches HTTP.
+            raise api_error("network.networksetup_missing")
+        # ``_rows`` + ``_mapping_get`` + ``_as_text``, not a bare comprehension:
+        # a poisoned ``interfaces()`` listing or a row whose stored name bombs /
+        # is unhashable used to 500 POST /failover/run before any probe ran.
+        iface_map = {}
+        for iface in _rows(interfaces()):
+            if not _isinst(iface, dict):
+                continue
+            name = _as_text(_mapping_get(iface, "name"))
+            if name:
+                iface_map[name] = iface
 
         def probe(item) -> dict:
             """Never raises: `fan_out` re-raises on iteration, and losing the whole
@@ -1280,7 +1754,9 @@ def network_failover_tick(force: bool = False) -> dict:
                 return _probe_wired_device(
                     device, conf["probe_timeout_ms"], iface=iface_map.get(device)
                 )
-            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
                 # The label stays ASCII on purpose: the payload is the operating
                 # system's own message ("no route to host"), which has no
                 # translation, and hub/errors.py is for text we author.
@@ -1297,6 +1773,29 @@ def network_failover_tick(force: bool = False) -> dict:
         # first.
         probes = fan_out(probe, wired)
         healthy = next((probe_result for probe_result in probes if probe_result.get("ok")), None)
+        if not healthy and wired and not iface_map and _ifconfig_missing():
+            # networksetup still lists wired adapters, but every probe read
+            # "link or IPv4 not ready" because a vanished ifconfig emptied
+            # the interface table — blaming the link for a missing host
+            # tool.  Disk-confirmed on the empty-table failure path only.
+            raise api_error("network.ifconfig_missing")
+        if (
+            not healthy
+            and any(
+                isinstance(probe_result, dict)
+                and probe_result.get("reason") == "not found"
+                for probe_result in probes
+            )
+            and _cli_gone(PING)
+        ):
+            # A probe that reached the ping spawn and got ``sh``'s vanished
+            # sentinel is not an unreachable gateway.  Before this raise, a
+            # vanished /sbin/ping read every wired link as dead: the tick
+            # switched the Wi-Fi radio ON and answered 200 mode wifi_backup
+            # — mutating radio state over a missing host tool.  The raise
+            # sits before the wifi read/action on purpose, and the
+            # background loop's own try wraps the tick.
+            raise api_error("network.ping_missing")
         wifi = wifi_power_status()
         action = None
         action_result = None
@@ -1359,14 +1858,30 @@ def update_alias_auto_config(
 ) -> dict:
     from hub.config import settings_section, update_settings
 
-    cur = dict(settings_section("ip_aliases"))
+    # Rebuild the patch from guarded reads of the known keys rather than
+    # ``dict(settings_section(...))``: the section is a shallow copy that can
+    # still carry a *hash-shadowing* leftover key (raising ``__eq__``), and
+    # copying / indexing it used to 500 the PUT write path.  ``update_settings``
+    # deep-merges onto the on-disk config, so keys we do not carry here are
+    # preserved untouched.
+    raw = settings_section("ip_aliases")
+    cur: dict[str, Any] = {}
+    for key in ("auto_bind", "ips", "netmask", "interval", "prefer_wired"):
+        value = _mapping_get(raw, key)
+        if value is not None:
+            cur[key] = value
     if auto_bind is not None:
-        cur["auto_bind"] = bool(auto_bind)
+        # _truthy, not bare bool(): the route hands over a Pydantic-exact
+        # bool, but in-process callers stored ``__bool__`` bombs here and
+        # the bare truth test raised out of the write path.
+        cur["auto_bind"] = _truthy(auto_bind)
     if ips is not None:
-        clean = [str(x).strip() for x in ips if _valid_ip(str(x).strip())]
-        cur["ips"] = clean
+        # Same str() probe as `_alias_settings`: a caller-supplied over-cap
+        # int must not ValueError the write path's bare ``str(x)``.
+        candidates = (_as_text(x).strip() for x in ips)
+        cur["ips"] = [x for x in candidates if _valid_ip(x)]
     if netmask is not None and _valid_ip(netmask):
-        cur["netmask"] = netmask
+        cur["netmask"] = _as_text(netmask).strip()
     if interval is not None:
         cur["interval"] = max(30, min(600, _coerce_int(interval, 60)))
     update_settings({"ip_aliases": cur})
@@ -1414,7 +1929,9 @@ def start_alias_autobind(interval: int | None = None) -> None:
                             next_alias = now + 5
                         else:
                             next_alias = now + (interval or alias_conf["interval"] or 60)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
                 deadlines = []
                 if alias_conf["auto_bind"]:
@@ -1423,7 +1940,9 @@ def start_alias_autobind(interval: int | None = None) -> None:
                     deadlines.append(next_failover)
                 if deadlines:
                     wait_for = max(1.0, min(deadlines) - time.monotonic())
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             _alias_stop.wait(wait_for)
 
@@ -1448,9 +1967,23 @@ def _validate_device(device: str) -> str:
     device = (device or "").strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9]*\d*$", device):
         raise api_error("network.invalid_device", device=device)
-    # must exist in ifconfig
-    names = {i["name"] for i in interfaces()}
+    # must exist in ifconfig.  ``_rows`` + ``_mapping_get`` + ``_as_text``, not
+    # ``{i["name"] for i in interfaces()}``: a poisoned listing (iter bomb /
+    # lying list), a non-dict / dict-subclass-with-bombing-.get row, a missing
+    # ``name`` key or an unhashable / hash-shadowing name all used to raise out
+    # of the set comprehension — a raw 500 on POST alias/add and alias/remove.
+    names = set()
+    for i in _rows(interfaces()):
+        if not _isinst(i, dict):
+            continue
+        name = _as_text(_mapping_get(i, "name"))
+        if name:
+            names.add(name)
     if device not in names:
+        if not names and _ifconfig_missing():
+            # An empty interface listing with ifconfig confirmed absent is
+            # the tool gone, not a caller typo — see _ifconfig_missing.
+            raise api_error("network.ifconfig_missing")
         raise api_error("network.device_not_found", device=device)
     return device
 
@@ -1466,6 +1999,14 @@ def _validate_service(service: str) -> str:
         rc, out, _ = _sh([NS, "-listallnetworkservices"], timeout=8)
         listed = {ln.strip().lstrip("* ").strip() for ln in (out or "").splitlines()[1:] if ln.strip()}
         if service not in listed:
+            if not listed and _networksetup_missing():
+                # A vanished networksetup empties both listings (``sh``
+                # answers its spawn sentinel), so dhcp/manual/dns/enabled
+                # used to 404 ``service_not_found`` — blaming the caller's
+                # service name for a missing host tool.  The disk confirm
+                # runs on the empty-fallback failure path only; a listing
+                # that names other services keeps the honest 404.
+                raise api_error("network.networksetup_missing")
             raise api_error("network.service_not_found", service=service)
     return service
 
@@ -1483,12 +2024,32 @@ def _valid_ip(ip: str) -> bool:
     Unicode digits pass ``str.isdigit()`` (``١`` / ``²``) and used to
     ValueError ``int()`` or become a leftover "valid" octet the same way
     non-ASCII dword hosts did in http_guard.
+
+    Unbound base decode/strip/split: a bytes-subclass ``decode`` bomb or a
+    str-subclass ``strip``/``split`` bomb from an in-process caller used to
+    raise straight out of this validator (the octet probes below already run
+    on the exact strs ``str.split`` returns).
+
+    ``_isinst`` + the try around the unbound calls: a ``__class__`` bomb
+    raised out of the old bare gates, and a lying ``__class__`` (claims
+    str/bytes, is neither) TypeErrored the unbound base calls — junk is
+    simply not a valid IP.
     """
-    if isinstance(ip, (bytes, bytearray)):
-        ip = ip.decode("utf-8", "replace")
-    elif not isinstance(ip, str):
+    if _isinst(ip, (bytes, bytearray)):
+        try:
+            ip = _decode_bytes(ip)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return False
+    elif not _isinst(ip, str):
         return False
-    parts = ip.strip().split(".")
+    try:
+        parts = str.split(str.strip(ip), ".")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
     if len(parts) != 4:
         return False
     for p in parts:
@@ -1591,9 +2152,21 @@ def dns_resolve(host: str) -> dict:
     host = (host or "").strip()
     if not _valid_lookup_target(host):
         raise api_error("network.invalid_hostname")
-    rc, out, err = _sh(["/usr/bin/dscacheutil", "-q", "host", "-a", "name", host], timeout=8)
+    rc, out, err = _sh([DSCACHEUTIL, "-q", "host", "-a", "name", host], timeout=8)
     if rc != 0 or not out.strip():
-        rc2, out2, err2 = _sh(["/usr/bin/dig", "+short", host], timeout=8)
+        rc2, out2, err2 = _sh([DIG, "+short", host], timeout=8)
+        if (
+            _spawn_sentinel(rc, out, err)
+            and _spawn_sentinel(rc2, out2, err2)
+            and _cli_gone(DSCACHEUTIL)
+            and _cli_gone(DIG)
+        ):
+            # Both resolvers answered the vanished-spawn sentinel and both
+            # are confirmed off disk: the 200 ok:false "not found" body this
+            # used to return reads like the host does not resolve.  Either
+            # tool still on disk — including present-but-empty answers —
+            # keeps the honest lookup result.
+            raise api_error("network.lookup_tools_missing")
         return {
             "ok": rc2 == 0 and bool(out2.strip()),
             "host": host,
@@ -1718,7 +2291,9 @@ def docker_networks_detail() -> list:
                         "ipv4": c.get("IPv4Address") or "",
                         "ipv6": c.get("IPv6Address") or "",
                     })
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
         return {
             "id": nid[:12],
@@ -1819,9 +2394,6 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
         p = str(p).strip()
         if p and re.match(r"^[0-9.:\-/tcpudp]+$", p):
             port_list.append(p)
-    # stop & remove then run
-    docker("stop", container, timeout=90)
-    docker("rm", container, timeout=60)
     body = {
         "image": image,
         "name": container,
@@ -1833,6 +2405,17 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
         "privileged": bool(host.get("Privileged")),
         "command": cfg_.get("Cmd"),
     }
+    # Run every recreate gate BEFORE the destructive stop/rm.  The gates
+    # used to live only inside create_run_container, *after* ``docker rm``:
+    # a container name past the panel's 64-char form cap (legal for docker,
+    # routine for compose-generated names) or a digest-pinned image past the
+    # 201-char cap answered the coded 400 with the container already
+    # destroyed and nothing recreated.  Validation raising here leaves the
+    # container untouched.
+    containers_svc.build_run_args(body)
+    # stop & remove then run
+    docker("stop", container, timeout=90)
+    docker("rm", container, timeout=60)
     return containers_svc.create_run_container(body)
 
 
@@ -1899,7 +2482,9 @@ def _build_overview(force_services: bool = False) -> dict:
     def _safe(fn, default):
         try:
             return fn()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
     _wifi_power_unknown = {"ok": False, "on": None, "device": None, "message": ""}
@@ -1925,7 +2510,9 @@ def _build_overview(force_services: bool = False) -> dict:
     try:
         services = f_services.result()
         svc_error = None
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         services = []
         svc_error = _as_text(e)
 

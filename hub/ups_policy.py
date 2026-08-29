@@ -47,6 +47,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -56,6 +57,9 @@ from hub.secure_io import replace_bytes
 from hub.util import read_text_capped, safe_json_loads
 
 log = logging.getLogger("serverhub.ups_policy")
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 STATE_FILE = DATA_DIR / "ups-policy-state.json"
 #: Leftover multi-MB state used to OOM GET /api/ups.
@@ -129,23 +133,82 @@ def _ups_status() -> dict:
     return ups_svc.ups_status()
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a seam value whose ``__class__`` is a *raising property*
+    detonated the sanitizer gates themselves — ``_row_get``'s dict gate,
+    ``drill()``'s status gate, ``_jsonable``'s rank heads — one step ahead
+    of every scrub in this module (the host9 identity_svc rule).  A real
+    subclass still matches through the C-level type check; only a value
+    that cannot answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
+
+
 def _as_text(value) -> str:
     """Exception/subprocess text that cannot RecursionError leftover ``str(e)``."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
@@ -154,8 +217,10 @@ def _run_argv(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
     try:
         rc, text = run_capped(argv, timeout=timeout, cap=4000)
         return rc, text, ""
-    except Exception as e:  # noqa: BLE001 — a policy step must record, not raise
-        return -1, "", _as_text(e)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        return -255, "", _as_text(e)
 
 
 def _engine_up() -> bool:
@@ -185,12 +250,36 @@ def _jsonable(value, depth: int = 0):
     onto disk from ``_save_state``.
     A >4300-digit leftover int still passed through untouched: CPython's
     int->str digit limit then ValueError'd ``json.dumps`` itself.
+    A *subclass* scalar still ran its own dunders through the probes: an int
+    ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode`` bomb and a
+    str ``encode`` bomb (value or key) each used to raise out of this scrub
+    (the hub.modules unbound-base rule).
+    A seam value whose ``__class__`` is a *raising property* detonated the
+    bare isinstance rank gates themselves, and a *lying* ``__class__``
+    (claims bytes, is not) TypeError'd the unguarded unbound decode — each
+    still 500'd the plan/drill routes after all of the above (the host9
+    _json_tree rule), hence ``_isa`` on every gate and the guarded decode.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # Identity, not ``_isa(value, bool)``: bool cannot be subclassed, so a
+    # real flag is one of the two singletons — but a *bool-liar* (a
+    # ``__class__`` property that *returns* bool on a plain object) passed
+    # the old gate and rode out of this scrub as itself, straight into the
+    # encoder for a 500 on the plan/drill routes.  The liar now falls to
+    # the int rank below, where the unbound base coercion refuses it.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -198,44 +287,224 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, str):
+        # str() then unbound base encode: a str-subclass ``encode`` bomb
+        # used to raise out of the surrogate laundering itself.
+        try:
+            value = str(value)
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` (claims bytes, is not) TypeErrors the
+            # unbound decode: junk drops like any other unrenderable.
+            return None
+    if _isa(value, dict):
+        try:
+            items = list(value.items())
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A mapping that refuses iteration (odd dict subclass): there is
+            # nothing to salvage from it, but its *siblings* must survive —
+            # the raise used to ride out of drill()'s scrub and 500 the
+            # route (the nginx_svc._jsonable rule).
+            return None
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, str):
+        for pair in items:
+            # Per-pair unpack guard: a torn non-pair row from a subclass
+            # ``items()`` used to ValueError out of the loop head and take
+            # every sane sibling pair down with it.
+            try:
+                k, v = pair
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    # A lying ``__class__`` key TypeErrors the unbound
+                    # decode; it renders through str() below instead.
+                    pass
+            elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             # A str *key* skipped the string sanitizer below: a leftover JSON
             # ``"\ud800…"`` key in the state file's steps/last used to 500
             # Starlette's UTF-8 encode of GET /api/ups — and _save_state's own
             # encode failed the same way, so every _mutate silently stopped
-            # persisting while the poisoned key sat there.
-            k = k.encode("utf-8", "replace").decode("utf-8")
+            # persisting while the poisoned key sat there.  str() + unbound
+            # base encode also keeps a str-subclass ``encode`` bomb key from
+            # raising out of the laundering itself.
+            try:
+                k = str(k)
+                k = str.encode(k, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
             out[k] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        try:
+            return [_jsonable(v, depth + 1) for v in value]
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Same class as the mapping above, at sequence rank: only this
+            # field drops, never the row or the route.
+            return None
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/ups.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+
+
+def _row_get(row, key):
+    """Seam-row field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    ``isinstance(s, dict)`` passes an odd subclass whose ``get`` raises (the
+    disk_power_svc pool5 class); one such row from the stack/script/status
+    seams used to raise out of build_plan()/_catalog() and 500
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with every
+    sane sibling row.  ``dict.get`` reads the real storage underneath the
+    override, so a subclass that only poisoned its method keeps its data.
+    _isa, not bare isinstance: a seam value whose ``__class__`` is a raising
+    property used to detonate this gate itself — one dunder ahead of the
+    ``.get`` bomb it guards against — and 500 the same routes.
+    """
+    if not _isa(row, dict):
+        return None
+    try:
+        return row.get(key)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            return dict.get(row, key)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+
+
+def _seam_eq(value, expected) -> bool:
+    """Guarded ``==`` against a raw seam value.
+
+    ``value == "ok"`` dispatches to the value's own ``__eq__`` first, so one
+    subclass eq-bomb ``status`` in a stack row from the ``_list_stacks`` seam
+    used to raise out of ``build_plan``/``_catalog``'s ``running`` probe and
+    500 GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with
+    every sane sibling row — and the same raise escaped ``_engage``'s plan
+    build during a real outage.  An unreadable status reads as not-running,
+    the conservative direction (never stop, never restore-start it).
+    """
+    try:
+        return bool(value == expected)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool()`` that a raw seam value's ``__bool__`` bomb cannot raise out of."""
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _below_floor(value, floor) -> bool:
+    """``float(value) <= float(floor)`` that a seam ``__float__`` bomb cannot 500.
+
+    ``float(value)`` dispatches to the value's own ``__float__``, so a
+    ``battery_percent`` / ``time_remaining_min`` subclass from the
+    ``_ups_status`` seam whose ``__float__`` raises outside the
+    ``(TypeError, ValueError, OverflowError)`` trio the old ``except`` caught
+    used to escape ``_condition``'s trigger compare and 500
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill — and raise
+    out of ``sweep()`` into check_once's containment, silently killing every
+    UPS policy tick.  An unreadable value fails its condition, the module's
+    documented "never fires on the unknown" (a hand-edited ``trigger_pct:
+    "25%"`` string floor and a >4300-digit / inf floor already leaned on the
+    same fall-through).
+    """
+    if value is None:
+        return False
+    try:
+        return float(value) <= float(floor)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _reason(template: str, *parts) -> str:
+    """Fired-condition label, built without running a raw seam value's dunders.
+
+    The reason interpolates the raw ``battery_percent`` / ``time_remaining_min``
+    the seam handed back (so a sane ``18`` still reads "battery 18% ≤ 25%"); a
+    subclass value whose ``__format__``/``__str__`` raises used to blow the
+    f-string *after* the condition had already fired and 500 the plan/drill
+    routes — and raise out of ``sweep()``.  A label that will not render
+    degrades to empty; the trigger it describes still fires.
+    """
+    try:
+        return template.format(*parts)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _service_states() -> dict[str, str]:
@@ -244,20 +513,44 @@ def _service_states() -> dict[str, str]:
     out: dict[str, str] = {}
     try:
         groups = full_status(force=False).get("groups") or []
-    except Exception:
-        groups = []
-    if not isinstance(groups, list):
+        # Materialize under the guard: a list *subclass* passes the
+        # isinstance gate but one whose ``__iter__`` raises used to abort
+        # this reader mid-scan and wipe every sibling's state with it.
+        groups = list(groups) if isinstance(groups, list) else []
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         groups = []
     for g in groups:
-        if not isinstance(g, dict):
+        # _isa: a ``__class__``-property bomb group used to raise out of
+        # this bare isinstance and wipe every sibling group's states.
+        if not _isa(g, dict):
             continue
-        services = g.get("services") or []
-        if not isinstance(services, list):
+        # _row_get: a group whose ``get`` raises used to abort the whole
+        # scan and wipe every sibling group's states along with its own.
+        # isinstance, not ``or []``: truth-testing a __bool__ bomb value
+        # would raise the same way.
+        services = _row_get(g, "services")
+        if not _isa(services, list):
+            continue
+        try:
+            services = list(services)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # One group's services refusing iteration drops that group
+            # alone; the states already collected keep their rows honest.
             continue
         for s in services:
-            if not isinstance(s, dict) or s.get("id") is None:
+            if not _isa(s, dict):
                 continue
-            out[str(s.get("id"))] = str(s.get("state") or "unknown")
+            # str() probe, not a bare render: an already-int over-cap id or
+            # state (YAML hex) used to ValueError here and drop every
+            # sibling service's state along with its own.
+            sid = _cfg_text(_row_get(s, "id"))
+            if not sid:
+                continue
+            out[sid] = _cfg_text(_row_get(s, "state")) or "unknown"
     return out
 
 
@@ -288,7 +581,9 @@ def _spawn(target) -> bool:
     def run():
         try:
             target()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # A worker crash must not leave a stack half-handled *silently*;
             # the state file keeps whatever was recorded, and the next sweep
             # respawns from it.
@@ -306,11 +601,32 @@ def _spawn(target) -> bool:
 
 # ── persisted state ───────────────────────────────────────────────────────────
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one leftover huge number in the
+    state file (a hand-edited ``engaged_at``, a stray counter) used to make
+    :func:`_load_state` read the entire policy state as ``{}`` — mid-outage
+    the latched ``engaged`` phase and every recorded stop marker silently
+    read as idle, so the restore pass never ran, and the next ``_mutate``
+    persisted that wipe for real.  The one unrenderable number drops alone
+    (``_jsonable`` could never render it anyway) and the siblings survive.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     try:
         if not STATE_FILE.exists():
             return {}
-        data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
+        data = safe_json_loads(
+            read_text_capped(STATE_FILE, _STATE_CAP),
+            parse_int=_capped_json_int,
+        )
         if isinstance(data, dict):
             return data
     except (OSError, ValueError, TypeError, RecursionError):
@@ -381,33 +697,40 @@ def _condition(status: dict, policy: dict) -> tuple[bool, str]:
     fails its condition — the policy never fires on the unknown.  With
     ``require_both`` an unreadable estimate therefore *blocks* the trigger
     until pmset produces one; that is the conservative reading of "both".
+
+    Status reads go through ``_row_get`` + ``_truthy``: a dict-subclass
+    ``.get``/``__bool__`` bomb from the ``_ups_status`` seam used to 500
+    the plan/drill routes out of this evaluation — and to raise out of
+    ``sweep()`` into check_once's containment, silently killing the tick.
+    The numeric floor compares go through ``_below_floor`` and their labels
+    through ``_reason`` for the same reason, one dunder deeper: a
+    ``battery_percent`` subclass whose ``__float__`` or ``__format__`` raises
+    used to escape this evaluation the same way.
     """
-    if not status.get("on_battery"):
+    if not _truthy(_row_get(status, "on_battery")):
         return False, ""
     pct_floor = policy.get("trigger_pct")
     min_floor = policy.get("trigger_remaining_min")
     checks: list[tuple[bool, str]] = []
     if pct_floor is not None:
-        pct = status.get("battery_percent")
-        try:
-            hit = pct is not None and float(pct) <= float(pct_floor)
-        except (TypeError, ValueError, OverflowError):
-            hit = False
-        checks.append((hit, f"battery {pct}% ≤ {pct_floor}%" if hit else ""))
+        pct = _row_get(status, "battery_percent")
+        hit = _below_floor(pct, pct_floor)
+        checks.append((hit, _reason("battery {}% ≤ {}%", pct, pct_floor) if hit else ""))
     if min_floor is not None:
-        remain = status.get("time_remaining_min")
-        try:
-            hit = remain is not None and float(remain) <= float(min_floor)
-        except (TypeError, ValueError, OverflowError):
-            hit = False
-        checks.append((hit, f"≈{remain} min left ≤ {min_floor} min" if hit else ""))
+        remain = _row_get(status, "time_remaining_min")
+        hit = _below_floor(remain, min_floor)
+        checks.append((hit, _reason("≈{} min left ≤ {} min", remain, min_floor) if hit else ""))
     if not checks:
         # Enabled but no condition configured: never fires.  The settings API
         # refuses to save this shape, but a hand-edited services.yaml can
         # still produce it, and "never" beats guessing a floor.
         return False, ""
     hits = [reason for ok, reason in checks if ok]
-    triggered = len(hits) == len(checks) if policy.get("require_both") and len(checks) > 1 else bool(hits)
+    # _truthy on require_both: ups_svc._jsonable launders the policy, but a
+    # bool-liar flag carrying a ``__bool__`` bomb used to ride through its
+    # old bool gate and detonate this bare truth-test — a 500 on the
+    # plan/drill routes and a raise out of sweep().
+    triggered = len(hits) == len(checks) if _truthy(policy.get("require_both")) and len(checks) > 1 else bool(hits)
     return triggered, " and ".join(hits) if triggered else ""
 
 
@@ -423,40 +746,67 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     """
     policy = policy if policy is not None else shutdown_settings()
     steps: list[dict] = []
+    # Materialize inside the guard: a list *subclass* passes isinstance but
+    # one whose ``__iter__`` raises used to blow up the scrub comprehension
+    # *outside* this try and 500 GET /api/ups/shutdown/plan and
+    # POST /api/ups/shutdown/drill (the nginx overview() rule).  _isa per
+    # row: a ``__class__``-property bomb row used to trip this try and wipe
+    # every sane sibling stack out of the plan with it.
     try:
-        stacks = _list_stacks()
-    except Exception:
+        stacks = [s for s in _list_stacks() if _isa(s, dict)]
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stacks = []
-    stacks = [s for s in stacks if isinstance(s, dict)]
-    by_id = {str(s.get("id")): s for s in stacks}
+    # _cfg_text probe, not a bare str(): an already-int over-cap id (YAML
+    # hex, exempt from the digit cap) in one row used to ValueError here and
+    # wipe every sane sibling out of the plan with the 500.  _row_get, not a
+    # bare ``.get``: a dict-subclass row whose ``get`` raises used to 500 the
+    # plan/drill routes the same way.
+    by_id: dict[str, dict] = {}
+    for s in stacks:
+        sid = _cfg_text(_row_get(s, "id"))
+        if sid and sid not in by_id:
+            by_id[sid] = s
     wanted = policy.get("stacks")
     if isinstance(wanted, list):
-        ordered = [str(x) for x in wanted]
+        ordered = [_cfg_text(x) for x in wanted]
     else:  # "all"
-        ordered = [str(s.get("id")) for s in stacks]
+        ordered = [_cfg_text(_row_get(s, "id")) for s in stacks]
     # Dedupe, first occurrence wins: steps are addressed by (kind, id) in the
     # state file, so a duplicated id would leave one entry forever unresolved.
+    # An id with no renderable text cannot be addressed at all and drops.
     seen: set[str] = set()
-    ordered = [sid for sid in ordered if not (sid in seen or seen.add(sid))]
+    ordered = [sid for sid in ordered if sid and not (sid in seen or seen.add(sid))]
     for sid in ordered:
         stack = by_id.get(sid)
+        # ``stack is not None`` rather than truth-testing: a dict-subclass
+        # row whose ``__bool__`` raises used to 500 the plan out of the old
+        # ``bool(stack and …)`` expression.
         steps.append({
             "kind": "stack",
             "id": sid,
-            "name": str((stack or {}).get("name") or sid),
-            "running": bool(stack and stack.get("status") == "ok"),
+            # Same probe for the label: an over-cap int name falls back to
+            # the id instead of 500ing the whole plan.
+            "name": _cfg_text(_row_get(stack, "name")) or sid,
+            # _seam_eq: a subclass eq-bomb status used to 500 the plan out
+            # of this bare ``== "ok"`` compare.
+            "running": stack is not None
+            and _seam_eq(_row_get(stack, "status"), "ok"),
             "known": stack is not None,
         })
     # Separate namespace: steps are addressed by (kind, id), so a service id
     # that happens to match a stack id is a different step, not a duplicate.
     seen_svc: set[str] = set()
     raw_scripts = policy.get("stop_scripts")
-    script_ids = [str(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
-    script_ids = [sid for sid in script_ids if not (sid in seen_svc or seen_svc.add(sid))]
+    script_ids = [_cfg_text(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
+    script_ids = [sid for sid in script_ids if sid and not (sid in seen_svc or seen_svc.add(sid))]
     if script_ids:
         try:
             states = _service_states()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             states = {}
         for sid in script_ids:
             state = states.get(sid)
@@ -482,20 +832,50 @@ def _cfg_text(value) -> str:
     int->str digit-cap ValueError — 500ing GET /api/ups/shutdown/plan and
     POST /api/ups/shutdown/drill, i.e. the whole UPS settings form.  An
     unrenderable scalar reads as "no value" (the backups pg_targets rule);
-    a sane numeric id keeps its old ``str()`` coercion.
+    a sane numeric id keeps its old ``str()`` coercion.  An int-*subclass*
+    ``__str__`` bomb escaped the digit-cap ``except ValueError`` and 500'd
+    GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill out of the
+    script/stack pickers; the unbound base coercion renders its real value.
+
+    The result is always an *exact* ``str``: ``str(x)`` returns whatever a
+    subclass ``__str__`` hands back, so a str subclass whose ``__str__``
+    returns *itself* rode out of the old base copy still carrying its dunder
+    bombs — its ``__hash__``/``__eq__`` then blew up ``build_plan``'s dedupe
+    set, its by-id index and the service-state compare, 500ing the plan and
+    drill routes with every sane sibling row.  The unbound ``str.__str__``
+    base copy strips the     subclass while keeping its rendered text.
+
+    _isa on the rank gates: an id/name whose ``__class__`` is a raising
+    property used to detonate the first bare isinstance here — after every
+    guard above — and 500 GET /api/ups/shutdown/plan and
+    POST /api/ups/shutdown/drill out of build_plan's bare ``_cfg_text`` call.
     """
-    if isinstance(value, bool) or value is None:
+    if _isa(value, bool) or value is None:
         return ""
-    if isinstance(value, int):
+    if _isa(value, int):
         try:
-            return str(value)
-        except ValueError:
+            # Unbound base coercion first, so the str() probe never runs a
+            # subclass ``__str__``; past the digit cap it stays ValueError.
+            return str(int.__index__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    if isinstance(value, str):
+    if _isa(value, str) and type(value) is str:
         return value
     try:
-        return str(value)
-    except Exception:
+        text = str(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if type(text) is str:
+        return text
+    try:
+        return str.__str__(text)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -506,37 +886,73 @@ def _catalog() -> dict:
     the form needs the full menu — every compose stack (configured or
     auto-scanned) and every script entry from services.yaml.
     """
+    # Same materialize-under-guard as build_plan: an iteration-refusing
+    # list subclass from the seam used to 500 the plan/drill routes, and a
+    # ``__class__``-property bomb row used to wipe its sane siblings.
     try:
-        stacks = _list_stacks()
-    except Exception:
+        stacks = [s for s in _list_stacks() if _isa(s, dict)]
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         stacks = []
-    stacks = [s for s in stacks if isinstance(s, dict)]
     from hub.config import cfg
     scripts = []
-    raw_scripts = cfg().get("scripts")
-    if not isinstance(raw_scripts, list):
+    try:
+        raw_scripts = cfg().get("scripts")
+        # A scripts list whose iteration raises passed the isinstance gate
+        # and 500'd the catalog the same way; an unreadable list means an
+        # empty picker, never a dead settings form.
+        raw_scripts = list(raw_scripts) if _isa(raw_scripts, list) else []
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw_scripts = []
     for s in raw_scripts:
-        if not isinstance(s, dict):
+        # _isa: a ``__class__``-property bomb script row used to detonate
+        # this bare isinstance outside any try and 500 the plan/drill
+        # routes with every sane sibling entry.
+        if not _isa(s, dict):
             continue
-        sid = _cfg_text(s.get("id"))
+        # _row_get: a dict-subclass row whose ``get`` raises used to 500 the
+        # plan/drill routes out of this loop with every sane sibling.
+        sid = _cfg_text(_row_get(s, "id"))
         if not sid:
             # No renderable id: the entry cannot be selected or acted on, so
             # it drops alone rather than 500ing the whole picker catalog.
             continue
+        try:
+            # Without a stop command run_action degrades to a no-op stop,
+            # so the form marks these rather than hiding them.  Guarded: a
+            # __bool__ bomb stop value used to 500 the whole catalog where
+            # "no usable stop" is the honest reading.
+            has_stop = bool(_row_get(s, "stop"))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            has_stop = False
         scripts.append({
             "id": sid,
-            "name": _cfg_text(s.get("name")) or sid,
-            # Without a stop command run_action degrades to a no-op stop,
-            # so the form marks these rather than hiding them.
-            "has_stop": bool(s.get("stop")),
+            "name": _cfg_text(_row_get(s, "name")) or sid,
+            "has_stop": has_stop,
+        })
+    stack_rows = []
+    for s in stacks:
+        # _cfg_text probe, matching the scripts side above: one row whose
+        # already-int over-cap id/name (YAML hex) fails str() drops alone
+        # instead of 500ing the whole picker catalog with its siblings —
+        # and _row_get keeps a ``.get`` bomb row from doing the same.
+        sid = _cfg_text(_row_get(s, "id"))
+        if not sid:
+            continue
+        stack_rows.append({
+            "id": sid,
+            "name": _cfg_text(_row_get(s, "name")) or sid,
+            # _seam_eq: a subclass eq-bomb status used to 500 the whole
+            # picker catalog out of this bare ``== "ok"`` compare.
+            "running": _seam_eq(_row_get(s, "status"), "ok"),
         })
     return {
-        "stacks": [
-            {"id": str(s.get("id")), "name": str(s.get("name") or s.get("id")),
-             "running": s.get("status") == "ok"}
-            for s in stacks
-        ],
+        "stacks": stack_rows,
         "scripts": scripts,
     }
 
@@ -551,17 +967,28 @@ def drill() -> dict:
     policy = shutdown_settings()
     try:
         status = _ups_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         status = {"present": False}
-    would, reason = (_condition(status, policy) if status.get("present") else (False, ""))
+    # _row_get + _truthy on every status read: a dict-subclass ``.get`` or
+    # ``__bool__`` bomb from the _ups_status seam used to 500 both
+    # GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill — and a
+    # ``__class__``-property bomb status detonated this very isinstance.
+    present = _isa(status, dict) and _truthy(_row_get(status, "present"))
+    would, reason = (_condition(status, policy) if present else (False, ""))
+    # _truthy on enabled, matching _condition's require_both: a bool-liar
+    # flag with a ``__bool__`` bomb used to detonate the bare bool() here
+    # after passing ups_svc._jsonable's old bool gate.
+    enabled = _truthy(policy.get("enabled"))
     return _jsonable({
-        "enabled": bool(policy.get("enabled")),
-        "would_trigger_now": bool(policy.get("enabled")) and would,
+        "enabled": enabled,
+        "would_trigger_now": enabled and would,
         "reason": reason,
-        "sensor_present": bool(status.get("present")),
-        "on_battery": bool(status.get("on_battery")),
-        "battery_percent": status.get("battery_percent"),
-        "time_remaining_min": status.get("time_remaining_min"),
+        "sensor_present": present,
+        "on_battery": _truthy(_row_get(status, "on_battery")),
+        "battery_percent": _row_get(status, "battery_percent"),
+        "time_remaining_min": _row_get(status, "time_remaining_min"),
         "steps": build_plan(policy),
         "catalog": _catalog(),
         "settings": policy,
@@ -589,16 +1016,25 @@ def _sweep_locked(now: int) -> list[dict]:
 
     try:
         status = _ups_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         status = None
     # Sensor unreadable (pmset failed / empty output → present False): never
     # trigger on the unknown, and never *reset* on it either — leaving an
     # outage latched until AC power is positively seen is the safe direction.
-    if not status or not status.get("present"):
+    # _row_get + _truthy: a dict-subclass ``.get``/``__bool__`` bomb from the
+    # seam used to raise out of sweep() into check_once's containment and
+    # silently kill every UPS tick — and a ``__class__``-property bomb
+    # status detonated this very isinstance the same way.
+    if not _isa(status, dict) or not _truthy(_row_get(status, "present")):
         return []
 
     if phase == PHASE_IDLE:
-        if not policy.get("enabled"):
+        # _truthy: same bool-liar ``__bool__`` bomb class as drill()'s
+        # enabled read — a bare truth-test here raised out of sweep() into
+        # check_once's containment and silently killed every policy tick.
+        if not _truthy(policy.get("enabled")):
             return []
         hit, reason = _condition(status, policy)
         if not hit:
@@ -606,7 +1042,7 @@ def _sweep_locked(now: int) -> list[dict]:
         return [_engage(now, reason, policy)]
 
     # engaged / restoring: latched until AC is seen, however the charge moves.
-    if status.get("on_ac"):
+    if _truthy(_row_get(status, "on_ac")):
         if not _worker_busy(st):
             _mutate(lambda s: s.update(phase=PHASE_RESTORING))
             _spawn(_run_restore_sequence)
@@ -700,7 +1136,9 @@ def _engage(now: int, reason: str, policy: dict) -> dict:
     try:
         audit.record(audit.UPS_POLICY_TRIGGERED, reason=reason,
                      targets=[p["id"] for p in planned])
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     _spawn(_run_stop_sequence)
     return alert
@@ -741,7 +1179,9 @@ def _run_stop_sequence() -> None:
     try:
         from hub.containers_svc import _stack_paths
         compose_by_id = {str(s.get("id")): s.get("compose_path") for s in _stack_paths()}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         compose_by_id = {}
 
     for step in steps:
@@ -776,14 +1216,18 @@ def _run_stop_sequence() -> None:
             _record_step(kind, sid, stop_issued=True)
             try:
                 rc, out, err = _svc_action(sid, "stop")
-            except Exception as e:  # unknown target etc. — record, keep going
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:  # unknown target etc. — record, keep going
                 rc, out, err = -1, "", _as_text(e)
             detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
             _record_step(kind, sid, done=True, stop_ok=rc == 0, detail=detail)
         try:
             audit.record(audit.UPS_POLICY_STEP, action="stop", kind=kind,
                          target=sid, ok=rc == 0, detail=detail)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     _mutate(lambda s: s.update(stop_done=True))
@@ -826,7 +1270,9 @@ def _run_restore_sequence() -> None:
         else:
             try:
                 rc, out, err = _svc_action(sid, "start")
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 rc, out, err = -1, "", _as_text(e)
         detail = "" if rc == 0 else (err or out or f"exit {rc}").strip()[:200]
         _record_step(kind, sid, start_ok=rc == 0, start_detail=detail)
@@ -834,7 +1280,9 @@ def _run_restore_sequence() -> None:
         try:
             audit.record(audit.UPS_POLICY_STEP, action="start", kind=kind,
                          target=sid, ok=rc == 0, detail=detail)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     def finish(s: dict) -> None:
@@ -853,7 +1301,9 @@ def _run_restore_sequence() -> None:
     _mutate(finish)
     try:
         audit.record(audit.UPS_POLICY_RESET, restarted=started, failed=failures)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if failures:
         message = (
@@ -874,5 +1324,7 @@ def _run_restore_sequence() -> None:
                           message=message, event="resolved")
     try:
         invalidate_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass

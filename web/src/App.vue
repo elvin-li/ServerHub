@@ -74,7 +74,7 @@
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('appearance.language') }}</span>
               <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-                <option v-for="l in locales" :key="l.id" :value="l.id">{{ finiteText(l.native) }}</option>
+                <option v-for="l in asArray(locales)" :key="finiteText(asRecord(l).id)" :value="asRecord(l).id">{{ finiteText(asRecord(l).native) }}</option>
               </select>
             </label>
             <label class="nav-tool">
@@ -108,10 +108,10 @@
         </div>
       </div>
       <!-- Secondary nav: related pages merged under one top tab -->
-      <div class="subchrome" v-if="activeChildren.length" role="navigation" :aria-label="t('common.section_nav')">
+      <div class="subchrome" v-if="asArray(activeChildren).length" role="navigation" :aria-label="t('common.section_nav')">
         <div class="subchrome-inner">
           <router-link
-            v-for="c in activeChildren"
+            v-for="c in asArray(activeChildren)"
             :key="c.to"
             :to="c.to"
             :class="{ active: isChildActive(c) }"
@@ -178,7 +178,7 @@
           aria-expanded="true"
           aria-autocomplete="list"
           aria-controls="cmd-list"
-          :aria-activedescendant="cmdFlat.length ? `cmd-opt-${cmdIdx}` : undefined"
+          :aria-activedescendant="asArray(cmdFlat).length ? `cmd-opt-${cmdIdx}` : undefined"
           :aria-label="t('common.cmd_title')"
           :placeholder="t('common.cmd_ph')"
           @keydown.enter="cmdEnter"
@@ -187,21 +187,21 @@
         />
         <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
-            v-for="(item, i) in cmdFlat"
-            :key="item.to"
+            v-for="(item, i) in asArray(cmdFlat)"
+            :key="finiteText(asRecord(item).to)"
             :id="`cmd-opt-${i}`"
             role="option"
             :aria-selected="i === cmdIdx"
-            :class="{ active: i === cmdIdx, 'cmd-ai': item.type === 'ai' }"
+            :class="{ active: i === cmdIdx, 'cmd-ai': asRecord(item).type === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ item.type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(item.query) }) : (finiteText(item.title, '') || t(item.labelKey)) }}</span>
-            <kbd>{{ item.type === 'ai' ? t('assistant.short') : finiteText(item.to) }}</kbd>
+            <span>{{ asRecord(item).type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(asRecord(item).query) }) : (finiteText(asRecord(item).title, '') || t(asRecord(item).labelKey)) }}</span>
+            <kbd>{{ asRecord(item).type === 'ai' ? t('assistant.short') : finiteText(asRecord(item).to) }}</kbd>
           </li>
           <!-- role=presentation: a listbox may only own options, and "no
                matches" is a message about the list, not a choice in it. -->
-          <li v-if="!cmdFlat.length" class="cmd-empty" role="presentation">{{ t('common.cmd_empty') }}</li>
+          <li v-if="!asArray(cmdFlat).length" class="cmd-empty" role="presentation">{{ t('common.cmd_empty') }}</li>
         </ul>
       </div>
     </div>
@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { finiteN, finiteText } from './lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -505,7 +505,7 @@ const nav = computed(() => {
 
 const activeGroup = computed(() => {
   const path = route.path
-  for (const item of nav.value) {
+  for (const item of asArray(nav.value)) {
     if (item.exact && path === item.to) return item
     if (item.match && item.match.some(m => path === m || path.startsWith(m + '/'))) return item
     if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
@@ -513,7 +513,7 @@ const activeGroup = computed(() => {
   return null
 })
 
-const activeChildren = computed(() => activeGroup.value?.children || [])
+const activeChildren = computed(() => asArray(activeGroup.value?.children))
 
 function isActive(item) {
   const path = route.path
@@ -532,7 +532,7 @@ function navCurrent(item) {
   // an *ancestor* of the open page, so it takes `true` and leaves `page` to
   // the child.
   if (!isActive(item)) return undefined
-  return (item.children || []).some(isChildActive) ? 'true' : 'page'
+  return asArray(item.children).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {
@@ -852,7 +852,7 @@ function onCmdKey(e) {
 }
 const cmdResults = computed(() => {
   const q = cmdQuery.value.toLowerCase().trim()
-  const items = nav.value.flatMap(n => n.children ? [n, ...n.children] : [n])
+  const items = asArray(nav.value).flatMap(n => n.children ? [n, ...asArray(n.children)] : [n])
   const matched = q
     ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
     : items
@@ -864,19 +864,22 @@ const cmdResults = computed(() => {
   // searchable and only the redundant second row is dropped.
   const seen = new Set()
   const fromNav = []
-  for (const n of matched) {
+  for (const n of asArray(matched)) {
     if (seen.has(n.to)) continue
     seen.add(n.to)
     fromNav.push(n)
   }
   if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
-    .filter((p) => !seen.has(p.path))
-    .map((p) => ({ type: 'nav', to: p.path, title: p.title, labelKey: '' }))
+    .filter((p) => !seen.has(asRecord(p).path))
+    .map((p) => {
+      const row = asRecord(p)
+      return { type: 'nav', to: row.path, title: row.title, labelKey: '' }
+    })
   return [...fromNav, ...fromCatalog].slice(0, 8)
 })
 const cmdFlat = computed(() => {
-  const items = cmdResults.value.map((n) => ({ type: 'nav', ...n }))
+  const items = asArray(cmdResults.value).map((n) => ({ type: 'nav', ...n }))
   const q = cmdQuery.value.trim()
   if (authState.canManage && q) {
     items.push({ type: 'ai', query: q, to: '__ai__' })
@@ -890,7 +893,7 @@ const cmdFlat = computed(() => {
 // list that grows underneath (the assistant catalogue arrives async) does
 // not yank the reader back to the top.
 watch(cmdFlat, (items) => {
-  if (cmdIdx.value > items.length - 1) cmdIdx.value = 0
+  if (cmdIdx.value > asArray(items).length - 1) cmdIdx.value = 0
 })
 
 function openAssistant(seed = '', action = '') {
@@ -900,8 +903,9 @@ function openAssistant(seed = '', action = '') {
 }
 function onAssistEvent(event) {
   if (!authState.canManage) return
-  const action = event.detail?.action || ''
-  openAssistant(event.detail?.query || '', action)
+  const detail = asRecord(event.detail)
+  const action = finiteText(detail.action, '')
+  openAssistant(finiteText(detail.query, ''), action)
 }
 function loadAssistCatalog() {
   if (!authState.canManage) {
@@ -912,7 +916,7 @@ function loadAssistCatalog() {
   getAssistantCatalog(locale.value)
     .then((body) => {
       if (!stillOnShell(generation) || !authState.canManage) return
-      assistCatalog.value = body.panels || []
+      assistCatalog.value = asArray(asRecord(body).panels)
     })
     .catch(() => {
       if (!stillOnShell(generation)) return
@@ -923,7 +927,7 @@ function onAssistGo(path) {
   if (path) router.push(path)
 }
 function cmdGo(i) {
-  const item = cmdFlat.value[i]
+  const item = asArray(cmdFlat.value)[i]
   if (!item) return
   cmdOpen.value = false
   if (item.type === 'ai') {
@@ -956,7 +960,7 @@ function cmdArrowUp(e) {
 function cmdArrowDown(e) {
   if (cmdComposing(e)) return
   e.preventDefault()
-  cmdIdx.value = Math.min(cmdFlat.value.length - 1, cmdIdx.value + 1)
+  cmdIdx.value = Math.min(asArray(cmdFlat.value).length - 1, cmdIdx.value + 1)
 }
 
 // Escape used to be bound to the search input alone, so it stopped working the

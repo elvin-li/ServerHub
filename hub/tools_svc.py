@@ -8,6 +8,8 @@ Inspired by Cockpit (logs/services), OMV (SMART/updates), CasaOS (simple tiles).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import glob
 import math
 import os
@@ -28,11 +30,13 @@ from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
 from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import (
+    _jsonable,
     cli_on_disk,
     docker,
     engine_up,
     looks_cli_vanished,
     looks_engine_down,
+    parse_int_capped,
 )
 from hub.paths import BASE, BREW, DOCKER, ORB
 from hub.proc_cache import ps_lines
@@ -48,10 +52,87 @@ def shutdown_executor() -> None:
     _pool.shutdown()
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so an ``sh``-stub leftover whose
+    ``__class__`` is a raising property blew straight through the bare
+    bytes gate below before the scrub could run — a raw 500 on
+    POST /api/tools/net/ping and every other ``_sh`` consumer (the
+    bookmarks8/modules8 rule).
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The ups_svc/vms_svc/health11 rule, which the updates snapshot's bare
+    ``_updates_cache["v"]`` subscript and ``hit.get("brew")`` probe never
+    got: even a plain-dict lookup still runs the *stored keys'* own
+    ``__eq__`` during the hash probe, so a leftover str-subclass key whose
+    hash shadows ``v``/``t``/``brew`` (raising ``__eq__``) used to raise
+    straight out of :func:`_updates_fresh` — a raw 500 on GET
+    /api/tools/updates, the Homebrew update card included — and out of
+    :func:`_brew_outdated`'s busy/cooldown fallback, silently dropping the
+    previous brew answer.  Only the shadowed field degrades.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _updates_cache_store(**fields) -> None:
+    """Write the updates-cache slots through a hostile *key* in the table.
+
+    A hash-shadowing junk key raises out of the C-level insert compare
+    (never out of a plain ``t``/``v`` overwrite), so the final
+    ``_updates_cache.update`` used to 500 GET /api/tools/updates at the very
+    end of a successful probe — after ``brew outdated`` and
+    ``softwareupdate`` had already been paid for.  ``clear()`` never
+    compares keys, so evicting the poison and rewriting always lands (the
+    health11 rule).
+    """
+    try:
+        _updates_cache.update(**fields)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            _updates_cache.clear()
+            _updates_cache.update(**fields)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 Tools JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+    if _isinst(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a subclass ``.decode`` bomb riding a
+            # cross-module row (a disk power_state, say) used to raise here
+            # and 500 GET /api/tools/hardware.  The try is for a *lying*
+            # ``__class__`` (claims bytes, is not): the unbound call
+            # TypeErrors and junk answers "" like any unreadable leftover.
+            base = bytes if _isinst(value, bytes) else bytearray
+            value = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     elif value is None:
         return ""
     else:
@@ -60,17 +141,98 @@ def _as_text(value) -> str:
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        # Unbound base encode (the storage7 rule): a ``__str__`` override may
+        # *return* a str subclass whose bound ``encode`` bombs, and the old
+        # ``value.encode(...)`` dispatched into it — degrading a readable
+        # cross-module answer (a DNS ip, a ps row) to "".  ``str.encode``
+        # reads the real char storage, so the text survives the bomb.
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _as_rc(value) -> int:
+    """Exact int exit status from a possibly-poisoned ``rc``.
+
+    The network_svc ``_as_rc`` rule: a real spawn always answers an exact
+    int, but ``sh`` is stubbed in-process and an rc *subclass* whose
+    ``__eq__`` bombs detonated the very first ``rc == 0`` /
+    ``_spawn_sentinel`` compare — a raw 500 on POST /api/tools/net/ping.
+    Junk degrades to ``-255``: nonzero (a poisoned rc is not consent to
+    claim success) and never ``-1`` (the vanished-spawn sentinel must stay
+    unforgeable).
+    """
+    if type(value) is not int:
+        try:
+            value = int(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return -255
+        if type(value) is not int:
+            return -255
+    try:
+        str(value)
+    except ValueError:
+        # Over-cap exact int (a YAML hex leftover skips CPython's digit
+        # cap): it blows any ``rc={rc}`` message render the same way.
+        return -255
+    return value
+
+
+def _sh_triple(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The network_svc ``_sh_triple`` rule: a real spawn always answers an
+    exact 3-tuple, but ``sh`` is stubbed in-process, and the bare
+    ``rc, out, err = sh(...)`` unpack dispatched into the answer's own
+    iteration — a tuple/list *subclass* whose bound ``__iter__`` bombs, or
+    a lying ``__class__`` claiming tuple/list over no real sequence
+    storage (the modules9/bookmarks9 impostor class) — a raw 500 on
+    POST /api/tools/net/ping and /net/flush-dns before the per-slot
+    laundering could run.  Unbound base reads keep an honest answer in a
+    subclass wrapper intact (the vanished-spawn sentinel included); junk
+    degrades to ``(-255, "", "")`` — nonzero, and never the ``-1``
+    sentinel, so it can neither claim success nor forge the coded 503.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isinst(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isinst(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _sh(cmd, timeout=10, **kwargs):
     # Tests stub ``sh`` with leftover None/bytes/int; parsers below assume text.
-    rc, out, err = sh(cmd, timeout=timeout, **kwargs)
-    return rc, _as_text(out), _as_text(err)
+    rc, out, err = _sh_triple(sh(cmd, timeout=timeout, **kwargs))
+    return _as_rc(rc), _as_text(out), _as_text(err)
 
 
 def _docker(*args, **kwargs):
@@ -114,12 +276,27 @@ _PROC_TTL = 5.0
 
 def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
     # JSON ``1e309`` is inf; ``int(inf)`` OverflowError.  Bool is an int.
-    if isinstance(raw, bool) or raw is None:
+    # ``raw is True/False``, not ``isinstance(raw, bool)``, and ``_isinst``
+    # below: a ``__class__``-property bomb raised out of the bare gates
+    # before the try could catch anything — the same in-process
+    # POST /api/tools/net/ping 500 the base coercions were added for.
+    if raw is True or raw is False or raw is None:
         value = default
     else:
         try:
+            # Base coercions before ``int()`` (the smart_test_svc.history
+            # rule): the routes hand over Pydantic-exact ints, but these
+            # services are also called in-process, and an int-subclass
+            # ``__int__`` bomb raised RuntimeError past the old arithmetic
+            # trio — a raw 500 on POST /api/tools/net/ping for those callers.
+            if _isinst(raw, int):
+                raw = int.__index__(raw)
+            elif _isinst(raw, float):
+                raw = float.__float__(raw)
             value = int(raw)
-        except (TypeError, ValueError, OverflowError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             value = default
     return max(lo, min(value, hi))
 
@@ -136,6 +313,21 @@ def top_processes(limit: int = 25) -> list:
     # One shared `ps aux` (hub/proc_cache.py).  The row cache above stays: it holds
     # the *parsed and sorted* rows, which the shared table deliberately does not.
     lines = ps_lines()
+    if isinstance(lines, list):
+        # Exact-list copy through the unbound base read: a leftover
+        # list-subclass table whose bound ``__len__`` / ``__getitem__``
+        # raises passes the isinstance gate, and the bomb used to blow
+        # ``len(lines)`` / ``lines[1:]`` below and 500
+        # GET /api/system/processes.  (An ``__iter__`` bomb was already
+        # neutralized by the slice; these two were not.)
+        lines = list.__getitem__(lines, slice(None))
+    else:
+        try:
+            lines = list(lines)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return []
     if len(lines) < 2:
         return []
     rows = []
@@ -199,12 +391,22 @@ def _docker_gone(rc: int, out: str, err: str) -> bool:
     suspicious = looks_engine_down(text) or (
         looks_cli_vanished(text) and not cli_on_disk()
     )
-    return suspicious and not engine_up(force=True)
+    # _safe_flag: the forced probe is a cross-module read, and a leftover
+    # ``__bool__`` bomb riding its answer used to raise here — a raw 500 on
+    # GET /api/docker/df and POST /api/tools/docker/prune instead of the
+    # engine-down classification.  An unanswerable probe counts as down.
+    return suspicious and not _safe_flag(engine_up(force=True))
 
 
 @ttl_memo(_DOCKER_DF_TTL)
-def docker_disk_usage() -> dict:
-    if not engine_up():
+def _docker_df_cached() -> dict:
+    # _safe_flag: ``engine_up()`` is a cross-module read and these three
+    # docker views trusted its bool contract wholesale — a leftover
+    # ``__bool__`` bomb answer used to raise out of the bare ``if not`` and
+    # 500 GET /api/docker/df, GET /api/docker/sizes and
+    # POST /api/tools/docker/prune (diagnostics' probe_docker was already
+    # guarded).  An unanswerable flag degrades to engine-down.
+    if not _safe_flag(engine_up()):
         return {"engine_up": False, "raw": "", "lines": []}
     rc, out, err = _docker("system", "df", timeout=30)
     if _docker_gone(rc, out, err):
@@ -235,8 +437,79 @@ def docker_disk_usage() -> dict:
     return {"engine_up": True, "raw": out or err, "lines": lines}
 
 
+def _df_payload(value) -> dict | None:
+    """The df memo's answer as a plain JSON-safe payload, or None if junk.
+
+    ``type(engine_up-slot) is bool`` exact check, the docker_cli
+    ``_cache_view`` convention: bool cannot be subclassed, so the check is
+    complete, and a payload whose flag is a liar or a bomb is junk — not
+    evidence of engine state.  ``_jsonable`` re-founds the mapping (C-level
+    key launder, JSON-safe values), so a planted bomb value cannot ride out
+    to Starlette's encoder.
+    """
+    if not _isinst(value, dict):
+        return None
+    if type(value) is not dict:
+        try:
+            # dict() through the C storage: a dict-subclass method bomb
+            # cannot fire; a lying-``__class__`` impostor TypeErrors here.
+            value = dict(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    cleaned = _jsonable(value)
+    if not _isinst(cleaned, dict) or type(cleaned.get("engine_up")) is not bool:
+        return None
+    return cleaned
+
+
+def docker_disk_usage() -> dict:
+    """``docker system df`` totals with a leftover in the memo store defused.
+
+    ``ttl_memo``'s cache dict is a module-lifetime store that outlives every
+    request (the docker11 ``_engine_cache`` class), and GET /api/docker/df
+    returned its hit raw: a junk stamp detonated the freshness probe, a
+    non-tuple hit detonated the wrapper's own subscript, and a junk value —
+    a ``__class__``-property bomb, a bare scalar — rode straight into
+    Starlette's encoder (or out to the client as the wrong shape entirely).
+    Junk is evicted (``invalidate`` never compares keys, the health11 rule)
+    and the probe re-runs once; junk that survives eviction reads as
+    engine-down — the same coded shape as a stopped engine, never a raw 500.
+    """
+    for attempt in (0, 1):
+        try:
+            raw = _docker_df_cached()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A poisoned KEY detonates inside the memo's own cache.get on
+            # hash collision; the raise carries no totals.
+            raw = None
+        cleaned = _df_payload(raw)
+        if cleaned is not None:
+            return cleaned
+        if attempt == 0:
+            try:
+                _docker_df_cached.invalidate()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                break
+    return {"engine_up": False, "raw": "", "lines": []}
+
+
+#: Callers (prune, tests) invalidate through the public name; keep the memo
+#: contract intact across the launder funnel.
+docker_disk_usage.invalidate = _docker_df_cached.invalidate  # type: ignore[attr-defined]
+docker_disk_usage.cache_clear = _docker_df_cached.invalidate  # type: ignore[attr-defined]
+docker_disk_usage._cache = _docker_df_cached._cache  # type: ignore[attr-defined]
+
+
 def container_sizes() -> list:
-    if not engine_up():
+    # _safe_flag: same cross-module ``__bool__``-bomb guard as
+    # docker_disk_usage above.
+    if not _safe_flag(engine_up()):
         return []
     # -s/--size is what populates {{.Size}}.  OrbStack happens to fill it in
     # anyway, but stock Docker Engine leaves the column empty without it, so the
@@ -268,7 +541,10 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
     """
     if not confirm:
         return soft_fail("tools.confirm_required")
-    if not engine_up():
+    # _safe_flag: same cross-module ``__bool__``-bomb guard as
+    # docker_disk_usage above — the bomb becomes the coded engine-down
+    # soft-fail, never a raw 500.
+    if not _safe_flag(engine_up()):
         return soft_fail("container.engine_down")
     cmds = {
         "dangling": ["image", "prune", "-f"],
@@ -360,7 +636,9 @@ def diagnostics() -> dict:
                     except (TypeError, ValueError, OverflowError):
                         # Leftover ``time.time() = inf`` OverflowError'd GET /api/diagnostics.
                         return None
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         return None
 
@@ -370,7 +648,9 @@ def diagnostics() -> dict:
         try:
             eng = engine_up()
             return eng, (docker_disk_usage() if eng else {})
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return False, {}
 
     def probe_platform() -> str:
@@ -381,13 +661,17 @@ def diagnostics() -> dict:
         try:
             from hub.identity_svc import platform_string
             return platform_string()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _as_text(platform.platform())
 
     def probe_host_ip() -> str:
         try:
             return host_ip()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
 
     try:
@@ -422,6 +706,16 @@ def diagnostics() -> dict:
         root_disk_pct = 0.0
     if not math.isfinite(root_disk_free_gb):
         root_disk_free_gb = 0.0
+    try:
+        metrics_points = len(metrics.history(60))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A leftover history table that refuses ``len()`` (a list-subclass
+        # ``__len__`` bomb, an unsized answer) used to raise here — the one
+        # unguarded cross-module read left in this collector — and 500
+        # GET /api/system/diagnostics after every probe had answered.
+        metrics_points = 0
     return {
         "hostname": _as_text(hostname),
         "platform": _as_text(plat),
@@ -441,9 +735,13 @@ def diagnostics() -> dict:
         "docker_cli": _as_text(DOCKER),
         "orb_cli": _as_text(ORB),
         "python": _as_text(platform.python_version()),
-        "host_ip": ip,
+        # host_ip() sanitizes its own answer today, but this boundary echoed
+        # it raw while every sibling field goes through _as_text — a leftover
+        # lone-surrogate address 500'd the UTF-8 encode and a >4300-digit int
+        # ValueError'd Starlette's json.dumps on GET /api/system/diagnostics.
+        "host_ip": _as_text(ip),
         "docker_df": df,
-        "metrics_points": len(metrics.history(60)),
+        "metrics_points": metrics_points,
         "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
         "version": __version__,
     }
@@ -635,13 +933,92 @@ def _profiler_report(entry) -> tuple[int, str]:
             ["/usr/sbin/system_profiler", data_type, "-detailLevel", "mini"],
             timeout=12,
         )
-    except Exception as exc:  # noqa: BLE001 - one report must not lose the rest
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - one report must not lose the rest
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 GET /api/tools.
         return 1, _as_text(exc)[:4000]
     text = (out or err or "").strip()
     if len(text) > 4000:
         text = text[:4000] + "\n…(truncated)"
     return rc, text
+
+
+def _renderable_number(value):
+    """*value* as a number Starlette's allow_nan=False encoder can emit, or None.
+
+    Bool is an int; inf/nan are refused by the encoder; an over-cap int (YAML/
+    plist hex loads uncapped through ``int(x, 16)``) makes ``json.dumps`` itself
+    raise the int->str digit-cap ValueError, so probe with ``str()``.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError was
+                # caught) and 500 GET /api/tools/hardware.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+        try:
+            str(value)
+        except ValueError:
+            return None
+        return value
+    if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+        return value if math.isfinite(value) else None
+    return None
+
+
+def _safe_flag(value, *, tri: bool = False):
+    """``bool(value)`` that a leftover ``__bool__`` bomb cannot raise through."""
+    if tri and value is None:
+        return None
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None if tri else False
+
+
+def _power_disk_row(d) -> dict | None:
+    """The hardware tab's subset of one disk-power row.  Never raises.
+
+    ``list_power_disks`` sanitizes its own fields today, but this boundary
+    trusted that cross-module contract wholesale: text fields go through
+    ``_as_text`` (numeric ids coerce via its str() probe; unrenderable ones
+    degrade to ""), ``size_gb`` through the renderable-number probe, and the
+    two flags through ``bool``, so a poisoned row costs itself one field
+    rather than the whole cached payload.
+
+    Reads are unbound (``dict.get``): a dict-subclass row whose bound
+    ``get()`` raises still passes the isinstance gate, and the bomb used to
+    escape into ``fan_out`` — which re-raises on iteration — and 500
+    GET /api/tools/hardware.  Same for ``__bool__`` bombs on the two flags.
+    """
+    if not isinstance(d, dict):
+        return None
+    ssd = dict.get(d, "ssd")
+    return {
+        "id": _as_text(dict.get(d, "id")),
+        "name": _as_text(dict.get(d, "name")),
+        "size_gb": _renderable_number(dict.get(d, "size_gb")),
+        "ssd": _safe_flag(ssd, tri=True),
+        "power_state": _as_text(dict.get(d, "power_state")),
+        "system": _safe_flag(dict.get(d, "system")),
+    }
 
 
 def _hardware_profile_uncached() -> dict:
@@ -670,19 +1047,31 @@ def _hardware_profile_uncached() -> dict:
     def power_disks() -> list:
         try:
             from hub import disk_power_svc
-            return [
-                {
-                    "id": d.get("id"),
-                    "name": d.get("name"),
-                    "size_gb": d.get("size_gb"),
-                    "ssd": d.get("ssd"),
-                    "power_state": d.get("power_state"),
-                    "system": d.get("system"),
-                }
-                for d in disk_power_svc.list_power_disks()[:12]
-            ]
-        except Exception:
+            rows = disk_power_svc.list_power_disks()[:12]
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
+        # Field-by-field, not pass-through: this boundary used to copy the six
+        # fields raw, so one leftover ``\ud800`` name / inf size_gb / bytes
+        # power_state in a single row 500'd GET /api/tools/hardware at
+        # Starlette's encode — outside the try above — and the poisoned
+        # payload then sat in _hw_cache, re-serving that 500 for the full
+        # 5-minute TTL with the four profiler sections wiped alongside.
+        out = []
+        for d in rows:
+            try:
+                row = _power_disk_row(d)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # Last-ditch: a bomb the field scrubs miss costs its own row,
+                # never the batch (fan_out re-raises on iteration, which
+                # would wipe the profiler sections alongside).
+                row = None
+            if row is not None:
+                out.append(row)
+        return out
 
     # The disk listing is its own multi-level chain (which disks exist, what `/` sits
     # on, then one `diskutil info` per disk), and it waited for all four profiler
@@ -707,9 +1096,33 @@ def _hardware_profile_uncached() -> dict:
 # ─── Updates ─────────────────────────────────────────────────────────────────
 
 def _updates_fresh() -> dict | None:
-    v = _updates_cache["v"]
-    if v is not None and time.time() - _updates_cache["t"] < _UPDATES_TTL:
-        return v
+    # _mapping_get, not the bare subscripts: a leftover hash-shadowing
+    # str-subclass key planted in the module cache detonated the C-level
+    # lookup itself and 500'd every GET /api/tools/updates.  An unreadable
+    # slot reads as expired and re-probes like any other cache poisoning.
+    v = _mapping_get(_updates_cache, "v")
+    if v is None:
+        return None
+    stamp = _mapping_get(_updates_cache, "t", 0.0)
+    if not _isinst(stamp, (int, float)):
+        return None
+    try:
+        stamp = float(stamp)
+        # Finite check first: a leftover ``.inf`` stamp makes ``now - stamp``
+        # ``-inf``, which reads as *infinitely fresh* and freezes the
+        # Homebrew / macOS / GitHub cards for the life of the process.
+        # ``float()`` of an over-cap int OverflowErrors, and a non-numeric
+        # stamp TypeError'd the subtraction outright.
+        if (
+            stamp == stamp
+            and abs(stamp) != float("inf")
+            and time.time() - stamp < _UPDATES_TTL
+        ):
+            return v
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
     return None
 
 
@@ -741,7 +1154,9 @@ def start_updates_warmer(initial_delay: float = 25.0) -> None:
         while True:
             try:
                 check_updates(force=True)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 # A warmer must never take the panel down; the next pass retries.
                 pass
             if stop.wait(interval):
@@ -810,18 +1225,30 @@ def _brew_outdated() -> dict:
     if not present:
         return {"ok": False, "outdated": [], "count": 0, "raw": ""}
     now = time.time()
-    busy = _brew_busy()
+    # Guarded: ``_brew_busy`` is brew_cache's, not ours, and an unreadable
+    # lock probe must not cost the whole updates snapshot its brew card.
+    try:
+        busy = _brew_busy()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        busy = False
     if busy or now < _brew_retry_at:
         hit = _updates_fresh()
-        previous = hit.get("brew") if isinstance(hit, dict) else None
-        if isinstance(previous, dict):
+        # _mapping_get, not bound ``hit.get``: a hash-shadowing ``brew`` key
+        # in the cached snapshot raised out of this reader and the card lost
+        # its previous answer to the pool's generic fallback.
+        previous = _mapping_get(hit, "brew")
+        if _isinst(previous, dict):
             return previous
         return {"ok": False, "outdated": [], "count": 0, "raw": "busy" if busy else "timeout"}
     try:
         rc, out, err = _sh(
             [brew, "outdated", "--verbose"], timeout=45, env=_brew_env(),
         )
-    except Exception as exc:  # noqa: BLE001 - reported in the card
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - reported in the card
         return {"ok": False, "outdated": [], "count": 0, "raw": _as_text(exc)[:200]}
     if rc == -1 and err == "timeout":
         _brew_retry_at = now + _BREW_FAIL_COOLDOWN
@@ -841,7 +1268,9 @@ def _macos_updates() -> dict:
     try:
         # slow by nature; a tight timeout and a partial answer beat blocking
         rc, out, err = _sh(["/usr/sbin/softwareupdate", "-l"], timeout=45)
-    except Exception as exc:  # noqa: BLE001 - reported in the card
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - reported in the card
         return {"ok": False, "lines": [], "raw": _as_text(exc)[:1500], "has_updates": False}
     raw = (out or err or "").strip()
     interesting = [
@@ -876,7 +1305,9 @@ def _github_repo() -> str:
     try:
         from hub.config import settings_section
         raw = _as_text((settings_section("updates") or {}).get("github_repo")).strip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = ""
     if _REPO_RE.fullmatch(raw):
         return raw
@@ -940,7 +1371,9 @@ def _github_get_json(path: str):
         body = b""
         try:
             body = exc.read(_GITHUB_BODY_CAP)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             body = b""
         raise RuntimeError(_as_text(body[:200]) or f"HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
@@ -950,10 +1383,21 @@ def _github_get_json(path: str):
     finally:
         try:
             resp.close()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
-        parsed = safe_json_loads(raw.decode("utf-8", "replace") or "null")
+        # parse_int_capped: a leftover >4300-digit numeric literal makes
+        # ``json.loads`` itself raise ValueError (not JSONDecodeError) at
+        # CPython's str->int digit cap, so one unrenderable number (a release
+        # ``id``, say) used to wipe the whole updates card to
+        # "invalid github json" — and the tags fallback with it, since both
+        # routes share this reader.  The hook loads the huge literal as None
+        # and the tag/notes fields the card actually renders survive.
+        parsed = safe_json_loads(
+            raw.decode("utf-8", "replace") or "null", parse_int=parse_int_capped,
+        )
     except (ValueError, TypeError, RecursionError):
         raise RuntimeError("invalid github json")
     return parsed
@@ -1032,7 +1476,9 @@ def _github_latest(*, force: bool = False) -> dict:
                 return hit
         try:
             result = _github_latest_uncached()
-        except Exception as exc:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as exc:
             result = _github_empty(error=_as_text(exc)[:200])
         _github_cache.update(t=time.time(), v=result)
         return result
@@ -1136,7 +1582,18 @@ def apply_brew_upgrade(*, confirm: bool = False) -> dict:
     """Upgrade outdated Homebrew formulae as a maintenance job."""
     if not confirm:
         raise api_error("tools.confirm_required")
-    if _brew_busy():
+    # Guarded: this route's only lock probe belongs to brew_cache, and an
+    # unreadable pgrep answer used to raise straight out of the handler —
+    # a raw 500 on POST /api/tools/updates/brew.  Treating it as "not busy"
+    # lets brew's own flock arbitrate, which is what the panel wants
+    # anyway; a truly held lock still surfaces as brew's own message.
+    try:
+        busy = _brew_busy()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        busy = False
+    if busy:
         raise api_error("tools.brew_busy")
     brew = BREW
     try:
@@ -1168,7 +1625,9 @@ def _check_updates_uncached(*, force: bool = False) -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     brew_result = _result(brew_future, {"ok": False, "outdated": [], "count": 0, "raw": ""})
@@ -1185,23 +1644,69 @@ def _check_updates_uncached(*, force: bool = False) -> dict:
         "hint": "GitHub is the panel itself · Homebrew / macOS are check-only",
         "cached_ttl": _UPDATES_TTL,
     }
-    _updates_cache.update(t=time.time(), v=result)
+    _updates_cache_store(t=time.time(), v=result)
     return result
 
 
 # ─── Network helpers ─────────────────────────────────────────────────────────
+
+#: Module-level so the vanished-CLI probes re-check the exact path the spawn
+#: used (the network_svc ROUTE/PING/DSCACHEUTIL convention).
+PING = "/sbin/ping"
+DSCACHEUTIL = "/usr/bin/dscacheutil"
+KILLALL = "/usr/bin/killall"
+
+
+def _cli_gone(path: str) -> bool:
+    """Fresh disk probe: True only for a confirmed-absent binary at *path*.
+
+    Run on a failure path only (the network_svc ``_cli_gone`` / docker
+    ``cli_on_disk`` rule — a successful spawn never pays the stat).  An
+    unreadable parent directory (EIO/ESTALE on a dying mount) must not
+    upgrade the failure to the coded 503, so a stat that raises reads as
+    "still present".
+    """
+    try:
+        return not Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _spawn_sentinel(rc, out: str, err: str) -> bool:
+    """True when ``(rc, out, err)`` is ``sh``'s FileNotFoundError sentinel.
+
+    ``run_capped``/``sh`` collapse every failed spawn of a missing binary
+    into exactly ``(-1, "", "not found")`` — never a real CLI exit.  A
+    genuine run whose output merely reads "not found" is disambiguated by
+    the :func:`_cli_gone` disk confirm every caller pairs with this check.
+    """
+    return rc == -1 and (err or out or "").strip() == "not found"
+
 
 def net_ping(host: str, count: int = 3) -> dict:
     # The old blocklist enumerated shell metacharacters and never considered a
     # leading hyphen, so `-f` / `--flood` landed in ping's option position.
     if not cli_args.is_safe_hostname(host):
         return soft_fail("tools.bad_host")
-    host = host.strip()
+    # Unbound ``str.strip`` (the health_svc encode-bomb rule at strip rank):
+    # the route hands over a Pydantic-exact str, but a str-subclass host
+    # whose bound ``.strip`` raises passed the guard above and 500'd the
+    # in-process call where every junk host earns the coded refusal.  The
+    # unbound base method also answers an exact str, so the subclass's other
+    # overrides cannot ride into the argv below.
+    host = str.strip(host)
     count = _clamp_int(count, 3, 1, 10)
     rc, out, err = _sh(
-        ["/sbin/ping", "-c", str(count), "-W", "2000", host],
+        [PING, "-c", str(count), "-W", "2000", host],
         timeout=count * 3 + 5,
     )
+    if _spawn_sentinel(rc, out, err) and _cli_gone(PING):
+        # A vanished /sbin/ping answered 200 ok:false output "not found",
+        # which reads like the *host* does not respond — the same lie the
+        # Network tab's failover/dns-lookup routes already upgraded to a
+        # coded 503.  Disk-confirmed on the spawn-sentinel failure path
+        # only; a present-but-failing ping keeps its honest output below.
+        raise api_error("tools.ping_missing")
     return {
         "ok": rc == 0,
         "host": host,
@@ -1211,28 +1716,54 @@ def net_ping(host: str, count: int = 3) -> dict:
 
 
 def net_dns_lookup(name: str) -> dict:
-    if not isinstance(name, str) or not name.strip():
+    # _isinst + unbound strip in a try: a __class__-bomb name from an
+    # in-process caller raised out of the bare gate, and a lying
+    # ``__class__`` (claims str, is not) TypeErrors the base call — both
+    # earn the coded refusal every other junk name gets.
+    if not _isinst(name, str):
+        return soft_fail("tools.empty_name")
+    try:
+        stripped = str.strip(name)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return soft_fail("tools.empty_name")
+    if not stripped:
         return soft_fail("tools.empty_name")
     # `dig -f /etc/passwd` treats the file as a query list, and this endpoint
     # returns command output -- an arbitrary-file-read primitive from one
     # unanchored blocklist.  Require an alphanumeric first character instead.
     if not cli_args.is_safe_hostname(name):
         return soft_fail("tools.bad_host")
-    name = name.strip()
+    name = stripped
     results = []
     try:
         infos = socket.getaddrinfo(name, None)
         seen = set()
         for fam, _, _, _, sockaddr in infos:
             ip = sockaddr[0]
+            # Raw membership first so an unhashable leftover stays the coded
+            # failure below (TypeError lands in the except like any other
+            # resolver fault) instead of being coerced into a junk answer.
             if ip in seen:
                 continue
             seen.add(ip)
+            # getaddrinfo answers are str, but this boundary echoed
+            # ``sockaddr[0]`` raw: a leftover >4300-digit int (int->str digit
+            # cap ValueError), lone-surrogate str (UnicodeEncodeError) or
+            # non-finite float (allow_nan=False) used to 500 the Starlette
+            # render of POST /api/tools/net/dns.  Scrub; an unrenderable ip
+            # costs its own row, never the lookup.
+            ip_text = _as_text(ip)[:64]
+            if not ip_text:
+                continue
             results.append({
-                "ip": ip,
+                "ip": ip_text,
                 "family": "IPv6" if fam == socket.AF_INET6 else "IPv4",
             })
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "name": name, "message": _as_text(e), "results": []}
     # also dig if available for NS/info
     # System dig first. which("dig") used to win, so a PATH hijack could
@@ -1334,18 +1865,30 @@ def flush_dns() -> dict:
     """Flush macOS DNS caches (common admin tool)."""
     msgs = []
     ok_any = False
+    all_vanished = True
     for cmd in [
-        ["/usr/bin/dscacheutil", "-flushcache"],
-        ["/usr/bin/killall", "-HUP", "mDNSResponder"],
+        [DSCACHEUTIL, "-flushcache"],
+        [KILLALL, "-HUP", "mDNSResponder"],
     ]:
         rc, out, err = _sh(cmd, timeout=8)
         msgs.append(f"{' '.join(cmd)} → rc={rc} {(out or err).strip()[:80]}")
         if rc == 0:
             ok_any = True
-    # may need sudo for killall
+        if not _spawn_sentinel(rc, out, err):
+            all_vanished = False
     if not ok_any:
+        if all_vanished and _cli_gone(DSCACHEUTIL) and _cli_gone(KILLALL):
+            # Both spawns answered ``sh``'s vanished sentinel and both
+            # binaries are confirmed off disk: "partially failed (may need
+            # administrator privileges)" blamed sudo rights for missing
+            # host tools.  The raise fires *before* the sudo fallback, so
+            # nothing re-spawns over the confirmed-gone killall.  Either
+            # tool still on disk — including present-but-failing (a real
+            # permission problem) — keeps the honest escalation below.
+            raise api_error("tools.dns_flush_tools_missing")
+        # may need sudo for killall
         rc, out, err = _sh(
-            ["/usr/bin/sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"],
+            ["/usr/bin/sudo", "-n", KILLALL, "-HUP", "mDNSResponder"],
             timeout=8,
         )
         msgs.append(f"sudo killall mDNSResponder → rc={rc}")
@@ -1359,13 +1902,80 @@ def flush_dns() -> dict:
 
 # ─── LaunchAgents (broader than timers) ──────────────────────────────────────
 
+def _truthy(value) -> bool:
+    """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
+    parsed plist value must degrade to False, never raise out of the
+    launchd readers into a raw 500."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _plist_map(pl) -> dict | None:
+    """Plain-dict copy of a parsed plist, or None.
+
+    ``dict(subclass)`` copies through CPython's C-level storage, bypassing
+    a leftover's overridden ``.get``/``items``/``keys`` (the host6 _as_map
+    rule): a parser answer that is a dict *subclass* with a bombing bound
+    ``.get`` passed the old ``isinstance(pl, dict)`` gate and raised out of
+    the field reads — a raw 500 on GET /api/system/scheduler and
+    GET /api/tools/agents.
+    """
+    if not isinstance(pl, dict):
+        return None
+    try:
+        return dict(pl)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _args_text(args, cap: int) -> str:
+    """ProgramArguments joined for display.  Never raises.
+
+    Exact-list copy through the unbound base read (the top_processes rule):
+    a leftover ProgramArguments that is a list *subclass* whose bound
+    ``__iter__`` bombs passed the isinstance gate and blew the join —
+    a raw 500 on both launchd views; the real elements sit readable in the
+    C-level storage and survive.
+    """
+    if not isinstance(args, list):
+        return ""
+    try:
+        items = list.__getitem__(args, slice(None))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return " ".join(_as_text(a) for a in items)[:cap]
+
+
 def _plist_int(raw):
     if isinstance(raw, bool) or raw is None:
         return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    if isinstance(raw, int):
+        try:
+            # Base coercion to an exact int first: an int *subclass* whose
+            # ``__int__``/``__index__`` bombs used to raise past the
+            # enumerated catch below and 500 the launchd views.
+            value = int.__index__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    else:
+        try:
+            value = int(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
     try:
         # ``int()`` of an int is not length-capped: XML plists load
         # ``<integer>0x…</integer>`` through ``int(raw, 16)``, which CPython's
@@ -1381,12 +1991,30 @@ def _plist_int(raw):
 
 
 def _plist_jsonable(value, depth: int = 0):
-    """Drop inf/nan/``\\ud800`` so Starlette's allow_nan=False encoder cannot 500."""
+    """Drop inf/nan/``\\ud800`` so Starlette's allow_nan=False encoder cannot 500.
+
+    Coercions run on the *base* types (the storage7 unbound rule): every
+    bound dispatch here — ``value.items()``, iteration, ``value.decode``,
+    the bare ``str()`` digit-cap probe — reflected into a leftover
+    subclass's own override, and a calendar carrying an items()-bomb dict,
+    an ``__iter__``-bomb list, a decode()-bomb bytes or an
+    ``__index__``/``__str__``-bomb int answered a raw 500 on
+    GET /api/system/scheduler where its plain-typed siblings rendered fine.
+    """
     if depth > 8:
         return None
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to raise a non-ValueError past the digit-cap probe.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -1397,22 +2025,69 @@ def _plist_jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float, matching the int arm.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         return value if math.isfinite(value) else None
     if isinstance(value, str):
         return _as_text(value)
     if isinstance(value, dict):
-        return {_as_text(k): _plist_jsonable(v, depth + 1) for k, v in value.items()}
+        # Unbound base view: ``dict.items`` reads the real C-level storage,
+        # so the salvageable keys of an items()-bomb subclass survive.
+        try:
+            items = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        out = {}
+        for k, v in items:
+            out[_as_text(k)] = _plist_jsonable(v, depth + 1)
+        return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_plist_jsonable(v, depth + 1) for v in value]
+        if isinstance(value, list):
+            base = list
+        elif isinstance(value, tuple):
+            base = tuple
+        elif isinstance(value, set):
+            base = set
+        else:
+            base = frozenset
+        try:
+            # Unbound base iteration (the ``dict.items`` rule at sequence
+            # rank): a subclass whose bound ``__iter__`` raises drops to
+            # None only when even the base storage refuses.
+            items = list(base.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        return [_plist_jsonable(v, depth + 1) for v in items]
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")[:200]
-    iso = getattr(value, "isoformat", None)
+        # Unbound base decode: a bytes subclass whose bound ``.decode``
+        # bombs must not raise out of the sanitizer.
+        base = bytes if isinstance(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")[:200]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raising ``isoformat`` property used to blow the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/tools launchd.
             return _plist_jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _as_text(value)[:200]
 
@@ -1435,29 +2110,32 @@ def launchd_timers() -> list:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
-        if not isinstance(pl, dict):
+        # Laundered plain-dict copy, then plain reads: a dict-*subclass*
+        # parser answer with a bombing bound ``.get`` used to raise out of
+        # the field reads below and 500 GET /api/system/scheduler.
+        pl = _plist_map(pl)
+        if pl is None:
             continue
-        label = pl.get("Label") or Path(path).stem
-        if not isinstance(label, str):
+        label = pl.get("Label")
+        # No bare ``or`` fallback: it dispatched into a leftover Label's own
+        # ``__bool__``, and the bomb 500'd both launchd views.
+        if not isinstance(label, str) or not label:
             label = Path(path).stem
         label = _as_text(label)
         interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
-        if not interval and not calendar:
+        if not interval and not _truthy(calendar):
             continue
-        args = pl.get("ProgramArguments")
-        program = (
-            " ".join(_as_text(a) for a in args)[:120]
-            if isinstance(args, list) else ""
-        )
         items.append({
             "label": label,
             "path": _as_text(path),
             "interval_sec": interval,
             "calendar": _plist_jsonable(calendar),
-            "program": _as_text(program),
+            "program": _args_text(pl.get("ProgramArguments"), 120),
         })
     return items
 
@@ -1483,38 +2161,40 @@ def launchd_agents_summary() -> dict:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             items.append({
                 "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
             })
             continue
-        if not isinstance(pl, dict):
+        # Laundered plain-dict copy + guarded bools: a dict-subclass parser
+        # answer with a bombing ``.get``, or a ``__bool__``-bomb
+        # RunAtLoad/KeepAlive/Disabled/calendar value, used to raise out of
+        # these reads and 500 GET /api/tools/agents.
+        pl = _plist_map(pl)
+        if pl is None:
             items.append({
                 "label": _as_text(path.stem), "path": _as_text(path), "error": "parse",
             })
             continue
-        label = pl.get("Label") or path.stem
-        if not isinstance(label, str):
+        label = pl.get("Label")
+        if not isinstance(label, str) or not label:
             label = path.stem
-        run_at = bool(pl.get("RunAtLoad"))
+        run_at = _truthy(pl.get("RunAtLoad"))
         keep = pl.get("KeepAlive")
         interval = _plist_int(pl.get("StartInterval"))
         calendar = pl.get("StartCalendarInterval")
-        disabled = bool(pl.get("Disabled"))
-        args = pl.get("ProgramArguments")
-        program = (
-            " ".join(_as_text(a) for a in args)[:100]
-            if isinstance(args, list) else ""
-        )
+        disabled = _truthy(pl.get("Disabled"))
         items.append({
             "label": _as_text(label),
             "path": _as_text(path),
             "run_at_load": run_at,
-            "keep_alive": bool(keep) if not isinstance(keep, dict) else True,
+            "keep_alive": _truthy(keep) if not isinstance(keep, dict) else True,
             "interval_sec": interval,
-            "calendar": bool(calendar),
+            "calendar": _truthy(calendar),
             "disabled": disabled,
-            "program": _as_text(program),
+            "program": _args_text(pl.get("ProgramArguments"), 100),
         })
     return {
         "count": len(items),
@@ -1533,14 +2213,18 @@ def about_info() -> dict:
     def probe_host_ip() -> str:
         try:
             return host_ip()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
 
     def probe_platform() -> str:
         try:
             from hub.identity_svc import platform_string
             return platform_string()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return _as_text(platform.platform())
 
     ip, plat = fan_out(lambda probe: probe(), [probe_host_ip, probe_platform])
@@ -1548,7 +2232,9 @@ def about_info() -> dict:
         "name": "ServerHub",
         "version": __version__,
         "tagline_key": "tools.about_tagline",
-        "host_ip": ip,
+        # Scrubbed for the same reason as diagnostics(): the raw echo used
+        # to 500 GET /api/tools/about on a leftover surrogate / over-cap int.
+        "host_ip": _as_text(ip),
         "platform": _as_text(plat),
         "python": _as_text(platform.python_version()),
         # BASE derives from __file__; a checkout path with a leftover non-UTF-8

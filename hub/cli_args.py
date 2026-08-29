@@ -29,6 +29,8 @@ import re
 
 from hub.errors import api_error
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 # A positional must start with an alphanumeric.  That single anchor is what
 # makes an option-like value unrepresentable, regardless of what the rest of the
 # name contains.
@@ -47,16 +49,41 @@ def as_argv(cmd: object) -> list[str] | None:
     after every str validator has refused it.  Nested lists, ints, and bools are
     the same class: they must not be stringified into a positional.
     """
-    if not isinstance(cmd, (list, tuple)):
+    try:
+        is_seq = isinstance(cmd, (list, tuple))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if not is_seq:
         return None
     out: list[str] = []
-    for part in cmd:
-        if isinstance(part, (bytes, bytearray)):
+    try:
+        parts = list(cmd)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    for part in parts:
+        try:
+            is_bytes = isinstance(part, (bytes, bytearray))
+            is_str = isinstance(part, str)
+            is_path = isinstance(part, os.PathLike)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
-        if isinstance(part, str):
+        if is_bytes:
+            return None
+        if is_str:
             text = part
-        elif isinstance(part, os.PathLike):
-            text = os.fspath(part)
+        elif is_path:
+            try:
+                text = os.fspath(part)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
             if not isinstance(text, str):
                 return None
         else:
@@ -64,8 +91,10 @@ def as_argv(cmd: object) -> list[str] | None:
         if "\x00" in text:
             return None
         try:
-            text.encode("utf-8")
-        except UnicodeEncodeError:
+            str.encode(text, "utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Leftover ``\ud800`` used to UnicodeEncodeError ``subprocess.run``.
             return None
         out.append(text)
@@ -85,9 +114,25 @@ def _normalise(value: object) -> str | None:
     caller using the predicate and then passing the original string would still
     put the newline in the argv.
     """
-    if not isinstance(value, str):
+    try:
+        if not isinstance(value, str):
+            return None
+        # Unbound ``str.strip`` (the modules6 encode-bomb rule at strip rank): a
+        # str *subclass* whose bound ``.strip`` raises passed the isinstance gate
+        # above and blew this guard itself — every route that asks "is this
+        # argv-safe?" raised out of the very predicate that exists to refuse the
+        # value.  The base method also answers an exact str, so the walk below
+        # never runs the subclass's own iteration either.
+        text = str.strip(value, " \t")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A ``__class__``-property bomb raises out of ``isinstance`` itself
+        # (CPython reads the operand's ``__class__`` when the real-type fast
+        # check misses), and a *lying* ``__class__`` (claims str, is not)
+        # TypeErrors the unbound base strip.  Either way the value cannot be
+        # argv — the refusal every other junk value earns here.
         return None
-    text = value.strip(" \t")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         return None
     return text

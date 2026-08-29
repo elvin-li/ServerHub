@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import fcntl
 import os
 import stat
@@ -16,6 +17,9 @@ from hub import secure_io
 from hub.errors import api_error
 from hub.paths import BASE, CONFIG_FILE, DATA_DIR, ensure_state_dirs
 from hub.util import read_text_capped
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _cfg = {"mtime": 0.0, "data": {}}
 _write_lock = threading.Lock()
@@ -94,19 +98,36 @@ def _file_lock():
 
     A leftover directory named ``.services.yaml.lock``, or EIO creating it,
     must not 500 PUT /api/settings — fall back to the in-process write lock.
+
+    Taking (or releasing) the flock gets the same degrade as creating it:
+    EIO/ENOLCK out of ``fcntl.flock`` on a dying mount under data/ used to
+    raise raw OSError out of every mutate() — POST /api/storage/pool/save
+    and /clear answered a bare 500 after validation had already passed,
+    while the identical failure one syscall earlier (``os.open``) already
+    fell back cleanly.
     """
     fd = _lock_fd()
     if fd is None:
         yield
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            yield
+            return
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 #: Top-level keys every route indexes with ``.get`` / ``.items``.  A hand-edit
@@ -118,6 +139,50 @@ _LIST_KEYS = (
     "maintenance", "scripts", "groups_order", "schedules",
     "group_rules",
 )
+
+
+class _CappedIntSafeLoader(yaml.SafeLoader):
+    """SafeLoader whose int constructor survives CPython's digit cap."""
+
+
+def _construct_yaml_int_capped(loader, node):
+    try:
+        return loader.construct_yaml_int(node)
+    except ValueError:
+        # Past CPython's 4300-digit int(str) cap the scalar can neither
+        # become an int nor ever be re-rendered; load it as None — the same
+        # drop docker_cli.parse_int_capped applies to JSON journals — so one
+        # poisoned scalar no longer costs the document it sits in.
+        return None
+
+
+_CappedIntSafeLoader.add_constructor(
+    "tag:yaml.org,2002:int", _construct_yaml_int_capped,
+)
+
+
+def load_yaml_int_capped(text):
+    """``yaml.safe_load`` that survives a >4300-digit decimal int scalar.
+
+    PyYAML builds decimal ints with ``int(str)``, so one over-cap scalar
+    raises *bare ValueError* — not YAMLError — out of ``safe_load``.  The
+    corrupt-document fallback in :func:`_read_disk` then answered ``{}``
+    for the WHOLE config: the admin account read as "setup required", and
+    the next :func:`mutate` (PUT /api/settings, a notify/override save)
+    rewrote services.yaml from that ``{}`` — persisting the wipe of every
+    sibling key.  Retry with a loader whose int constructor drops the
+    unrenderable scalar to None; everything genuinely unparseable
+    (``!!timestamp .inf``, ``2026-13-01``, ``!!bool 2``, 12k-deep nests)
+    still raises to the caller's existing fallback.
+    """
+    try:
+        return yaml.safe_load(text)
+    except ValueError as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            raise
+        # May re-raise ValueError for non-digit-cap corruption (a bad
+        # ``2026-13-01`` date): the caller's corrupt-document path applies.
+        return yaml.load(text, Loader=_CappedIntSafeLoader)
 
 
 def _as_config(data) -> dict:
@@ -148,11 +213,15 @@ def _as_config(data) -> dict:
 def _read_disk() -> dict:
     """Parse services.yaml straight from disk, bypassing the mtime cache.
 
-    Used inside the write lock so a mutation merges onto what is actually stored
-    now, not onto a snapshot this process may have taken minutes ago.
+    Reader shape: anything unreadable or unparseable degrades to ``{}`` so a
+    page can still render defaults.  :func:`mutate` must NOT use this — its
+    write-back would persist that ``{}`` as the new config — it reads through
+    :func:`_read_disk_for_mutate`, which refuses instead.
     """
     try:
-        return _as_config(yaml.safe_load(read_text_capped(YAML_PATH, _YAML_CAP)) or {})
+        return _as_config(
+            load_yaml_int_capped(read_text_capped(YAML_PATH, _YAML_CAP)) or {}
+        )
     except (
         OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
         TypeError, ValueError, AttributeError, KeyError,
@@ -161,9 +230,65 @@ def _read_disk() -> dict:
         # torn write after power loss used to raise out of mutate()/cfg() and
         # 500 every route that touches settings.  RecursionError is leftover
         # deeply nested YAML — not YAMLError.  TypeError/ValueError/AttributeError
-        # /KeyError: leftover ``!!timestamp .inf``, ``2026-13-01``, a 5000-digit
-        # int, or ``!!bool 2`` are not YAMLError.
+        # /KeyError: leftover ``!!timestamp .inf``, ``2026-13-01`` or ``!!bool 2``
+        # are not YAMLError.  A >4300-digit decimal int no longer lands here:
+        # load_yaml_int_capped drops that one scalar so a mutate() on this
+        # snapshot cannot wipe every sibling key from services.yaml.
         return {}
+
+
+def _read_disk_for_mutate() -> dict:
+    """The read side of :func:`mutate`: refuse rather than wipe.
+
+    :func:`_read_disk`'s corrupt-document ``{}`` is the right shape for
+    *readers* — a route that cannot parse the file can still render defaults.
+    Under :func:`mutate` that same ``{}`` became the snapshot the mutator
+    patched and :func:`_save_full_locked` wrote back: a services.yaml that
+    was merely *unreadable* (grown past the 1MB read cap by a hand edit or a
+    restored ``services.yaml.bak.*``, torn to non-UTF-8 bytes by power loss,
+    over-deep, genuinely unparseable, or replaced whole by a stray paste)
+    was silently rewritten as ``{}``-plus-patch with an HTTP 200 — the admin
+    account, apps, stacks and bookmarks all gone.  Worse, for the oversize
+    case even the pre-save backup was skipped (``copy_secret_file`` reads
+    capped and its OSError is deliberately swallowed), so that wipe had no
+    pre-image to recover from.  Refuse with the coded 503 instead; the file
+    the operator could still fix stays byte-identical on disk.
+
+    A *missing* file stays writable — first-run setup creates the config
+    through this path — and an empty or comments-only file parses to ``{}``
+    legitimately.  A leftover non-file node (directory/FIFO squatting the
+    path) also proceeds: it holds no YAML to lose, and
+    :func:`_save_full_locked` already knows how to clear it.
+    """
+    try:
+        regular = stat.S_ISREG(os.stat(YAML_PATH).st_mode)
+    except (OSError, ValueError):
+        # Missing, dangling symlink, or a name the filesystem cannot even
+        # represent (UnicodeEncodeError is a ValueError): nothing readable
+        # sits there, so there is nothing this save could destroy.
+        regular = False
+    if not regular:
+        return {}
+    try:
+        text = read_text_capped(YAML_PATH, _YAML_CAP)
+    except FileNotFoundError:
+        # Vanished between the stat and the read: same as missing.
+        return {}
+    except (OSError, UnicodeDecodeError):
+        raise api_error("settings.config_unreadable")
+    try:
+        data = load_yaml_int_capped(text) or {}
+    except (
+        UnicodeDecodeError, yaml.YAMLError, RecursionError,
+        TypeError, ValueError, AttributeError, KeyError,
+    ):
+        raise api_error("settings.config_unreadable")
+    if not isinstance(data, dict):
+        # A whole-document paste (a compose file, a bare list) is content the
+        # operator can still rescue by hand; overwriting it with settings
+        # would not be.
+        raise api_error("settings.config_unreadable")
+    return _as_config(data)
 
 
 #: Minimal config written on first run.  Without this a fresh install raises
@@ -255,7 +380,9 @@ def cfg():
             return _cfg["data"]
         if m != _cfg["mtime"]:
             try:
-                data = _as_config(yaml.safe_load(read_text_capped(p, _YAML_CAP)) or {})
+                data = _as_config(
+                    load_yaml_int_capped(read_text_capped(p, _YAML_CAP)) or {}
+                )
             except (
                 OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError,
                 TypeError, ValueError, AttributeError, KeyError,
@@ -275,31 +402,107 @@ def settings_section(name: str) -> dict:
     like ``notify: []`` used to 500 the alerter, Settings, file manager, and
     every job that merged ``maintenance_env``.
     """
-    s = cfg().get("settings")
-    if not isinstance(s, dict):
+    # ``dict.get(...)``, not ``s.get(...)``: ``cfg()`` normally returns a plain
+    # dict, but a leftover whose ``settings`` map (or the config root) is a
+    # dict *subclass* with a bombing ``.get`` used to raise straight out of
+    # this hot helper — and every route that reads a nested section
+    # (ip_aliases/notify/thresholds/terminal/ollama…) inherited the 500 unless
+    # it happened to wrap the call.  The unbound builtin reads the C-level
+    # storage, bypassing the override at no copy cost; the returned section is
+    # laundered with ``dict(...)`` so the caller's own ``.get`` is safe too.
+    #
+    # The ``cfg()`` call itself is guarded like ``settings_api._cfg_map`` /
+    # ``system_settings_svc._settings_map``: a snapshot provider that raises
+    # used to escape this helper and 500 GET /api/settings/other and
+    # /api/settings/thresholds while GET /api/settings (whose reads go through
+    # the guarded siblings) answered 200 over the very same failure.
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
-    raw = s.get(name)
-    return raw if isinstance(raw, dict) else {}
+    # _isa, not a bare isinstance: ``isinstance`` consults ``__class__``
+    # when the exact-type check misses, so a snapshot root whose
+    # ``__class__`` is a *raising property* detonated this gate itself —
+    # a raw 500 on GET /api/settings/other and /thresholds one step ahead
+    # of every guard below (the host12 rule; the raising-provider try
+    # above never saw it because the answer, not the call, is the bomb).
+    if not _isa(data, dict):
+        return {}
+    # The unbound reads sit inside a try too: ``dict.get`` bypasses a
+    # subclass's own ``.get`` but still runs the hash lookup, and a leftover
+    # *hash-shadowing* key (same hash as "settings"/<name>, raising
+    # ``__eq__``) detonated the compare inside the C lookup itself — a raw
+    # 500 on GET /api/settings/other and /thresholds (the host10 rule).
+    try:
+        s = dict.get(data, "settings")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    # _isa on the stored values as well: a ``__class__``-property bomb
+    # planted as the ``settings`` block (or the section itself) passes the
+    # guarded read whole and used to blow these bare gates the same way.
+    if not _isa(s, dict):
+        return {}
+    try:
+        raw = dict.get(s, name)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    if not _isa(raw, dict):
+        return {}
+    try:
+        return dict(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
 
 
 def _env_text(value) -> str:
     """subprocess env keys/values. Leftover ``str()`` RecursionError / ``\\ud800``
-    used to 500 POST backups and maintenance jobs (Popen UTF-8 argv/env)."""
+    used to 500 POST backups and maintenance jobs (Popen UTF-8 argv/env).
+
+    Unbound base-type calls only (``bytes.decode`` / ``str.encode``, the
+    audit._utf8_text convention): a leftover subclass overriding ``decode``
+    or ``encode`` to raise used to blow this scrub from inside every job
+    thread that merges ``maintenance_env`` — the container-update runner
+    died *before* its try block and left its row running forever — instead
+    of degrading that one entry.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        base = bytes if isinstance(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     elif value is None:
         return ""
-    else:
+    elif not isinstance(value, str):
         try:
             value = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def maintenance_env() -> dict:
@@ -313,11 +516,53 @@ def maintenance_env() -> dict:
 
 
 def override(sid):
-    ov = cfg().get("overrides")
-    if not isinstance(ov, dict):
+    # dict.get, not .get: a leftover cfg() whose root / overrides map is a
+    # dict subclass with a bombing .get must not raise out of this reader
+    # (services and bookmarks call it per row); the returned override is
+    # laundered so the caller's own .get is safe too.
+    #
+    # The cfg() call and both unbound reads sit inside a try (the
+    # settings_section rule this per-row sibling never got): a snapshot
+    # provider that raises escaped this reader bare, and ``dict.get``
+    # bypasses a subclass's own ``.get`` but still runs the hash lookup —
+    # a leftover *hash-shadowing* key (same hash as "overrides" or the
+    # sid, raising ``__eq__``) detonated the compare inside the C lookup
+    # itself and 500'd every services/bookmarks listing that reads
+    # overrides per row.
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
-    val = ov.get(sid, {})
-    return val if isinstance(val, dict) else {}
+    # _isa on every rank gate (the settings_section host12 rule): a
+    # snapshot root — or a stored ``overrides``/per-sid value — whose
+    # ``__class__`` is a raising property used to detonate the bare
+    # isinstance itself, one step ahead of the guarded reads.
+    if not _isa(data, dict):
+        return {}
+    try:
+        ov = dict.get(data, "overrides")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    if not _isa(ov, dict):
+        return {}
+    try:
+        val = dict.get(ov, sid, {})
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    if not _isa(val, dict):
+        return {}
+    try:
+        return dict(val)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
 
 
 def set_override(sid: str, patch: dict) -> dict:
@@ -364,6 +609,160 @@ def reload_cfg():
         return cfg()
 
 
+#: Sentinel: a node yaml.safe_dump cannot render (over-cap int); the entry is
+#: dropped rather than failing the whole save.
+_UNRENDERABLE = object()
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover node whose ``__class__`` is a *raising property*
+    riding a stored section back through PUT /api/settings detonated
+    ``_renderable_tree``'s bare rank gates on the retry walk — and the same
+    probe inside ``yaml.safe_dump``'s own ``ignore_aliases`` raises a
+    RuntimeError (not a YAMLError) straight out of the first dump attempt.
+    A real subclass still matches through the C-level type check (the
+    storage_svc/vms_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _renderable_tree(value, depth: int = 0):
+    """Drop over-cap ints and launder subclass leftovers so one node cannot
+    wedge every save forever.
+
+    A ``str()`` probe, not an isinstance-str gate: the poison is an
+    *already-parsed* int (YAML hex/octal loads through ``int(x, 16)``, which
+    CPython's 4300-digit cap does not bound), and it can sit in a value, a
+    mapping key, a list item or a ``!!set`` member.
+
+    Subclass instances are coerced to their base type through unbound base
+    calls: ``yaml.safe_dump`` looks representers up by *exact* type, so a
+    leftover str/int/float/dict/list subclass riding a stored section back
+    through a save raised RepresenterError — a YAMLError, not the ValueError
+    :func:`_dump` retried on — a raw 500 out of PUT /api/settings (the
+    terminal/ui/thresholds branches all merge ``settings_section(...)``
+    values back in).  The base copy also bypasses subclass method bombs
+    (``items``/``__iter__``/``__str__``/``__index__`` raising), which used
+    to blow this walk itself on the retry path.  Everything genuinely
+    plain -- surrogate strings, dates, normal ints -- passes through
+    untouched.
+    """
+    if depth > 64:
+        return value
+    if type(value) is bool:
+        return value
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return _UNRENDERABLE
+        try:
+            str(value)
+        except ValueError:
+            return _UNRENDERABLE
+        return value
+    if _isa(value, float):
+        if type(value) is float:
+            return value
+        try:
+            # NaN/inf stay: YAML renders them as ``.nan`` / ``.inf``.
+            return float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return _UNRENDERABLE
+    if _isa(value, str):
+        if type(value) is str:
+            return value
+        try:
+            return str.__str__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` (claims str, is not) TypeErrors the
+            # unbound copy: no representer could render it either way.
+            return _UNRENDERABLE
+    if _isa(value, (bytes, bytearray)):
+        # bytearray as well: SafeDumper only represents exact bytes.
+        try:
+            return bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return _UNRENDERABLE
+    if not _isa(value, (dict, list, tuple, set, frozenset)):
+        try:
+            value.__class__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A ``__class__``-property bomb detonates the dumper's own bare
+            # ``ignore_aliases`` isinstance (RuntimeError, not YAMLError):
+            # unrepresentable either way — drop the node, keep siblings.
+            return _UNRENDERABLE
+        return value
+    if _isa(value, dict):
+        try:
+            items = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return _UNRENDERABLE
+        out = {}
+        for k, v in items:
+            k2 = _renderable_tree(k, depth + 1)
+            if k2 is _UNRENDERABLE:
+                continue
+            v2 = _renderable_tree(v, depth + 1)
+            if v2 is _UNRENDERABLE:
+                continue
+            try:
+                out[k2] = v2
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A passthrough key whose ``__hash__`` bombs cannot land in
+                # a YAML mapping; drop the entry, keep siblings.
+                continue
+        return out
+    if _isa(value, (set, frozenset)):
+        base = set if _isa(value, set) else frozenset
+        try:
+            members = list(base.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return _UNRENDERABLE
+        cleaned = (_renderable_tree(v, depth + 1) for v in members)
+        try:
+            return {v for v in cleaned if v is not _UNRENDERABLE}
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A laundered member whose ``__hash__`` bombs cannot join a set.
+            return _UNRENDERABLE
+    base = list if _isa(value, list) else tuple
+    try:
+        members = list(base.__iter__(value))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return _UNRENDERABLE
+    cleaned = [_renderable_tree(v, depth + 1) for v in members]
+    return [v for v in cleaned if v is not _UNRENDERABLE]
+
+
 def _dump(data: dict) -> str:
     # SafeDumper, not Dumper: a leftover tuple in a hand-built patch used to
     # emit ``!!python/tuple`` into services.yaml.  The next yaml.safe_load then
@@ -381,11 +780,47 @@ def _dump(data: dict) -> str:
     except RecursionError:
         # Leftover deeply nested services.yaml used to RecursionError PUT /api/settings.
         raise api_error("settings.save_failed")
-    except ValueError:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A leftover YAML hex int past CPython's int->str digit cap loads fine
-        # (``int(x, 16)`` is uncapped) but cannot be re-dumped; any mutate that
-        # carried it along -- auth setup, password change -- used to 500.
-        raise api_error("settings.save_failed")
+        # (``int(x, 16)`` is uncapped) but cannot be re-dumped.  The coded 503
+        # alone left every settings save stuck for good: the auth sweep scrubs
+        # its own block, but a huge leftover *outside* it (a stray settings
+        # key, a stack port) rode through every mutate() and PUT /api/settings,
+        # PUT /api/identity, alias/notify saves all 503'd until services.yaml
+        # was hand-edited.  Retry once with only the unrenderable nodes
+        # dropped -- the value cannot be persisted either way; losing the rest
+        # of the save with it bought nothing.
+        #
+        # YAMLError too, not just ValueError: SafeDumper looks representers up
+        # by *exact* type, so a leftover str/int/dict *subclass* riding a
+        # stored section back through a save (PUT /api/settings merges
+        # ``settings_section("terminal")`` and friends into the patch) raised
+        # RepresenterError straight out of mutate() — a raw 500 where the
+        # digit-cap sibling one line up already degraded.  The retry launders
+        # subclasses to their base type, so the value itself still persists.
+        #
+        # Exception, not (ValueError, YAMLError): the dumper's own
+        # ``ignore_aliases`` runs a bare isinstance, so a leftover whose
+        # ``__class__`` is a raising property escaped the first attempt as a
+        # RuntimeError — a raw 500 where every other unrenderable node
+        # already took the retry.  The retry drops the bomb node and the
+        # rest of the save still lands.
+        try:
+            return yaml.safe_dump(
+                _renderable_tree(data),
+                allow_unicode=True,
+                sort_keys=False,
+                width=120,
+                default_flow_style=False,
+            )
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # ValueError / RecursionError / YAMLError as before, plus any
+            # bomb the laundering could not shape: the coded 503, never raw.
+            raise api_error("settings.save_failed")
 
 
 def save_full(data: dict) -> None:
@@ -449,12 +884,33 @@ def _save_full_locked(data: dict) -> None:
             #
             # Sorted by name, which is sound because the suffix is a fixed-width
             # epoch: lexicographic and numeric order coincide.
-            baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
+            #
+            # The scandir under glob() re-raises EIO/ESTALE on a dying data/
+            # mount.  The pre-image copy just landed and the new config is
+            # about to be written — losing the *retention trim* is
+            # housekeeping, but the raw OSError used to 500 the save that had
+            # otherwise succeeded (POST /api/storage/pool/save was the found
+            # route; every mutate() shares this path).
+            try:
+                baks = sorted(DATA_DIR.glob("services.yaml.bak.*"), reverse=True)
+            except OSError:
+                baks = []
             for old in baks[BACKUP_RETENTION:]:
                 try:
                     old.unlink()
                 except OSError:
                     pass
+    text = _dump(data)
+    if len(text) > _YAML_CAP:
+        # A config larger than the read cap can never be loaded back: every
+        # later cfg()/_read_disk() would answer {} — the admin account and
+        # every sibling setting gone from the panel's view — and the next
+        # mutate() would persist that wipe from the empty snapshot.  One
+        # unbounded notify-channel value used to do exactly this with a
+        # single 200 response.  Refusing the save keeps the on-disk file
+        # (and everything in it) intact; read_text_capped compares
+        # characters, so len() is the right unit.
+        raise api_error("settings.save_failed")
     # services.yaml carries service credentials, tunnel tokens and admin
     # passwords.  The previous write_text()+chmod() left the staging file
     # world-readable at the default umask for the whole duration of the
@@ -462,11 +918,22 @@ def _save_full_locked(data: dict) -> None:
     # file is now 0600 from the moment it first exists.  The replace stays
     # atomic, so a reader never observes a half-written config.
     try:
-        secure_io.replace_secret_text(YAML_PATH, _dump(data))
+        secure_io.replace_secret_text(YAML_PATH, text)
     except OSError:
         # Leftover nonempty directory / EIO replacing the file must not 500.
         raise api_error("settings.save_failed")
-    reload_cfg()
+    # The refresh is best-effort: the new config is already on disk, so a
+    # snapshot provider that raises (this cache does not own ``cfg`` —
+    # tests and tooling patch it) used to 500 PUT /api/identity and every
+    # other mutate() *after* the save had landed, answering an error for a
+    # write that succeeded.  Skipping the refresh costs nothing durable:
+    # the mtime changed, so the next honest cfg() re-reads the file anyway.
+    try:
+        reload_cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
 
 
 def mutate(mutator) -> dict:
@@ -476,19 +943,46 @@ def mutate(mutator) -> dict:
     mutates it in place. This is the safe way to change one key: the read and the
     write happen inside one lock, so a concurrent ServerHub cannot interleave and
     lose the change (or have its own change lost). Returns the written config.
+
+    Raises the coded 503 ``settings.config_unreadable`` when services.yaml
+    exists but cannot be read back (oversize, torn, unparseable): patching a
+    ``{}`` fallback snapshot and writing it out used to *persist* the wipe of
+    every sibling key with an HTTP 200 — see :func:`_read_disk_for_mutate`.
     """
     with _write_lock, _file_lock():
-        data = _read_disk()
+        data = _read_disk_for_mutate()
         mutator(data)
         _save_full_locked(data)
         return data
 
 
-def deep_merge(base: dict, patch: dict) -> dict:
+def deep_merge(base: dict, patch: dict, _merging: frozenset = frozenset()) -> dict:
+    """Merge *patch* onto a deep copy of *base*, dict-by-dict.
+
+    Cycle-guarded by identity along the current merge path: a recursive YAML
+    anchor (``ip_aliases: &a {self: *a}``) survives ``yaml.safe_load`` and
+    ``settings_section``, so a handler that copies its stored section and
+    writes it back through :func:`update_settings` hands this function a
+    patch that contains itself.  The recursion then never terminated —
+    ``copy.deepcopy`` is memo'd against cycles, but this walk was not — and
+    PUT /api/system/network/alias/auto answered a RecursionError 500 instead
+    of saving.  On re-entering a dict already being merged the base copy wins
+    unchanged (there is nothing new underneath: it is the same mapping).  The
+    guard is per-path, not global, so a non-cyclic alias reused by two
+    sibling keys still merges into both.
+    """
     out = copy.deepcopy(base)
+    if id(patch) in _merging:
+        return out
+    _merging = _merging | {id(patch)}
     for k, v in patch.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = deep_merge(out[k], v)
+        # _isa: a leftover patch value whose ``__class__`` is a raising
+        # property (a stored-section bomb merged back in by PUT
+        # /api/settings' terminal branch) used to detonate the bare rank
+        # gate here — a raw 500 out of mutate() before the dump-side
+        # laundering ever ran.
+        if _isa(v, dict) and _isa(out.get(k), dict):
+            out[k] = deep_merge(out[k], v, _merging)
         else:
             out[k] = v
     return out
@@ -508,10 +1002,52 @@ def panel_locale() -> str:
     ``zh-Hans-CN``, so a first-match would keep the menu in English while
     the panel is zh-CN.
     """
-    settings = cfg().get("settings")
-    ui = settings.get("ui") if isinstance(settings, dict) else None
+    # dict.get, not .get: a leftover cfg() root / settings map that is a dict
+    # subclass with a bombing .get must not 500 the menu-bar locale probe
+    # (GET /api/status reads this on a cold cache).
+    #
+    # The cfg() call and the settings/ui reads sit inside a try (the
+    # settings_section rule): a snapshot provider that raises escaped this
+    # probe bare, and a leftover *hash-shadowing* key (same hash as
+    # "settings"/"ui", raising ``__eq__``) survived the unbound read and
+    # detonated the C-level compare — the locale try below starts one read
+    # too late to catch either, so a cold GET /api/status answered a raw
+    # 500 instead of the default locale.
+    try:
+        data = cfg()
+        settings = dict.get(data, "settings") if isinstance(data, dict) else None
+        ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return DEFAULT_UI_LOCALE
     ui = ui if isinstance(ui, dict) else {}
-    raw = str(ui.get("locale") or DEFAULT_UI_LOCALE).strip()
+    try:
+        _locale_raw = dict.get(ui, "locale")
+        # Guarded str(), not a bare one: a hand-edited YAML hex/octal locale
+        # (``locale: 0xF…``) parses uncapped through ``int(x, 16)`` and the
+        # bare ``str()`` raised CPython's 4300-digit ValueError here.  That
+        # 500'd GET /api/status forever on a cold cache (_build_status has no
+        # last-good snapshot to fall back to on first boot) and the member
+        # status/services filters the same way.  A numeric YAML ``locale:
+        # 2023`` still coerces and falls through to the default below.
+        #
+        # ``except Exception``, not ValueError, and no ``_locale_raw or …``:
+        # the old ``or`` reflected into a leftover's own ``__bool__`` and the
+        # ValueError-only catch let that bomb (and any non-ValueError
+        # ``__str__`` bomb) raise straight out of this probe — the same cold
+        # GET /api/status 500 the digit cap already had.  ``str(x)`` of a str
+        # *subclass* whose ``__str__`` returns itself also keeps the
+        # subclass, so the bound ``.strip()`` / ``in`` / ``.lower()`` below
+        # dispatched into leftover overrides; launder to an exact str first.
+        raw = "" if _locale_raw is None else str(_locale_raw)
+        if type(raw) is not str:
+            raw = str.__str__(raw)
+        raw = raw.strip() or DEFAULT_UI_LOCALE
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return DEFAULT_UI_LOCALE
     if raw in UI_LOCALES:
         return raw
     low = raw.lower()

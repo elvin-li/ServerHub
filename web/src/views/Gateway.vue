@@ -46,18 +46,18 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in data?.sites || []" :key="s.file">
+          <tr v-for="s in asArray(asRecord(data).sites)" :key="finiteText(asRecord(s).file)">
             <td class="mono">
-              <strong>{{ finiteText(s.file) }}</strong>
-              <div v-if="(s.server_names || []).length" class="show-m sub">{{ (s.server_names || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-              <div v-if="(s.listens || []).length" class="show-m sub">{{ (s.listens || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-              <div v-if="(s.upstreams || []).length" class="show-m sub">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</div>
+              <strong>{{ finiteText(asRecord(s).file) }}</strong>
+              <div v-if="asArray(asRecord(s).server_names).length" class="show-m sub">{{ asArray(asRecord(s).server_names).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="asArray(asRecord(s).listens).length" class="show-m sub">{{ asArray(asRecord(s).listens).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="asArray(asRecord(s).upstreams).length" class="show-m sub">{{ asArray(asRecord(s).upstreams).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</div>
             </td>
-            <td class="mono col-hide-m">{{ (s.listens || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
-            <td class="mono col-hide-m">{{ (s.server_names || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ (s.upstreams || []).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
+            <td class="mono col-hide-m">{{ asArray(asRecord(s).listens).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m">{{ asArray(asRecord(s).server_names).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ asArray(asRecord(s).upstreams).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
           </tr>
-          <tr v-if="!(data?.sites || []).length && !loadError">
+          <tr v-if="!asArray(asRecord(data).sites).length && !loadError">
             <td colspan="4" class="empty-row">{{ t('gateway.empty') }}</td>
           </tr>
         </tbody>
@@ -71,7 +71,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getNginx, reloadNginx, testNginx } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -90,9 +90,12 @@ let loadSeq = 0
 async function load() {
   const seq = ++loadSeq
   try {
-    const next = await getNginx()
+    const next = asRecord(await getNginx())
     if (seq !== loadSeq || !pageAlive) return
-    data.value = next
+    data.value = {
+      ...next,
+      sites: asArray(next.sites).map((s) => asRecord(s)),
+    }
     loadError.value = ''
   } catch (e) {
     if (seq !== loadSeq || !pageAlive) return

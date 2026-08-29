@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 from pathlib import Path
 
 from hub import cli_args
 from hub.docker_cli import _jsonable, engine_up
-from hub.errors import api_error
+from hub.errors import CODES, api_error
 from hub.launchd_cache import invalidate_launchd, loaded_labels
 from hub.util import cached_snapshot, fan_out, read_bytes_capped, run_capped, sh, strftime_now, utf8_env
 from hub.brew_cache import brew_services_list, invalidate_brew_services
@@ -32,23 +33,140 @@ from hub.paths import AGENTS_DIR, user_home  # noqa: E402
 # hub.paths.BREW worked fine.
 from hub.paths import BREW  # noqa: E402
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _TTL = 12.0
 #: Leftover multi-MB LaunchAgent plist used to OOM GET /api/apps/autostart.
 _PLIST_CAP = 256 * 1024
 
+# Same code (and localized string) native_catalog registers for its own
+# LaunchAgent writes; setdefault here too so raising it does not depend on
+# import order — api_error() degrades unknown codes to HTTP 500.
+CODES.setdefault(
+    "catalog.plist_write_failed",
+    (409, "could not write LaunchAgent {label}: {detail}"),
+)
+
+
+def _isinstance(value, types) -> bool:
+    """isinstance that survives a leftover raising ``__class__`` property.
+
+    When the type check fails, CPython's isinstance consults
+    ``value.__class__`` — so a leftover object whose ``__class__`` is a
+    raising property used to blow the snapshot gate / field probes in
+    :func:`_brew_service_items` (wiping every Homebrew row into overview()'s
+    _safe fallback) and the ``_plain_rc`` probes that run outside the toggle
+    trys.  A real subclass never reaches the ``__class__`` lookup (the type
+    check answers first) — the brew_svc/brew_cache ``_isinstance`` convention.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 
 def _as_text(value) -> str:
-    """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    """JSON-safe leftover. ``\\ud800`` in brew/Popen messages used to 500 autostart JSON.
+
+    Unbound through the base types, like brew_svc._as_text: a leftover
+    bytes-subclass whose bound ``.decode`` raises (or a str-subclass whose
+    ``.encode`` does — including one minted by a self-``__str__``) used to
+    raise out of the launchctl log tail below and 500 POST /api/apps/autostart.
+    Guarded isinstance: a ``__class__`` property bomb used to blow the chain.
+    """
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _plain_rc(value):
+    """Exact-type launchctl/brew rc for the post-spawn tails below.
+
+    The vanished-brew sentinel check in :func:`set_brew_autostart` and the
+    ``ok`` render must run *outside* the spawn try (its broad except used to
+    swallow the coded 503 raise), so a leftover numeric-subclass rc whose
+    ``__eq__`` raises used to 500 POST /api/apps/autostart after the run had
+    already finished — the exact class brew_svc.service_action sealed, left
+    over in this sibling.  Unbound base-type calls dodge the override;
+    anything non-numeric degrades to None.  Guarded isinstance: a leftover
+    rc whose ``__class__`` property raises used to blow the first probe here.
+    """
+    if type(value) is bool:
+        return int(value)
+    if _isinstance(value, int) and type(value) is not bool:
+        try:
+            return int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinstance(value, float):
+        try:
+            return float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return None
+
+
+def _rc_note(op: str, rc) -> str:
+    """``{op} rc={rc}`` for the launchctl toggle message, whatever rc's shape.
+
+    A leftover over-cap rc (hex-minted ints dodge CPython's str->int digit
+    cap) used to ValueError the f-string and 500 POST /api/apps/autostart
+    after launchctl had already run; subclass rc bombs degrade via _plain_rc.
+    """
+    rc = _plain_rc(rc)
+    if rc is None:
+        return f"{op} rc=unknown"
+    try:
+        return f"{op} rc={rc}"
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return f"{op} rc=unknown"
 
 
 def _exists(path: Path) -> bool:
@@ -138,13 +256,28 @@ def _read_plist(path: Path) -> dict:
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
         return pl if isinstance(pl, dict) else {}
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
 
 
 def _write_plist(path: Path, data: dict) -> None:
     from hub import secure_io
-    secure_io.replace_bytes(path, plistlib.dumps(data))
+    try:
+        secure_io.replace_bytes(path, plistlib.dumps(data))
+    except (OSError, OverflowError, ValueError, TypeError, RecursionError) as exc:
+        # plistlib.loads reads any <integer> — the 0x… spelling parses uncapped
+        # past CPython's digit limit — but the dumps writer refuses ints outside
+        # the 64-bit window with OverflowError (the files_svc/ondemand class).
+        # That, or an unwritable LaunchAgents dir (OSError from replace_bytes),
+        # used to 500 POST /api/apps/autostart for a launchd/script toggle on a
+        # plist that had already passed the bad_plist gate — homebrew.mxcl.*
+        # agents included.  Same coded 409 as native_catalog's agent writes.
+        label = data.get("Label") if isinstance(data.get("Label"), str) else path.stem
+        raise api_error(
+            "catalog.plist_write_failed", label=label, detail=_as_text(exc)
+        )
 
 
 def _loaded_labels() -> frozenset[str]:
@@ -241,27 +374,43 @@ def _brew_service_items() -> list[dict]:
         return []
     items = []
     # Shared TTL cache: this list was being fetched once per caller, and
-    # `brew services list --json` costs ~1.3s each time.
-    data = brew_services_list()
+    # `brew services list --json` costs ~1.3s each time.  Guarded probes:
+    # a snapshot object — or one element — whose ``__class__`` property
+    # raises used to blow the gates below (which run outside any try here)
+    # into overview()'s _safe fallback and wipe every Homebrew row.
+    try:
+        data = brew_services_list()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    if not _isinstance(data, list):
+        return []
+    # Unbound base iteration into an exact list, the brew_cache._copy_items
+    # convention: a leftover list-subclass ``__iter__`` bomb (or a
+    # dict-subclass row whose ``get`` raises below) used to raise out of this
+    # collector into overview()'s _safe fallback and wipe every Homebrew row
+    # from GET /api/apps/autostart instead of costing only the poisoned value.
+    try:
+        rows = [s for s in list.__iter__(data) if _isinstance(s, dict)]
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        rows = []
     from hub.brew_svc import _HIDE_BREW
-    for s in data:
-        if not isinstance(s, dict):
+    for s in rows:
+        # _as_text yields an exact, surrogate-scrubbed str: a str-subclass
+        # name/status whose ``__format__``/``.lower()`` raises used to bomb
+        # the f-string / bound-lower below the same way.
+        name = _as_text(dict.get(s, "name"))
+        if not name or name in _HIDE_BREW:
             continue
-        name = s.get("name") if isinstance(s.get("name"), str) else _as_text(s.get("name"))
-        if not name:
-            continue
-        # Dummy brew formulae replaced by a custom LaunchAgent / container.
-        # Listing them here offers Enable, which recopies a KeepAlive plist
-        # and crash-loops (cloudflared, redis, nginx, ollama).
-        if name in _HIDE_BREW:
-            continue
-        raw_status = s.get("status")
-        status = raw_status.lower() if isinstance(raw_status, str) else _as_text(raw_status).lower()
-        raw_file = s.get("file")
-        if isinstance(raw_file, str):
-            file_path = raw_file
-        elif isinstance(raw_file, (bytes, bytearray)):
-            file_path = raw_file.decode("utf-8", "replace")
+        status = _as_text(dict.get(s, "status")).lower()
+        raw_file = dict.get(s, "file")
+        if _isinstance(raw_file, (str, bytes, bytearray)):
+            # _as_text, not bound ``.decode``: a bytes-subclass decode bomb
+            # used to raise here and cost the whole collector.
+            file_path = _as_text(raw_file)
         else:
             file_path = ""
         pl = {}
@@ -323,8 +472,15 @@ def set_brew_autostart(name: str, enabled: bool) -> dict:
     except RecursionError:
         # leftover ``str(e)`` RecursionError is not OSError; PUT brew autostart used to 500.
         return {"ok": False, "message": "action failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e) or "action failed"}
+    # Exact-type rc before the comparisons below: they run outside the try
+    # (deliberately, so the coded 503 raise cannot be swallowed), which meant
+    # a leftover numeric-subclass rc whose ``__eq__`` raises 500'd the toggle
+    # after brew had already run — the class service_action's tail sealed.
+    rc = _plain_rc(rc)
     if rc == -1 and msg == "not found":
         # run_capped reports a FileNotFoundError spawn as (-1, "not found") —
         # a sentinel, never a real brew exit.  Homebrew vanished between the
@@ -365,7 +521,9 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
     # this through ``fan_out``.
     try:
         script_plist, script_label = _resolve_script_agent()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         script_plist, script_label = None, None
 
     # Parse and filter the plists first — pure filesystem work — so the subprocess
@@ -484,16 +642,21 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
 
     dom = _uid_domain()
     logs = []
+    # ``_as_text(out) or _as_text(err)``, not ``_as_text(out or err)``: the
+    # bare ``or`` asked the raw value for truth, so a leftover str-subclass
+    # ``__bool__`` bomb from a hostile sh 500'd the toggle before the text
+    # was ever laundered.  ``_rc_note`` renders the rc fallback: an over-cap
+    # rc used to ValueError the bare f-string here too.
     if enabled:
         # bootout then bootstrap to pick up RunAtLoad
         sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=8)
         rc, out, err = sh(["/bin/launchctl", "bootstrap", dom, str(path)], timeout=10)
-        logs.append(_as_text(out or err) or f"bootstrap rc={rc}")
+        logs.append(_as_text(out) or _as_text(err) or _rc_note("bootstrap", rc))
         sh(["/bin/launchctl", "enable", f"{dom}/{label}"], timeout=5)
         sh(["/bin/launchctl", "kickstart", "-k", f"{dom}/{label}"], timeout=10)
     else:
         rc, out, err = sh(["/bin/launchctl", "bootout", f"{dom}/{label}"], timeout=10)
-        logs.append(_as_text(out or err) or f"bootout rc={rc}")
+        logs.append(_as_text(out) or _as_text(err) or _rc_note("bootout", rc))
         # disable for session
         sh(["/bin/launchctl", "disable", f"{dom}/{label}"], timeout=5)
 
@@ -609,7 +772,9 @@ def run_autostart_now() -> dict:
     except (OSError, ValueError, TypeError) as e:
         # Leftover ``\\ud800`` env UnicodeEncodeError is ValueError, not OSError.
         return {"ok": False, "message": _as_text(e) or "start failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e) or "start failed"}
 
 
@@ -628,7 +793,9 @@ def overview(force: bool = False) -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; a dead Docker socket must not

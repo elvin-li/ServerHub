@@ -6,6 +6,8 @@ fresh read. No API caller can submit a command, launchd label, or executable.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import plistlib
@@ -16,6 +18,7 @@ import subprocess
 import threading
 from pathlib import Path
 from uuid import uuid4
+from xml.parsers.expat import ExpatError
 
 from hub.config import cfg
 from hub.host_address import host_ip, resolve_value
@@ -80,23 +83,173 @@ class ShareValidationError(ValueError):
         self.code = code
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gate itself: ``_plain_result``'s dict gate 500'd every
+    share mutation one line ahead of the laundering built to absorb junk
+    shapes.  A real subclass still matches through the C-level type check;
+    only a value that cannot answer what it is takes the non-matching
+    branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``sharing`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 GET /api/shares."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if _isa(value, (bytes, bytearray)):
+        # Unbound base decode (the brew6 rule): a leftover bytes-subclass
+        # whose bound ``.decode`` raises used to escape list_smb_shares'
+        # parse guards and 500 GET /api/shares/acl through the share gate.
+        # In a try (the modules9 / share_acl_svc rule): a *lying*
+        # ``__class__`` claiming bytes passes the gate but is no bytes
+        # underneath, and the descriptor's TypeError used to 500 the share
+        # mutations out of _admin_failure's message read — it falls through
+        # to the str() probe so a legible impostor still renders.
+        base = bytes if _isa(value, bytes) else bytearray
+        try:
+            value = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    if value is None:
         return ""
-    else:
+    if type(value) is not str:
         try:
             value = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode (the modules6 rule the sibling services follow):
+    # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+    # CPython's exact-str copy, so the old bound ``value.encode(...)`` ran
+    # the subclass override — a leftover encode bomb 500'd the same routes.
+    try:
+        return bytes.decode(str.encode(value, "utf-8", "replace"), "utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    health9 / host_address / docker10 ``_rc_int`` rule), and every listing
+    probe compared the *rc* slot raw.  An rc-subclass whose ``__eq__`` /
+    ``__ne__`` raises detonated ``rc == 0`` in ``list_smb_shares`` — a raw
+    500 on every share mutation through ``_find_share`` — and ``rc != 0``
+    in ``time_machine_records`` rode ``list_smb_shares``'s unguarded merge
+    the same way.  ``-255`` is no honest exit status and is distinct from
+    the ``-1`` spawn-failure sentinel, so junk can never be misread as
+    success, a timeout, or a vanished CLI.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
+        # cannot fire, and a lying-``__class__`` impostor TypeErrors here
+        # instead of passing the gate (the modules5 unbound convention).
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        # Digit-cap probe: past CPython's int->str cap the status cannot be
+        # rendered by any log line or JSON encoder — junk, reads as failure.
+        str(value)
+        return value
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _str_keyed(plain: dict) -> dict:
+    """*plain* (an exact dict) with every key an exact ``str``.
+
+    One hash-shadowing key — same hash as the literal a reader fetches,
+    raising ``__eq__`` — detonates the *probe itself*: ``dict.get`` on a
+    laundered copy is still a hash-table probe, one seam earlier than any
+    value gate (the compose10 / files13 shadow-key class).  A shadow over
+    ``ok`` in a privileged result blew ``_plain_result`` one line after its
+    ``dict()`` copy, and a shadow over a record name in a patched
+    ``time_machine_records`` table blew ``list_smb_shares``'s merge — raw
+    500s on the share mutations.  ``str.__str__`` copies through the C
+    storage, so laundering cannot itself detonate; non-str keys drop — no
+    reader ever looks a row up by one (the containers ``_plain_job`` rule).
+    """
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str map returns as-is.
+    if all(type(k) is str for k in plain):
+        return plain
+    out = {}
+    for k, v in plain.items():
+        if type(k) is str:
+            out[k] = v
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew a bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
+            try:
+                out[str.__str__(k)] = v
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    return out
+
+
+def _plain_result(result) -> dict:
+    """A privileged-helper result as a plain dict with a real bool ``ok``.
+
+    A leftover dict-*subclass* result from run_admin / run_admin_sequence
+    (the jobs/metrics row-bomb class: passes an isinstance gate, then
+    ``.get()`` raises) used to 500 every share mutation right out of
+    ``if not result.get("ok")``, and a ``__bool__``-bomb ``ok`` value blew
+    the same read.  ``dict()`` copies through the C-level storage, so an
+    overridden method cannot fire; junk shapes degrade to the coded failure.
+    _isa, not a bare isinstance: a ``__class__``-property bomb detonated
+    the gate itself before the non-dict branch could answer.
+    """
+    if _isa(result, dict):
+        try:
+            # _str_keyed after the copy: a hash-shadowing ``ok`` key kept
+            # its raising ``__eq__`` through ``dict()`` and detonated the
+            # very next ``plain.get("ok")`` probe — a raw 500 on every
+            # share mutation out of the laundering built to absorb junk.
+            plain = _str_keyed(dict(result))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return {"ok": False, "error": "failed"}
+    else:
+        return {"ok": False, "error": "failed"}
+    plain["ok"] = _truthy(plain.get("ok"))
+    return plain
 
 
 def _field_value(line: str, key: str) -> str | None:
@@ -164,9 +317,25 @@ def _flag(value: object) -> bool:
     return bool(value)
 
 
+def _int_capped(digits: str):
+    """``json.loads`` *parse_int* hook that survives >4300-digit literals.
+
+    CPython's int(str) digit cap makes the decoder itself raise ValueError —
+    not JSONDecodeError — on a leftover huge number, so one poisoned field in
+    ``sharing -l -f json`` used to wipe the *whole* SMB listing: the page and
+    the ACL share gate silently lost every share and update/remove answered a
+    404 lie.  A number past the cap cannot be rendered by any JSON encoder
+    anyway, so it loads as None (the docker_cli.parse_int_capped drop).
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _json_shares(output: str) -> list[dict]:
     try:
-        parsed = safe_json_loads(output)
+        parsed = safe_json_loads(output, parse_int=_int_capped)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
         # not ValueError; GET /api/shares used to 500.
@@ -226,23 +395,64 @@ _GB = 1_000_000_000  # decimal, matching how macOS reports disk sizes
 
 
 def _plist_first(record: dict, key: str) -> str | None:
-    """First value of a dscl plist attribute (they are always string arrays)."""
+    """First value of a dscl plist attribute (they are always string arrays).
+
+    A str() probe, not an ``isinstance(str)`` gate: a numeric leftover record
+    id must keep behaving as its string form.  XML plists load
+    ``<integer>0x…</integer>`` with ``int(x, 16)`` — exempt from CPython's
+    int(str) digit cap — so a >4300-digit *already-int* leftover reached the
+    bare ``str()`` here, whose digit-cap ValueError escaped the whole record
+    loop: every share's Time Machine attributes were wiped (the live reader
+    swallows Exception into ``{}``) and leftover dscl-dump callers got an
+    untyped raise.  Only the unusable value is dropped; siblings survive.
+    """
     values = record.get(key)
     if isinstance(values, list) and values:
-        return str(values[0])
+        try:
+            return str(values[0])
+        except ValueError:
+            return None
     return None
 
 
 def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
     """RecordName -> Time Machine attributes, from `dscl -plist . -readall`."""
-    data = plist_text.encode() if isinstance(plist_text, str) else plist_text
+    if _isa(plist_text, (bytes, bytearray)):
+        data = plist_text
+    elif _isa(plist_text, str):
+        # Unbound str.encode (the modules6 rule ``_as_text`` already follows):
+        # a leftover str-subclass whose ``__str__`` answers *self* would carry
+        # a bound ``encode`` bomb into a bare ``plist_text.encode()``, raising
+        # a non-ValueError past this parser's documented contract; ``replace``
+        # so a lone surrogate cannot UnicodeEncodeError either.
+        data = str.encode(plist_text, "utf-8", "replace")
+    else:
+        # shares8 sealed the torn-XML ``ExpatError`` leak; this is the same
+        # contract, one shape further out.  A non-text leftover (int / dict /
+        # list, or a value whose ``__class__`` is a raising property so it
+        # answers neither str nor bytes above) reached ``plistlib.loads`` as a
+        # bare TypeError — which is NOT a ValueError, so a caller catching the
+        # documented ``ValueError`` (the sibling ``_json_shares`` / raid_svc /
+        # snapshots_svc rule) would not stop it.  The live reader masks it with
+        # ``except Exception``, so the Shares page stays 200; refusing here as
+        # the coded input error closes the parser's own contract.
+        raise ValueError("SharePoints plist is not text")
     try:
         records = plistlib.loads(data)
-    except RecursionError as e:
-        # RecursionError: leftover deeply-nested SharePoints plist is not
-        # ValueError.  The live reader swallows Exception; this parser is
-        # also used on leftover dscl dumps and used to raise untyped.
-        raise ValueError("SharePoints plist is not an array") from e
+    except (ExpatError, plistlib.InvalidFileException, RecursionError, TypeError) as e:
+        # A torn ``dscl -plist . -readall`` dump — unclosed / malformed XML
+        # that has already begun parsing — raises xml.parsers.expat.ExpatError,
+        # which is NOT a ValueError (``InvalidFileException`` from binary junk
+        # or empty output already is one, and a deeply-nested plist raises
+        # RecursionError).  This parser is public and documented to fail as
+        # ValueError — the sibling ``_json_shares`` normalize and the
+        # raid_svc._plist / snapshots_svc / files_svc rule — and its
+        # RecursionError case is already pinned, so the ExpatError escaping
+        # untyped broke that contract for any ValueError-catching caller.  The
+        # live reader masks it with ``except Exception``; normalising here
+        # closes the parser's own contract.  InvalidFileException is folded in
+        # too so the failure message is consistent.
+        raise ValueError("SharePoints plist is not readable") from e
     if not isinstance(records, list):
         raise ValueError("SharePoints plist is not an array")
     result: dict[str, dict] = {}
@@ -289,19 +499,83 @@ def time_machine_records() -> dict[str, dict]:
     Reading the local directory node needs no privileges, unlike the writes.
     """
     rc, output, _ = sh([DSCL, "-plist", ".", "-readall", _SHAREPOINTS], timeout=8)
-    if rc != 0 or not output:
+    # _rc_int / _truthy: an rc-subclass ``__ne__`` bomb or a ``__bool__``-bomb
+    # output from a patched/odd ``sh`` used to raise out of this probe and —
+    # through ``list_smb_shares``'s unguarded merge — 500 every share
+    # mutation via ``_find_share``.
+    if _rc_int(rc) != 0 or not _truthy(output):
         return {}
     try:
         return parse_time_machine_records(output)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return {}
+
+
+def _plain_tm_records() -> dict:
+    """The live TM table as a plain dict with exact-str keys, {} for junk.
+
+    This module does not own the provider (tests and tooling patch
+    ``time_machine_records``), so the table is laundered before any reader
+    probes it: a *lying* ``__class__`` impostor claiming dict — or a dict
+    subclass whose copy raises — degrades to ``{}``, and ``_str_keyed``
+    drops the hash-shadowing record-name keys whose raising ``__eq__`` used
+    to detonate the ``.get(record)`` probes in ``list_smb_shares``'s merge
+    and ``update_smb_share``'s UUID read (raw 500s on the share mutations,
+    and a silently wiped listing under ``shares_overview``'s rescue).
+    """
+    records = time_machine_records()
+    if type(records) is not dict:
+        if not _isa(records, dict):
+            return {}
+        try:
+            records = dict(records)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return {}
+    return _str_keyed(records)
+
+
+def _tm_record_uuid(record: str) -> str | None:
+    """*record*'s existing backup-set UUID, None when unreadable.
+
+    The old bare ``(time_machine_records().get(record) or {}).get("uuid")``
+    chain detonated three ways on a poisoned provider — the ``.get(record)``
+    hash probe on a shadow key, the ``or`` truthiness on a ``__bool__``-bomb
+    record, and the bound ``.get("uuid")`` on a dict-subclass / dict-liar
+    record — each a raw 500 on PUT /api/shares/smb/{record} with Time
+    Machine enabled.  A junk record just means "no known UUID", so enabling
+    mints a fresh one, which the fresh-read verification then confirms.
+    """
+    tm = _plain_tm_records().get(record)
+    if not _isa(tm, dict):
+        return None
+    try:
+        # Unbound dict.get in a try: a genuine subclass reads through the
+        # C-level storage, a lying impostor TypeErrors, and a shadow-key
+        # ``uuid`` probe raising inside the hash table degrades the same.
+        raw = dict.get(tm, "uuid")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    # _as_text, not the raw value: ``_time_machine_commands`` decides
+    # "mint or keep" from this value's truthiness, and a ``__bool__``-bomb
+    # UUID used to detonate that read.  A legible leftover still reads as
+    # "a UUID exists", so a junk shape cannot rotate a share's backup-set
+    # identity.
+    return _as_text(raw) or None
 
 
 def smb_service_running() -> bool:
     """Whether smbd is accepting connections (File Sharing is on)."""
     try:
         return bool(port_open(SMB_PORT, host="localhost", timeout=0.4))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -404,8 +678,34 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
     assumed; the SPA and the health page turn them into actionable hints.
     """
     if shares is None:
-        shares = list_smb_shares(include_sizes=False)
-    tm_count = sum(1 for share in shares if share.get("time_machine"))
+        try:
+            shares = list_smb_shares(include_sizes=False)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            shares = []
+    # Guarded unbound walk with per-row reads: this runs *after* the
+    # ``shares_overview`` fan-out has already absorbed its own failures, so a
+    # leftover listing that passes ``isinstance`` yet refuses iteration — or a
+    # dict-subclass row whose bound ``.get`` raises (the jobs/metrics row-bomb
+    # class) — used to raise here and 500 the whole shares page the fan-out
+    # had just rescued.
+    tm_count = 0
+    try:
+        rows = list.__iter__(shares) if isinstance(shares, list) else iter(())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        rows = iter(())
+    try:
+        for share in rows:
+            if isinstance(share, dict) and _truthy(dict.get(share, "time_machine")):
+                tm_count += 1
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A walk dying mid-iteration keeps the count already gathered.
+        pass
     return {
         "share_count": tm_count,
         "smb_service_running": smb_service_running(),
@@ -426,7 +726,10 @@ def _dir_size_mb(path: str) -> float | None:
         return None
     rc, output, _ = sh(["/usr/bin/du", "-sm", expanded], timeout=15)
     output = _as_text(output)
-    if rc != 0 or not output:
+    # _rc_int: an rc-``__ne__`` bomb raised inside the fan_out worker,
+    # which re-raises — one poisoned ``du`` used to wipe the whole sized
+    # listing where the row should just lose its size column.
+    if _rc_int(rc) != 0 or not output:
         return None
     try:
         value = float(output.split()[0])
@@ -448,7 +751,12 @@ def _connection_url(smb_name: str | None) -> str | None:
 def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     rc, output, _ = sh([SHARING, "-l", "-f", "json"], timeout=8)
     shares: list[dict]
-    if rc == 0 and output:
+    # _rc_int / _truthy: an rc-subclass ``__eq__`` bomb or a ``__bool__``-bomb
+    # output from a patched/odd ``sh`` used to detonate this very gate — a
+    # raw 500 on every share mutation through ``_find_share``, and a wiped
+    # listing under ``shares_overview``'s rescue.  Junk rc reads as failure,
+    # so the legacy fallback still runs.
+    if _rc_int(rc) == 0 and _truthy(output):
         try:
             shares = _json_shares(_as_text(output))
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
@@ -460,7 +768,7 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
         shares = []
     if not shares:
         legacy_rc, legacy_output, _ = sh([SHARING, "-l"], timeout=8)
-        shares = _legacy_shares(legacy_output) if legacy_rc == 0 else []
+        shares = _legacy_shares(legacy_output) if _rc_int(legacy_rc) == 0 else []
     # `du -sm` per share, and on a share holding real data it runs for seconds --
     # the timeout is 15 of them.  Serially the listing cost the sum, so a handful of
     # populated shares could hold the page past a minute; they are separate trees
@@ -475,18 +783,44 @@ def list_smb_shares(*, include_sizes: bool = True) -> list[dict]:
     sizes = dict(zip(wanted, measured))
     # `sharing -l` knows nothing about the Time Machine attributes, so the
     # share-point records are read once and merged into every row.
-    tm_records = time_machine_records()
+    # _plain_tm_records launders the whole table first (the _plain_result
+    # rule): this module does not own the provider (tests and tooling patch
+    # it), and a *lying* ``__class__`` impostor claiming dict, a dict
+    # subclass whose bound ``.get`` raises, or a hash-shadowing record-name
+    # key whose ``__eq__`` bomb fired inside the ``.get`` probe itself used
+    # to blow the merge below — a raw 500 on the share mutations through
+    # _find_share where the TM columns are droppable collateral.
+    tm_records = _plain_tm_records()
     for index, share in enumerate(shares):
         share["size_mb"] = sizes.get(index)
         share["url"] = _connection_url(share.get("smb_name"))
-        tm = tm_records.get(share["record_name"]) or {}
-        share["time_machine"] = bool(tm.get("time_machine"))
-        share["tm_quota_gb"] = tm.get("tm_quota_gb") if share["time_machine"] else None
+        # No ``or {}``: the truthiness read detonated a ``__bool__``-bomb
+        # record one line ahead of the dict gate that already absorbs it.
+        tm = tm_records.get(share["record_name"])
+        if not _isa(tm, dict):
+            tm = {}
+        try:
+            share["time_machine"] = bool(dict.get(tm, "time_machine"))
+            share["tm_quota_gb"] = dict.get(tm, "tm_quota_gb") if share["time_machine"] else None
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A dict-liar record: the TM columns drop, the share row stays.
+            share["time_machine"] = False
+            share["tm_quota_gb"] = None
     return shares
 
 
 def _validate_name(value: str) -> str:
-    normalized = str(value or "").strip()
+    try:
+        # A str() probe, not an isinstance gate: a numeric leftover name keeps
+        # behaving as its string form, while a >4300-digit *already-int*
+        # (YAML/plist hex loads with int(x, 16), exempt from the int(str)
+        # parse cap) earns the coded refusal instead of the digit-cap
+        # ValueError this bare str() used to raise past the router.
+        normalized = str(value or "").strip()
+    except ValueError as error:
+        raise ShareValidationError("shares.bad_name") from error
     if not _NAME_RE.fullmatch(normalized):
         raise ShareValidationError("shares.bad_name")
     # Every current call site puts the name in a flag-argument slot (`-n <name>`,
@@ -499,6 +833,16 @@ def _validate_name(value: str) -> str:
     # character and would reject legitimate non-Latin share names.
     if normalized.startswith("-"):
         raise ShareValidationError("shares.bad_name")
+    try:
+        normalized.encode("utf-8")
+    except UnicodeEncodeError as error:
+        # JSON bodies may carry a lone ``\ud800``; it passes _NAME_RE (a
+        # surrogate is neither a slash nor a control character) but no
+        # filesystem can hold it, and as_argv refuses surrogate argv — so the
+        # create/update used to prompt for the administrator password and
+        # *then* answer the 500 "authorization failed".  Refuse it as the
+        # coded bad input it is, before any password or spawn.
+        raise ShareValidationError("shares.bad_name") from error
     return normalized
 
 
@@ -539,6 +883,15 @@ def validate_share_path(value: str) -> Path:
         for root in _SENSITIVE_ROOTS
     ):
         raise ShareValidationError("shares.protected_path")
+    try:
+        str(resolved).encode("utf-8")
+    except UnicodeEncodeError as error:
+        # A real directory whose on-disk name holds undecodable bytes arrives
+        # from os.fsdecode as lone ``\udcXX`` surrogates.  It resolves and
+        # is_dir()s fine, but as_argv refuses surrogate argv, so the create
+        # used to burn the operator's password prompt and answer the 500
+        # "authorization failed".  Same refusal as nfs_svc._validate_entry.
+        raise ShareValidationError("shares.bad_path") from error
     return resolved
 
 
@@ -608,12 +961,60 @@ def _time_machine_commands(
     return commands
 
 
-def _admin_failure(result: dict) -> dict:
-    return {
+def _tool_on_disk(path: str) -> bool:
+    """Fresh disk probe for the mutation-failure paths only (raid/vms rule).
+
+    ``Path.is_file()`` can itself raise on a dying volume (EIO/ESTALE); a disk
+    that cannot even answer for /usr/sbin is not confirmably carrying it.
+    """
+    try:
+        return Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _sharing_on_disk() -> bool:
+    return _tool_on_disk(SHARING)
+
+
+#: What a spawn of a gone binary reads like through run_admin / sh: the
+#: shell's own refusal (``sh: /usr/sbin/sharing: command not found`` / ``No
+#: such file or directory``) or sh()'s FileNotFoundError sentinel (``not
+#: found``).  Purely a message-pattern gate: classification additionally
+#: requires the fresh :func:`_sharing_on_disk` probe to confirm the binary is
+#: really gone, and only the generic ``failed`` shape is eligible — timeouts,
+#: cancelled sheets and password failures keep their original shape.
+_VANISH_MARKERS = ("command not found", "no such file or directory", "not found")
+
+
+def _admin_failure(
+    result: dict, *, sharing_cli: bool = False, system_tool: str | None = None,
+) -> dict:
+    # _truthy before the ``or``: a leftover ``__bool__``-bomb error/message
+    # value used to raise out of the fallback chain itself (callers hand in
+    # a _plain_result copy, so the ``.get`` reads themselves are safe).
+    raw_error = result.get("error")
+    raw_message = result.get("message")
+    failure = {
         "ok": False,
-        "error": result.get("error") or "failed",
-        "message": result.get("message") or "",
+        "error": raw_error if _truthy(raw_error) else "failed",
+        "message": raw_message if _truthy(raw_message) else "",
     }
+    # A sharing CLI that vanished between the listing and the spawn used to
+    # surface as the generic 500 "the macOS sharing operation failed", which
+    # sends the operator back to a password dialog that cannot help.  The
+    # coded 503 fires only on this failure path, after a fresh disk probe.
+    # ``system_tool`` is the same rule for the system-service toggles, whose
+    # vanished systemsetup/launchctl/AssetCacheManagerUtil used to answer the
+    # generic 500 "authorization failed" — after the password was spent.
+    if failure["error"] == "failed" and (sharing_cli or system_tool):
+        message = _as_text(failure["message"]).lower()
+        if any(marker in message for marker in _VANISH_MARKERS):
+            if sharing_cli and not _sharing_on_disk():
+                return {"ok": False, "error": "sharing_missing"}
+            if system_tool and not _tool_on_disk(system_tool):
+                return {"ok": False, "error": "system_tool_missing"}
+    return failure
 
 
 def _verify_share_state(
@@ -655,9 +1056,9 @@ def create_smb_share(
         )
     # One sequence, one authorization: the dscl attribute writes ride the same
     # admin approval as the share creation itself.
-    result = run_admin_sequence(commands)
+    result = _plain_result(run_admin_sequence(commands))
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
         record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
         time_machine=time_machine, quota_gb=quota,
@@ -674,14 +1075,18 @@ def update_smb_share(
     quota = _validate_quota(time_machine, tm_quota_gb)
     existing = _find_share(record)
     if not existing:
+        # With the sharing CLI gone the listing cannot answer at all, so
+        # "not found" would be a 404 lie.  Fresh probe on this failure path
+        # only, never on a successful lookup.
+        if not _sharing_on_disk():
+            return {"ok": False, "error": "sharing_missing"}
         return {"ok": False, "error": "not_found"}
     current = {
         "time_machine": existing.get("time_machine"),
         "tm_quota_gb": existing.get("tm_quota_gb"),
         # The UUID is not part of the share rows; it is only needed here, to
         # decide whether enabling has to mint one.
-        "uuid": (time_machine_records().get(record) or {}).get("uuid")
-        if time_machine else None,
+        "uuid": _tm_record_uuid(record) if time_machine else None,
     }
     commands = [[
         SHARING, "-e", record, "-S", smb,
@@ -690,9 +1095,9 @@ def update_smb_share(
     commands += _time_machine_commands(
         record, time_machine=time_machine, quota_gb=quota, current=current,
     )
-    result = run_admin_sequence(commands)
+    result = _plain_result(run_admin_sequence(commands))
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     return _verify_share_state(
         record, smb=smb, guest=guest, readonly=readonly, encrypted=encrypted,
         time_machine=time_machine, quota_gb=quota,
@@ -702,10 +1107,13 @@ def update_smb_share(
 def remove_smb_share(record_name: str) -> dict:
     record = _validate_name(record_name)
     if not _find_share(record):
+        # Same 404-lie guard as update: a vanished CLI, not a vanished share.
+        if not _sharing_on_disk():
+            return {"ok": False, "error": "sharing_missing"}
         return {"ok": False, "error": "not_found"}
-    result = run_admin([SHARING, "-r", record])
+    result = _plain_result(run_admin([SHARING, "-r", record]))
     if not result.get("ok"):
-        return _admin_failure(result)
+        return _admin_failure(result, sharing_cli=True)
     if _find_share(record):
         return {"ok": False, "error": "verification_failed"}
     return {"ok": True}
@@ -715,7 +1123,9 @@ def _probe_port(port) -> bool | None:
     """Port reachability that never raises, for use inside the pool."""
     try:
         return port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -823,7 +1233,9 @@ def system_services() -> list[dict]:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; one probe must not blank Sharing.
@@ -876,6 +1288,15 @@ def system_services() -> list[dict]:
     ]
 
 
+#: The binary each toggle actually spawns, for the confirmed-vanish probe on
+#: the failure path.  screen_sharing runs launchctl twice; one probe covers it.
+_SERVICE_TOOLS = {
+    "remote_login": SYSTEMSETUP,
+    "remote_apple_events": SYSTEMSETUP,
+    "content_caching": ASSET_CACHE,
+    "screen_sharing": LAUNCHCTL,
+}
+
 _SERVICE_COMMANDS = {
     "remote_login": lambda enabled: [[SYSTEMSETUP, "-setremotelogin", "on" if enabled else "off"]],
     "remote_apple_events": lambda enabled: [[SYSTEMSETUP, "-setremoteappleevents", "on" if enabled else "off"]],
@@ -900,12 +1321,16 @@ def set_system_service(service_id: str, enabled: bool) -> dict:
     if current["enabled"] is enabled:
         return {"ok": True, "service": current}
 
-    result = run_admin_sequence(_SERVICE_COMMANDS[service_id](enabled))
+    result = _plain_result(run_admin_sequence(_SERVICE_COMMANDS[service_id](enabled)))
     actual = next(item for item in system_services() if item["id"] == service_id)
     if actual["enabled"] is enabled:
         return {"ok": True, "service": actual}
     if not result.get("ok"):
-        return _admin_failure(result)
+        # A systemsetup/launchctl/AssetCacheManagerUtil that vanished before
+        # the spawn used to surface as the generic 500 "authorization failed"
+        # — after the operator already typed the administrator password.  The
+        # coded 503 fires only on this failure path, after a fresh disk probe.
+        return _admin_failure(result, system_tool=_SERVICE_TOOLS[service_id])
     return {"ok": False, "error": "verification_failed", "service": actual}
 
 
@@ -913,10 +1338,15 @@ def open_system_settings() -> dict:
     rc, output, error = sh([OPEN, SETTINGS_URL], timeout=12)
     if rc != 0:
         rc, output, error = sh([OPEN, "-a", "System Settings"], timeout=12)
-    return {
-        "ok": rc == 0,
-        "message": _as_text(error or output)[-300:],
-    }
+    message = _as_text(error or output)[-300:]
+    if rc != 0:
+        # A vanished /usr/bin/open used to answer the 500 "System Settings
+        # could not be opened", blaming the app for a missing tool.  Coded
+        # 503 only after the fresh disk probe on this failure path; every
+        # other failure keeps its shape.
+        if any(marker in message.lower() for marker in _VANISH_MARKERS) and not _tool_on_disk(OPEN):
+            return {"ok": False, "error": "system_tool_missing", "message": message}
+    return {"ok": rc == 0, "message": message}
 
 
 def shares_overview() -> dict:
@@ -931,13 +1361,22 @@ def shares_overview() -> dict:
     """
     try:
         hostname = _as_text(socket.gethostname())
-    except OSError:
+    except (OSError, UnicodeError, ValueError, TypeError):
+        # ``gethostname()`` decodes the system name, so a name it cannot decode
+        # raises UnicodeError (a *ValueError* subclass), not OSError — and this
+        # line sits one step outside the fan-out that rescues every other
+        # collector, with the route (``shares()``) pasting ``shares_overview()``
+        # in without a guard of its own, so that leftover 500'd GET /api/shares.
+        # ``detect_lan_ip`` / ``normalize_local_url`` already treat every
+        # ``gethostname`` call as raising this same family.
         hostname = ""
     def _safe(item):
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # fan_out re-raises on iteration; one collector must not 500 the page.

@@ -3,13 +3,13 @@
     <!-- No visible page title on this layout; see Dashboard.vue. -->
     <h1 class="sr-only">{{ t('services.title') }}</h1>
     <!-- Problems banner -->
-    <div v-if="(status?.problems || []).length" class="problems-bar">
+    <div v-if="asArray(status?.problems).length" class="problems-bar">
       <strong>{{ t('services.problems') }}</strong>
       <!-- LEDs: warn vs down reached a sighted reader in colour alone, so
            hide the paint and spell the state — same treatment as the
            Containers rows and Dashboard cards. ledText reuses the state-chip
            words, so no new locale strings. -->
-      <span v-for="p in (status.problems || []).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
+      <span v-for="p in asArray(status.problems).slice(0, 8)" :key="p.id" class="prob-chip" @click="openDetail(p)" tabindex="0" role="button" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
         <span class="led" :class="ledOf(p.state)" aria-hidden="true"></span>
         <span class="sr-only">{{ ledText(p.state) }}</span>
         {{ finiteText(p.name) }}
@@ -23,8 +23,8 @@
     </div>
 
     <!-- Quick links -->
-    <div v-if="(status?.links || []).length" class="quick-links">
-      <a v-for="l in status.links" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
+    <div v-if="asArray(status?.links).length" class="quick-links">
+      <a v-for="l in asArray(status.links)" :key="finiteText(l.url)" class="btn tiny" :href="finiteText(l.url, '')" target="_blank" rel="noopener">{{ finiteText(l.name) }}</a>
     </div>
 
     <!-- Toolbar: one row — refresh, filter, selects, then the compact toggle cluster -->
@@ -33,11 +33,11 @@
       <input v-model="q" type="text" class="search" :placeholder="t('services.filter_ph')"  :aria-label="t('services.filter_ph')"/>
       <select v-model="kindF" class="cat-select" :aria-label="t('services.filter_kind')">
         <option value="">{{ t('services.kind_all') }}</option>
-        <option v-for="k in kindOptions" :key="k" :value="k">{{ kindLabel(k) }}</option>
+        <option v-for="k in asArray(kindOptions)" :key="k" :value="k">{{ kindLabel(k) }}</option>
       </select>
       <select v-model="groupF" class="cat-select" :aria-label="t('services.filter_group')">
         <option value="">{{ t('services.group_all') }}</option>
-        <option v-for="g in groupOptions" :key="g" :value="g">{{ displayGroup(g) }}</option>
+        <option v-for="g in asArray(groupOptions)" :key="g" :value="g">{{ displayGroup(g) }}</option>
       </select>
       <select v-model="sortBy" class="cat-select" :aria-label="t('common.sort_by')">
         <option value="group">{{ t('services.sort_group') }}</option>
@@ -50,7 +50,7 @@
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
         <!-- role=status: the count is the only feedback the filter box and
              state chips give, and it changed silently for a screen reader. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ flat.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(flat).length }}</span>
       </span>
       <span class="meta svc-summary" v-if="status">
         {{ t('services.summary', {
@@ -60,7 +60,7 @@
           stopped: finiteN(status.counts?.stopped, 0),
           ts: finiteText(status.ts),
         }) }}
-        · {{ finiteN(status.service_total, flat.length) }} {{ t('services.total_unit') }}
+        · {{ finiteN(status.service_total, asArray(flat).length) }} {{ t('services.total_unit') }}
         <span v-if="!status.engine_up" class="warn-tag">{{ t('services.engine_down') }}</span>
       </span>
     </div>
@@ -68,7 +68,7 @@
     <!-- State chips: status shortcuts, kept as their own visual row -->
     <div class="state-chips">
       <button type="button" class="chip" :class="{ active: stateF === '' }" :aria-pressed="stateF === ''" @click="stateF = ''">
-        {{ t('common.all') }} {{ flat.length }}
+        {{ t('common.all') }} {{ asArray(flat).length }}
       </button>
       <button type="button" class="chip chip-ok" :class="{ active: stateF === 'ok' }" :aria-pressed="stateF === 'ok'" @click="stateF = stateF === 'ok' ? '' : 'ok'">
         {{ t('services.state_ok') }} {{ finiteN(status?.counts?.ok, 0) }}
@@ -98,7 +98,7 @@
          stay on screen under the banner instead (the LoadFailure contract —
          same as Containers and the Users accounts table). -->
     <template v-else-if="dense">
-      <div v-if="flat.length || !loadError" class="table-wrap">
+      <div v-if="asArray(flat).length || !loadError" class="table-wrap">
         <table class="dense svc-table fit-m">
           <thead>
             <tr>
@@ -114,7 +114,7 @@
           </thead>
           <tbody>
             <tr
-              v-for="s in filtered"
+              v-for="s in asArray(filtered)"
               :key="s.id"
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
               @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
@@ -148,10 +148,10 @@
                 <ServiceActions :service="s" :busy="busy" variant="table" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" />
               </td>
             </tr>
-            <tr v-if="!filtered.length && !loadError">
+            <tr v-if="!asArray(filtered).length && !loadError">
               <!-- A filter that misses and a host with nothing discovered are
                    different answers (Tools/Network/Containers pattern). -->
-              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ flat.length ? t('common.no_match') : t('services.empty') }}</td>
+              <td :colspan="canManage ? 8 : 7" class="empty-row">{{ asArray(flat).length ? t('common.no_match') : t('services.empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -170,14 +170,14 @@
 
     <!-- Card grid by group -->
     <template v-else>
-      <template v-for="g in filteredGroups" :key="g.group">
-        <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
+      <template v-for="g in asArray(filteredGroups)" :key="g.group">
+        <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ asArray(g.services).length }}</span></h2>
         <div class="grid svc-grid">
           <!-- The button role sits on the name, not the <article>: the card also
                holds the ServiceActions buttons and a control may not contain
                other controls (ARIA nested-interactive) — same split as the
                Compose stack list. @click stays on the card for mouse users. -->
-          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
+          <article v-for="s in asArray(g.services)" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
             <div class="row">
               <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
               <span class="sr-only">{{ ledText(s.state) }}</span>
@@ -192,7 +192,7 @@
           </article>
         </div>
       </template>
-      <div v-if="!filtered.length && !loadError" class="placeholder">{{ flat.length ? t('common.no_match') : t('services.empty') }}</div>
+      <div v-if="!asArray(filtered).length && !loadError" class="placeholder">{{ asArray(flat).length ? t('common.no_match') : t('services.empty') }}</div>
     </template>
 
     <!-- Detail drawer -->
@@ -281,7 +281,7 @@ import {
 import { injectI18n } from '../i18n'
 import { groupI18nKey } from '../i18n/groupLabels'
 import { authState } from '../lib/authState'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText } from '../lib/finite'
 import { canLogs, ledOf, portOf, serviceLabels, signatureOf } from '../lib/serviceActions'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -356,29 +356,29 @@ function later(fn, ms) {
 
 const flat = computed(() => {
   const list = []
-  for (const g of status.value?.groups || []) {
-    for (const s of g.services || []) list.push(s)
+  for (const g of asArray(status.value?.groups)) {
+    for (const s of asArray(g.services)) list.push(s)
   }
   return list
 })
 
 const kindOptions = computed(() => {
-  const set = new Set(flat.value.map(s => s.kind).filter(Boolean))
+  const set = new Set(asArray(flat.value).map(s => s.kind).filter(Boolean))
   return [...set].sort()
 })
 
 const groupOptions = computed(() => {
-  const set = new Set(flat.value.map(s => s.group).filter(Boolean))
+  const set = new Set(asArray(flat.value).map(s => s.group).filter(Boolean))
   return [...set].sort()
 })
 
-const downIds = computed(() => flat.value.filter(s => s.state === 'down').map(s => s.id))
-const warnIds = computed(() => flat.value.filter(s => s.state === 'warn').map(s => s.id))
+const downIds = computed(() => asArray(flat.value).filter(s => s.state === 'down').map(s => s.id))
+const warnIds = computed(() => asArray(flat.value).filter(s => s.state === 'warn').map(s => s.id))
 
 const stateRank = { down: 0, warn: 1, stopped: 2, ok: 3, unknown: 4 }
 
 const filtered = computed(() => {
-  let list = flat.value
+  let list = asArray(flat.value)
   if (onlyBad.value) list = list.filter(s => s.state !== 'ok' && s.state !== 'stopped')
   if (stateF.value) list = list.filter(s => s.state === stateF.value)
   if (kindF.value) list = list.filter(s => s.kind === kindF.value)
@@ -411,7 +411,7 @@ const filtered = computed(() => {
 
 const filteredGroups = computed(() => {
   const map = new Map()
-  for (const s of filtered.value) {
+  for (const s of asArray(filtered.value)) {
     const g = s.group || t('services.other_group')
     if (!map.has(g)) map.set(g, [])
     map.get(g).push(s)
@@ -419,7 +419,7 @@ const filteredGroups = computed(() => {
   return [...map.entries()].map(([group, services]) => ({ group, services }))
 })
 
-const allSelected = computed(() => filtered.value.length > 0 && filtered.value.every(s => selected.value.has(s.id)))
+const allSelected = computed(() => asArray(filtered.value).length > 0 && asArray(filtered.value).every(s => selected.value.has(s.id)))
 
 function toggleSelect(id) {
   const n = new Set(selected.value)
@@ -429,7 +429,7 @@ function toggleSelect(id) {
 }
 
 function toggleSelectAll(e) {
-  if (e.target.checked) selected.value = new Set(filtered.value.map(s => s.id))
+  if (e.target.checked) selected.value = new Set(asArray(filtered.value).map(s => s.id))
   else selected.value = new Set()
 }
 

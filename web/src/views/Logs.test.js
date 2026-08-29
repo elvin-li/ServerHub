@@ -78,6 +78,66 @@ describe('Logs leave-guards', () => {
     expect(toast).not.toHaveBeenCalled()
   })
 
+  it('does not throw when sources is a leftover mapping', async () => {
+    api.getLogSources.mockResolvedValue({
+      sources: { 0: { id: 'panel', name: 'Panel', exists: true, size: 12 } },
+    })
+    const { wrapper } = await mountPage()
+    expect(wrapper.findAll('option').length).toBeGreaterThan(0)
+    expect(wrapper.text()).not.toContain('TypeError')
+    wrapper.unmount()
+  })
+
+  it('does not throw when the tail log is a leftover mapping of lines', async () => {
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 12,
+      lines: 2,
+      log: { 0: 'hello', 1: 'world' },
+    })
+    const { wrapper } = await mountPage()
+    expect(wrapper.get('.log-viewer').text()).not.toContain('TypeError')
+    wrapper.unmount()
+  })
+
+  it('does not throw when the tail log is leftover JSON text', async () => {
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 12,
+      lines: 2,
+      log: '["hello","world"]',
+    })
+    const { wrapper } = await mountPage()
+    expect(wrapper.get('.log-viewer').text()).toContain('hello')
+    expect(wrapper.get('.log-viewer').text()).toContain('world')
+    wrapper.unmount()
+  })
+
+  it('does not throw when leftover JSON log text is invalid', async () => {
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 4,
+      lines: 1,
+      log: '{',
+    })
+    const { wrapper } = await mountPage()
+    expect(wrapper.get('.log-viewer').text()).toBe('{')
+    wrapper.unmount()
+  })
+
+  it('does not throw when display lines is a leftover mapping', async () => {
+    api.getLogTail.mockResolvedValue({
+      path: '/tmp/panel.log',
+      size: 12,
+      lines: 2,
+      log: { lines: { 0: 'hello', 1: 'world' } },
+    })
+    const { wrapper } = await mountPage()
+    await wrapper.get('input[type="text"]').setValue('hello')
+    expect(wrapper.get('[role="status"]').text()).toContain('logs.matched')
+    wrapper.unmount()
+  })
+
   it('does not render leftover infinite sizes as Infinity', async () => {
     api.getLogSources.mockResolvedValue({
       sources: [{ id: 'panel', name: 'Panel', exists: true, size: Number.POSITIVE_INFINITY }],
@@ -90,6 +150,7 @@ describe('Logs leave-guards', () => {
     })
     const { wrapper } = await mountPage()
     expect(wrapper.text()).not.toContain('Infinity')
+    wrapper.unmount()
   })
 
   it('does not toast a tail that fails after leave', async () => {

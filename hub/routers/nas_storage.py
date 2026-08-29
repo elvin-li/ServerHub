@@ -15,16 +15,36 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from hub import audit, nfs_svc, raid_svc, smart_test_svc, snapshots_svc, usage_svc
-from hub.errors import api_error
+from hub.errors import api_error, api_error_from
 from hub.routers.nas_common import (
+    _jsonable,
     _utf8_text,
     client_host,
-    raise_for_admin_result,
     raise_service_error,
     require_admin_browser,
+    result_ok,
 )
 
 router = APIRouter(tags=["nas-storage"])
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+
+def _rendered(payload):
+    """Read payload through the shared sanitizer before Starlette renders it.
+
+    Every *mutation* here already answers through ``raise_service_error``,
+    which cleans the body with ``nas_common._jsonable``; the read routes
+    pasted their service payload in verbatim.  A leftover the encoder cannot
+    take — a lone ``\\ud800`` in a plist name or an ``/etc/exports`` line, an
+    over-cap already-int (YAML/plist hex loads uncapped through
+    ``int(x, 16)``), an ``inf`` size or XID, or a collection that passes
+    ``isinstance`` but refuses iteration — 500'd the whole page where every
+    sibling answers with the field dropped or the text scrubbed.  Same fix
+    ``hub/routers/storage.py`` already carries for the disk pages this
+    router sits next to.
+    """
+    return _jsonable(payload)
 
 
 # ── NFS exports ──────────────────────────────────────────────────────────────
@@ -58,12 +78,12 @@ class NfsServerActionBody(BaseModel):
 
 @router.get("/api/nfs")
 def api_nfs(force: bool = False):
-    return nfs_svc.overview(force=force)
+    return _rendered(nfs_svc.overview(force=force))
 
 
 @router.get("/api/nfs/stats")
 def api_nfs_stats():
-    return nfs_svc.statistics()
+    return _rendered(nfs_svc.statistics())
 
 
 @router.post("/api/nfs/exports")
@@ -72,16 +92,24 @@ def api_nfs_save(body: NfsSaveBody, request: Request):
     try:
         result = nfs_svc.save_exports([e.model_dump() for e in body.entries])
     except nfs_svc.NfsConfigError as exc:
-        raise api_error(exc.code, **exc.params)
+        # api_error_from, not bare ``api_error(exc.code, **exc.params)``: a
+        # leftover subclass whose ``code``/``params`` is a raising property —
+        # or whose params slot is a non-mapping / carries a non-str key —
+        # used to detonate this except clause itself, a raw HTTP 500 in
+        # place of the coded validation refusal.
+        raise api_error_from(exc)
     audit.record(
         audit.NFS_CHANGED,
         username=username,
         client=client_host(request),
         action="save",
         count=len(body.entries),
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_for_admin_result(result)
+    # An nfsd confirmed vanished by a fresh disk probe answers the coded 503,
+    # not the generic 500 "the privileged macOS operation failed" that sends
+    # the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"nfsd_missing": "nfs.nfsd_missing"})
 
 
 @router.post("/api/nfs/server")
@@ -93,9 +121,13 @@ def api_nfs_server(body: NfsServerActionBody, request: Request):
         username=username,
         client=client_host(request),
         action=body.action,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_service_error(result, {"bad_action": "nfs.bad_action"})
+    return raise_service_error(result, {
+        "bad_action": "nfs.bad_action",
+        # Confirmed-vanished nfsd (fresh disk probe on the failure path only).
+        "nfsd_missing": "nfs.nfsd_missing",
+    })
 
 
 # ── AppleRAID ────────────────────────────────────────────────────────────────
@@ -140,7 +172,7 @@ class RaidRemoveMemberBody(BaseModel):
 
 @router.get("/api/raid")
 def api_raid(force: bool = False):
-    return raid_svc.overview(force=force)
+    return _rendered(raid_svc.overview(force=force))
 
 
 def _raid_call(fn, request: Request, action: str, **kwargs):
@@ -148,16 +180,22 @@ def _raid_call(fn, request: Request, action: str, **kwargs):
     try:
         result = fn(**kwargs)
     except raid_svc.RaidError as exc:
-        raise api_error(exc.code, **exc.params)
+        # Same guarded unwrap as the NFS save above: bombs riding the typed
+        # error's ``code``/``params`` slots used to 500 every RAID mutation
+        # out of this except clause instead of answering the coded refusal.
+        raise api_error_from(exc)
     audit.record(
         audit.RAID_CHANGED,
         username=username,
         client=client_host(request),
         action=action,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
         **{k: v for k, v in kwargs.items() if k != "confirm_phrase"},
     )
-    return raise_for_admin_result(result)
+    # A diskutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"diskutil_missing": "raid.diskutil_missing"})
 
 
 @router.post("/api/raid/sets")
@@ -249,7 +287,7 @@ class TimeMachineActionBody(BaseModel):
 
 @router.get("/api/snapshots")
 def api_snapshots(force: bool = False):
-    return snapshots_svc.overview(force=force)
+    return _rendered(snapshots_svc.overview(force=force))
 
 
 @router.post("/api/snapshots/create")
@@ -261,15 +299,39 @@ def api_snapshot_create(request: Request):
         username=username,
         client=client_host(request),
         action="create",
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_for_admin_result(result)
+    # A tmutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {"tmutil_missing": "snapshot.tmutil_missing"})
 
 
 def _known_mount(mount: str) -> str:
     """Reject a volume the snapshot service does not report."""
     value = str(mount or "/").strip() or "/"
-    if value not in set(snapshots_svc.snapshot_mounts()):
+    # Guarded materialization (the users_svc rule): a leftover list-subclass
+    # listing whose ``__iter__`` bomb fired at the old ``set(...)`` build —
+    # or an unhashable row inside an ordinary list — used to 500
+    # POST /api/snapshots/delete and /thin out of the gate itself.  "/" is
+    # pinned because snapshot_mounts always reports the boot volume first,
+    # so it stays operable while a hostile listing drops row by row.
+    known = {"/"}
+    try:
+        rows = iter(snapshots_svc.snapshot_mounts())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        rows = iter(())
+    try:
+        for row in rows:
+            if isinstance(row, str):
+                known.add(row)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    if value not in known:
         raise api_error("snapshot.bad_mount", mount=value[:80])
     return value
 
@@ -292,9 +354,13 @@ def api_snapshot_delete(body: SnapshotDeleteBody, request: Request):
         client=client_host(request),
         action=action,
         mount=mount,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_service_error(result, {"bad_token": "snapshot.bad_token"})
+    return raise_service_error(result, {
+        "bad_token": "snapshot.bad_token",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 @router.post("/api/snapshots/thin")
@@ -309,9 +375,13 @@ def api_snapshot_thin(body: SnapshotThinBody, request: Request):
         action="thin",
         mount=mount,
         urgency=body.urgency,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_service_error(result, {"bad_urgency": "snapshot.bad_urgency"})
+    return raise_service_error(result, {
+        "bad_urgency": "snapshot.bad_urgency",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 @router.post("/api/timemachine/action")
@@ -323,9 +393,13 @@ def api_time_machine_action(body: TimeMachineActionBody, request: Request):
         username=username,
         client=client_host(request),
         action=f"tm_{body.action}",
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_service_error(result, {"bad_action": "snapshot.bad_action"})
+    return raise_service_error(result, {
+        "bad_action": "snapshot.bad_action",
+        # Confirmed-vanished tmutil (fresh disk probe on the failure path).
+        "tmutil_missing": "snapshot.tmutil_missing",
+    })
 
 
 # ── SMART self-tests ─────────────────────────────────────────────────────────
@@ -353,12 +427,12 @@ class SmartScheduleBody(BaseModel):
 
 @router.get("/api/smart")
 def api_smart(force: bool = False):
-    return smart_test_svc.overview(force=force)
+    return _rendered(smart_test_svc.overview(force=force))
 
 
 @router.get("/api/smart/history")
 def api_smart_history(limit: int = 100):
-    return {"history": smart_test_svc.history(limit)}
+    return {"history": _rendered(smart_test_svc.history(limit))}
 
 
 _SMART_ERRORS = {
@@ -381,7 +455,7 @@ def api_smart_test(body: SmartTestBody, request: Request):
         client=client_host(request),
         device=body.device,
         kind=body.kind,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, _SMART_ERRORS)
 
@@ -395,7 +469,7 @@ def api_smart_abort(body: SmartAbortBody, request: Request):
         username=username,
         client=client_host(request),
         device=body.device,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(result, _SMART_ERRORS)
 
@@ -413,7 +487,7 @@ def api_smart_schedule(body: SmartScheduleBody, request: Request):
         interval=body.interval,
         kind=body.kind,
         devices=",".join(body.devices or []),
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
     return raise_service_error(
         result, {"bad_interval": "smart.bad_interval", "bad_kind": "smart.bad_kind"}
@@ -431,22 +505,22 @@ class SpotlightBody(BaseModel):
 
 @router.get("/api/storage/usage")
 def api_storage_usage():
-    return usage_svc.overview()
+    return _rendered(usage_svc.overview())
 
 
 @router.get("/api/storage/usage/tree")
 def api_storage_usage_tree(path: str = "", root_id: str = ""):
-    return usage_svc.tree(path or None, root_id or None)
+    return _rendered(usage_svc.tree(path or None, root_id or None))
 
 
 @router.get("/api/storage/usage/largest")
 def api_storage_usage_largest(path: str = "", root_id: str = "", limit: int = 50):
-    return usage_svc.largest_files(path or None, root_id or None, limit)
+    return _rendered(usage_svc.largest_files(path or None, root_id or None, limit))
 
 
 @router.get("/api/storage/usage/duplicates")
 def api_storage_usage_duplicates(path: str = "", root_id: str = "", min_mb: float = 1.0):
-    return usage_svc.duplicates(path or None, root_id or None, min_mb)
+    return _rendered(usage_svc.duplicates(path or None, root_id or None, min_mb))
 
 
 @router.post("/api/storage/spotlight")
@@ -459,9 +533,15 @@ def api_storage_spotlight(body: SpotlightBody, request: Request):
         client=client_host(request),
         volume=body.volume,
         enabled=body.enabled,
-        ok=bool(result.get("ok")),
+        ok=result_ok(result),
     )
-    return raise_service_error(result, {"bad_volume": "usage.bad_volume"})
+    # An mdutil confirmed vanished by a fresh disk probe answers the coded
+    # 503, not the generic 500 "the privileged macOS operation failed" that
+    # sends the operator back to a password dialog that cannot help.
+    return raise_service_error(result, {
+        "bad_volume": "usage.bad_volume",
+        "mdutil_missing": "usage.mdutil_missing",
+    })
 
 
 @router.get("/api/nfs/exports/preview", response_class=PlainTextResponse)
@@ -469,11 +549,26 @@ def api_nfs_preview():
     """The exact ``/etc/exports`` body a save would install, for review first."""
     entries = nfs_svc.read_exports()
     lines = []
-    if isinstance(entries, list):
-        for e in entries:
+    # Guarded iteration + the unbound ``dict.get`` view: a leftover
+    # list-subclass table whose ``__iter__`` raises, or a dict-subclass row
+    # whose bound ``.get`` raises (both pass ``isinstance``), used to 500
+    # the preview instead of rendering the salvageable lines.
+    try:
+        rows = iter(entries) if isinstance(entries, list) else iter(())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        rows = iter(())
+    try:
+        for e in rows:
             if not isinstance(e, dict):
                 continue
-            raw = _utf8_text(e.get("raw"))
+            raw = _utf8_text(dict.get(e, "raw"))
             if raw:
                 lines.append(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A walk dying mid-iteration keeps the lines already collected.
+        pass
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""))

@@ -9,7 +9,11 @@ this module size-probes, rejects a zero ``hw.memsize``, and falls back to
 from __future__ import annotations
 
 import ctypes
+import re
 import struct
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 INTEGER_KEYS = frozenset({"hw.ncpu", "hw.memsize", "hw.pagesize"})
 _SYSCTL = "/usr/sbin/sysctl"
@@ -22,7 +26,9 @@ try:
             break
         except OSError:
             continue
-except Exception:  # pragma: no cover — non-macOS / sandbox
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover — non-macOS / sandbox
     _libc = None
 
 if _libc is not None:
@@ -35,26 +41,33 @@ if _libc is not None:
             ctypes.c_size_t,
         ]
         _libc.sysctlbyname.restype = ctypes.c_int
-    except Exception:  # pragma: no cover
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:  # pragma: no cover
         _libc = None
 
 
 def parse_int(value) -> int | None:
     """int from a sysctl ``-n`` payload that may be str, bytes, or already int."""
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, int):
+    if type(value) is int:
         return value if value >= 0 else None
-    if isinstance(value, (bytes, bytearray)):
+    for base in (bytes, bytearray):
         try:
-            value = value.decode("utf-8", "replace")
-        except Exception:
-            return None
+            value = base.decode(value, "utf-8", "replace")
+            break
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
         text = str(value).strip()
     except RecursionError:
         return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if not text.isdigit():
         return None
@@ -91,7 +104,9 @@ def sysctlbyname_int(name: str) -> int | None:
             value = struct.unpack("<Q", data)[0]
         else:
             value = struct.unpack("<I", data)[0]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if name == "hw.memsize" and value == 0:
         return None
@@ -110,8 +125,16 @@ def sysctl_int(name: str, *, timeout: int = 2, sh=None) -> int | None:
         from hub.util import sh as run
     try:
         rc, out, _ = run([_SYSCTL, "-n", name], timeout=timeout)
-    except Exception:
-        return None
-    if rc != 0:
+        # Inside the guard, not one line past it: this helper does not own
+        # the runner, and an rc-subclass ``__ne__`` bomb from a patched/odd
+        # ``sh`` used to detonate this bare probe — through sensors_svc's
+        # ``_static_hw`` that ran on the request thread of the light
+        # GET /api/system/sensors tick.  An unreadable status reads as
+        # failure, same as a raising spawn.
+        if rc != 0:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return parse_int(out)

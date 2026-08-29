@@ -21,24 +21,55 @@ from hub.paths import user_home
 from hub.service_signatures import configured_signatures, identify, unescape_proc_name
 from hub.util import port_open, read_text_capped, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _utf8_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/nginx cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 # Common flags that take a port as next argument
 _PORT_FLAGS = {
@@ -222,7 +253,9 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
                 timeout=10,
             )
             rows = _parse_lsof_listen(out) if rc == 0 else []
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
         with _lsof_lock:
             if gen != _lsof_generation:
@@ -356,7 +389,9 @@ def _probe_protocol(port: int) -> tuple[str, bytes]:
             s.settimeout(_PROBE_TIMEOUT_S)
             s.sendall(req)
             head = s.recv(256)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "", b""
     return _classify_head(head), head
 
@@ -393,7 +428,9 @@ def guess_http_url(port: int) -> str | None:
     try:
         if not port_open(port, host="localhost", timeout=0.35):
             return None
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     proto, head = _probe_protocol(port)
     if not proto:
@@ -452,7 +489,9 @@ def _https_url(port: int, hip: str) -> str | None:
                 # cannot sit on the socket until the context manager closes.
                 try:
                     r.read(256)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
                 return f"https://{hip}:{port}"
     except urllib.error.HTTPError as e:
@@ -462,7 +501,9 @@ def _https_url(port: int, hip: str) -> str | None:
         # Peer spoke HTTPS and tried to 302.  That is enough to call it HTTPS
         # without fetching the Location (which may be metadata).
         return f"https://{hip}:{port}"
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return None
 

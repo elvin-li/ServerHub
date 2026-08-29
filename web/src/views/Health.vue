@@ -11,8 +11,8 @@
            click beside them, and they updated silently for a screen reader
            (Users toolbar-count pattern). -->
       <span class="meta hide-m" v-if="data?.summary" role="status" style="color:var(--sub)">
-        {{ t('health.passed') }} {{ finiteN(data.summary.ok) }} · {{ t('health.warnings') }} {{ finiteN(data.summary.warn) }} · {{ t('health.errors') }} {{ finiteN(data.summary.error) }}
-        · {{ finiteN(data.summary.total) }}
+        {{ t('health.passed') }} {{ finiteN(asRecord(asRecord(data).summary).ok) }} · {{ t('health.warnings') }} {{ finiteN(asRecord(asRecord(data).summary).warn) }} · {{ t('health.errors') }} {{ finiteN(asRecord(asRecord(data).summary).error) }}
+        · {{ finiteN(asRecord(asRecord(data).summary).total) }}
       </span>
       <span v-if="data" class="badge" :class="data.healthy ? 'ok' : 'down'" style="margin-left:4px">
         {{ data.healthy ? t('common.healthy') : t('common.issues') }}
@@ -24,15 +24,15 @@
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
         <h2>{{ t('health.passed') }}</h2>
-        <div class="v" style="color:var(--ok-text)">{{ finiteN(data.summary.ok) }}</div>
+        <div class="v" style="color:var(--ok-text)">{{ finiteN(asRecord(asRecord(data).summary).ok) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.warnings') }}</h2>
-        <div class="v" style="color:var(--warn-text)">{{ finiteN(data.summary.warn) }}</div>
+        <div class="v" style="color:var(--warn-text)">{{ finiteN(asRecord(asRecord(data).summary).warn) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.errors') }}</h2>
-        <div class="v" style="color:var(--down-text)">{{ finiteN(data.summary.error) }}</div>
+        <div class="v" style="color:var(--down-text)">{{ finiteN(asRecord(asRecord(data).summary).error) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.overall') }}</h2>
@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ filtered.length }} / {{ (data?.checks || []).length }}
+        {{ asArray(filtered).length }} / {{ asArray(data?.checks).length }}
       </span>
     </div>
 
@@ -62,7 +62,7 @@
          (the empty-row is loadError-suppressed), claiming a scan that never
          arrived.  Stale rows still stay on screen under the banner when a
          later rescan fails (the LoadFailure contract — Services pattern). -->
-    <div v-else-if="(data?.checks || []).length || !loadError" class="table-wrap">
+    <div v-else-if="asArray(data?.checks).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -74,26 +74,26 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filtered" :key="c.id">
+          <tr v-for="c in asArray(filtered)" :key="finiteText(asRecord(c).id)">
             <!-- aria-hidden: the LED repeats the Level badge's Pass/Warn/Error
                  text in colour only (same as the Users admin LED). -->
             <td><span class="led" :class="led(c)" aria-hidden="true"></span></td>
             <td>
-              <strong>{{ finiteText(c.name) }}</strong>
-              <div v-if="finiteText(errText(c.detail), '')" class="show-m sub">{{ finiteText(errText(c.detail)) }}</div>
-              <div v-if="c.fix && !c.ok" class="show-m sub">{{ finiteText(errText(c.fix)) }}</div>
+              <strong>{{ finiteText(asRecord(c).name) }}</strong>
+              <div v-if="finiteText(errText(asRecord(c).detail), '')" class="show-m sub">{{ finiteText(errText(asRecord(c).detail)) }}</div>
+              <div v-if="asRecord(c).fix && !asRecord(c).ok" class="show-m sub">{{ finiteText(errText(asRecord(c).fix)) }}</div>
             </td>
             <td>
               <span class="badge" :class="levelBadge(c)">{{ levelLabel(c) }}</span>
             </td>
-            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(c.detail)) }}</td>
-            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
+            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(asRecord(c).detail)) }}</td>
+            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ asRecord(c).fix ? finiteText(errText(asRecord(c).fix)) : (asRecord(c).ok ? '—' : '') }}</td>
           </tr>
-          <tr v-if="!filtered.length && !loadError">
+          <tr v-if="!asArray(filtered).length && !loadError">
             <!-- A level tab that misses and a scan that produced no checks
                  are different answers: "no matching items" on an empty scan
                  hid that there is nothing to filter (Logs/Services split). -->
-            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : ((data?.checks || []).length ? t('common.no_match') : t('health.empty')) }}</td>
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(data?.checks).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>
@@ -105,7 +105,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -120,7 +120,7 @@ let pageAlive = true
 let loadGeneration = 0
 
 const filtered = computed(() => {
-  const list = data.value?.checks || []
+  const list = asArray(asRecord(data.value).checks).map((row) => asRecord(row))
   if (filter.value === 'all') return list
   if (filter.value === 'issues') return list.filter(c => !c.ok)
   if (filter.value === 'error') return list.filter(c => !c.ok && c.level === 'error')
@@ -129,20 +129,23 @@ const filtered = computed(() => {
 })
 
 function led(c) {
-  if (c.ok) return 'on'
-  if (c.level === 'warn') return 'warn'
+  const row = asRecord(c)
+  if (row.ok) return 'on'
+  if (row.level === 'warn') return 'warn'
   return 'err'
 }
 function levelLabel(c) {
-  if (c.ok) return t('common.pass')
-  if (c.level === 'error') return t('common.error')
-  if (c.level === 'warn') return t('common.warn')
-  return c.level
+  const row = asRecord(c)
+  if (row.ok) return t('common.pass')
+  if (row.level === 'error') return t('common.error')
+  if (row.level === 'warn') return t('common.warn')
+  return row.level
 }
 function levelBadge(c) {
-  if (c.ok) return 'ok'
-  if (c.level === 'error') return 'down'
-  if (c.level === 'warn') return 'warn'
+  const row = asRecord(c)
+  if (row.ok) return 'ok'
+  if (row.level === 'error') return 'down'
+  if (row.level === 'warn') return 'warn'
   return ''
 }
 
@@ -150,13 +153,17 @@ async function load() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getHealthChecks()
+    const next = asRecord(await getHealthChecks())
     if (generation !== loadGeneration || !pageAlive) return
-    data.value = next
+    data.value = {
+      ...next,
+      summary: asRecord(next.summary),
+      checks: asArray(next.checks).map((row) => asRecord(row)),
+    }
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === loadGeneration && pageAlive) {

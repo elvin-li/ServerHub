@@ -2,28 +2,60 @@
 from __future__ import annotations
 
 import json
+import re
 
-from hub.docker_cli import _jsonable, docker, engine_up
+from hub.docker_cli import _jsonable, docker, engine_up, parse_int_capped
 from hub.paths import DOCKER, ORB
 from hub.util import fan_out, safe_json_loads, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _payload(value) -> dict:
@@ -37,7 +69,9 @@ def _slim_info() -> dict:
     text = _as_text(out).strip()
     if rc == 0 and text:
         try:
-            parsed = safe_json_loads(text)
+            # parse_int_capped: one leftover >4300-digit number used to
+            # ValueError the decode and collapse every field into "raw".
+            parsed = safe_json_loads(text, parse_int=parse_int_capped)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
             info = {"raw": text[:2000]}
@@ -74,7 +108,7 @@ def _version() -> dict:
     text = _as_text(ver).strip()
     if rc == 0 and text:
         try:
-            parsed = safe_json_loads(text)
+            parsed = safe_json_loads(text, parse_int=parse_int_capped)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
@@ -89,7 +123,9 @@ def _orb_version() -> str:
 def engine_info() -> dict:
     try:
         up = bool(engine_up())
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         up = False
     if not up:
         return _payload({
@@ -108,7 +144,9 @@ def engine_info() -> dict:
         probe, fallback = item
         try:
             return probe()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     slim, version, orb_v = fan_out(

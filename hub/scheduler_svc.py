@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -92,6 +93,61 @@ _thread: threading.Thread | None = None
 
 # ── cron parsing / matching ──────────────────────────────────────────────────
 
+# Real control flow must keep propagating even through the bomb guards:
+# swallowing a Ctrl-C or an interpreter shutdown to save one JSON field would
+# turn the sanitizer into a hang.  Everything else BaseException-shaped that a
+# leftover raises out of its own hooks is a bomb like any other — every guard
+# below used to stop at ``except Exception``, so a leftover whose hooks raise
+# a *BaseException* subclass (the modules12/logs12/nas13 watchdog/timeout
+# shape) sailed past GET /api/scheduler/jobs, every mutation's get_job scan,
+# and the engine tick's nets at once.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a value whose ``__class__`` is a raising
+    property blew every ``isinstance`` gate in this module — a job id, an
+    ``enabled`` flag, a cron payload, a params value, a whole row — straight
+    out of GET /api/scheduler/jobs, out of every mutation's get_job scan,
+    and out of the engine tick (costing every *other* job its matching
+    minute; the modules8 rule).  A lying ``__class__`` (answers ``int``) is
+    *not* an error and still reports its claim here; the unbound base
+    coercions downstream then drop the impostor, exactly as before.
+
+    ``except BaseException``: the old guard stopped at ``Exception``, so a
+    leftover whose ``__class__`` property raises a *BaseException* subclass
+    sailed past this catch — the gate every sanitizer arm in this module
+    stands on — straight out of the same routes and the tick, raw.  Only
+    genuine control flow keeps propagating.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap (the jobs14/modules14 rule).  After a claimed arm
+    rejects the operand, only the arm the *real* layout matches may pick
+    the value up — the lie must not steer the listing walk a second time.
+    Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 _FIELD_RANGES = (
     ("minute", 0, 59),
     ("hour", 0, 23),
@@ -110,20 +166,61 @@ def _cron_field_tokens(expr) -> list[str]:
     ``"['0',"` — the job silently never fires.  Non-string leftovers
     (``True``, a job mapping) used to stringify into garbage too.
     """
-    if isinstance(expr, (list, tuple)):
-        if len(expr) != 5:
-            raise ValueError("a cron expression has five fields: min hour dom month dow")
+    if _isinst(expr, (list, tuple)):
         try:
-            return [str(part).strip() for part in expr]
-        except RecursionError as e:
-            # Leftover cyclic YAML field used to RecursionError
-            # GET /api/scheduler/jobs via next_run_ts (not ValueError).
+            # list() through the C storage, then len() on the plain copy: a
+            # leftover list-subclass whose ``__iter__``/``__len__`` raised
+            # used to escape next_run_ts's (ValueError, RecursionError) net
+            # and 500 GET /api/scheduler/jobs.
+            parts = list(expr)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
+            # BaseException too: a bomb ``__iter__`` raising one sailed
+            # past the old ``except Exception`` — out of every caller's
+            # ValueError net — and 500'd the same route.
             raise ValueError(
                 "a cron expression has five fields: min hour dom month dow"
             ) from e
-    if not isinstance(expr, str):
+        if len(parts) != 5:
+            raise ValueError("a cron expression has five fields: min hour dom month dow")
+        try:
+            # Unbound str.strip on the str() result: ``str()`` of a subclass
+            # whose ``__str__`` returns self keeps the subclass, so a bound
+            # ``.strip()`` returning (or being) a bomb handed _parse_field a
+            # token whose ``split``/``__len__`` raised past this except —
+            # outside every caller's ValueError net — and 500'd the same
+            # route.  The unbound view also yields exact-str tokens.
+            return [str.strip(str(part)) for part in parts]
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
+            # ValueError is the one signal every caller catches.  A leftover
+            # cyclic YAML field used to RecursionError GET /api/scheduler/jobs
+            # via next_run_ts; a field item whose ``str()`` raised anything
+            # else (a ``__str__`` bomb, an over-cap int's digit-limit
+            # ValueError is already covered) still escaped next_run_ts's
+            # (ValueError, RecursionError) net and 500'd the same route.
+            raise ValueError(
+                "a cron expression has five fields: min hour dom month dow"
+            ) from e
+    if not _isinst(expr, str):
         raise ValueError("a cron expression has five fields: min hour dom month dow")
-    fields = expr.split()
+    # Unbound str.split: a str-subclass expression whose ``split()`` raised
+    # escaped next_run_ts's (ValueError, RecursionError) net and 500'd
+    # GET /api/scheduler/jobs; the unbound view also yields exact-str fields.
+    try:
+        fields = str.split(expr)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # A liar whose ``__class__`` answers str passes the gate but is not
+        # a real str: the unbound descriptor refuses it with TypeError,
+        # which used to escape every caller's ValueError net and 500 the
+        # same route (and abort the whole engine tick).
+        raise ValueError(
+            "a cron expression has five fields: min hour dom month dow"
+        ) from e
     if len(fields) != 5:
         raise ValueError("a cron expression has five fields: min hour dom month dow")
     return fields
@@ -197,20 +294,128 @@ def valid_cron(expr: str) -> bool:
         return False
 
 
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor."""
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _decode_or_none(value):
+    """Both bases, real layout first-come — or ``None`` for a total liar."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500.
+
+    Both bases, real layout first-come (the modules12/nas13 rule): the old
+    pick chose the base off the *claimed* ``__class__``, so a genuine
+    ``bytearray`` whose ``__class__`` lied ``bytes`` was handed to
+    ``bytes.decode``, refused by the descriptor, and its perfectly decodable
+    content degraded to ``""`` at the wrong rank (a job name went blank).  A
+    total liar (real type is neither base) still degrades to ``""``, which
+    used to ride out of _jsonable's bytes arm and 500 GET /api/scheduler/jobs.
+    """
+    decoded = _decode_or_none(value)
+    # scheduler_svc keeps the guarded drop for non-bytes storage: a str
+    # that claims bytes (or any total liar) degrades to ``""`` instead of
+    # recovering through ``_str_text`` (jobs recovers; jobs13 pins this).
+    return decoded if decoded is not None else ""
+
+
+#: CPython's angle-repr shape (``<X object at 0x7f...>``) — a raw heap
+#: address, never a job-listing field.  Applied to the *coercion* arms only.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    jobs14: a *lying* ``__class__`` claim no longer wipes honest storage at
+    the wrong rank, and the free-text arm no longer runs dispatching
+    ``str()`` on a type that never overrode ``__str__``/``__repr__`` (the
+    default ``object.__repr__`` is a raw heap address).
+    """
+    if _isinst(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+    if _isinst(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _key_text(k):
+    """One mapping key as text, or ``None`` to drop just its entry."""
+    if _isinst(k, (bytes, bytearray)):
+        decoded = _decode_or_none(k)
+        if decoded is not None:
+            return decoded
+    if _isinst(k, str):
+        text = _str_text(k)
+        if text is not None:
+            return text
+    try:
+        cls = type(k)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str(k)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    return None if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -222,59 +427,155 @@ def _jsonable(value, depth: int = 0):
     job name still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     A >4300-digit ``timeout``/param int still passed through untouched:
     CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
+
+    jobs14 listing: recover honest storage behind a lying ``__class__``,
+    snapshot ``dict.items`` so a nested cell cannot RuntimeError the live
+    walk, and belt default-repr heap addresses on keys and coercion.
+    Sequence rank keeps the jobs5/jobs13 guarded drop: a leftover
+    subclass ``__iter__`` bomb becomes ``None`` (hub.jobs recovers the
+    C-level storage; scheduler listing must stay empty, not recovered).
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # ``type(value) is bool``, not isinstance: a liar whose ``__class__``
+    # *answers* bool passed the old gate and rode raw into json.dumps
+    # (TypeError, 500); bool cannot be subclassed, so the exact check is
+    # complete and the impostor falls to the int arm's unbound coercion.
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
-        try:
-            str(value)
-        except ValueError:
-            # Past CPython's int->str digit cap the encoder cannot render
-            # the number at all — same drop as its inf float sibling.
+    if _isinst(value, int):
+        num = value if type(value) is int else None
+        if num is None:
+            try:
+                num = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            try:
+                str(num)
+            except ValueError:
+                return None
+            return num
+        if not _real(value, (float, str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+    if _isinst(value, float):
+        num = value if type(value) is float else None
+        if num is None:
+            try:
+                num = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
+                return None
+            return num
+        if not _real(value, (str, bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
             return None
-        return value
-    if isinstance(value, str):
-        return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            if not isinstance(k, str):
-                try:
-                    k = str(k)
-                except Exception:
+    if _isinst(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+        if not _real(value, (bytes, bytearray, dict,
+                             list, tuple, set, frozenset)):
+            return _utf8_text(value)
+    if _isinst(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+        if not _real(value, (dict, list, tuple, set, frozenset)):
+            return ""
+    if _isinst(value, dict):
+        plain = value if type(value) is dict else None
+        if plain is None:
+            try:
+                plain = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                plain = None
+        if plain is not None:
+            try:
+                items = list(dict.items(plain))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+            out = {}
+            for k, v in items:
+                key = _key_text(k)
+                if key is None:
                     continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+                out[key] = _jsonable(v, depth + 1)
+            return out
+        if not _real(value, (list, tuple, set, frozenset)):
+            return None
+    if _isinst(value, (list, tuple, set, frozenset)):
+        # Bound ``list(value)`` so a leftover subclass ``__iter__`` bomb
+        # drops to None (jobs5/jobs13).  Unbound ``base.__iter__`` would
+        # recover C-level rows; that is the jobs module contract, not this
+        # listing walk.
+        try:
+            items = list(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        iso = None
     if callable(iso):
         try:
-            # isoformat() is usually a str; a leftover that returns inf
-            # used to skip the float sanitizer and 500 GET /api/scheduler/jobs.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+
+
+def _in_field(n: int, values) -> bool:
+    """``n in values`` that a leftover member ``__eq__`` bomb cannot raise through.
+
+    A parse_cron product holds frozensets of exact ints, but the matcher
+    fast path accepts any set-typed field values — and a set membership test
+    compares the probe against every stored member whose hash collides,
+    dispatching into that member's own ``__eq__``.  A leftover int-*subclass*
+    member with a bombing ``__eq__`` (hash of a real minute, so the probe
+    reaches it) used to raise out of :func:`cron_matches` /
+    :func:`_day_matches` past :func:`_tick_once`'s (ValueError, TypeError)
+    net and abort the whole tick.  A bombed field is junk: it matches
+    nothing, so the job never fires — the same contract as an unparsable
+    expression — and the siblings keep their minute.
+    """
+    try:
+        return n in values
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
 
 def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     """Vixie day rule: when *both* dom and dow are restricted, either may match."""
-    if month not in parsed["month"]:
+    if not _in_field(month, parsed["month"]):
         return False
-    dom_ok = dom in parsed["dom"]
-    dow_ok = dow in parsed["dow"]
+    dom_ok = _in_field(dom, parsed["dom"])
+    dow_ok = _in_field(dow, parsed["dow"])
     if parsed["dom_star"] and parsed["dow_star"]:
         return True
     if parsed["dom_star"]:
@@ -284,16 +585,72 @@ def _day_matches(parsed: dict, *, month: int, dom: int, dow: int) -> bool:
     return dom_ok or dow_ok
 
 
+#: Every key a parse_cron product carries; _day_matches reads all of them.
+_MATCHER_KEYS = frozenset(
+    ("minute", "hour", "dom", "month", "dow",
+     "minute_star", "hour_star", "dom_star", "month_star", "dow_star")
+)
+
+
+def _parsed_matcher(expr) -> dict | None:
+    """*expr* when it is a parse_cron product, else None.
+
+    The old sniff — ``expr.get("minute")`` behind a bare isinstance — had two
+    holes.  A leftover dict-*subclass* cron whose ``.get`` raised detonated
+    the probe itself, and a YAML mapping cron that happened to carry a
+    ``!!set`` ``minute`` passed the sniff and KeyError'd :func:`_day_matches`
+    on the matcher keys it did not have.  Either escaped
+    :func:`_tick_once`'s (ValueError, TypeError) net and aborted the whole
+    tick — every *other* job's matching minute was lost (the sched7
+    thread-name class again).  Only an exact dict carrying every matcher key
+    with set-typed field values and exact-bool star flags takes the fast
+    path; everything else goes to parse_cron's ValueError, the one signal
+    every caller catches.
+
+    The whole probe runs in a try: the key-subset test and the ``expr[k]``
+    reads both hash-probe the dict, and that probe compares the interned
+    matcher key against every stored key whose hash collides — so a leftover
+    hash-shadow key (a str *subclass* with a matcher key's text and a
+    bombing ``__eq__``) used to raise out of the ``<=`` itself and abort the
+    whole tick.  A raise means "not a parse_cron product": the dict goes to
+    parse_cron's ValueError like every other impostor.
+
+    The star flags are read as raw truth by :func:`_day_matches`, so they
+    must be exact bools here (parse_cron only ever writes exact bools): a
+    leftover ``__bool__``-bomb star value used to pass the old gate and
+    detonate the ``and`` inside the day rule, aborting the tick the same
+    way.  This *strengthens* the gate; the fast path for genuine parse_cron
+    products is unchanged.
+    """
+    try:
+        if type(expr) is not dict or not _MATCHER_KEYS <= expr.keys():
+            return None
+        # _isinst: an exact-dict cron carrying a ``__class__``-bomb field
+        # value used to detonate this probe and abort the whole tick.
+        if not all(_isinst(expr[k], (set, frozenset))
+                   for k in ("minute", "hour", "dom", "month", "dow")):
+            return None
+        if not all(type(expr[f"{k}_star"]) is bool
+                   for k in ("minute", "hour", "dom", "month", "dow")):
+            return None
+        return expr
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
 def cron_matches(expr: str | dict | list | tuple, t: time.struct_time) -> bool:
     """Whether *t* (a local struct_time) is a matching minute for *expr*."""
     # A parsed matcher carries frozensets; a job mapping also looks like a
     # dict and must go through parse_cron (ValueError) instead of
     # ``5 not in "*"`` TypeError, which used to abort the whole tick.
-    if isinstance(expr, dict) and isinstance(expr.get("minute"), (set, frozenset)):
-        parsed = expr
-    else:
+    parsed = _parsed_matcher(expr) if _isinst(expr, dict) else None
+    if parsed is None:
         parsed = parse_cron(expr)
-    if t.tm_min not in parsed["minute"] or t.tm_hour not in parsed["hour"]:
+    # _in_field, not bare ``in``: a leftover ``__eq__``-bomb member in a
+    # matcher set used to raise here and abort the whole tick.
+    if not _in_field(t.tm_min, parsed["minute"]) or not _in_field(t.tm_hour, parsed["hour"]):
         return False
     # struct_time: Monday=0..Sunday=6; cron: Sunday=0..Saturday=6.
     dow = (t.tm_wday + 1) % 7
@@ -341,15 +698,154 @@ def next_run_ts(expr: str | list | tuple, after_ts: float | None = None) -> int 
 
 # ── job storage (services.yaml → schedules:) ─────────────────────────────────
 
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* row (the same bomb class hub.jobs._plain_dict
+    guards the Maintenance routes against: passes the isinstance gate, then
+    ``.get()`` / ``dict()``'s ``keys()`` fallback raises) used to 500
+    GET /api/scheduler/jobs from :func:`list_jobs`'s bare ``dict(j)`` copy.
+    ``dict()`` on a plain-iter subclass copies through the C-level storage;
+    when the subclass overrides ``__iter__``/``keys`` the copy itself raises,
+    so the row is junk and drops.
+    """
+    if type(value) is dict:
+        return value
+    # _isinst, not a bare isinstance: a leftover non-dict row whose
+    # ``__class__`` is a raising property used to detonate the gate itself
+    # and 500 GET /api/scheduler/jobs plus every mutation's get_job scan.
+    if _isinst(value, dict):
+        try:
+            return dict(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return None
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a leftover hash-shadowing mapping *key* cannot 500.
+
+    The hub.jobs._mapping_get seam this module never got: :func:`_plain_dict`
+    returns the row (or a ``dict()`` copy) with its *keys* intact, and even a
+    plain ``dict.get`` probe still compares the probe against every stored
+    key whose hash collides — dispatching into that key's own ``__eq__``.  A
+    leftover str-subclass key whose text shadows a real field name and whose
+    ``__eq__`` raises used to detonate ``job.get("id")`` in :func:`_job_id`
+    (500 on GET /api/scheduler/jobs and, via :func:`_matches_id`'s
+    :func:`get_job` scan, on DELETE / PUT / enable / run-now for *healthy*
+    sibling jobs), ``job.get("enabled")`` in :func:`job_enabled` (500 on the
+    list route), ``job.get("cron")`` in :func:`_tick_once` (a RuntimeError
+    past its (ValueError, TypeError) net aborted the whole tick — every
+    other job's matching minute lost), and ``job.get("type")`` in
+    :func:`_execute`'s entry builds (breaking its "never raises" contract).
+    Only the shadowed field degrades to its default; sibling fields and rows
+    keep their sane data.
+    """
+    if not _isinst(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A raise can only come from a poisoned stored key (or a liar whose
+        # ``__class__`` merely answers dict, which the unbound descriptor
+        # refuses): the field is junk-shadowed either way.  BaseException
+        # too — a shadow key whose ``__eq__`` raises one used to sail past
+        # the old ``except Exception`` and 500 the same routes.
+        return default
+
+
 def list_jobs() -> list[dict]:
-    raw = cfg().get("schedules")
-    rows = raw if isinstance(raw, list) else []
-    return [dict(j) for j in rows if isinstance(j, dict)]
+    # Guarded like storage_pool_svc._pool_config: a cfg() snapshot provider
+    # that raises used to escape this reader and 500 GET /api/scheduler/jobs
+    # and every job mutation's get_job scan at once.
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        data = {}
+    # dict.get, not the bound method: cfg() parses YAML to exact types, but
+    # the snapshot is whatever an in-process caller last stored, and a
+    # dict-*subclass* config root with a bombing ``.get`` used to detonate
+    # here and 500 the same routes.  The unbound builtin reads the C-level
+    # storage underneath the override.
+    if _isinst(data, dict):
+        try:
+            raw = dict.get(data, "schedules")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The unbound builtin is a descriptor bound to the real dict
+            # layout: a liar whose ``__class__`` merely *answers* dict (the
+            # maint9/modules9 impostor class — real type is no dict at all)
+            # passes _isinst above and then TypeErrors right here, which
+            # used to 500 GET /api/scheduler/jobs, every mutation's get_job
+            # scan, and abort the engine tick from outside every net.  A
+            # raise means "not really a dict": the impostor root degrades
+            # to the empty job list.
+            raw = None
+    else:
+        raw = None
+    if _isinst(raw, list) or _real(raw, (list, tuple)):
+        # Bound ``list(raw)`` so a leftover subclass ``__iter__`` bomb
+        # degrades to the empty listing (jobs5).  Unbound ``list.__iter__``
+        # would recover C-level rows; scheduler listing keeps the drop.
+        try:
+            rows = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            rows = []
+    else:
+        rows = []
+    out: list[dict] = []
+    for j in rows:
+        row = _plain_dict(j)
+        if row is not None:
+            out.append(row)
+    return out
+
+
+def _matches_id(job: dict, job_id) -> bool:
+    """Whether *job* is the record an API path names.
+
+    Raw equality first (the historic shape), then the same ``str()`` coercion
+    :func:`_job_id` applies.  A hand-edited numeric YAML ``id: 123`` is listed
+    — and *fired by the engine* — as ``"123"``, but the lookups here compared
+    with raw ``==``, so the path string never matched the stored int: every
+    enable/update/delete/run-now on the running job mis-404'd
+    ``scheduler.not_found`` while the engine kept firing it, leaving no way to
+    stop the job through the API.
+
+    The raw equality is guarded: a leftover ``__eq__``-bomb id value on ANY
+    sibling row used to raise out of :func:`get_job`'s scan and 500 every
+    DELETE / PUT / enable / run-now — for jobs whose own records were fine.
+    """
+    try:
+        # _mapping_get, not bound ``job.get``: a leftover hash-shadowing
+        # bomb key with "id"'s text used to detonate the listing scan.
+        if _mapping_get(job, "id") == job_id:
+            return True
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # BaseException too: an eq-bomb id value raising one on ANY sibling
+        # row used to sail past the old ``except Exception`` and 500 every
+        # DELETE / PUT / enable / run-now for healthy jobs.
+        pass
+    if not _isinst(job_id, str) or not job_id:
+        return False
+    coerced = _job_id(job)
+    return bool(coerced) and coerced == job_id
 
 
 def get_job(job_id: str) -> dict | None:
     for j in list_jobs():
-        if j.get("id") == job_id:
+        if _matches_id(j, job_id):
             return j
     return None
 
@@ -383,7 +879,7 @@ def save_job(record: dict, *, mode: str = "upsert") -> bool:
             jobs = []
             data["schedules"] = jobs
         for i, j in enumerate(jobs):
-            if isinstance(j, dict) and j.get("id") == record["id"]:
+            if isinstance(j, dict) and _matches_id(j, record["id"]):
                 if mode == "create":
                     raise _NoChange
                 jobs[i] = record
@@ -404,7 +900,7 @@ def delete_job(job_id: str) -> bool:
 
     def apply(data: dict) -> None:
         jobs = data.get("schedules") or []
-        kept = [j for j in jobs if not (isinstance(j, dict) and j.get("id") == job_id)]
+        kept = [j for j in jobs if not (isinstance(j, dict) and _matches_id(j, job_id))]
         found["hit"] = len(kept) != len(jobs)
         data["schedules"] = kept
 
@@ -428,7 +924,7 @@ def set_enabled(job_id: str, enabled: bool) -> dict | None:
         jobs = data.get("schedules")
         rows = jobs if isinstance(jobs, list) else []
         for j in rows:
-            if isinstance(j, dict) and j.get("id") == job_id:
+            if isinstance(j, dict) and _matches_id(j, job_id):
                 j["enabled"] = bool(enabled)
                 hit.update(j)
                 return
@@ -538,10 +1034,10 @@ def last_runs_by_job() -> dict[str, dict]:
             rec = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
-        rec = _jsonable(rec) if isinstance(rec, dict) else None
-        if not isinstance(rec, dict):
+        rec = _jsonable(rec) if _isinst(rec, dict) else None
+        if not _isinst(rec, dict):
             continue
-        jid = str(rec.get("job") or "")
+        jid = _utf8_text(_mapping_get(rec, "job") or "")
         if jid and jid not in out:
             out[jid] = rec
     return out
@@ -558,20 +1054,40 @@ def _job_env() -> dict:
 def _job_timeout(job: dict) -> int:
     try:
         t = int(job.get("timeout") or DEFAULT_TIMEOUT)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Broad on purpose: a ``__bool__`` bomb in the ``or``, an
+        # int-subclass ``__int__`` bomb, or a ``__class__`` bomb with no
+        # numeric protocol raised RuntimeError past the old (TypeError,
+        # ValueError, OverflowError) net — and a BaseException-shaped bomb
+        # rode past even the broad Exception net into the run thread.
         t = DEFAULT_TIMEOUT
     return max(1, min(t, MAX_TIMEOUT))
 
 
 def _epoch_int(raw, default: int = 0) -> int:
     """Finite epoch seconds. Leftover ``time.time() = inf`` OverflowError'd ``int()``."""
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        return default
+    if _isinst(raw, float):
+        if type(raw) is not float:
+            try:
+                # Base coercion first: a float-subclass clock whose
+                # ``__eq__``/``__ne__`` raised used to blow the NaN probe
+                # below out of _execute's journal build.
+                raw = float.__float__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return default
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            return default
     try:
         return int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
 
 
@@ -579,7 +1095,13 @@ def _finite_duration(ended, started) -> float:
     """Seconds between two clocks, or 0 when leftover inf/NaN would 500 JSON."""
     try:
         duration = round(float(ended) - float(started), 1)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Broad on purpose: a float-subclass clock whose ``__float__``
+        # raised RuntimeError escaped the old net out of _execute's
+        # journal build, so the run was never journalled — a BaseException
+        # bomb took the same path past even the broad Exception net.
         return 0.0
     if duration != duration or duration in (float("inf"), float("-inf")):
         return 0.0
@@ -587,16 +1109,37 @@ def _finite_duration(ended, started) -> float:
 
 
 def _job_params(job: dict) -> dict:
-    p = job.get("params")
-    return p if isinstance(p, dict) else {}
+    # _plain_dict over _mapping_get: a leftover params dict-subclass (or a
+    # ``__class__`` bomb) degrades to {}, and a hash-shadowing bomb key
+    # beside "params" degrades field-level ("!! no command configured")
+    # instead of costing the whole run an opaque "!! error".
+    p = _plain_dict(_mapping_get(job, "params"))
+    return p if p is not None else {}
 
 
 def _job_id(job: dict) -> str:
-    """Stable job identity.  A missing/bool/mapping id must not become ``'None'``."""
-    raw = job.get("id")
-    if isinstance(raw, bool) or raw is None:
+    """Stable job identity.  A missing/bool/mapping id must not become ``'None'``.
+
+    _mapping_get, not ``job.get``: a leftover hash-shadowing bomb key with
+    "id"'s text used to detonate the bare probe and 500
+    GET /api/scheduler/jobs, every mutation's get_job scan (healthy sibling
+    jobs included), and abort the engine tick.
+    """
+    raw = _mapping_get(job, "id")
+    if type(raw) is bool or raw is None:
         return ""
-    if isinstance(raw, int):
+    if _isinst(raw, int):
+        if type(raw) is not int:
+            try:
+                # Base coercion first: an int-subclass id whose ``__str__``
+                # raised anything but the digit-cap ValueError used to 500
+                # GET /api/scheduler/jobs — and, via _matches_id's scan,
+                # DELETE / run-now on *healthy* sibling jobs.
+                raw = int.__index__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
         try:
             return str(raw)
         except ValueError:
@@ -605,7 +1148,16 @@ def _job_id(job: dict) -> str:
             # ValueError'd here — 500ing GET /api/scheduler/jobs and aborting
             # the whole engine tick, so every *other* job's minute was lost.
             return ""
-    if isinstance(raw, float):
+    if _isinst(raw, float):
+        if type(raw) is not float:
+            try:
+                # A float-subclass id whose ``__eq__``/``__ne__`` raised used
+                # to blow the NaN probe below and 500 the same routes.
+                raw = float.__float__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
         # YAML ``id: .inf``: ``float('inf').is_integer()`` is True and
         # ``int(inf)`` OverflowError used to 500 GET /api/scheduler/jobs.
         if raw != raw or raw in (float("inf"), float("-inf")) or not raw.is_integer():
@@ -614,19 +1166,54 @@ def _job_id(job: dict) -> str:
             return str(int(raw))
         except (OverflowError, ValueError):
             return ""
-    if isinstance(raw, str):
-        return raw.strip()
+    if _isinst(raw, str):
+        # Through _utf8_text, not a bare ``raw.strip()``: the encode/decode
+        # round trip yields a plain ``str``, so a leftover str-*subclass* id
+        # whose overridden ``strip()`` (or ``__hash__``, once the id becomes
+        # a ``_running`` set member) raised can no longer 500
+        # GET /api/scheduler/jobs.  Same coercion hub.jobs._task_id applies.
+        return _utf8_text(raw).strip()
     return ""
 
 
 def job_enabled(job: dict) -> bool:
-    """Whether *job* should fire.  YAML ``"false"`` / ``"0"`` are off, not on."""
-    raw = job.get("enabled")
-    if isinstance(raw, str):
-        return raw.strip().lower() not in {"", "0", "false", "no", "off", "n", "f"}
-    if isinstance(raw, bool):
+    """Whether *job* should fire.  YAML ``"false"`` / ``"0"`` are off, not on.
+
+    _mapping_get, not ``job.get``: a leftover hash-shadowing bomb key with
+    "enabled"'s text used to detonate the bare probe and 500
+    GET /api/scheduler/jobs (and abort the engine tick).  A junk-shadowed
+    flag fails closed — junk must not fire operator shell.
+    """
+    raw = _mapping_get(job, "enabled")
+    if _isinst(raw, str):
+        # Unbound str.strip: a str-subclass value whose ``strip()`` raised
+        # used to 500 GET /api/scheduler/jobs (the unbound view returns an
+        # exact str, so the chained ``lower()`` is safe too).
+        try:
+            return str.strip(raw).lower() not in {"", "0", "false", "no", "off", "n", "f"}
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A liar whose ``__class__`` answers str is not a real str: the
+            # unbound descriptor refuses it with TypeError, which used to
+            # 500 the list route and abort the whole tick.
+            return False
+    # ``type(raw) is bool``, not isinstance: bool cannot be subclassed, and
+    # a liar claiming bool must fall through to the numeric arm's unbound
+    # coercion instead of escaping this helper un-boolean.
+    if type(raw) is bool:
         return raw
-    if isinstance(raw, (int, float)):
+    if _isinst(raw, (int, float)):
+        if type(raw) not in (int, float):
+            try:
+                # Base coercion first: an int/float-subclass ``enabled``
+                # whose ``__eq__``/``__ne__`` raised used to blow the NaN
+                # probe (or the ``!= 0`` test) and 500 the list route.
+                raw = float.__float__(raw) if _isinst(raw, float) else int.__index__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return False
         if raw != raw or raw in (float("inf"), float("-inf")):
             return False
         return raw != 0
@@ -656,11 +1243,25 @@ def _command_text(raw) -> str:
     the misleading coded 503 ``settings.save_failed`` instead of the same
     400 ``scheduler.bad_params`` its control-character siblings get.
     """
-    if isinstance(raw, (list, tuple)):
+    if _isinst(raw, (list, tuple)):
+        try:
+            # list() through the C storage before the walk: a leftover
+            # sequence-subclass command whose ``__iter__`` raises used to
+            # detonate the ``for`` itself — Exception-shaped into _execute's
+            # opaque "!! error", BaseException-shaped straight through it.
+            items = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
         parts: list[str] = []
-        for part in raw:
-            if not isinstance(part, str):
+        for part in items:
+            if not _isinst(part, str):
                 return ""
+            if type(part) is not str:
+                # Exact-str launder: a subclass ``strip()`` bomb or a liar
+                # claiming str degrades to the empty command, never a raise.
+                part = _utf8_text(part)
             text = part.strip()
             if not text:
                 continue
@@ -670,8 +1271,10 @@ def _command_text(raw) -> str:
                 return ""
             parts.append(text)
         return " ".join(parts)
-    if not isinstance(raw, str):
+    if not _isinst(raw, str):
         return ""
+    if type(raw) is not str:
+        raw = _utf8_text(raw)
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
         return ""
     if not _encodable_utf8(raw):
@@ -680,7 +1283,12 @@ def _command_text(raw) -> str:
 
 
 def _run_command(job: dict, log: list[str]) -> int:
-    command = _command_text(_job_params(job).get("command"))
+    # _mapping_get: a hash-shadowing bomb key beside "command" survives the
+    # _plain_dict copy, and the bare probe is caught by _execute's broad net
+    # either way — but degrading field-level keeps the "!! no command
+    # configured" diagnosis instead of an opaque "!! error" (the
+    # hub.jobs.start_job rule).
+    command = _command_text(_mapping_get(_job_params(job), "command"))
     if not command.strip():
         log.append("!! no command configured")
         return -1
@@ -691,19 +1299,26 @@ def _run_command(job: dict, log: list[str]) -> int:
 
 def _run_rsync(job: dict, log: list[str]) -> int:
     from hub import rsync_svc
+    # _job_id, not ``str(job.get("id") or "")``: the bare probe dispatched a
+    # leftover hash-shadowing bomb key (and the ``or`` a ``__bool__`` bomb)
+    # into _execute's broad net, costing the run its rsync log for an
+    # opaque "!! error"; the laundered identity degrades field-level.
     return rsync_svc.run_job(_job_params(job), log=log,
-                             timeout=_job_timeout(job), job_id=str(job.get("id") or ""))
+                             timeout=_job_timeout(job), job_id=_job_id(job))
 
 
 def _run_stack_backup(job: dict, log: list[str]) -> int:
     from hub import backups
     params = _job_params(job)
-    stack_id = str(params.get("stack_id") or "")
+    # _mapping_get twice: shadow bomb keys beside "stack_id"/"retain" keep
+    # the "!! no stack configured" / default-retain degrades field-level
+    # instead of costing the run an opaque "!! error".
+    stack_id = str(_mapping_get(params, "stack_id") or "")
     if not stack_id:
         log.append("!! no stack configured")
         return -1
     try:
-        retain = int(params.get("retain") or backups.RETAIN)
+        retain = int(_mapping_get(params, "retain") or backups.RETAIN)
     except (TypeError, ValueError, OverflowError):
         retain = backups.RETAIN
     result = backups.backup_stack(stack_id, retain=retain, log=log)
@@ -731,23 +1346,190 @@ _RUNNERS = {
 
 # ── execution ────────────────────────────────────────────────────────────────
 
+def _rebuilt_fail_counts(drop: str) -> dict:
+    """A fresh plain streak table without *drop*, laundered to exact types.
+
+    Reached only when the live table refused an unbound read/write — a
+    leftover hash-shadow key or a ``__class__`` liar with no dict storage
+    at all (then there is nothing to salvage and the slate is clean, the
+    same quiet side a panel restart errs on).
+    """
+    try:
+        items = list(dict.items(_fail_counts))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    out: dict = {}
+    for k, v in items:
+        key = _utf8_text(k)
+        if not key or key == drop:
+            continue
+        if type(v) is int and 0 <= v < 1_000_000:
+            out[key] = v
+    return out
+
+
+def _running_has(jid) -> bool:
+    """``jid in _running`` that a leftover bomb member cannot 500 through.
+
+    Callers hold ``_running_guard``.  A set membership test compares the
+    probe against every stored member whose hash collides, and when the
+    member is a *subclass* of the probe's type its reflected ``__eq__`` gets
+    first shot — so a leftover str-subclass member with a job id's text and
+    a bombing ``__eq__`` used to raise out of :func:`is_running` and 500
+    GET /api/scheduler/jobs (every row reads its running flag) and POST
+    run-now, and out of :func:`_execute`'s overlap check, breaking its
+    "never raises" contract.  A set-*subclass* table's overridden
+    ``__contains__`` detonated the same callers.  The probe goes through
+    the unbound base; on a raise, a scan counts only *exact*-str members:
+    ids this module writes are exact by construction (:func:`_job_id`
+    launders them), so a subclass twin is junk, not a live run — reading it
+    as "running" would skip the job forever, the same wedged-mutex fail
+    direction ``hub.jobs._truthy`` refuses.  A genuine live marker is an
+    exact str and the scan still finds it, so overlap-skip survives.
+    """
+    try:
+        return set.__contains__(_running, jid)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Not really a set (a ``__class__`` liar): nothing can be running.
+        return False
+    for m in members:
+        # type(m) is str, then the unbound compare: neither can raise, and
+        # a subclass junk member can neither bomb the scan nor pose as live.
+        if type(m) is str and str.__eq__(m, jid) is True:
+            return True
+    return False
+
+
+def _rebuilt_running(members) -> set:
+    """A fresh plain set keeping only the exact-str live markers.
+
+    A str-*subclass* member is a leftover by definition (this module only
+    ever stores :func:`_job_id`'s exact strs); keeping a laundered twin
+    would mark a job that is not running as live forever.
+    """
+    out: set = set()
+    for m in members:
+        if type(m) is str:
+            out.add(m)
+    return out
+
+
+def _add_running(jid: str) -> None:
+    """``_running.add(jid)`` that never raises.  Callers hold the guard.
+
+    The plain add compares jid against any colliding stored member,
+    dispatching into that member's ``__eq__``; a leftover bomb member (or a
+    subclass table's overridden ``add``) used to raise here and 500 the
+    run-now path.  On a raise the table is rebuilt with laundered exact-str
+    members — ids this module writes already are, so a subclass member is a
+    leftover by definition and its laundered twin keeps marking the run.
+    """
+    global _running
+    try:
+        set.add(_running, jid)
+        return
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        members = []
+    fresh = _rebuilt_running(members)
+    fresh.add(jid)
+    _running = fresh
+
+
+def _discard_running(jid: str) -> None:
+    """``_running.discard(jid)`` that never raises.  Callers hold the guard.
+
+    A raise out of the discard in :func:`_execute`'s ``finally`` used to
+    leave the id parked "running" forever — every later trigger skipped —
+    so the rebuild both drops the poisoned twin and completes the discard.
+    """
+    global _running
+    try:
+        set.discard(_running, jid)
+        return
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        members = list(set.__iter__(_running))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        members = []
+    fresh = _rebuilt_running(members)
+    fresh.discard(jid)
+    _running = fresh
+
+
 def _alert_on_failure(job: dict, entry: dict) -> None:
     """Track consecutive failures; involve the alert pipeline on a streak.
 
     Imported lazily and wrapped: a broken alert path must not take the
     scheduler thread with it, mirroring how the alerter itself never lets a
     channel exception escape.
+
+    The streak table reads/writes go through the unbound dict builtins in
+    a try: every ``_fail_counts`` access hash-probes the table and compares
+    jid against any colliding stored key, so a leftover hash-shadow key (a
+    str subclass with the id's text and a bombing ``__eq__``) — or a
+    dict-subclass table with bombing overrides — used to raise out of
+    :func:`_execute` *after* the run was journalled, breaking its "never
+    raises" contract and killing the run thread.  On a poisoned write the
+    table is rebuilt with laundered exact-str keys and exact-int counts so
+    the streak (and the alert it has earned) survives the junk twin.
     """
+    global _fail_counts
     jid = _job_id(job)
     if not jid:
         return
     if entry.get("status") == "ok":
-        _fail_counts.pop(jid, None)
+        try:
+            dict.pop(_fail_counts, jid, None)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            _fail_counts = _rebuilt_fail_counts(drop=jid)
         return
     if entry.get("status") == "skipped":
         return
-    count = _fail_counts.get(jid, 0) + 1
-    _fail_counts[jid] = count
+    try:
+        prev = dict.get(_fail_counts, jid, 0)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        prev = 0
+    # Exact bounded int only: a leftover junk count (a bool, an int-subclass
+    # arithmetic bomb, a >4300-digit int whose str() the alert f-string
+    # cannot render) restarts the streak instead of detonating it.
+    if type(prev) is not int or not 0 <= prev < 1_000_000:
+        prev = 0
+    count = prev + 1
+    try:
+        dict.__setitem__(_fail_counts, jid, count)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        fresh = _rebuilt_fail_counts(drop=jid)
+        fresh[jid] = count
+        _fail_counts = fresh
     if count < FAILURE_ALERT_AFTER:
         return
     try:
@@ -757,12 +1539,35 @@ def _alert_on_failure(job: dict, entry: dict) -> None:
             level="warn",
             alert_id=f"schedule:{jid}",
             message=(
-                f"scheduled task '{job.get('name') or jid}' failed "
+                # _job_label: the bare ``or`` ran a leftover name value's
+                # ``__bool__``; the bomb was swallowed by the except below
+                # but silently dropped the alert the streak had earned.
+                f"scheduled task '{_job_label(job, jid)}' failed "
                 f"{count} times in a row (last exit {entry.get('rc')})"
             ),
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
+
+
+def _job_label(job: dict, jid: str):
+    """The job's display name, or its id.
+
+    The bare ``job.get("name") or jid`` ran a leftover name value's own
+    ``__bool__``; a subclass bomb there raised out of :func:`_execute`'s
+    entry build — *after* the runner had finished — so the run journalled
+    nothing and the "Never raises" contract broke.  The rendered value
+    itself is _jsonable's problem, not this helper's.
+    """
+    try:
+        name = job.get("name")
+        return name if name else jid
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return jid
 
 
 def _execute(job: dict, trigger: str) -> dict:
@@ -770,38 +1575,67 @@ def _execute(job: dict, trigger: str) -> dict:
     jid = _job_id(job)
     if not jid:
         return {"ok": False, "error": "no_id"}
+    # _mapping_get, read once: the entry builds below run *outside* the try
+    # (the skipped build before it, the final build after the finally), so a
+    # leftover hash-shadowing bomb key with "type"'s text used to raise out
+    # of the bare ``job.get("type")`` probes and break the "never raises"
+    # contract — after the runner had already finished, so the run was
+    # never journalled.
+    job_type = _mapping_get(job, "type")
     started = time.time()
     with _running_guard:
-        if jid in _running:
+        # _running_has / _add_running, not bare set ops: a leftover bomb
+        # member (or a subclass table) used to raise here — before the try
+        # below — and break the "never raises" contract.
+        if _running_has(jid):
             entry = {
                 "ts": _epoch_int(started), "end": _epoch_int(started), "job": jid,
-                "name": job.get("name") or jid, "type": job.get("type"),
+                "name": _job_label(job, jid), "type": job_type,
                 "trigger": trigger, "status": "skipped", "rc": None,
                 "tail": "previous run still in progress", "duration": 0,
             }
             _record_run(entry)
             return entry
-        _running.add(jid)
+        _add_running(jid)
     log: list[str] = []
     rc: int | None = -1
     try:
-        runner = _RUNNERS.get(str(job.get("type") or ""))
+        runner = _RUNNERS.get(str(job_type or ""))
         if runner is None:
-            log.append(f"!! unknown job type: {job.get('type')}")
+            # _utf8_text, not the raw value: a junk type's own
+            # ``__str__``/``__format__`` bomb in the f-string degrades
+            # field-level instead of costing the run its diagnosis.
+            log.append(f"!! unknown job type: {_utf8_text(job_type)}")
             rc = -1
         else:
             rc = runner(job, log)
-    except Exception as e:  # a runner bug must not kill the engine thread
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        # A runner bug must not kill the engine thread.  BaseException too:
+        # a leftover runner seam raising a BaseException subclass used to
+        # sail past the old ``except Exception``, so the run was never
+        # journalled and the "never raises" contract broke.
         log.append(f"!! error: {_utf8_text(e)}")
         rc = -1
     finally:
         with _running_guard:
-            _running.discard(jid)
+            _discard_running(jid)
     ended = time.time()
-    status = "ok" if rc == 0 else ("timeout" if rc == 124 else "failed")
+    try:
+        status = "ok" if rc == 0 else ("timeout" if rc == 124 else "failed")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # An int-subclass ``__eq__`` bomb rc from a runner seam used to
+        # raise here — *after* the runner finished — so the run journalled
+        # nothing and the "Never raises" contract broke (the api_action
+        # guarded-rc rule).  A bomb rc is not a clean exit: read it as
+        # failure.
+        status = "failed"
     entry = {
         "ts": _epoch_int(started), "end": _epoch_int(ended), "job": jid,
-        "name": job.get("name") or jid, "type": job.get("type"),
+        "name": _job_label(job, jid), "type": job_type,
         "trigger": trigger, "status": status, "rc": rc,
         "tail": "\n".join(log)[-TAIL_CHARS:],
         "duration": _finite_duration(ended, started),
@@ -812,8 +1646,11 @@ def _execute(job: dict, trigger: str) -> dict:
 
 
 def is_running(job_id: str) -> bool:
+    # _running_has, not bare ``in``: a leftover hash-shadow member's
+    # reflected ``__eq__`` (or a subclass table's ``__contains__``) used to
+    # raise here and 500 GET /api/scheduler/jobs and POST run-now.
     with _running_guard:
-        return job_id in _running
+        return _running_has(job_id)
 
 
 def run_job_now(job_id: str, *, wait: bool = False) -> dict:
@@ -873,16 +1710,46 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
         if n != n or n in (float("inf"), float("-inf")) or abs(n) > 1e18:
             return []
         now = time.localtime(n)
-    except (OverflowError, OSError, ValueError, TypeError):
-        # Leftover ``time.time() = inf`` OverflowError'd the scheduler tick.
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Leftover ``time.time() = inf`` OverflowError'd the scheduler tick;
+        # the old net named only (OverflowError, OSError, ValueError,
+        # TypeError), so a patched clock whose ``__float__`` raised
+        # RuntimeError — let alone a BaseException subclass — rode out raw
+        # and cost every job its minute through _loop's blanket catch.
         return []
     key = _minute_key(now)
-    if key == _last_minute:
+    last = _last_minute
+    try:
+        if key == last:
+            return []
+        went_back = last is not None and key < last
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # This module only ever writes exact int tuples, but the mark is
+        # whatever an in-process leftover last stored: a junk high-water
+        # mark (a tuple subclass whose ``__eq__``/``__lt__`` bombs, junk
+        # elements the comparison reflects into) used to raise out of every
+        # tick forever — every job's every minute was lost while the loop's
+        # broad except kept the thread alive.  A junk mark carries no
+        # usable timeline: re-anchor on the current minute with boot
+        # semantics (marked evaluated, not fired).
+        _last_minute = key
         return []
-    if _last_minute is not None and key < _last_minute:
+    if went_back:
         # Naive datetimes on purpose: both keys came from time.localtime(),
         # so their difference is the wall-clock distance the operator sees.
-        if datetime(*_last_minute) - datetime(*key) <= _BACKWARD_RESYNC:
+        try:
+            small_step = datetime(*last) - datetime(*key) <= _BACKWARD_RESYNC
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A mark that compares but cannot build a datetime (junk
+            # elements) is a leftover, not a timeline: re-anchor.
+            small_step = False
+        if small_step:
             return []
         _last_minute = key
         return []
@@ -893,14 +1760,29 @@ def _tick_once(now_ts: float | None = None) -> list[str]:
         if not jid or not job_enabled(job):
             continue
         try:
-            if not cron_matches(job.get("cron"), now):
+            # _mapping_get, not ``job.get``: a leftover hash-shadowing bomb
+            # key with "cron"'s text raised RuntimeError past this
+            # (ValueError, TypeError) net and aborted the whole tick —
+            # every *other* job's matching minute was lost while _loop's
+            # broad except kept the thread alive.
+            if not cron_matches(_mapping_get(job, "cron"), now):
                 continue
         except (ValueError, TypeError):
             continue  # an unparsable expression can never fire
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Defense at the seam (tests and tooling patch cron_matches): a
+            # matcher raising anything else — BaseException-shaped included
+            # — costs only its own row, never the whole tick.
+            continue
         launched.append(jid)
         threading.Thread(
             target=_execute, args=(job, "schedule"), daemon=True,
-            name=f"sched-{job.get('id')}",
+            # jid, not the raw id: the f-string ran a leftover id value's
+            # own __format__/__str__, and a subclass bomb there aborted the
+            # whole tick — every *other* job's matching minute was lost.
+            name=f"sched-{jid}",
         ).start()
     return launched
 
@@ -924,7 +1806,14 @@ def _delay_until_next_minute(now: float | None = None) -> float:
         if delay != delay or delay <= 0.0 or delay > 61.0:
             return fallback
         return delay
-    except (OverflowError, OSError, ValueError, TypeError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # The old net named only (OverflowError, OSError, ValueError,
+        # TypeError) — but this helper runs *outside* _loop's blanket tick
+        # catch, so a patched clock whose ``__float__`` raised RuntimeError
+        # (or a BaseException subclass) killed the engine thread outright:
+        # no job ever fired again until a panel restart.
         return fallback
 
 
@@ -935,8 +1824,12 @@ def _loop() -> None:
         try:
             worker_health.beat("panel-scheduler")
             _tick_once()
-        except Exception:
-            # The engine thread must survive anything a tick throws.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # The engine thread must survive anything a tick throws —
+            # BaseException-shaped bombs included; only genuine control
+            # flow may take the thread down.
             pass
         delay = _delay_until_next_minute()
         try:
@@ -960,10 +1853,13 @@ def start_scheduler() -> None:
     # the panel was down (including "right now") are not back-filled.
     try:
         _last_minute = _minute_key(time.localtime())
-    except (OverflowError, OSError, ValueError, TypeError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Leftover ``time.localtime()`` OverflowError (inf clock) used to
         # abort start; the lifespan ``except Exception`` then skipped the
-        # engine entirely.
+        # engine entirely — and a BaseException-shaped clock bomb rode past
+        # even that.
         _last_minute = None
     _thread = threading.Thread(target=_loop, daemon=True, name="panel-scheduler")
     _thread.start()

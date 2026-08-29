@@ -20,6 +20,8 @@ from hub.routers.nas_common import client_host, require_admin_browser
 
 router = APIRouter(tags=["accounts"])
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 #: hub.auth account-writer ValueError reasons → stable API error codes.
 _ACCOUNT_ERRORS = {
     "bad_username": "accounts.bad_username",
@@ -53,26 +55,96 @@ class AccountPasswordBody(BaseModel):
     new_password: str = Field(min_length=1, max_length=256)
 
 
-def _public_view(acct: dict) -> dict:
-    """Account record without its hash, plus 2FA state for the admin table."""
-    username = str(acct.get("username") or "")
-    return {
-        "username": username,
-        "role": str(acct.get("role") or auth.ROLE_MEMBER),
-        "resources": list(acct.get("resources") or []),
-        "twofa_enabled": twofa_svc.enabled(username),
-    }
+def _text(value) -> str:
+    """Panel JSON text.  None stays empty; else auth._cfg_text (ADDR belt)."""
+    if value is None:
+        return ""
+    try:
+        return auth._cfg_text(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _resource_ids(raw) -> list:
+    """JSON list of grant ids.  A leftover mapping/int used to 500 GET accounts."""
+    if not auth._isinst(raw, list):
+        return []
+    out = []
+    for item in auth._iter_list(raw):
+        try:
+            text = _text(item).strip()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if text:
+            out.append(text)
+    return out
+
+
+def _public_view(acct) -> dict | None:
+    """Account record without its hash, plus 2FA state for the admin table.
+
+    One leftover row (hostile grants list, raising field) costs itself only
+    — never GET /api/auth/accounts for every sibling.
+    """
+    try:
+        if not auth._isinst(acct, dict):
+            return None
+        username = _text(auth._mapping_get(acct, "username"))
+        role = _text(auth._mapping_get(acct, "role")) or auth.ROLE_MEMBER
+        try:
+            flag = bool(twofa_svc.enabled(username))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            flag = False
+        return {
+            "username": username,
+            "role": role,
+            "resources": _resource_ids(auth._mapping_get(acct, "resources")),
+            "twofa_enabled": flag,
+        }
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 @router.get("/api/auth/accounts")
 def accounts_list(request: Request):
     require_admin_browser(request)
-    records = sorted(
-        auth.accounts().values(),
-        # Admins first, then alphabetically — the shape the Users table shows.
-        key=lambda a: (str(a.get("role")) != auth.ROLE_ADMIN, str(a.get("username"))),
-    )
-    return {"accounts": [_public_view(a) for a in records]}
+    try:
+        records = list(auth.accounts().values())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        records = []
+    views = []
+    for raw in records:
+        try:
+            view = _public_view(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if view is not None:
+            views.append(view)
+    try:
+        views.sort(
+            # Admins first, then alphabetically — the shape the Users table shows.
+            key=lambda a: (
+                _text(auth._mapping_get(a, "role")) != auth.ROLE_ADMIN,
+                _text(auth._mapping_get(a, "username")),
+            ),
+        )
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    return {"accounts": views}
 
 
 @router.post("/api/auth/accounts")
@@ -96,7 +168,16 @@ def accounts_create(body: AccountCreateBody, request: Request):
         client=client_host(request),
         outcome="success",
     )
-    return {"ok": True, "account": {**created, "twofa_enabled": False}}
+    view = {
+        "username": _text(auth._mapping_get(created, "username") if auth._isinst(created, dict) else None),
+        "role": _text(auth._mapping_get(created, "role") if auth._isinst(created, dict) else None)
+        or auth.ROLE_MEMBER,
+        "resources": _resource_ids(
+            auth._mapping_get(created, "resources") if auth._isinst(created, dict) else None
+        ),
+        "twofa_enabled": False,
+    }
+    return {"ok": True, "account": view}
 
 
 @router.put("/api/auth/accounts/{username}/resources")
@@ -114,7 +195,7 @@ def accounts_set_resources(username: str, body: AccountResourcesBody, request: R
         client=client_host(request),
         outcome="success",
     )
-    return {"ok": True, "resources": granted}
+    return {"ok": True, "resources": _resource_ids(granted)}
 
 
 @router.post("/api/auth/accounts/{username}/password")
@@ -127,15 +208,15 @@ def accounts_reset_password(username: str, body: AccountPasswordBody, request: R
     """
     operator = require_admin_browser(request)
     target = auth.account(username)
-    if not target:
+    if not target or not auth._isinst(target, dict):
         raise api_error("accounts.not_found")
-    if str(target.get("role")) == auth.ROLE_ADMIN:
+    if _text(auth._mapping_get(target, "role")) == auth.ROLE_ADMIN:
         # The admin rotates their own credential through change-password,
         # which demands the current one.  A no-questions-asked reset endpoint
         # must not exist for administrator accounts.
         raise api_error("accounts.not_member")
     try:
-        auth.set_account_password(str(target["username"]), body.new_password)
+        auth.set_account_password(_text(auth._mapping_get(target, "username")), body.new_password)
     except ValueError as exc:
         raise _account_error(exc)
     audit.record(

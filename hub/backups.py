@@ -23,24 +23,73 @@ from hub.errors import CODES, api_error
 from hub.paths import CONFIG_FILE, DATA_DIR, user_home
 from hub.util import read_text_capped, run_capped, safe_json_loads, strftime_now, utf8_env
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
 
 def _as_text(value) -> str:
     """``run_capped`` leftovers arrive as bytes/None; JSON and ``.strip`` need text."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
-        return ""
-    else:
+    # _isa on the gate, try on the decode (the ollama10 rule): a lying
+    # ``__class__`` impostor (claims bytes, is not — the dash10/json9 shape)
+    # passed the bare isinstance and the unbound ``bytes.decode`` TypeError'd
+    # *inside* the broad catches around the immich/postgres/configs jobs —
+    # the successful artefact was ``_discard``'ed and the 200 lied ok:false
+    # with descriptor gibberish as the run's failure.  The impostor drops to
+    # "", so the message falls back to the honest ``_exit_text(rc)``.
+    if _isa(value, (bytes, bytearray)):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    if value is None:
+        return ""
+    try:
+        value = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _home_dir() -> Path:
@@ -285,7 +334,9 @@ def _tool_on_disk(tool) -> bool:
     """
     try:
         text = str(tool or "")
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
     if not text:
         return False
@@ -295,6 +346,59 @@ def _tool_on_disk(tool) -> bool:
         return shutil.which(text) is not None
     except (OSError, TypeError, ValueError):
         return False
+
+
+def _exit_code(rc):
+    """*rc* as an exact int, or None when it is seam junk (never raises).
+
+    ``run_capped`` results are the same seam the backups7 sweep sealed for
+    *text* — and the *rc* half still ran raw dunders everywhere it landed.
+    An int subclass whose ``__eq__``/``__ne__`` raises passed
+    ``isinstance`` and detonated ``_cli_vanished``'s ``rc != -1`` (a bare
+    500 out of POST /api/backups/immich, whose comparisons sit outside the
+    spawn's try) and the jobs' ``ok = rc == 0`` — inside the postgres /
+    configs broad catches, where the raise ``_discard``'ed an artefact that
+    had already written every byte and reported a 200 that lied ok:false
+    with the bomb's text as the dump's failure.  ``int.__index__`` is the
+    unbound base coercion ``_jsonable`` already uses: it reads the real
+    exit status underneath the override, so a bomb wrapping a genuine 0
+    keeps its successful run.  Anything uncoercible is junk, not an exit
+    status — None fails every ``== 0`` / ``!= -1`` probe closed.
+    """
+    if type(rc) is int:
+        return rc
+    try:
+        return int.__index__(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _exit_text(rc) -> str:
+    """``exit <rc>`` for result messages, or ``exit unknown`` when *rc* cannot
+    be rendered at all (the brew_svc rule).
+
+    Past CPython's 4300-digit int->str cap the bare f-string raises the
+    digit-cap ValueError.  In ``_backup_immich_script`` that render sat
+    outside every try and 500'd POST /api/backups/immich after the run had
+    already finished; the postgres dump's broad catch kept the 200 but
+    answered with CPython's digit-cap internals as the whole message.  The
+    compose stop/start/config and tar renders feed the scheduler journal
+    through the same f-strings.
+    """
+    if rc is None:
+        return "exit unknown"
+    try:
+        return f"exit {rc}"
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # ValueError past the digit cap — but the f-string's empty format
+        # spec also dispatches to a subclass ``__str__``, so a seam rc
+        # bomb raised RuntimeError past the old narrow tuple and 500'd
+        # POST /api/backups/immich on the empty-output failure path.
+        return "exit unknown"
 
 
 def _cli_vanished(rc, text, tool) -> bool:
@@ -316,7 +420,11 @@ def _cli_vanished(rc, text, tool) -> bool:
     apply — the vms ``_cli_missing`` / ollama ``delete_model`` rule.  The
     re-check runs only on this failure path, never on a successful spawn.
     """
-    if rc != -1 or _as_text(text).strip() != "not found":
+    # _exit_code, not the bare compare: ``!=`` dispatches to the value's
+    # own ``__ne__`` first, so a seam rc bomb 500'd POST /api/backups/immich
+    # out of this very probe.  The spawn sentinel is a literal exact -1, so
+    # junk that cannot coerce (None) is never the sentinel.
+    if _exit_code(rc) != -1 or _as_text(text).strip() != "not found":
         return False
     return not _tool_on_disk(tool)
 
@@ -383,25 +491,235 @@ def _cfg_text(value) -> str | None:
         return ""
     try:
         text = str(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # ValueError past the int->str digit cap; RecursionError on a
         # leftover self-referential __str__.
         return None
     try:
-        text.encode("utf-8")
+        # Unbound base encode, and the round-trip rather than a bare probe:
+        # ``str()`` of a subclass whose ``__str__`` answers *self* skips
+        # CPython's exact-str copy, so a leftover bound ``encode`` bomb
+        # raised RuntimeError past the UnicodeEncodeError catch and 500'd
+        # GET /api/backups — and the subclass's ``.strip()`` / ``__eq__``
+        # were the next overrides in pg_targets' path.  The decode of the
+        # exact bytes hands back an exact str.
+        return str.encode(text, "utf-8").decode("utf-8")
     except UnicodeEncodeError:
         return None
-    return text
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _exact_str(value) -> str | None:
+    """Exact-str copy of *value* without calling any overridable method.
+
+    ``agent_keywords`` / ``extra_paths`` entries pass ``isinstance(x, str)``
+    as odd subclasses too, and the bound ``.strip()`` that followed used to
+    raise out of :func:`agent_keywords` / :func:`config_archive_extra_paths`
+    and 500 POST /api/backups/configs.  surrogatepass, not the
+    :func:`_cfg_text` reject: these values name real on-disk files, and an
+    undecodable filename legitimately carries lone surrogates
+    (os surrogateescape) all the way into tar's argv.
+    """
+    if type(value) is str:
+        return value
+    try:
+        return str.encode(value, "utf-8", "surrogatepass").decode(
+            "utf-8", "surrogatepass"
+        )
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a poisoned ``backups`` / ``config_archive`` / ``postgres``
+    value (or one of its entries) whose ``__class__`` is a *raising
+    property* detonated the very type gates below — every one of which sits
+    *outside* a try — and 500'd GET /api/backups, POST /api/backups/postgres
+    and POST /api/backups/configs before any of this module's ``_mapping_get``
+    / ``_truthy`` / ``_iter_list`` unbound reads got a turn.  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch (the worker_health /
+    smart_test_svc ``_isa`` rule) — which for these gates means "drop this
+    entry" or "treat as unset", never a raise.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule: the truth test hidden in
+    ``entry.get(key) or ""`` used to detonate a junk config value whose
+    ``__bool__`` raises and 500 GET /api/backups.  Fails closed to False —
+    a bomb value is junk, not a name.
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule, which these cfg-readers never
+    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get``
+    raises, and one such block planted as ``backups`` / ``config_archive``
+    / a postgres entry used to raise out of :func:`pg_targets` /
+    :func:`config_archive_extra_paths` and 500 GET /api/backups,
+    POST /api/backups/postgres and POST /api/backups/configs at once.
+    ``dict.get`` reads the real storage underneath the override.
+    """
+    if not _isa(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            return dict.get(mapping, key)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+
+
+def _iter_list(value):
+    """Unbound base iteration over a list (the ``hub.modules._jsonable``
+    rule): a list-subclass ``__iter__`` bomb planted as
+    ``backups.postgres`` / ``agent_keywords`` / ``extra_paths`` used to
+    raise out of the ``for`` and 500 the route; the real elements still
+    come through.
+
+    The unbound call runs in a try (the ollama10 rule): ``_isa`` lets a
+    *lying* ``__class__`` impostor through — a plain object whose
+    ``__class__`` property *returns* ``list`` passes ``isinstance``, and
+    the descriptor TypeError then detonated at the ``for`` itself, a bare
+    500 out of GET /api/backups, POST /api/backups/postgres (via
+    ``pg_targets``) and POST /api/backups/configs (via ``agent_keywords``
+    / ``config_archive_extra_paths``).  The impostor has no real list
+    storage to read, so it degrades to "no entries" — the same treat-as-
+    unset answer a raising ``__class__`` bomb already gets — and a real
+    list subclass still yields its real elements.
+    """
+    try:
+        return list(list.__iter__(value))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+
+
+def _cfg_map() -> dict:
+    """The config snapshot as a dict — or ``{}`` when the provider itself
+    raises (the ``hub.config.settings_section`` rule these readers never got).
+
+    Every cfg read in this module goes through ``_mapping_get`` — but the
+    ``cfg()`` *call* sat outside every guard, so a snapshot provider that
+    raises 500'd GET /api/backups and POST /api/backups/postgres straight
+    out of ``pg_targets`` (and once more per listed row via ``scan_backups``
+    → ``restore_hint``), and POST /api/backups/configs out of
+    ``config_archive_extra_paths`` (outside the tar try) and
+    ``agent_keywords`` (inside a catch that only covers OSError) — all
+    before any job's broad catch got a turn.  In ``_pg_env`` the same raise
+    landed *inside* the dump's broad catch instead, which ``_discard``'ed
+    the finished artefact and blamed pg_dump for a config leftover the dump
+    never read.  A snapshot that cannot be read means the same thing an
+    empty services.yaml means: nothing is configured.
+    """
+    try:
+        raw = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    return raw if _isa(raw, dict) else {}
+
+
+def _user_home() -> Path | None:
+    """Best-effort HOME through the module seam (never raises, always a Path).
+
+    ``hub.paths.user_home`` already guards ``Path.home()`` — but the seam
+    itself is a snapshot provider like ``cfg``, and this module joined its
+    answer bare: ``home / "Services" / …`` in :func:`scan_backups` and the
+    LaunchAgents join in :func:`_backup_configs`.  A leftover provider that
+    raises — or answers *text* instead of a Path — detonated those joins
+    (TypeError on ``str.__truediv__``) and 500'd GET /api/backups and
+    POST /api/backups/configs outside every catch.  A textual answer still
+    names a real directory, so it is kept as a Path (``_exact_str``:
+    surrogates in an undecodable HOME are legitimate there); junk that
+    cannot name one degrades to None — the same "no home" answer an
+    unresolvable HOME already gets.
+    """
+    try:
+        home = user_home()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if home is None:
+        return None
+    if _isa(home, (bytes, bytearray)):
+        try:
+            text = _decode_bytes(home)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    elif _isa(home, str):
+        text = _exact_str(home)
+    else:
+        # Path and any real os.PathLike; a lying-``__class__`` Path impostor
+        # has no __fspath__ to answer with and drops here.  The fspath
+        # round-trip also flattens a Path subclass carrying bound bombs.
+        try:
+            text = os.fspath(home)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        if not _isa(text, str):
+            return None
+        text = _exact_str(text)
+    if not text:
+        return None
+    try:
+        return Path(text)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 def _backups_cfg() -> dict:
-    raw = cfg().get("backups")
-    return raw if isinstance(raw, dict) else {}
+    # _isa, not bare isinstance: a ``backups:`` value whose ``__class__`` is a
+    # raising property detonated this gate itself — a 500 on GET /api/backups
+    # and both POST dumps before any reader ran.
+    raw = _mapping_get(_cfg_map(), "backups")
+    return raw if _isa(raw, dict) else {}
 
 
 def _config_archive_cfg() -> dict:
-    raw = _backups_cfg().get("config_archive")
-    return raw if isinstance(raw, dict) else {}
+    raw = _mapping_get(_backups_cfg(), "config_archive")
+    return raw if _isa(raw, dict) else {}
 
 
 def pg_targets(raw: list | None = None) -> list[dict]:
@@ -413,33 +731,46 @@ def pg_targets(raw: list | None = None) -> list[dict]:
     the role named after the database.
     """
     if raw is None:
-        raw = _backups_cfg().get("postgres")
-    if not isinstance(raw, list):
+        raw = _mapping_get(_backups_cfg(), "postgres")
+    # _isa, not bare isinstance: a ``backups.postgres`` value (or one of its
+    # entries) whose ``__class__`` is a raising property detonated these gates
+    # and 500'd GET /api/backups instead of dropping the one bad entry.
+    if not _isa(raw, list):
         return []
     out: list[dict] = []
     seen: set[str] = set()
-    for entry in raw:
-        if not isinstance(entry, dict):
+    for entry in _iter_list(raw):
+        if not _isa(entry, dict):
             continue
         # _cfg_text, not str(): a YAML hex over-cap int or lone-surrogate
         # value in any of these fields used to raise out of this loop and
         # 500 GET /api/backups instead of dropping the one bad entry.
-        fields = {
-            key: _cfg_text(entry.get(key) or "")
-            for key in ("id", "db", "host", "user", "password_env")
-        }
+        # _mapping_get / _truthy, not ``entry.get(key) or ""``: a
+        # dict-subclass ``.get`` bomb or a value whose ``__bool__`` raises
+        # used to 500 the same routes instead of costing its entry.
+        fields = {}
+        for key in ("id", "db", "host", "user", "password_env"):
+            value = _mapping_get(entry, key)
+            fields[key] = _cfg_text(value if _truthy(value) else "")
         if any(v is None for v in fields.values()):
             continue
         tid = fields["id"].strip()
         db = fields["db"].strip()
         host = fields["host"].strip() or "localhost"
         user = fields["user"].strip() or db
-        port_raw = entry.get("port", 5432)
+        port_raw = _mapping_get(entry, "port")
         try:
             # None/"" mean "unset" and take the default; 0 is a typo, not a port.
             # YAML ``port: .inf`` used to OverflowError GET /api/backups.
             port = int(5432 if port_raw in (None, "") else port_raw)
         except (TypeError, ValueError, OverflowError):
+            continue
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A leftover comparison / __int__ bomb in ``port`` (the ``in``
+            # check runs the value's ``__eq__``) is the same "drop this
+            # entry", never a 500 out of GET /api/backups.
             continue
         if not _PG_ID_RE.fullmatch(tid) or tid in seen or not db:
             continue
@@ -494,7 +825,11 @@ def _pg_password(target_id: str) -> str:
         if not BACKUP_SECRETS_FILE.is_file():
             return ""
         raw = safe_json_loads(
-            read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8")
+            read_text_capped(BACKUP_SECRETS_FILE, _SECRETS_CAP, encoding="utf-8"),
+            # One leftover >4300-digit stamp anywhere in the store used to
+            # ValueError the whole decode, read every password back as ""
+            # and send pg_dump off unauthenticated (see _capped_json_int).
+            parse_int=_capped_json_int,
         )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested credentials is not ValueError.
@@ -529,13 +864,32 @@ def _pg_env(target: dict) -> dict:
     # that stubs ``backups.cfg`` also stubs the overlay.  ``maintenance_env()``
     # always goes back to ``hub.config.cfg`` and would silently pick up the
     # live services.yaml PATH instead.
-    settings = cfg().get("settings")
-    raw = settings.get("maintenance_env") if isinstance(settings, dict) else {}
-    if isinstance(raw, dict):
+    # _mapping_get / dict.items: a dict-subclass ``.get`` / ``items()``
+    # bomb in settings used to be swallowed by the broad catch around the
+    # dump and reported as its failure ("leftover .get bomb") — a lie that
+    # blamed pg_dump for a config leftover the dump never even read.
+    # _cfg_map, not a bare cfg(): a snapshot provider that raises was the
+    # same swallowed-and-blamed lie — the finished artefact discarded and
+    # the provider's text reported as pg_dump's failure.
+    settings = _mapping_get(_cfg_map(), "settings")
+    raw = _mapping_get(settings, "maintenance_env")
+    # _isa + a try around the unbound view: a raising ``__class__`` bomb
+    # detonated the bare isinstance, and a *lying* ``__class__`` dict
+    # impostor passed it and TypeError'd ``dict.items`` — both inside the
+    # broad catch around the dump, which ``_discard``'ed the successful
+    # artefact and reported descriptor gibberish as pg_dump's failure.
+    # A junk overlay is junk, not an environment: skip it, keep the dump.
+    if _isa(raw, dict):
+        try:
+            entries = list(dict.items(raw))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            entries = []
         # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
         # used to UnicodeEncodeError Popen on POST /api/backups.
         env.update({
-            _as_text(k): _as_text(v) for k, v in raw.items() if _as_text(k)
+            _as_text(k): _as_text(v) for k, v in entries if _as_text(k)
         })
     password = _pg_password(target["id"])
     if not password and target["password_env"]:
@@ -610,6 +964,17 @@ def apply_restore_path(hint: str, path: str) -> str:
     return hint.replace("{path}", str(path))
 
 
+def backup_root_text() -> str:
+    """:data:`BACKUP_ROOT` as UTF-8-clean text for the GET /api/backups payload.
+
+    A BACKUP_ROOT under an undecodable HOME carries lone surrogates
+    (os surrogateescape); the route's bare ``str()`` used to 500 the whole
+    Backups page at Starlette's UTF-8 encode while every row it listed was
+    already scrubbed.
+    """
+    return _as_text(BACKUP_ROOT)
+
+
 def scan_backups() -> list:
     """Every backup artefact found, newest first and not truncated.
 
@@ -618,7 +983,9 @@ def scan_backups() -> list:
     older than the cap were deleted.
     """
     items = []
-    home = user_home()
+    # _user_home, not the bare seam: a raising or text-answering provider
+    # used to 500 this join — and with it the whole GET /api/backups page.
+    home = _user_home()
     roots = [BACKUP_ROOT, DATA_DIR]
     if home is not None:
         roots.insert(1, home / "Services" / "teslamate" / "backups")
@@ -711,18 +1078,44 @@ def _immich_latest() -> dict | None:
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    # _isa on the gate, try on the decode: a raising ``__class__`` bomb
+    # detonated the bare isinstance; a lying ``__class__`` impostor (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -734,12 +1127,39 @@ def _jsonable(value, depth: int = 0):
     still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     A >4300-digit int still passed through untouched: CPython's int->str
     digit limit then ValueError'd ``json.dumps`` itself.
+    Subclass bombs (the hub.modules._jsonable unbound convention this copy
+    never got) each 500'd the page out of ``_json_object``, whose
+    ``_jsonable(raw)`` call sits outside its load-time catch: a dict whose
+    ``items()`` raises, a container whose ``__iter__`` raises, an int whose
+    ``__str__`` blows the digit-cap probe, a float whose ``__eq__`` blows
+    the NaN/inf probes, bytes whose ``decode`` raises, and an ``isoformat``
+    probe on an object whose ``__getattr__`` raises.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate (the ollama10 parity): a raising ``__class__``
+    # bomb used to detonate the first bare isinstance; a *lying* ``__class__``
+    # impostor passes the gate and must drop at its unbound base call instead
+    # of riding the claimed rank into the encoder.
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a lying ``__class__`` impostor (the
+        # dash10/json9 shape).  It used to be returned verbatim — every
+        # other liar drops at its unbound base call, but the bool gate had
+        # nothing to call — and the C-level JSON encoder then refused it.
+        return value if type(value) is bool else None
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -747,37 +1167,116 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises used
+        # to 500 the page; the real storage underneath still comes through.
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if _isa(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot 500 and the real elements still survive.  The
+                # try is for a lying-``__class__`` impostor, which
+                # TypeErrors the unbound iteration itself.
+                try:
+                    items = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/backups.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document.  One poisoned number used to
+    wipe whole Backups stores at once: a status counter in
+    panel_status.json / backup_status.json blanked every layer card on the
+    page; a stray stamp beside a target's entry in backup-credentials.json
+    read the *password* back as "" (the dump then ran unauthenticated and
+    failed); a huge label in resolved compose JSON refused the whole stack
+    backup as ``compose_config_failed``; and one in an inflight marker made
+    crash recovery forget which compose file to ``start``.  Dropping just
+    the number keeps the document, same as the notify_channels /
+    smart_test_svc / docker_cli hooks.
+    """
+    try:
+        return int(text)
+    except ValueError:
         return None
 
 
@@ -787,7 +1286,10 @@ def _json_object(path: Path) -> dict:
         # a dying FUSE mount re-raises EIO from is_file() itself.
         if not path.is_file():
             return {}
-        raw = safe_json_loads(read_text_capped(path, _JSON_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(path, _JSON_CAP, encoding="utf-8"),
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError:
         # a torn panel_status.json used to 500 the Backups page.
@@ -960,13 +1462,32 @@ def _immich_conn() -> dict:
         if line.startswith("DB_URL="):
             raw = line.split("=", 1)[1].strip().strip("\"'")
             break
-    parsed = urlparse(raw) if raw else None
+    try:
+        # A torn IPv6 literal in the netloc ("[::1" with no closing bracket)
+        # makes urlsplit — which urlparse calls — raise ValueError("Invalid
+        # IPv6 URL"), the catalog5 leftover class.  That is a raw stdlib error,
+        # not this helper's documented RuntimeError, and but for the caller's
+        # broad catch it would surface CPython-internal text ("Invalid IPv6
+        # URL") as the immich dump's failure instead of a coded reason.  A
+        # torn DB_URL means the same operator-facing state every other bad
+        # db.env here gets: unusable, raise the coded refusal.
+        parsed = urlparse(raw) if raw else None
+    except ValueError as exc:
+        raise RuntimeError("Immich db.env has an unparsable DB_URL") from exc
     password = unquote(parsed.password) if parsed and parsed.password else ""
     if not password:
         raise RuntimeError("Immich db.env has no usable DB_URL password")
+    try:
+        # ``.port`` re-parses the netloc and raises ValueError on an
+        # out-of-range or non-numeric port ("host:99999999999999999999",
+        # "host:notaport") — the same raw stdlib leak as the torn bracket
+        # above, and accessed unguarded twice below.  Read it once, coded.
+        port = parsed.port if parsed and parsed.port else 5433
+    except ValueError as exc:
+        raise RuntimeError("Immich db.env DB_URL port is out of range") from exc
     return {
         "host": (parsed.hostname if parsed and parsed.hostname else "127.0.0.1"),
-        "port": (parsed.port if parsed and parsed.port else 5433),
+        "port": port,
         "user": unquote(parsed.username) if parsed and parsed.username else "immich",
         "db": (parsed.path or "/immich").lstrip("/") or "immich",
         "password": password,
@@ -1018,7 +1539,14 @@ def _backup_immich_script() -> dict:
             [str(IMMICH_SCRIPT)], timeout=600, cwd=str(IMMICH_ROOT),
         )
         text = _as_text(text)
-    except Exception as exc:
+        # _exit_code beside _as_text: the rc half of the seam still ran raw
+        # dunders through ``rc == 0`` and ``_exit_text`` *outside* this try,
+        # so an int-subclass ``__eq__`` / ``__str__`` bomb 500'd the route
+        # after the script had already produced its artefact.
+        rc = _exit_code(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         # leftover ``str(exc)`` RecursionError / ``\\ud800`` used to 500 POST /api/backups.
         return {"ok": False, "message": _as_text(exc)[:500]}
     if _cli_vanished(rc, text, IMMICH_SCRIPT):
@@ -1038,7 +1566,7 @@ def _backup_immich_script() -> dict:
         # created-check above stays raw on purpose — it compares glob
         # results with glob results.
         "path": _as_text(BACKUP_ROOT / latest["name"]) if ok and latest else None,
-        "message": (text or f"exit {rc}")[:500],
+        "message": (text or _exit_text(rc))[:500],
         "size_mb": latest["size_mb"] if ok and latest else 0,
     }
 
@@ -1075,7 +1603,9 @@ def _backup_immich_native() -> dict:
         return {"ok": False, "message": "postgresql@18 pg_dump is not installed"}
     try:
         conn = _immich_conn()
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         return {"ok": False, "message": _as_text(exc)[:200]}
 
     stamp = strftime_now("%Y%m%d_%H%M%S", "0")
@@ -1161,7 +1691,9 @@ def _backup_immich_native() -> dict:
     except RecursionError:
         _discard(dest)
         return {"ok": False, "message": (err_text or "immich dump failed")[:500]}
-    except Exception as exc:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as exc:
         _discard(dest)
         return {"ok": False, "message": (err_text or _as_text(exc))[:500]}
     finally:
@@ -1187,8 +1719,11 @@ def _backup_immich_native() -> dict:
     _prune("immich_*.sql.gz", retain=IMMICH_RETAIN)
     return {
         "ok": True,
-        "path": str(dest),
-        "message": f"immich backup ok: {dest.name}",
+        # _as_text on both: a BACKUP_ROOT under an undecodable HOME carries
+        # lone surrogates, and raw they 500'd POST /api/backups/immich at
+        # Starlette's UTF-8 encode — on the successful run.
+        "path": _as_text(dest),
+        "message": f"immich backup ok: {_as_text(dest.name)}",
         "size_mb": round(size / 1024 / 1024, 2),
     }
 
@@ -1233,6 +1768,11 @@ def _dump_one_postgres(target: dict) -> dict:
     try:
         rc, text = run_capped(cmd, timeout=600, env=_pg_env(target))
         text = _as_text(text)
+        # _exit_code beside _as_text: an int-subclass ``__eq__`` bomb in the
+        # rc half of the seam used to raise at ``ok = rc == 0`` inside this
+        # broad catch — the *successful* dump was ``_discard``'ed and the
+        # 200 lied ok:false with the bomb's text as the dump's failure.
+        rc = _exit_code(rc)
         if _cli_vanished(rc, text, cmd[0]):
             # pg_dump itself could not be spawned — never installed, or
             # uninstalled while this ran.  The coded 503 instead of the
@@ -1249,8 +1789,12 @@ def _dump_one_postgres(target: dict) -> dict:
             _prune(f"{target['id']}_*.sql.bak")
         return {
             "ok": ok,
-            "path": str(dest) if ok else None,
-            "message": (text or f"exit {rc}")[:500],
+            # _as_text: a BACKUP_ROOT under an undecodable HOME surfaces as
+            # lone surrogates (os surrogateescape); raw, the *successful*
+            # dump used to 500 POST /api/backups/postgres at Starlette's
+            # UTF-8 encode.  _discard/_prune above keep the raw Path.
+            "path": _as_text(dest) if ok else None,
+            "message": (text or _exit_text(rc))[:500],
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
     except HTTPException:
@@ -1260,7 +1804,9 @@ def _dump_one_postgres(target: dict) -> dict:
     except RecursionError:
         _discard(dest)
         return {"ok": False, "message": "dump failed"}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         _discard(dest)
         return {"ok": False, "message": _as_text(e)}
 
@@ -1299,10 +1845,20 @@ def agent_keywords() -> tuple[str, ...]:
     reason: a malformed list must degrade to the defaults, not to nothing.
     """
     merged = list(DEFAULT_AGENT_KEYWORDS)
-    extras = _config_archive_cfg().get("agent_keywords")
-    if isinstance(extras, list):
-        for kw in extras:
-            if isinstance(kw, str):
+    extras = _mapping_get(_config_archive_cfg(), "agent_keywords")
+    # _isa, not bare isinstance: a keywords list (or entry) whose ``__class__``
+    # is a raising property detonated these gates and 500'd
+    # POST /api/backups/configs instead of degrading to the defaults.
+    if _isa(extras, list):
+        for kw in _iter_list(extras):
+            if _isa(kw, str):
+                # _exact_str first: a str-subclass entry whose bound
+                # ``.strip()`` / ``__eq__`` raises used to 500
+                # POST /api/backups/configs as soon as one LaunchAgents
+                # plist was up for the _wanted_agent test.
+                kw = _exact_str(kw)
+                if kw is None:
+                    continue
                 kw = kw.strip()
                 if kw and kw not in merged:
                     merged.append(kw)
@@ -1319,11 +1875,19 @@ def config_archive_extra_paths() -> list[Path]:
     file does not silently fall out of the configuration.
     """
     out: list[Path] = []
-    raw = _config_archive_cfg().get("extra_paths")
-    if not isinstance(raw, list):
+    raw = _mapping_get(_config_archive_cfg(), "extra_paths")
+    # _isa, not bare isinstance: an extra_paths list (or entry) whose
+    # ``__class__`` is a raising property detonated these gates and 500'd
+    # POST /api/backups/configs out of this loop.
+    if not _isa(raw, list):
         return out
-    for entry in raw:
-        if not isinstance(entry, str) or not entry.strip():
+    for entry in _iter_list(raw):
+        if not _isa(entry, str):
+            continue
+        # _exact_str first: a str-subclass entry whose bound ``.strip()``
+        # raises used to 500 POST /api/backups/configs out of this loop.
+        entry = _exact_str(entry)
+        if entry is None or not entry.strip():
             continue
         try:
             path = Path(os.path.expanduser(entry.strip()))
@@ -1371,8 +1935,16 @@ def _run_argv(argv: list[str], *, timeout: int, cap: int = 4000) -> tuple[int, s
         # Combined stream: callers already do ``(err or out)``.
         # Leftover bytes/None used to TypeError ``.strip()`` / JSON-encode
         # POST /api/backups/stack and the postgres/immich/config dumps.
-        return rc, _as_text(text), ""
-    except Exception as e:  # noqa: BLE001 — a backup step must report, not raise
+        # _exit_code on the rc half: _backup_stack compares ``rc != 0``
+        # bare (including in its finally-restart), so a seam rc bomb used
+        # to raise past the one promise this module makes — the compose
+        # start after an attempted stop — and out into the scheduler run.
+        # Junk that cannot coerce maps to the same -1 the except arm uses.
+        rc = _exit_code(rc)
+        return (-1 if rc is None else rc), _as_text(text), ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # noqa: BLE001 — a backup step must report, not raise
         return -1, "", _as_text(e)
 
 
@@ -1423,9 +1995,13 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
         cap=_COMPOSE_JSON_CAP,
     )
     if rc != 0 or not out.strip():
-        return [], [], (err or out or f"compose config exit {rc}").strip()[:300]
+        return [], [], (err or out or f"compose config {_exit_text(rc)}").strip()[:300]
     try:
-        resolved = safe_json_loads(out, loads=json.loads)
+        # parse_int hook: one leftover >4300-digit number anywhere in the
+        # resolved config (a label, an x- extension) used to ValueError the
+        # decode itself and refuse the whole stack backup as
+        # ``compose_config_failed`` — a number tar never even looks at.
+        resolved = safe_json_loads(out, loads=json.loads, parse_int=_capped_json_int)
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested compose JSON is not ValueError.
         return [], [], "unparsable compose config: " + (_as_text(e) or "error")
@@ -1544,7 +2120,12 @@ def recover_interrupted_stack_backups() -> list[dict]:
         return recovered
     for marker in markers:
         try:
-            info = safe_json_loads(read_text_capped(marker, _MARKER_CAP))
+            # parse_int hook: a leftover >4300-digit ``ts`` used to ValueError
+            # the decode, so recovery forgot the recorded compose_path and —
+            # unless the stack was still discoverable — left it stopped.
+            info = safe_json_loads(
+                read_text_capped(marker, _MARKER_CAP), parse_int=_capped_json_int,
+            )
         except (OSError, ValueError, RecursionError):
             info = {}
         if not isinstance(info, dict):
@@ -1562,7 +2143,7 @@ def recover_interrupted_stack_backups() -> list[dict]:
             )
             started = rc == 0
             detail = "restarted" if started else (
-                f"compose start exit {rc}: {(err or out).strip()[:200]}"
+                f"compose start {_exit_text(rc)}: {(err or out).strip()[:200]}"
             )
         log.warning("interrupted stack backup found for %s: %s", stack_id, detail)
         try:
@@ -1577,14 +2158,26 @@ def recover_interrupted_stack_backups() -> list[dict]:
                     f"(after compose stop); automatic recovery: {detail}"
                 ),
             )
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             # Recovery must finish even when the alert pipeline is broken.
             pass
         try:
             marker.unlink()
         except OSError:
             pass
-        recovered.append({"stack": stack_id, "started": started, "detail": detail})
+        # _as_text on both: an undecodable marker *filename* (os
+        # surrogateescape) or a ``\ud800`` escape in the marker JSON put lone
+        # surrogates in this row, and the returned list feeds JSON encoders
+        # the same way every other result in this module does.  The raw
+        # stack_id above stays raw on purpose — _find_stack must keep
+        # matching a stack whose own id carries the same surrogates.
+        recovered.append({
+            "stack": _as_text(stack_id),
+            "started": started,
+            "detail": _as_text(detail),
+        })
     return recovered
 
 
@@ -1667,7 +2260,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
             # finally-restart below keys off "stop was attempted", not rc.
             stopped = True
             if rc != 0:
-                log.append(f"!! compose stop exit {rc}: {(err or out).strip()[:200]}")
+                log.append(f"!! compose stop {_exit_text(rc)}: {(err or out).strip()[:200]}")
 
         # No early returns inside this try: the result must be assembled after
         # the finally has run, or it could not truthfully report `restarted`.
@@ -1712,7 +2305,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
             archive_ok = rc == 0 and size > 0
             if not archive_ok:
                 error = "archive_failed"
-                message = (err or out or f"tar exit {rc}").strip()[:300]
+                message = (err or out or f"tar {_exit_text(rc)}").strip()[:300]
                 log.append(f"!! archive failed: {message}")
             else:
                 message = f"archived {len(binds)} bind mount(s), {len(volumes)} volume(s)"
@@ -1726,7 +2319,7 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
                                      timeout=300)
             restarted = rc == 0
             if not restarted:
-                log.append(f"!! compose start exit {rc}: {(err or out).strip()[:200]}")
+                log.append(f"!! compose start {_exit_text(rc)}: {(err or out).strip()[:200]}")
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
         if dest is not None and not archive_ok:
@@ -1743,7 +2336,10 @@ def _backup_stack(stack_id: str, *, retain: int, stop_first: bool, log: list) ->
         message = f"{message}; STACK DID NOT RESTART — start it manually".strip("; ")
     result = {
         "ok": archive_ok and restarted is not False,
-        "path": str(dest) if archive_ok else None,
+        # _as_text: this result lands in the scheduler journal and its JSON
+        # encoders; a surrogate-HOME dest is the same 500 class as the
+        # postgres/configs paths above.
+        "path": _as_text(dest) if archive_ok else None,
         "size_mb": round(_written_bytes(dest) / 1024 / 1024, 2) if archive_ok and dest else 0,
         "stack": stack_id,
         "stopped": stopped,
@@ -1827,7 +2423,9 @@ def _backup_configs() -> dict:
     # itself is 0600 in a 0700 directory via _private_dest, same as before.
     paths = [CONFIG_FILE, *data_state_paths(), *config_archive_extra_paths()]
     # include launchagents selectively
-    home = user_home()
+    # _user_home, not the bare seam: a raising or text-answering provider
+    # used to 500 POST /api/backups/configs at this join, outside the tar try.
+    home = _user_home()
     agents = (home / "Library" / "LaunchAgents") if home is not None else None
     try:
         if agents is not None and agents.is_dir():
@@ -1851,9 +2449,12 @@ def _backup_configs() -> dict:
     if str(CONFIG_FILE) not in existing:
         return {
             "ok": False,
+            # _as_text: CONFIG_FILE under an undecodable HOME carries lone
+            # surrogates; raw, this refusal itself used to 500 the route.
             "message": (
-                f"refusing to write a config backup without {CONFIG_FILE.name}: "
-                f"{CONFIG_FILE} is missing or unreadable"
+                f"refusing to write a config backup without "
+                f"{_as_text(CONFIG_FILE.name)}: "
+                f"{_as_text(CONFIG_FILE)} is missing or unreadable"
             ),
         }
     # Created only now that there is something to archive, so a no-op call does
@@ -1868,6 +2469,10 @@ def _backup_configs() -> dict:
             timeout=120,
         )
         text = _as_text(text)
+        # _exit_code beside _as_text: same rc-seam rule as the postgres dump
+        # — a subclass ``__eq__`` bomb used to discard the finished archive
+        # inside the broad catch and report a 200 that lied ok:false.
+        rc = _exit_code(rc)
         if _cli_vanished(rc, text, "/usr/bin/tar"):
             # tar itself could not be spawned: the coded 503 instead of the
             # bare "not found" sentinel in an uncoded ok:false.
@@ -1883,7 +2488,8 @@ def _backup_configs() -> dict:
             _prune("configs_*.tgz")
         return {
             "ok": ok,
-            "path": str(dest) if ok else None,
+            # _as_text: same surrogate-HOME rule as the postgres dump above.
+            "path": _as_text(dest) if ok else None,
             "message": (text or "")[:500] or ("ok" if ok else "fail"),
             "size_mb": round(size / 1024 / 1024, 2) if ok else 0,
         }
@@ -1891,6 +2497,8 @@ def _backup_configs() -> dict:
         # The coded refusal above must reach the route, not be flattened
         # into an uncoded ok:false by the broad catch below.
         raise
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         _discard(dest)
         return {"ok": False, "message": _as_text(e)}

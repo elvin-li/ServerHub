@@ -11,7 +11,7 @@
     <p class="hint" v-if="loaded && source === 'yaml'">{{ t('grules.source_yaml') }}</p>
     <p class="hint" v-else-if="loaded">{{ t('grules.source_seed') }}</p>
 
-    <div class="table-wrap" v-if="rows.length">
+    <div class="table-wrap" v-if="asArray(rows).length">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -21,10 +21,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="finiteText(row.id)">
+          <tr v-for="row in asArray(rows)" :key="finiteText(asRecord(row).id)">
             <td>
-              <strong>{{ finiteText(row.group) }}</strong>
-              <div class="mono sub-line">{{ finiteText(row.id) }}</div>
+              <strong>{{ finiteText(asRecord(row).group) }}</strong>
+              <div class="mono sub-line">{{ finiteText(asRecord(row).id) }}</div>
               <div class="show-m sub">{{ matchSummary(row) }}</div>
             </td>
             <td class="col-hide-m mono">{{ matchSummary(row) }}</td>
@@ -74,7 +74,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { deleteGroupRule, getGroupRules, saveGroupRules } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -90,23 +90,23 @@ let pageAlive = true
 let loadGeneration = 0
 
 function fmtList(value) {
-  const arr = Array.isArray(value) ? value : (value ? [value] : [])
+  const arr = asArray(value)
   return arr.map((item) => finiteText(item, '')).filter(Boolean).join(', ')
 }
 
 function matchSummary(row) {
-  if (!row || typeof row !== 'object') return '—'
+  const rec = asRecord(row)
   const parts = []
-  const compose = fmtList(row.compose_project)
-  const image = fmtList(row.image)
-  const prefix = fmtList(row.launchd_prefix)
-  const ports = fmtList(row.ports)
+  const compose = fmtList(rec.compose_project)
+  const image = fmtList(rec.image)
+  const prefix = fmtList(rec.launchd_prefix)
+  const ports = fmtList(rec.ports)
   if (compose) parts.push(compose)
   if (image) parts.push(image)
   if (prefix) parts.push(prefix)
-  if (row.launchd_interval === true) parts.push('interval')
+  if (rec.launchd_interval === true) parts.push('interval')
   if (ports) parts.push(ports)
-  const owner = fmtList(row.auto_port_owner)
+  const owner = fmtList(rec.auto_port_owner)
   if (owner) parts.push(owner)
   return parts.length ? parts.join(' · ') : '—'
 }
@@ -123,7 +123,7 @@ async function load() {
   try {
     const data = await getGroupRules()
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = Array.isArray(data?.rules) ? data.rules : []
+    rows.value = asArray(data?.rules).map((r) => asRecord(r))
     source.value = data?.source === 'yaml' ? 'yaml' : 'seed'
     loadError.value = ''
   } catch (e) {
@@ -176,11 +176,11 @@ async function save() {
 }
 
 async function removeRow(row) {
-  if (!confirm(t('grules.confirm_delete', { id: finiteText(row.id) }))) return
+  if (!confirm(t('grules.confirm_delete', { id: finiteText(asRecord(row).id) }))) return
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteGroupRule(row.id)
+    await deleteGroupRule(asRecord(row).id)
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.removed')}`)
     await load()

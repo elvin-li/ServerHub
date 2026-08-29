@@ -39,6 +39,70 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 _REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+#: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
+_INLINE_SCRIPT_RE = re.compile(
+    r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
+)
+#: Cap on the shell we will hash.  A leftover multi-MB index.html is already
+#: refused elsewhere; refusing it here too keeps startup off that path.
+_INDEX_HASH_CAP = 2 * 1024 * 1024
+#: How long a computed policy is reused before the shell is read again.
+_CSP_TTL = 30.0
+
+
+def _inline_script_hashes() -> tuple[str, ...]:
+    """CSP source expressions for the shell's inline scripts.
+
+    ``index.html`` opens with a small block that reads the saved theme and
+    applies it to <html> before the first paint.  Under ``script-src 'self'``
+    the browser refuses to run it, so the panel painted the default light
+    theme and only switched once main.js booted -- a white flash on every
+    single load for anyone on a dark theme.  Hashing the block is what CSP
+    offers for exactly this case: it authorises those bytes and nothing else,
+    unlike ``'unsafe-inline'``, which would authorise anything injected.
+
+    A missing or unreadable shell yields no hashes and leaves the policy
+    exactly as it was, so the failure mode is the current behaviour rather
+    than a weaker policy.
+    """
+    try:
+        raw = (STATIC_DIR / "index.html").read_bytes()
+    except OSError:
+        return ()
+    if len(raw) > _INDEX_HASH_CAP:
+        return ()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ()
+    digests = []
+    for body in _INLINE_SCRIPT_RE.findall(text):
+        if not body.strip():
+            continue
+        digest = hashlib.sha256(body.encode("utf-8")).digest()
+        digests.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
+    return tuple(dict.fromkeys(digests))
+
+
+@ttl_memo(_CSP_TTL)
+def _csp_header() -> str:
+    """The policy, re-derived every so often rather than pinned at import.
+
+    ``static/`` is served straight off disk, so a rebuild lands live -- and a
+    policy computed once at startup would keep authorising the *previous*
+    shell's theme script until someone restarted the process.  Half a minute
+    of staleness costs one stat, and only ever means the pre-paint script is
+    skipped, which is what used to happen on every load.
+    """
+    script_src = " ".join(("'self'",) + _inline_script_hashes())
+    return (
+        "default-src 'self'; base-uri 'none'; object-src 'none'; "
+        "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
+        f"style-src 'self' 'unsafe-inline'; script-src {script_src}; "
+        "connect-src 'self' ws: wss:"
+    )
 
 #: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
 _INLINE_SCRIPT_RE = re.compile(
@@ -168,32 +232,44 @@ def _warm_hotpath() -> None:
     try:
         from hub.brew_cache import brew_services
         brew_services()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.sensors_svc import collect_light
         collect_light()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.routers.system_extra import _host_snapshot
         _host_snapshot()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.vms_svc import list_all_vms
         list_all_vms()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.status import full_status
         full_status()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         from hub.apps_manage_svc import inventory
         inventory()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -213,13 +289,15 @@ async def lifespan(app: FastAPI):
     # (not ValueError); ``true`` is a bool subclass of int and used to sample
     # every 1s.
     def _interval(raw, default=90):
-        if isinstance(raw, bool) or raw is None:
+        if type(raw) is bool or raw is None:
             return default
         if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         try:
             n = int(raw)
-        except (TypeError, ValueError, OverflowError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
         # Leftover YAML ``1e308`` is finite; ``int(1e308)`` succeeds and
         # ``Event.wait`` then OverflowError's the worker on the first tick.
@@ -229,16 +307,22 @@ async def lifespan(app: FastAPI):
     # the LaunchAgent before uvicorn bound the port.
     try:
         metrics.start_sampler(_interval(s.get("metrics_interval"), 90))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         alerts.start_alerter(_interval(s.get("alert_interval"), 90))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # User-defined cron jobs (see hub/scheduler_svc.py for the semantics).
     try:
         scheduler_svc.start_scheduler()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # SMART self-test schedules.  The engine existed but nothing ever started
     # it, so a configured schedule (which the scheduler page even displays
@@ -247,7 +331,9 @@ async def lifespan(app: FastAPI):
     # pays nothing at startup.
     try:
         smart_test_svc.start_scheduler()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # A panel death between `compose stop` and the finally-restart of a stack
     # backup leaves that stack stopped; scan for leftover in-flight markers
@@ -258,14 +344,18 @@ async def lifespan(app: FastAPI):
             target=backups.recover_interrupted_stack_backups,
             daemon=True, name="stack-backup-recovery",
         ).start()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # First visitor after a panel restart used to pay the cold hot-path:
     # brew services list --json ~1.2s, sensors ~1.6s, utmctl list ~0.3s,
     # host engine_up ~0.3s.  Warm them off the request path.
     try:
         threading.Thread(target=_warm_hotpath, daemon=True, name="hotpath-warmer").start()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     # Low mode: do not run `brew outdated` + `softwareupdate -l` (~11.5s) on
     # every boot. High mode warms Tools; the Tools page also starts it on visit.
@@ -274,12 +364,16 @@ async def lifespan(app: FastAPI):
         from hub.resource_mode import is_high
         if is_high():
             tools_svc.start_updates_warmer()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         log.exception("updates warmer failed to start")
     # Keep managed IP aliases on the highest-priority active NIC
     try:
         network_svc.start_alias_autobind()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         log.exception("alias autobind failed to start")
     try:
         yield
@@ -438,7 +532,9 @@ def create_app() -> FastAPI:
         """
         try:
             detail = jsonable_encoder(exc.errors())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             detail = exc.errors()
         return JSONResponse({"detail": jsonable_error_detail(detail)}, status_code=422)
 

@@ -77,6 +77,44 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('Pool candidates empty-state split', () => {
+  it('says all-in-pool when every eligible disk is already selected', async () => {
+    // Pre-split this row claimed "no eligible disks" — on a host whose only
+    // disk is simply already a member, that reads like the pool lost it.
+    const { wrapper } = await mountPage()
+    const rows = wrapper.findAll('.empty-row')
+    const texts = rows.map((row) => row.text())
+    expect(texts).toContain('pool.all_in_pool')
+    expect(texts).not.toContain('pool.empty_candidates')
+  })
+
+  it('keeps the no-eligible-disks wording when the backend reports none', async () => {
+    api.getStoragePool.mockResolvedValue(payload({
+      configured: false,
+      members: [],
+      unassigned: [],
+      summary: { total_gb: 0, used_gb: 0, avail_gb: 0, pct: 0, member_count: 0 },
+      next_write_target: null,
+    }))
+    const { wrapper } = await mountPage()
+    const texts = wrapper.findAll('.empty-row').map((row) => row.text())
+    expect(texts).toContain('pool.empty_candidates')
+    expect(texts).not.toContain('pool.all_in_pool')
+  })
+
+  it('announces the split row and the action status to live regions', async () => {
+    const { wrapper } = await mountPage()
+    const split = wrapper.findAll('.empty-row').find((cell) => cell.text() === 'pool.all_in_pool')
+    expect(split.attributes('role')).toBe('status')
+    api.planStoragePool.mockResolvedValue(payload())
+    await button(wrapper, 'pool.preview').trigger('click')
+    await flushPromises()
+    const status = wrapper.find('[role="status"][aria-live="polite"]')
+    expect(status.exists()).toBe(true)
+    expect(status.text()).toContain('pool.msg_preview')
+  })
+})
+
 describe('Pool leave-guards', () => {
   it('does not toast a save that returns after leave', async () => {
     let resolveSave

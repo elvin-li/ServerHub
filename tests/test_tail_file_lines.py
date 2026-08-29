@@ -96,8 +96,8 @@ class ReadTextCappedTests(unittest.TestCase):
         self.assertEqual(ctx.exception.errno, errno.EFBIG)
 
     def test_leftover_surrogate_name_is_oserror_not_500(self):
-        """``Path.open`` UnicodeEncodeError used to 500 OSError-only callers."""
-        with mock.patch.object(Path, "open", side_effect=UnicodeEncodeError(
+        """The open's UnicodeEncodeError used to 500 OSError-only callers."""
+        with mock.patch("os.open", side_effect=UnicodeEncodeError(
             "utf-8", "\ud800", 0, 1, "surrogates not allowed",
         )):
             with self.assertRaises(OSError) as ctx:

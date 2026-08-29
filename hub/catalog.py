@@ -25,11 +25,11 @@ from fastapi import HTTPException
 from hub import catalog_remote
 from hub import cli_args
 from hub import secure_io
-from hub.docker_cli import engine_up, looks_cli_vanished, looks_engine_down
+from hub.docker_cli import _jsonable, cli_on_disk, engine_up, looks_cli_vanished, looks_engine_down
 from hub.errors import CODES, api_error, soft_fail
 from hub.host_address import host_ip
 from hub.paths import BASE, DOCKER, user_home
-from hub.util import fan_out, read_text_capped, run_capped
+from hub.util import fan_out, read_bytes_capped, read_text_capped, run_capped
 
 TEMPLATES = BASE / "templates"
 
@@ -41,6 +41,9 @@ def _default_services_root() -> Path:
 
 
 SERVICES_ROOT = _default_services_root()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+#: CPython's angle-repr shape — a raw heap address, never catalog data.
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 #: Leftover multi-MB ``*.yml`` used to OOM GET /api/catalog.
 _TEMPLATE_CAP = 64 * 1024
 #: Port scan only needs the compose ports block, not a leftover multi-MB file.
@@ -159,27 +162,200 @@ CATEGORIES = [
 ]
 
 
-def _plain_str(value, default: str = "") -> str:
-    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store."""
-    if isinstance(value, str):
-        text = value
-    elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, bool) or value is None:
-        return default
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return default
-    elif isinstance(value, (dict, list, tuple, set, frozenset)):
-        return default
-    else:
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through.
+
+    The hub.jobs / hub.auth rule: CPython's ``isinstance`` reads the operand's
+    ``__class__`` whenever the real-type fast check misses, so a value whose
+    ``__class__`` is a raising property detonates a bare ``isinstance`` gate.
+    ``catalog_overview`` merges the *native* catalog's rows — another module's
+    payload — into GET /api/catalog, and the row filter's bare
+    ``isinstance(a, dict)`` ran before ``_jsonable`` could launder anything: a
+    single poisoned row raised straight out of the store overview instead of
+    being dropped while its siblings (and the whole docker half) survived.
+    A lying ``__class__`` (answers ``dict``) is not an error and still reports
+    its claim; ``_jsonable`` then copies it through the C-level storage.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _real(value, types) -> bool:
+    """True when the *real* storage layout is this type.
+
+    ``type(value)`` reads the C-level type slot, which a lying ``__class__``
+    property cannot swap.  Fail-closed like ``_isinst``.
+    """
+    try:
+        return issubclass(type(value), types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _str_text(value):
+    """Exact text of *really-str* storage, or ``None`` for an impostor."""
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _decode_or_none(value):
+    """Both bases, real layout first-come — or ``None`` for a total liar."""
+    for base in (bytes, bytearray):
         try:
-            text = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return None
+
+
+def _plain_str(value, default: str = "") -> str:
+    """JSON-safe string. YAML leftover ``.inf`` / ``\\ud800`` used to 500 the store.
+
+    catalog14: a lying ``__class__`` no longer wipes honest storage at the
+    wrong rank, a BaseException-shaped bomb no longer sails past
+    ``except Exception``, and the free-text coercion arm no longer serves
+    a default ``object.__repr__`` heap address.
+    """
+    if _isinst(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+        # Lying-bytes claim: recover genuine str below.
+    if _isinst(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    if _real(value, (bytes, bytearray)):
+        decoded = _decode_or_none(value)
+        if decoded is not None:
+            return decoded
+    if _real(value, str):
+        text = _str_text(value)
+        if text is not None:
+            return text
+    if type(value) is bool or value is None:
+        return default
+    if _isinst(value, float):
+        num = value if type(value) is float else None
+        if num is None:
+            try:
+                num = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                num = None
+        if num is not None:
+            if num != num or num in (float("inf"), float("-inf")):
+                return default
+            return str(num)
+        if not _real(value, (int, str, bytes, bytearray)):
+            return default
+    if _isinst(value, int) and type(value) is not bool:
+        try:
+            num = value if type(value) is int else int.__index__(value)
+            str(num)
+            return str(num)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
+    if _isinst(value, (dict, list, tuple, set, frozenset)):
+        if not _real(value, (str, bytes, bytearray, int, float)):
             return default
     try:
-        return text.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return default
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return default
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+    return default if _ADDR_REPR_RE.search(text) else text
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``run_capped`` (tests and tooling patch it —
+    the docker_cli / native_catalog ``_rc_int`` rule).  Install and
+    uninstall compare the *rc* slot inside broad try blocks, so a leftover
+    rc-subclass ``__eq__`` bomb never 500'd — but it *lied*: on install the
+    bomb detonated the ``rc != 0`` probe and rolled back a compose stack
+    that had just come up cleanly, and on uninstall it detonated
+    ``rc == 0`` and misfiled a clean ``down`` as a failure.  ``-255`` is no
+    honest exit status and is distinct from the ``-1`` timeout / not-found
+    sentinel, so junk can never be misread as a vanished CLI or success.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        value = int.__index__(rc) if _isinst(rc, int) else int(rc)
+        str(value)
+        return value
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _safe_host_ip() -> str:
+    """The panel's advertised address, laundered to an exact str.
+
+    This module does not own ``host_ip`` (tests and tooling patch it — the
+    docker_cli / native_catalog seam rule), and three consumers read it raw:
+    the url-hint fallback's f-string in ``_build_listing``, ``auto_var_values``
+    (whose values ``_expand_auto`` calls ``.replace`` on for every template
+    default that carries a ``{{...}}``), and install's own HOST_IP injection.
+    A leftover provider that raises — or answers bytes, ``None``, or a
+    ``__str__``/``__format__`` bomb — used to 500 GET /api/catalog/templates
+    and POST /api/catalog/{id}/install outright, and silently emptied the
+    docker half of GET /api/catalog through catalog_overview's fallback.
+    Junk degrades to "" (the same "no address" the honest probe can answer);
+    a genuine address passes byte-for-byte.  The shape gate is str/bytes
+    only: an address is never any other type, and the generic ``str(value)``
+    tail of ``_plain_str`` would render an arbitrary object's *repr* into
+    url hints and compose variables as if it were a host.
+    """
+    try:
+        host = host_ip()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if _isinst(host, (str, bytes, bytearray)):
+        return _plain_str(host)
+    return ""
 
 
 def _exists(path: Path) -> bool:
@@ -197,11 +373,27 @@ def _is_dir(path: Path) -> bool:
 
 
 def _plain_str_list(raw) -> list[str]:
-    if isinstance(raw, list):
-        items = raw
-    elif raw in (None, "", False):
-        return []
+    if _isinst(raw, list):
+        try:
+            # Base copy first: a lying ``__class__`` claiming list is not
+            # actually iterable, so the loop below used to TypeError on it.
+            items = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return []
     else:
+        try:
+            # ``raw in (None, "", False)`` runs the scalar's own ``__eq__``:
+            # a leftover whose ``__eq__`` raises used to detonate this
+            # emptiness probe itself instead of degrading through
+            # _plain_str like every other junk scalar.
+            if raw in (None, "", False):
+                return []
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
         items = [raw]
     out: list[str] = []
     for item in items:
@@ -212,17 +404,31 @@ def _plain_str_list(raw) -> list[str]:
 
 
 def _plain_ports(raw) -> list:
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
+        return []
+    try:
+        # Base copy first (the _plain_str_list convention): a lying
+        # ``__class__`` claiming list is not actually iterable.
+        ports = list(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out: list = []
-    for port in raw:
-        if port is None or port == "" or isinstance(port, bool):
+    for port in ports:
+        if port is None or _isinst(port, bool):
             continue
-        if isinstance(port, float) and (
-            port != port or port in (float("inf"), float("-inf"))
-        ):
-            continue
-        if isinstance(port, int):
+        if _isinst(port, int):
+            if type(port) is not int:
+                try:
+                    # Base coercion to an exact int: a subclass ``__str__``
+                    # bomb used to blow the digit-cap probe below (only
+                    # ValueError was caught).
+                    port = int.__index__(port)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
             # YAML hex/octal ints dodge CPython's int(str) digit cap, so a
             # leftover ``ports: [0xfff…]`` arrives as a >4300-digit int that
             # renders nowhere: ``str(port_spec)`` in the url_hint fallback and
@@ -235,6 +441,18 @@ def _plain_ports(raw) -> list:
                 continue
             out.append(port)
         else:
+            if _isinst(port, float):
+                if type(port) is not float:
+                    try:
+                        # Base coercion: a subclass ``__eq__`` bomb used to
+                        # blow the NaN/inf probes below.
+                        port = float.__float__(port)
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        continue
+                if port != port or port in (float("inf"), float("-inf")):
+                    continue
             text = _plain_str(port)
             if text:
                 out.append(text)
@@ -339,13 +557,18 @@ def host_languages() -> tuple[str, ...]:
     if cached and cached[0] == mtime:
         return cached[1]
     try:
-        with _GLOBAL_PREFS.open("rb") as fh:
-            blob = fh.read(_PREFS_CAP + 1)
-        if len(blob) > _PREFS_CAP:
-            raise OSError(errno.EFBIG, "file exceeds read cap", str(_GLOBAL_PREFS))
+        # read_bytes_capped, not a bare open(): stat() answers fine for a
+        # leftover FIFO occupying .GlobalPreferences.plist, and the plain open
+        # that followed parked until a writer appeared — hanging GET
+        # /api/catalog (the store overview reads the host languages) forever.
+        # The capped reader opens O_NONBLOCK, refuses non-regular files, and
+        # keeps the oversize refusal as OSError(EFBIG).
+        blob = read_bytes_capped(_GLOBAL_PREFS, _PREFS_CAP)
         prefs = plistlib.loads(blob)
         raw = prefs.get("AppleLanguages") if isinstance(prefs, dict) else []
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         raw = []
     if not isinstance(raw, list):
         # A scalar leftover used to raise on `for tag in 3` and 500 the store.
@@ -384,15 +607,23 @@ def host_ui_languages() -> str:
 
 
 def auto_var_values() -> dict[str, str]:
-    """Values for the placeholders the server fills in on its own."""
+    """Values for the placeholders the server fills in on its own.
+
+    Every value is laundered through ``_plain_str``: ``_expand_auto`` calls
+    ``val.replace`` on each of them for every template default carrying a
+    ``{{...}}``, inside ``_parse_template`` — whose only guard in
+    ``_build_listing`` is ``except OSError``.  A leftover host seam answering
+    bytes / ``None`` / a ``__str__`` bomb was an AttributeError there, a raw
+    500 on GET /api/catalog/templates and POST /api/catalog/{id}/install.
+    """
     home = user_home()
     return {
-        "HOST_IP": host_ip(),
-        "HOME": str(home) if home is not None else "",
-        "SERVICES": str(SERVICES_ROOT),
-        "TZ": host_timezone(),
-        "OCR_LANG": host_ocr_languages(),
-        "UI_LANGS": host_ui_languages(),
+        "HOST_IP": _safe_host_ip(),
+        "HOME": _plain_str(str(home)) if home is not None else "",
+        "SERVICES": _plain_str(str(SERVICES_ROOT)),
+        "TZ": _plain_str(host_timezone(), "UTC") or "UTC",
+        "OCR_LANG": _plain_str(host_ocr_languages()),
+        "UI_LANGS": _plain_str(host_ui_languages()),
     }
 
 
@@ -666,9 +897,19 @@ def _build_listing(now: float, sig: str) -> list:
         except OSError:
             continue
         tid = meta.get("id") or p.stem
+        if isinstance(tid, int) and not isinstance(tid, bool):
+            # A numeric YAML id (`id: 8080`) must behave like its quoted twin:
+            # coerce via a str() probe, not the strict isinstance gate that
+            # silently renamed the entry to the filename.  Over-cap ints
+            # (hex/octal YAML dodges the digit cap at parse time) make str()
+            # the digit-cap ValueError — those keep the stem fallback.
+            try:
+                tid = str(tid)
+            except ValueError:
+                tid = p.stem
         if not isinstance(tid, str) or not tid or "\x00" in tid:
             tid = p.stem
-            meta["id"] = tid
+        meta["id"] = tid
         is_remote = p.parent != TEMPLATES
         dest = None
         installed = False
@@ -708,11 +949,16 @@ def _build_listing(now: float, sig: str) -> list:
         if meta.get("url_template"):
             try:
                 url_hint = _suggest_url(meta, values_for_url) or ""
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 url_hint = ""
         if not url_hint and meta.get("ports"):
-            # first numeric web-ish port as fallback
-            hip = host_ip()
+            # first numeric web-ish port as fallback.  _safe_host_ip, not the
+            # raw seam: a leftover host bomb used to detonate the f-string
+            # below — a raw 500 on GET /api/catalog/templates after every
+            # template had already parsed cleanly.
+            hip = _safe_host_ip()
             for port_spec in meta.get("ports") or []:
                 ps = str(port_spec).split("/")[0]
                 if ps.isdigit() and ps not in ("1883", "5432", "6379", "3306", "5672", "5900", "9100", "22000"):
@@ -769,7 +1015,9 @@ def catalog_overview() -> dict:
     def docker_templates() -> list:
         try:
             return list_templates()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     def native_apps() -> list:
@@ -777,14 +1025,29 @@ def catalog_overview() -> dict:
             from hub import native_catalog
             # Always re-check brew/bin for store badges (install just finished)
             return native_catalog.list_native_apps(force=True)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return []
 
     docker, native = fan_out(
         lambda collect: collect(), [docker_templates, native_apps], max_workers=2
     )
-    docker = [d for d in docker if isinstance(d, dict)]
-    native = [a for a in native if isinstance(a, dict)]
+    docker = [d for d in docker if _isinst(d, dict)]
+    # Laundered through _jsonable: the native listing is another module's
+    # payload and it is merged into this response verbatim.  A dict-subclass
+    # row whose ``.get`` bombs (or a value ``__bool__``/``__eq__``/``__str__``
+    # bomb reached by the installed filter and the sort key below), a
+    # >4300-digit int, raw bytes, or a lone-surrogate name all used to 500
+    # GET /api/catalog — either right here or later in Starlette's encoder.
+    # _isinst, not a bare isinstance: the row filter runs *before* _jsonable
+    # can launder anything, so a leftover row whose ``__class__`` is a raising
+    # property detonated this gate itself (the jobs/auth rule) — one poisoned
+    # row 500'd the whole store overview instead of costing only itself.
+    native = [
+        row for row in (_jsonable(a) for a in native if _isinst(a, dict))
+        if _isinst(row, dict)
+    ]
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
     native_ids_installed = {
         a["id"] for a in native if a.get("installed") and isinstance(a.get("id"), str)
@@ -887,7 +1150,9 @@ def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
             })
 
         mutate(apply)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -895,7 +1160,10 @@ def _suggest_url(meta: dict, values: dict) -> str | None:
     tpl = meta.get("url_template")
     if not isinstance(tpl, str) or not tpl:
         return None
-    host = _plain_str(values.get("HOST_IP")).strip() or host_ip()
+    # _safe_host_ip, not the raw seam: this fallback fires exactly when the
+    # laundered HOST_IP came up empty — i.e. when the provider is already
+    # suspect — and junk here used to TypeError ``tpl.replace`` below.
+    host = _plain_str(values.get("HOST_IP")).strip() or _safe_host_ip()
     port = _plain_str(values.get("HOST_PORT") or values.get("WEB_PORT"))
     out = tpl.replace("{{HOST_IP}}", host).replace("{{HOST_PORT}}", port)
     out = out.replace("{{WEB_PORT}}", _plain_str(values.get("WEB_PORT") or port))
@@ -970,7 +1238,9 @@ def _port_is_bound(port: int) -> bool:
         except OSError as e:
             if e.errno == errno.EADDRINUSE:
                 return True
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         finally:
             s.close()
@@ -1073,7 +1343,9 @@ def _rollback_install(
     notes: list[str] = []
     try:
         _unregister_stack(template_id, dest_dir)
-    except Exception as e:  # never let cleanup mask the original failure
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # never let cleanup mask the original failure
         notes.append(
             "stack registration left behind: " + (_plain_str(e) or "error")
         )
@@ -1196,7 +1468,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
     # Auto-injected placeholders so shipped templates never need to hardcode a
     # developer-specific absolute paths that would make templates non-portable.
     if "HOST_IP" not in values:
-        values["HOST_IP"] = host_ip()
+        # _safe_host_ip: this assignment runs before the broad rollback try
+        # below even starts, so a raising host seam was a raw 500 on
+        # POST /api/catalog/{id}/install — not even the coded rollback shape.
+        values["HOST_IP"] = _safe_host_ip()
     home = user_home()
     values.setdefault("HOME", str(home) if home is not None else "")
     values.setdefault("SERVICES", str(SERVICES_ROOT))
@@ -1237,12 +1512,26 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         for bf in meta.get("bootstrap_files") if isinstance(meta.get("bootstrap_files"), list) else []:
             if not isinstance(bf, dict) or not bf.get("path"):
                 continue
-            rel = str(bf["path"]).lstrip("/")
-            if ".." in rel:
+            # _plain_str, not bare str(): bootstrap_files is the one block of
+            # front matter _parse_template leaves raw.  A leftover hex-huge
+            # YAML int in ``path`` (or ``content``) is a >4300-digit int whose
+            # ``str()`` is the digit-cap ValueError, and a lone ``"\ud800"``
+            # UnicodeEncodeError'd the write — either escaped this loop's
+            # OSError guard and failed the *whole* install through the broad
+            # rollback, discarding the operator's filled-in variables and
+            # minted passwords over one junk entry.  Unrenderable entries are
+            # dropped; the rest of the install proceeds.
+            rel = _plain_str(bf["path"]).lstrip("/")
+            if not rel or ".." in rel:
                 continue
             fp = dest_dir / rel
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            content = str(bf.get("content") or "")
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # A leftover file occupying the parent path blocks this one
+                # bootstrap file, not the install.
+                continue
+            content = _plain_str(bf.get("content") or "")
             for k, v in values.items():
                 content = content.replace("{{" + k + "}}", str(v))
             # "x" so an existing file is never rewritten: these are deployment
@@ -1307,9 +1596,25 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         except (TypeError, ValueError, OverflowError, RecursionError):
             redacted_json = "{}"
         readme += ["## Variables (secrets redacted)", "```json", redacted_json, "```"]
-        (dest_dir / "README.serverhub.md").write_text(
-            "\n".join(readme), encoding="utf-8", errors="replace",
-        )
+        try:
+            # replace_bytes, not a bare write_text(): install never removes a
+            # pre-existing ~/Services/<id>/ (it may hold user data), so a
+            # leftover FIFO occupying README.serverhub.md in a pre-seeded
+            # directory reached the plain open — which parks until a reader
+            # appears — hanging POST /api/catalog/{id}/install forever after
+            # the compose file and stack registration had already landed.
+            # The tmp+os.replace write never opens the squatting node and
+            # atomically swaps the FIFO out.  A leftover non-empty
+            # *directory* by that name still refuses os.replace as OSError:
+            # the README is advisory documentation, so it costs only itself
+            # (the bootstrap_files convention above), never the install the
+            # operator's variables and minted passwords are riding on.
+            secure_io.replace_bytes(
+                dest_dir / "README.serverhub.md",
+                "\n".join(readme).encode("utf-8", "replace"),
+            )
+        except OSError:
+            pass
 
         _register_stack(template_id, meta.get("name") or template_id, dest_dir)
 
@@ -1338,6 +1643,10 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             env=env,
             cap=4000,
         )
+        # _rc_int: a leftover rc bomb used to detonate ``rc != 0`` inside
+        # the broad try below and roll back a stack that had just come up
+        # cleanly; junk reads -255, never the -1 vanished-CLI sentinel.
+        rc = _rc_int(rc)
         msg = (_plain_str(msg) or f"exit {rc}").strip()
         if rc != 0:
             # A docker CLI that vanished between the _exists() gate above and
@@ -1348,7 +1657,14 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             # generated passwords) reported as an uncoded two-word
             # ``message: "not found"`` the SPA cannot translate.
             unreachable = looks_engine_down(msg) or (
-                rc == -1 and looks_cli_vanished(msg)
+                # The sentinel is any FileNotFoundError spawn — a dest_dir
+                # (the compose cwd) that vanished between mkdir and the
+                # spawn raises identically — so the binary must be confirmed
+                # gone from disk before the sentinel reads as a vanished CLI
+                # (the compose_svc / actions convention): with the CLI still
+                # present and the engine merely off, the keep-the-stack 503
+                # pointed the operator at the wrong remedy.
+                rc == -1 and looks_cli_vanished(msg) and not cli_on_disk()
             )
             if unreachable and not engine_up(force=True):
                 # Same shape as the missing-CLI branch just above: the compose
@@ -1411,7 +1727,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             "notes": _plain_str(meta.get("notes")),
             "stack_id": None,
         }
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         detail = _rollback_install(template_id, dest_dir, created_dir)
         msg = _plain_str(e) or "install failed"
         return {
@@ -1451,7 +1769,9 @@ def _unregister_stack(template_id: str, dest_dir: Path | None = None) -> None:
             data["stacks"] = kept
 
         mutate(apply)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -1489,16 +1809,30 @@ def uninstall_template(
         rc, text = run_capped(
             args, cwd=str(dest_dir), timeout=300, env=env, cap=4000,
         )
+        # _rc_int: a leftover rc bomb (or a >4300-digit rc ValueError-ing
+        # the f-string) used to misfile a clean ``down`` as a failure
+        # through the except arm below; junk reads -255, honestly failed.
+        rc = _rc_int(rc)
         logs.append((_plain_str(text) or f"down exit {rc}").strip())
         down_ok = rc == 0
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         logs.append(_plain_str(e) or "error")
         down_ok = False
 
     joined = "\n".join(logs)
     if (
         not down_ok
-        and (looks_engine_down(joined) or looks_cli_vanished(joined))
+        # The vanished-CLI sentinel only classifies once the binary is
+        # confirmed gone from disk (the compose_svc / actions convention):
+        # any FileNotFoundError spawn collapses into the same "not found",
+        # so a dest_dir that vanished mid-request with the CLI still on
+        # disk keeps the ordinary uninstall path instead of the 503.
+        and (
+            looks_engine_down(joined)
+            or (looks_cli_vanished(joined) and not cli_on_disk())
+        )
         and not engine_up(force=True)
     ):
         # ``down`` did nothing: the containers, networks and volumes this
@@ -1522,7 +1856,9 @@ def uninstall_template(
             _shutil.rmtree(dest_dir)
             removed_path = True
             logs.append(f"Removed directory {dest_dir}")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             logs.append(f"Failed to remove directory: {_plain_str(e) or 'error'}")
     else:
         # keep files; user can re-up later

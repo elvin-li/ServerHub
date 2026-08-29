@@ -21,6 +21,8 @@ stays fresh for the management listing either way.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import fcntl
 import hashlib
 import hmac
@@ -144,9 +146,13 @@ def _utf8_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     return text.encode("utf-8", "replace").decode("utf-8")
 
@@ -167,6 +173,15 @@ def _json_safe(value, depth: int = 0):
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            # An already-int leftover past CPython's int->str digit cap (a
+            # plist/YAML hex import: ``int(x, 16)`` is uncapped) raises the
+            # same ValueError out of json.dumps — one poisoned field used to
+            # cost the *entire* ``_save`` (it returns early), so a create,
+            # revoke or last_used persist silently never landed on disk.
+            return None
         return value
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -182,7 +197,9 @@ def _json_safe(value, depth: int = 0):
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 create / revoke / Bearer.
             return _json_safe(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return _utf8_text(value)
 
@@ -216,9 +233,33 @@ def _store_rows(raw) -> list:
     return []
 
 
+def _parse_capped_int(text):
+    """``json.loads`` integer hook for :func:`_load`.
+
+    A >4300-digit number literal is valid JSON, but the default ``int(text)``
+    conversion raises CPython's str->int digit-cap ValueError — a *plain*
+    ValueError, not JSONDecodeError — so ``_load``'s corrupt-document fallback
+    read the whole store as ``[]``: every Bearer-authenticated request 401'd,
+    and the next write (key create, revoke, or ``verify``'s throttled
+    last_used persist) rewrote api-keys.json from that empty snapshot,
+    silently wiping every sibling key.  The one oversized field degrades to
+    ``inf`` — which :func:`_as_epoch` and :func:`_json_safe` already coerce,
+    and which ``_persistable_record`` pins to 0 (= expired, fail-closed) when
+    it is an ``expires`` stamp — and the rest of the document survives.  Same
+    hook as twofa_svc / notify_channels / service_credentials.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float("inf")
+
+
 def _load() -> list[dict]:
     try:
-        raw = safe_json_loads(read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"))
+        raw = safe_json_loads(
+            read_text_capped(STORE_FILE, _STORE_CAP, encoding="utf-8"),
+            parse_int=_parse_capped_int,
+        )
     except (OSError, ValueError, RecursionError):
         # ValueError covers json.JSONDecodeError *and* UnicodeDecodeError: a
         # torn write leaving non-UTF-8 bytes used to raise past this guard,
@@ -256,6 +297,13 @@ def _as_epoch(raw, default: int | None = 0) -> int | None:
     if isinstance(raw, bool):
         return default
     if isinstance(raw, int):
+        try:
+            str(raw)
+        except ValueError:
+            # An already-int leftover past the digit cap cannot be JSON-
+            # encoded; passing it through used to 500 GET /api/api-keys at
+            # Starlette's encoder (public_view created/expires/last_used).
+            return default
         return raw
     if isinstance(raw, float):
         if raw != raw or raw in (float("inf"), float("-inf")):
@@ -267,7 +315,9 @@ def _as_epoch(raw, default: int | None = 0) -> int | None:
     if isinstance(raw, (bytes, bytearray)):
         try:
             return _as_epoch(raw.decode("utf-8", "replace"), default)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
     if isinstance(raw, str):
         text = raw.strip()

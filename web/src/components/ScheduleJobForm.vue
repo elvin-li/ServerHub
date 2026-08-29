@@ -82,13 +82,13 @@
       <div v-else-if="preview" role="status" aria-live="polite"
            style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px;font-size:12px">
         <div style="margin-bottom:6px">
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(preview.creates) }) }}</span>
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(preview.updates) }) }}</span>
-          <span class="badge" :class="preview.deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(preview.deletes) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(asRecord(preview).creates) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(asRecord(preview).updates) }) }}</span>
+          <span class="badge" :class="asRecord(preview).deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(asRecord(preview).deletes) }) }}</span>
         </div>
-        <div v-if="!preview.total" class="meta">{{ t('sched.preview_empty') }}</div>
+        <div v-if="!asRecord(preview).total" class="meta">{{ t('sched.preview_empty') }}</div>
         <div v-else style="max-height:140px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-          <div v-for="(line, i) in (Array.isArray(preview.samples) ? preview.samples : [])" :key="i">{{ finiteText(line) }}</div>
+          <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="i">{{ finiteText(line) }}</div>
         </div>
       </div>
     </template>
@@ -98,7 +98,7 @@
       <div class="kv" style="margin-bottom:8px">
         <div class="k">{{ t('sched.stack') }}</div>
         <select v-model="stackId" :aria-label="t('sched.stack')">
-          <option v-for="s in stacks" :key="s.id" :value="s.id">{{ finiteText(s.name, '') || finiteText(s.id) }}</option>
+          <option v-for="s in asArray(stacks)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">{{ finiteText(asRecord(s).name, '') || finiteText(asRecord(s).id) }}</option>
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -141,7 +141,7 @@ const { t } = injectI18n()
 const lockType = computed(() => Boolean(props.job) || props.allowedTypes.length === 1)
 const allowedTypes = computed(() => props.allowedTypes)
 
-const p = props.job?.params || {}
+const p = asRecord(props.job?.params)
 const name = ref(props.job?.name || '')
 const type = ref(props.job?.type || props.allowedTypes[0])
 const cron = ref(props.job?.cron || '30 3 * * *')
@@ -154,7 +154,7 @@ const command = ref(p.command || '')
 const direction = ref(p.direction || 'push')
 const src = ref(p.src || '')
 const dest = ref(p.dest || '')
-const excludeText = ref((p.exclude || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
+const excludeText = ref(asArray(p.exclude).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
 const del = ref(Boolean(p.delete))
 const compress = ref(Boolean(p.compress))
 const bwlimit = ref(p.bwlimit_kbps || null)
@@ -244,7 +244,10 @@ async function doPreview() {
   try {
     const next = await rsyncPreview(rsyncParams())
     if (generation !== previewGeneration || !pageAlive) return
-    preview.value = next
+    preview.value = {
+      ...asRecord(next),
+      samples: asArray(asRecord(next).samples),
+    }
   } catch (e) {
     if (generation !== previewGeneration || !pageAlive) return
     previewError.value = finiteText(e.message || String(e), '')
@@ -273,9 +276,9 @@ onMounted(async () => {
   try {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = Array.isArray(d?.stacks) ? d.stacks : []
+    stacks.value = asArray(d?.stacks).map((s) => asRecord(s))
     stacksError.value = ''
-    if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
+    if (!stackId.value && asArray(stacks.value).length) stackId.value = asRecord(asArray(stacks.value)[0]).id
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = []

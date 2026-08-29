@@ -1,19 +1,122 @@
 from __future__ import annotations
 
 import platform
+import re
 from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from hub import audit, auth, network_svc, tools_svc, vm_console, vms_svc
+from hub import audit, auth, network_svc, system_settings_svc, tools_svc, vm_console, vms_svc
 from hub.docker_cli import engine_up, peek_engine
 from hub.errors import api_error
 from hub.resource_mode import is_high
 from hub.host_address import default_interface, host_ip, interface_address
 from hub.paths import DOCKER, ORB
 from hub.util import LazyPool, cached_snapshot, fan_out, sh
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _audit_host_change(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a host-level mutation.
+
+    Called after the service call returned, so a rejected action that raised
+    leaves no record.  FastAPI always injects `request`; the None guard only
+    keeps direct in-process calls (tests, tooling) working.
+    """
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property* — an
+    ``sh`` output from a patched/odd ``sh`` — used to detonate ``_as_text``'s
+    bytes gate itself and 500 GET /api/system/host (the dash9 host_address
+    rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==``/``!=`` probes; a bomb reads as failure.
+
+    This router does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc == 0`` / ``rc != 0`` probes in ``_host_snapshot`` / ``_mem_gb``
+    / ``_ncpu_int`` — a raw 500 on GET /api/system/host (the health9 /
+    dash9 host_address rule).  ``-255`` is no honest exit status, so a bomb
+    keeps the failure branch.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        if _isa(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The nginx/docker11 guarded-shape rule: this router does not own ``sh``
+    (tests and tooling patch it), and a leftover riding the *shape* of the
+    return — a 2-tuple, a scalar, a tuple subclass whose ``__iter__``
+    raises, a lying-``__class__`` tuple impostor — used to detonate the
+    bare ``rc, hostname, _ = …`` unpacks in ``_host_snapshot``, one seam
+    past the ``_result`` guard that only absorbs a *raising* future — a
+    raw 500 on GET /api/system/host.  Junk degrades to ``(-255, "", "")``:
+    nonzero, never a success rc, so the platform fallbacks stay in force.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb (fails False)."""
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
 
 def _audit_host_change(event: str, request: Request | None, **fields) -> None:
@@ -33,24 +136,49 @@ def _audit_host_change(event: str, request: Request | None, **fields) -> None:
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; ``.isdigit`` / JSON need text."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
-            return ""
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
     try:
-        return value.encode("utf-8", "replace").decode("utf-8")
-    except Exception:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 #: Dashboard heavy tick is 90s in low mode. A 20s snapshot expired before
 #: every sit tick, so each one re-ran engine_up (~800ms) plus the iface
@@ -168,7 +296,9 @@ def _iface_addresses(route_iface: str) -> list[dict]:
 def _mem_gb(rc, memsize):
     """``hw.memsize`` as GiB, or None.  A 400-digit leftover OverflowError'd ``/``."""
     try:
-        if rc != 0 or not memsize.isdigit():
+        # _rc_int: an rc-subclass ``__ne__`` bomb raised RuntimeError past
+        # the typed catch below and 500'd GET /api/system/host.
+        if _rc_int(rc) != 0 or not memsize.isdigit():
             return None
         gb = round(int(memsize) / 2**30, 1)
     except (TypeError, ValueError, OverflowError, AttributeError):
@@ -186,7 +316,8 @@ def _ncpu_int(rc, ncpu):
     GET /api/system/host — one line below the already-guarded ``_mem_gb``.
     """
     try:
-        if rc != 0 or not ncpu.isdigit():
+        # _rc_int: same rc-``__ne__`` bomb class as _mem_gb.
+        if _rc_int(rc) != 0 or not ncpu.isdigit():
             return None
         return int(ncpu)
     except (TypeError, ValueError, OverflowError, AttributeError):
@@ -217,30 +348,40 @@ def _host_snapshot() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; one sysctl/docker timeout must not 500 /api/system/host.
-    rc, hostname, _ = _result(f_hostname, (1, "", ""))
-    rc3, model, _ = _result(f_model, (1, "", ""))
+    # _sh3 on the raw sh futures: an answer-shape bomb used to detonate
+    # the bare unpack itself, which no _result fallback could absorb.
+    rc, hostname, _ = _sh3(_result(f_hostname, (1, "", "")))
+    rc3, model, _ = _sh3(_result(f_model, (1, "", "")))
     rc4, ncpu, rc_m, memsize = _result(f_hw, (1, "", 1, ""))
     hostname, model = _as_text(hostname), _as_text(model)
     ncpu, memsize = _as_text(ncpu), _as_text(memsize)
+    # _truthy, not a bare ``bool``: a leftover ``__bool__`` bomb planted in
+    # the engine cache used to detonate the eagerly-evaluated fallback (it
+    # ran even when the probe future succeeded) and 500 GET /api/system/host.
     if f_engine is not None:
-        orbstack = _result(f_engine, bool(peek_engine()))
+        engine = _result(f_engine, None)
+        orbstack = _truthy(engine if engine is not None else peek_engine())
     else:
-        orbstack = bool(peek_engine())
+        orbstack = _truthy(peek_engine())
     ifaces = _result(f_ifaces, []) or []
 
     # Was called twice (once as `lan`, once inline); it is the same value both
     # times and both fields are documented to carry it.
     ip = host_ip()
+    # _rc_int on the hostname/model probes: an rc-subclass ``__eq__`` bomb
+    # from a patched/odd ``sh`` used to detonate these bare reads.
     return {
-        "hostname": hostname if rc == 0 else _as_text(platform.node()),
+        "hostname": hostname if _rc_int(rc) == 0 else _as_text(platform.node()),
         "platform": _as_text(platform.platform()),
         "arch": _as_text(platform.machine()),
         "python": _as_text(platform.python_version()),
-        "cpu": model if rc3 == 0 else "",
+        "cpu": model if _rc_int(rc3) == 0 else "",
         "ncpu": _ncpu_int(rc4, ncpu),
         "mem_total_gb": _mem_gb(rc_m, memsize),
         "host_ip": ip,
@@ -276,7 +417,9 @@ class NetDnsBody(BaseModel):
 
 @router.get("/api/system/network/services")
 def network_services():
-    return {"services": network_svc.network_services()}
+    # The listing wrapper, not the raw read: a vanished networksetup used
+    # to answer 200 {"services": []} here — see network_services_listing.
+    return {"services": network_svc.network_services_listing()}
 
 
 @router.post("/api/system/network/services/{service_name}/dhcp")
@@ -490,7 +633,15 @@ def system_diagnostics():
 
 @router.get("/api/system/scheduler")
 def system_scheduler():
-    return {"timers": tools_svc.launchd_timers()}
+    # _json_tree, not a raw passthrough (the /api/scheduler alias rule from
+    # host6): this route used to hand the timer rows straight to Starlette
+    # while both scheduler siblings sanitized the same data — a leftover
+    # ``\ud800`` label, an over-cap plist int or a subclass row bomb
+    # answered a raw 500 here and a 200 there.
+    timers = system_settings_svc._json_tree(tools_svc.launchd_timers())
+    if not isinstance(timers, list):
+        timers = []
+    return {"timers": timers}
 
 
 @router.get("/api/docker/df")
@@ -532,7 +683,9 @@ def tools_updates(force: bool = False):
     # First Tools visit pays the probe; later visits and the warmer share it.
     try:
         tools_svc.start_updates_warmer()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return tools_svc.check_updates(force=force)
 

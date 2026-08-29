@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+
+describe('asRecord leftover mappings', () => {
+  it('keeps real objects and fail-closes lists', () => {
+    expect(asRecord({ a: 1 })).toEqual({ a: 1 })
+    expect(asRecord([])).toEqual({})
+    expect(asRecord(['a'])).toEqual({})
+    expect(asRecord(null)).toEqual({})
+    expect(asRecord('x')).toEqual({})
+  })
+})
+
+describe('asArray leftover lists', () => {
+  it('keeps real arrays and fail-closes mappings', () => {
+    expect(asArray(['a'])).toEqual(['a'])
+    expect(asArray([])).toEqual([])
+    expect(asArray({ 0: 'a', length: 1 })).toEqual([])
+    expect(asArray(null)).toEqual([])
+    expect(asArray('x')).toEqual([])
+  })
+})
 
 describe('leftover number clamps', () => {
   it('finiteN rejects Infinity and NaN', () => {
@@ -74,5 +94,23 @@ describe('leftover number clamps', () => {
     expect(
       finiteText(Number.POSITIVE_INFINITY, '') || 'localhost',
     ).toBe('localhost')
+  })
+})
+
+describe('jsonText leftover circular mappings', () => {
+  it('fail-closes circular leftover objects', () => {
+    const cycle = {}
+    cycle.self = cycle
+    expect(jsonDump(cycle)).toBe('')
+    expect(jsonText(cycle)).toBe('—')
+    expect(jsonText({ a: 1 })).toBe('{"a":1}')
+    expect(jsonText({ a: 1 }, '', 2)).toBe('{\n  "a": 1\n}')
+  })
+
+  it('fail-closes leftover invalid JSON text', () => {
+    expect(jsonLoad('{')).toBe(null)
+    expect(jsonLoad('{', {})).toEqual({})
+    expect(jsonLoad('{"a":1}')).toEqual({ a: 1 })
+    expect(jsonLoad(undefined)).toBe(null)
   })
 })

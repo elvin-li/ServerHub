@@ -1,6 +1,7 @@
 """REST API — menubar-compatible + panel."""
 from __future__ import annotations
 
+import re
 import time
 
 from fastapi import APIRouter, Request
@@ -13,10 +14,76 @@ from hub.status import cached_status, filter_status_for_resources, full_status, 
 
 router = APIRouter()
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 class Action(BaseModel):
     target: str
     action: str
+
+
+def _message_text(value) -> str:
+    """One renderable message part from a run_action result.
+
+    Leftover bytes / non-finite floats / ``\\ud800`` were already absorbed;
+    a ``str()`` RecursionError still re-raised out of the shaping and 500'd
+    POST /api/action — the bulk route's ``_as_text`` contract.
+    """
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    if type(value) is not bool:
+        try:
+            if isinstance(value, float):
+                finite = float.__float__(value)
+                if finite != finite or finite in (float("inf"), float("-inf")):
+                    return ""
+                return str(finite)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            text = type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _visible_status(request: Request, *, force: bool = False) -> dict:
@@ -108,7 +175,14 @@ def api_action(a: Action, request: Request):
             raise api_error("auth.admin_required")
     rc, out, err = actions.run_action(a.target, a.action)
     invalidate_status()
-    ok = rc == 0
+    try:
+        ok = rc == 0
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # An int-subclass ``__eq__`` bomb rc from an action seam reads as
+        # failure — the bulk route's per-id contract — never a 500.
+        ok = False
     # run_action raises before touching anything on an unknown target or a
     # disallowed action, so reaching record() means the command really ran;
     # the outcome rides along rather than gating the record — a failed stop
@@ -121,16 +195,23 @@ def api_action(a: Action, request: Request):
         action=a.action,
         ok=bool(ok),
     )
-    raw = out if ok else (err or out or f"exit {rc}")
-    if isinstance(raw, (bytes, bytearray)):
-        message = raw.decode("utf-8", "replace")
-    elif isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
-        message = ""
-    else:
-        message = "" if raw is None else str(raw)
     # Leftover ``\\ud800`` / bytes / inf from a VM/action helper used to
     # 500 the menubar's POST /api/action under Starlette's UTF-8 encoder.
-    message = message.encode("utf-8", "replace").decode("utf-8")
+    # Shaped through _message_text rather than raw truth tests: a
+    # ``__bool__`` bomb in ``err or out`` and the ``f"exit {rc}"`` int->str
+    # digit-cap ValueError on an over-cap rc both 500'd this echo while the
+    # bulk route rode the very same shapes as per-id failures.
+    if ok:
+        message = _message_text(out)
+    else:
+        message = _message_text(err) or _message_text(out)
+        if not message:
+            try:
+                message = f"exit {rc}"
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                message = "exit (unrenderable code)"
     return JSONResponse(
         {"ok": bool(ok), "message": message},
         status_code=200 if ok else 500,
@@ -139,22 +220,31 @@ def api_action(a: Action, request: Request):
 
 @router.get("/api/maintenance")
 def api_maintenance():
-    return [
-        {
-            "id": t["id"],
-            "name": t.get("name") or t["id"],
-            "desc": t.get("desc", ""),
-            "confirm": bool(t.get("confirm")),
-            **jobs.job_state(t["id"]),
-        }
-        for t in jobs.maintenance_tasks().values()
-    ]
+    # The row the SPA reads is shaped in hub.jobs under the module's union
+    # guards (``_mapping_get`` / ``_truthy`` / ``_jsonable``): the old inline
+    # ``t["id"]`` / ``bool(t.get("confirm"))`` / ``**job_state(...)`` build ran
+    # one step outside every sanitizer, so a ``__bool__``-bomb ``confirm`` or a
+    # hash-shadowing bomb key on ``id`` / ``name`` / ``confirm`` 500'd this
+    # route from the surface itself.  ``maintenance_view`` never raises.
+    return jobs.maintenance_view()
 
 
-@router.post("/api/maintenance/{tid}/run")
+# ``{tid:path}``, not ``{tid}``: task ids come straight from services.yaml and
+# may contain ``/`` (``id: brew/upgrade``).  The SPA percent-encodes the id,
+# but ASGI servers decode ``%2F`` back to ``/`` before routing, so a
+# single-segment matcher can never see such an id — the list offered a Run
+# button for a task whose run route answered the SPA fallback's 405, and
+# whose log poll answered its HTML 404 (the "listed id the run route can
+# never match" class the surrogate-id scrub already fixed).  tid is only ever
+# a mapping key here (never a filesystem path or argv), so the greedy match
+# is safe.
+@router.post("/api/maintenance/{tid:path}/run")
 def api_maintenance_run(tid: str, request: Request = None):
-    task = jobs.maintenance_tasks().get(tid)
-    if not task:
+    # ``lookup_maintenance_task``, not bound ``.get`` + ``if not task``:
+    # a leftover listing mapping whose ``.get`` / ``__bool__`` bombs used
+    # to 500 this route from the surface itself.  The helper never raises.
+    task = jobs.lookup_maintenance_task(tid)
+    if task is None:
         raise api_error("maintenance.unknown_task")
     jobs.start_job(task)
     audit.record(
@@ -168,6 +258,6 @@ def api_maintenance_run(tid: str, request: Request = None):
     return {"ok": True, "message": "Task started"}
 
 
-@router.get("/api/maintenance/{tid}/log")
+@router.get("/api/maintenance/{tid:path}/log")
 def api_maintenance_log(tid: str):
     return jobs.job_log(tid)

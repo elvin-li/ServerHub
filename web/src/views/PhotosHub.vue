@@ -99,14 +99,14 @@
             {{ t('photoshub.map_to_photos') }}
           </button>
           <button @click="removeSelected" :disabled="!selected.length || pendingLoading">
-            {{ t('photoshub.remove_selected') }} ({{ selected.length }})
+            {{ t('photoshub.remove_selected') }} ({{ asArray(selected).length }})
           </button>
         </div>
         <p v-if="pendingError" class="meta" data-test="photoshub-pending-error" style="color:var(--down-text)" role="alert">{{ finiteText(pendingError) }}</p>
         <p class="meta" v-if="pending?.gated || data?.gates?.allow_delete_channel === false" style="color:var(--warn-text)">
           {{ t('photoshub.gated_warn') }}
         </p>
-        <p v-if="(pending?.assets || []).length" class="meta select-all">
+        <p v-if="asArray(pending?.assets).length" class="meta select-all">
           <label>
             <input type="checkbox" :checked="allSelected" @change="toggleAll" />
             {{ t('photoshub.select_all') }}
@@ -115,12 +115,12 @@
         <!-- role=status: the scanning -> "no pending deletes" flip is the
              whole outcome of an empty refresh and was paint-only (the Logs
              empty/loading treatment). -->
-        <p v-if="!pendingError && !(pending?.assets || []).length" class="meta" data-test="photoshub-pending-empty" role="status">
+        <p v-if="!pendingError && !asArray(pending?.assets).length" class="meta" data-test="photoshub-pending-empty" role="status">
           {{ pendingLoading ? t('common.scanning') : t('photoshub.no_pending') }}
         </p>
         <div v-else class="review-grid" data-test="photoshub-pending-grid">
           <label
-            v-for="a in pending?.assets || []"
+            v-for="a in asArray(pending?.assets)"
             :key="a.id"
             class="review-tile"
             :class="{ picked: selected.includes(a.id) }"
@@ -282,11 +282,11 @@
           <div class="section-head">
             <h2>{{ t('photoshub.logs') }}</h2>
             <div class="tabs">
-              <button v-for="n in logNames" :key="finiteText(n)" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ finiteText(n) }}</button>
+              <button v-for="n in asArray(logNames)" :key="finiteText(n)" :class="{ active: logName===n }" :aria-pressed="logName===n" @click="switchLog(n)">{{ finiteText(n) }}</button>
             </div>
           </div>
           <p v-if="logError" class="hint bad" role="alert">{{ finiteText(logError) }}</p>
-          <pre v-if="(logData?.lines || []).length" class="mono logbox" aria-live="polite">{{ (logData?.lines || []).map(l => finiteText(l, '')).filter(Boolean).join('\n') }}</pre>
+          <pre v-if="asArray(logData?.lines).length" class="mono logbox" aria-live="polite">{{ asArray(logData?.lines).map(l => finiteText(l, '')).filter(Boolean).join('\n') }}</pre>
           <pre v-else class="mono logbox">{{ '—' }}</pre>
         </div>
       </template>
@@ -307,7 +307,7 @@ import {
   getPhotosHubLogs,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonText, withUnit } from '../lib/finite'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 
@@ -363,8 +363,8 @@ const originalsColor = computed(() => {
   return 'var(--down-text)'
 })
 const allSelected = computed(() => {
-  const assets = pending.value?.assets || []
-  return assets.length > 0 && selected.value.length === assets.length
+  const assets = asArray(pending.value?.assets)
+  return assets.length > 0 && asArray(selected.value).length === assets.length
 })
 const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))
 const panelHref = computed(() => safeHttpUrl(data.value?.links?.panel))
@@ -384,15 +384,15 @@ const externalIssue = computed(() => {
 })
 const formDirty = computed(() => {
   if (!cfg.value) return false
-  return JSON.stringify(form.value) !== JSON.stringify(formFromConfig(cfg.value))
+  return jsonText(form.value, '') !== jsonText(formFromConfig(cfg.value), '')
 })
 const peopleLabel = computed(() => {
-  const p = data.value?.people || {}
+  const p = asRecord(data.value?.people)
   const names = [p.yuanbao?.name, p.erbao?.name].map(n => finiteText(n, '')).filter(Boolean)
   return names.join(' · ') || '—'
 })
 const peopleMeta = computed(() => {
-  const p = data.value?.people || {}
+  const p = asRecord(data.value?.people)
   const bits = [p.yuanbao?.birthday, p.erbao?.birthday].map(n => finiteText(n, '')).filter(Boolean)
   return bits.join(' · ')
 })
@@ -631,12 +631,12 @@ async function run(action) {
 }
 
 async function removeSelected() {
-  if (!selected.value.length) return
+  if (!asArray(selected.value).length) return
   if (!confirm(t('photoshub.confirm_remove'))) return
   const generation = loadGeneration
   pendingLoading.value = true
   try {
-    await postPhotosHubPendingRemove(selected.value)
+    await postPhotosHubPendingRemove(asArray(selected.value))
     if (generation !== loadGeneration || !pageAlive) return
     await loadPending()
     if (generation !== loadGeneration || !pageAlive) return
@@ -657,7 +657,7 @@ async function removeSelected() {
 
 function toggleAll(ev) {
   const on = ev.target.checked
-  selected.value = on ? (pending.value?.assets || []).map(a => a.id) : []
+  selected.value = on ? asArray(pending.value?.assets).map(a => a.id) : []
 }
 
 async function switchLog(n) {

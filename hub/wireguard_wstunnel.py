@@ -25,24 +25,103 @@ from hub.util import read_bytes_capped, sh, ttl_memo
 
 LABEL = "com.elvin.wstunnel-wg-server"
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a snapshot (or value) whose ``__class__`` is a *raising
+    property* detonated the type gates themselves — a raw 500 on GET
+    /api/wireguard and GET /api/wireguard/settings (the wireguard_svc._isa
+    rule).  A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__``/``__len__`` bomb."""
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status; a bomb reads as failure (the health9 rc rule).
+
+    :func:`local_ipv4s` does not own ``sh`` (tests and tooling patch it),
+    and an rc-subclass whose ``__eq__``/``__ne__`` raises used to detonate
+    the bare ``rc != 0`` probe — a raw 500 on GET /api/wireguard, GET
+    /api/wireguard/settings and /readiness through ``status()``'s
+    stale-restrict check.  ``int.__index__`` salvages the honest exit.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        if _isa(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/wireguard cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _path_is_file(path) -> bool:
@@ -166,16 +245,29 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
     target = path or PLIST_PATH
     try:
         data = plistlib.loads(read_bytes_capped(target, _PLIST_CAP))
-    except (OSError, plistlib.InvalidFileException, ValueError, RecursionError):
-        # RecursionError: leftover deeply-nested LaunchDaemon plist is not
-        # ValueError; GET /api/wireguard and GET /api/system/network used to 500.
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # An enumerated tuple is a losing game against plistlib's XML path
+        # (the files_svc lesson): a torn or truncated LaunchDaemon plist
+        # raises xml.parsers.expat.ExpatError, a junk <date> raises
+        # AttributeError, a stray <key> outside any dict raises IndexError,
+        # and a deeply-nested plist raises RecursionError — none of which the
+        # old (OSError, InvalidFileException, ValueError, RecursionError)
+        # tuple fully covered, so GET /api/wireguard, /api/wireguard/settings
+        # and /api/wireguard/readiness used to 500 on a half-written plist.
         return {"listen": "", "restrict_to": ""}
     if not isinstance(data, dict):
         return {"listen": "", "restrict_to": ""}
     argv = data.get("ProgramArguments") or []
     if not isinstance(argv, list):
         return {"listen": "", "restrict_to": ""}
-    return parse_argv([str(part) for part in argv])
+    # _as_text, not str(): plistlib parses <integer>0x…</integer> through
+    # int(x, 16), which CPython's 4300-digit cap does not bound, so a leftover
+    # over-cap hex integer in the argv survived plistlib.loads and the bare
+    # str() here ValueError'd GET /api/wireguard, GET /api/wireguard/settings,
+    # GET /api/wireguard/readiness and GET /api/system/network.
+    return parse_argv([_as_text(part) for part in argv])
 
 
 @ttl_memo(6.0)
@@ -202,7 +294,7 @@ def live(ps_text: str | None = None) -> dict[str, Any]:
 def local_ipv4s() -> frozenset[str]:
     """IPv4 addresses currently on this host, for stale ``--restrict-to`` checks."""
     rc, out, _err = sh(["/sbin/ifconfig", "-a"], timeout=5)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return frozenset()
     return frozenset(_INET_RE.findall(_as_text(out)))
 
@@ -375,34 +467,78 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     generated command that names a dest the running process will refuse is
     worse than a slightly-unstable LAN address that still works today.
     """
-    cfg = dict(settings) if isinstance(settings, dict) else {}
-    found = live()
+    # ``dict(settings)`` in a try: a *lying*-``__class__`` impostor
+    # (``isinstance`` answers dict, the real object is a plain object)
+    # passed the ``_isa`` gate and the bare copy raised TypeError — this
+    # function does not own its caller's snapshot, and a liar must read as
+    # an empty section like every other junk shape.
+    cfg = {}
+    if _isa(settings, dict):
+        try:
+            cfg = dict(settings)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            cfg = {}
+    # Laundered snapshot (the settings_section rule): this read does not own
+    # its provider — tests and tooling patch ``live`` — and a snapshot that
+    # is a dict *subclass* with a bombing ``.get`` used to raise out of the
+    # bare method calls below, a raw 500 on GET /api/wireguard, GET
+    # /api/wireguard/settings and /readiness.  ``dict(...)`` copies through
+    # the C-level storage; the values stay laundered individually below.
+    # _isa: a snapshot whose ``__class__`` is a raising property used to
+    # detonate the shape gate itself.
     try:
-        listen_port = int(cfg.get("listen_port") or 0)
-    except (TypeError, ValueError, OverflowError):
-        listen_port = 0
+        found = live()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        found = None
+    if _isa(found, dict):
+        try:
+            found = dict(found)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            found = {}
+    else:
+        found = {}
+    # _int_or_zero, not a bare ``int(... or 0)``: the ``or`` blank probe ran
+    # a leftover value's own ``__bool__``, and a raising one blew past the
+    # old arithmetic-trio except — the launder below degrades every bomb to
+    # 0 and already absorbs the over-cap int->str case.
+    listen_port = _int_or_zero(cfg.get("listen_port"))
     if not (0 <= listen_port <= 65535):
         # A YAML hex/octal int skips CPython's str->int digit cap, so an
         # over-cap ``listen_port`` reached ``local_port`` here and ValueError'd
         # ``json.dumps`` on GET /api/wireguard and the Network overview.
         listen_port = 0
-    desired_listen = _as_text(cfg.get("wstunnel_listen") or DEFAULT_LISTEN)
-    desired_restrict = _as_text(cfg.get("wstunnel_restrict_to") or "") or default_restrict_to(
+    # Launder-then-or (the wg9 ``found.get`` rule, on the *stored* side):
+    # ``cfg.get(...) or default`` ran a leftover value's own ``__bool__``
+    # before the launder could absorb it.
+    desired_listen = _as_text(cfg.get("wstunnel_listen")) or DEFAULT_LISTEN
+    desired_restrict = _as_text(cfg.get("wstunnel_restrict_to")) or default_restrict_to(
         listen_port
     )
-    live_listen = _as_text(found.get("listen") or "")
-    live_restrict = _as_text(found.get("restrict_to") or "")
-    running = bool(found.get("running"))
+    # _as_text straight on the stored value, no ``or ""`` first: the old
+    # blank probe reflected into a leftover value's own ``__bool__`` — a
+    # raw 500 on GET /api/wireguard and GET /api/wireguard/settings for a
+    # value the launder degrades to "" anyway.  Same for ``running`` and
+    # ``binary``/``plist`` below (``_truthy``, launder-then-or).
+    live_listen = _as_text(found.get("listen"))
+    live_restrict = _as_text(found.get("restrict_to"))
+    running = _truthy(found.get("running"))
     # Export dest must match the process that will accept it.
     restrict_to = live_restrict if running and live_restrict else desired_restrict
     listen = live_listen if running and live_listen else desired_listen
-    stored_public = _as_text(cfg.get("wstunnel_public") or "")
-    public = stored_public or public_url(listen, str(cfg.get("endpoint") or ""))
+    stored_public = _as_text(cfg.get("wstunnel_public"))
+    public = stored_public or public_url(listen, _as_text(cfg.get("endpoint")))
     _scheme, _host, port = listen_parts(listen)
     if not listen_port:
         listen_port = int(port) if str(port).isdigit() else 0
-    enabled = bool(cfg.get("wstunnel_enabled"))
-    binary = _as_text(found.get("binary") or "") or find_binary()
+    enabled = _truthy(cfg.get("wstunnel_enabled"))
+    binary = _as_text(found.get("binary")) or find_binary()
+    plist_path = _as_text(found.get("plist"))
     aligned = (not running) or (
         live_listen == desired_listen and live_restrict == desired_restrict
     )
@@ -411,14 +547,16 @@ def status(settings: dict | None = None) -> dict[str, Any]:
     stale = restrict_is_stale(restrict_to, addresses)
     # Default listen is always filled by settings(); it does not mean the
     # operator turned this on.  A live process or an explicit public/restrict
-    # value does.
+    # value does.  Laundered strings, not the raw snapshot values: the raw
+    # ``found.get(...)`` truthiness probes reflected into a leftover value's
+    # own ``__bool__`` and 500'd the read.
     configured = bool(
         enabled
         or running
-        or found.get("listen")
-        or found.get("plist")
-        or str(cfg.get("wstunnel_public") or "").strip()
-        or str(cfg.get("wstunnel_restrict_to") or "").strip()
+        or live_listen
+        or plist_path
+        or _as_text(cfg.get("wstunnel_public")).strip()
+        or _as_text(cfg.get("wstunnel_restrict_to")).strip()
     )
     needs_stabilize = enabled and (not stable or stale)
     needs_apply = enabled and (not running or not aligned)
@@ -439,7 +577,7 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         "client_command": client_command(
             public=public, restrict_to=restrict_to, local_port=listen_port,
         ),
-        "plist": _as_text(found.get("plist") or ""),
+        "plist": plist_path,
         "binary": _as_text(binary),
         "binary_ok": bool(binary) and _path_is_file(binary),
         "aligned": aligned,
@@ -452,30 +590,73 @@ def status(settings: dict | None = None) -> dict[str, Any]:
 
 
 def _int_or_zero(value) -> int:
+    """Exact bounded int, or 0.
+
+    Base coercions plus a ``str()`` probe: the old bare ``int(value or 0)``
+    reflected into a leftover's own ``__bool__``/``__int__`` (raising past
+    the arithmetic-trio except), and passed a >4300-digit already-int
+    straight through to Starlette's ``json.dumps``, whose int->str digit cap
+    ValueError'd GET /api/wireguard one layer later.
+    """
     try:
-        return int(value or 0)
-    except (TypeError, ValueError, OverflowError):
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            number = int.__index__(value)
+        elif isinstance(value, float):
+            probe = float.__float__(value)
+            if probe != probe or probe in (float("inf"), float("-inf")):
+                return 0
+            number = int(probe)
+        else:
+            text = _as_text(value).strip()
+            if not text:
+                return 0
+            number = int(text)
+        str(number)  # CPython's 4300-digit int->str cap; json.dumps enforces it
+        return number
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
 
 
 def listener_row(snapshot: dict | None) -> dict[str, Any] | None:
     """A ports-tab row for a root wstunnel that ``lsof`` without sudo misses."""
-    if not isinstance(snapshot, dict):
+    # _isa: a snapshot whose ``__class__`` is a raising property detonated
+    # the bare shape gate itself.
+    if not _isa(snapshot, dict):
         return None
-    port = snapshot.get("port")
+    # Exact-dict launder in a try: a *lying*-``__class__`` impostor passed
+    # the ``_isa`` gate and made the unbound ``dict.get`` descriptors below
+    # raise TypeError into the Network ports tab.  ``dict(...)`` copies a
+    # real (sub)dict through the C-level storage and refuses the liar.
+    try:
+        snapshot = dict(snapshot)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    # Unbound ``dict.get`` + laundered values: a dict-subclass snapshot with
+    # a bombing ``.get``, a listen value whose str-subclass methods raise
+    # under urlsplit, or an over-cap port used to raise out of this row
+    # builder into the Network ports tab.
+    port = _int_or_zero(dict.get(snapshot, "port"))
+    listen = _as_text(dict.get(snapshot, "listen"))
     if not port:
         try:
-            parsed = urlparse(str(snapshot.get("listen") or ""))
-            port = parsed.port
+            port = urlparse(listen).port or 0
         except ValueError:
+            # Torn IPv6 in the URL ("ws://[::1:8444") and out-of-range ports
+            # are both ValueError out of urlsplit/.port.
             return None
     if not port:
         return None
-    pid = _int_or_zero(snapshot.get("pid"))
+    pid = _int_or_zero(dict.get(snapshot, "pid"))
     return {
         "process": "wstunnel",
         "pid": pid or "",
         "user": "root",
-        "address": snapshot.get("listen") or f"*:{port}",
+        "address": listen or f"*:{port}",
         "port": str(port),
     }

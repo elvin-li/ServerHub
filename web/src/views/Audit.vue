@@ -11,19 +11,19 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ filteredRows.length }} / {{ rows.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filteredRows).length }} / {{ asArray(rows).length }}</span>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="6" :rows="8" />
-    <div v-else-if="!entries.length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
+    <div v-else-if="!asArray(entries).length && !loadError" class="placeholder">{{ t('audit.empty') }}</div>
     <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
          the else-branch rendered a table whose only row said "None" — an empty
          claim for an API failure. The banner above is the whole story; stale
          rows still render when a re-poll fails, which is the LoadFailure
          contract. -->
-    <template v-else-if="entries.length">
+    <template v-else-if="asArray(entries).length">
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead>
@@ -37,18 +37,18 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in filteredRows" :key="i">
-              <td class="mono col-hide-m">{{ fmt(e.ts) }}</td>
+            <tr v-for="(e, i) in asArray(filteredRows)" :key="i">
+              <td class="mono col-hide-m">{{ fmt(asRecord(e).ts) }}</td>
               <td class="mono">
-                {{ finiteText(e.event) }}
-                <div class="show-m sub">{{ fmt(e.ts) }}</div>
-                <div v-if="finiteText(e.client, '')" class="show-m sub">{{ finiteText(e.client) }}</div>
+                {{ finiteText(asRecord(e).event) }}
+                <div class="show-m sub">{{ fmt(asRecord(e).ts) }}</div>
+                <div v-if="finiteText(asRecord(e).client, '')" class="show-m sub">{{ finiteText(asRecord(e).client) }}</div>
                 <div v-if="detail(e)" class="show-m sub">{{ detail(e) }}</div>
               </td>
-              <td><strong>{{ finiteText(e.username) }}</strong></td>
-              <td class="mono col-hide-m">{{ finiteText(e.client) }}</td>
+              <td><strong>{{ finiteText(asRecord(e).username) }}</strong></td>
+              <td class="mono col-hide-m">{{ finiteText(asRecord(e).client) }}</td>
               <td>
-                <span class="badge" :class="badgeClass(e.outcome)">{{ finiteText(e.outcome) }}</span>
+                <span class="badge" :class="badgeClass(asRecord(e).outcome)">{{ finiteText(asRecord(e).outcome) }}</span>
               </td>
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
@@ -57,13 +57,13 @@
                  (it gets the audit.empty placeholder above). "None" claimed
                  the log was empty when the filter simply missed — the same
                  filter-miss/no-data split as Tools, Network and Health. -->
-            <tr v-if="!filteredRows.length">
+            <tr v-if="!asArray(filteredRows).length">
               <td colspan="6" class="empty-row">{{ t('common.no_match') }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="meta">{{ t('audit.retained', { n: finiteN(entries.length), max: finiteN(maxRetained) }) }}</p>
+      <p class="meta">{{ t('audit.retained', { n: finiteN(asArray(entries).length), max: finiteN(maxRetained) }) }}</p>
     </template>
   </div>
 </template>
@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -94,7 +94,48 @@ let loadGeneration = 0
 // Newest first on screen: an operator opening this page is looking at what just
 // happened, not at the start of the file. The API returns oldest-first because
 // that is the natural order of an append-only log.
-const rows = computed(() => entries.value.slice().reverse())
+const rows = computed(() => {
+  try {
+    return asArray(entries.value).slice().reverse().map((e) => asRecord(e)).filter(
+      (e) => e != null && typeof e === 'object' && !Array.isArray(e),
+    )
+  } catch {
+    return []
+  }
+})
+
+// Text filter over every rendered column — the same convention as the
+// Maintenance task filter.  200 rows of mixed sign-ins need "which of these
+// touched user X / came from client Y" to be one keystroke, not a scan.
+const q = ref('')
+
+function fieldText(value) {
+  if (value != null && typeof value === 'object') return jsonText(value, '')
+  try {
+    return String(finiteText(value, ''))
+  } catch {
+    return ''
+  }
+}
+
+const filteredRows = computed(() => {
+  try {
+    const list = asArray(rows.value)
+    const needle = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
+    if (!needle) return list
+    return list.filter((e) => {
+      try {
+        const row = asRecord(e)
+        const hay = `${fieldText(row.event)} ${fieldText(row.username)} ${fieldText(row.client)} ${fieldText(row.outcome)} ${detail(e)}`
+        return hay.toLowerCase().includes(needle)
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return []
+  }
+})
 
 // Text filter over every rendered column — the same convention as the
 // Maintenance task filter.  200 rows of mixed sign-ins need "which of these
@@ -112,10 +153,14 @@ const filteredRows = computed(() => {
 
 function fmt(ts) {
   if (ts == null || ts === '') return ''
-  const d = new Date(ts)
-  // Invalid leftover values (Infinity, NaN, junk strings) used to be returned
-  // verbatim, so the time column printed the word "Infinity".
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  try {
+    const d = new Date(ts)
+    // Invalid leftover values (Infinity, NaN, junk strings) used to be returned
+    // verbatim, so the time column printed the word "Infinity".
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  } catch {
+    return ''
+  }
 }
 
 function badgeClass(outcome) {
@@ -129,10 +174,14 @@ function badgeClass(outcome) {
 // filter here.
 const KNOWN = new Set(['ts', 'event', 'username', 'client', 'outcome'])
 function detail(e) {
-  return Object.entries(e)
-    .filter(([k]) => !KNOWN.has(k))
-    .map(([k, v]) => `${finiteText(k)}=${finiteText(v)}`)
-    .join(' · ')
+  try {
+    return Object.entries(asRecord(e))
+      .filter(([k]) => !KNOWN.has(k))
+      .map(([k, v]) => `${finiteText(k)}=${finiteText(v)}`)
+      .join(' · ')
+  } catch {
+    return ''
+  }
 }
 
 async function refresh(manual = false) {
@@ -142,19 +191,27 @@ async function refresh(manual = false) {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const d = await getAuthAudit(200)
+    const d = asRecord(await getAuthAudit(200))
     if (generation !== loadGeneration || !pageAlive) return
-    entries.value = d.entries || []
+    try {
+      entries.value = asArray(d.entries).slice()
+    } catch {
+      entries.value = []
+    }
     const retained = Number(d.retained_lines)
     maxRetained.value = Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    try {
+      loadError.value = finiteText(e && e.message, '') || 'error'
+    } catch {
+      loadError.value = 'error'
+    }
     // Background ticks stay silent: LoadFailure already marks the failure, and
     // a toast per interval while the panel is down is pure noise.  Returning
     // false is lib/poll's opt-in sentinel for backoff.
-    if (manual) toast('❌ ' + finiteText(e.message))
+    if (manual) toast('❌ ' + finiteText(e && e.message))
     return false
   } finally {
     if (generation === loadGeneration && pageAlive) {

@@ -43,14 +43,20 @@ Semantics that are deliberate (and pinned by tests/test_metrics_rollup.py):
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import re
+import stat
 import threading
 import time
 
 from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 FILE_5M = DATA_DIR / "metrics-5m.jsonl"
 FILE_1H = DATA_DIR / "metrics-1h.jsonl"
@@ -113,6 +119,16 @@ def _sample_ts(raw) -> int | None:
                 return None
     if not isinstance(raw, (int, float)):
         return None
+    # Base coercion first: ``float(raw)`` / ``int(raw)`` dispatch into a
+    # subclass ``__float__`` / ``__int__`` / ``__trunc__``, whose modules5
+    # bomb is none of the errors caught below and used to escape.
+    if type(raw) not in (int, float):
+        try:
+            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
     # Same leftover as metrics.sample_ts: a 400-digit int is not inf, but
     # ``time.time() - since`` and ``float(n)`` OverflowError it.
     try:
@@ -141,6 +157,16 @@ def _finite_num(raw):
             return None
     if not isinstance(raw, (int, float)):
         return None
+    # Base coercion before the NaN/inf probes: ``raw != raw`` and the inf
+    # tuple membership dispatch into a subclass ``__eq__``/``__ne__``,
+    # whose modules5 bomb used to raise out of every aggregation pass.
+    if type(raw) not in (int, float):
+        try:
+            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
     if raw != raw or raw in (float("inf"), float("-inf")):
         return None
     try:
@@ -149,20 +175,65 @@ def _finite_num(raw):
         return None
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -170,12 +241,29 @@ def _jsonable(value, depth: int = 0):
 
     Infinity in a leftover rollup row was already dropped; a leftover
     ``\\ud800`` field or key still 500'd ``GET /api/metrics?range=``.
+
+    The remaining bound probes still blew on the modules5 subclass-bomb
+    classes (already neutralized in sensors_svc._jsonable, never ported
+    here): an int subclass whose ``__str__`` raises, a float subclass whose
+    ``__eq__``/``__float__`` raises, and a bytes/bytearray subclass whose
+    ``decode`` raises — as a value and as a mapping key.  Each used to
+    raise straight out of this sanitizer and abort the rollup pass or the
+    state save.  Hence the unbound base-type coercions below.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -184,43 +272,102 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover subclass method bomb
+            # cannot fire (same guard as sensors_svc._jsonable).
+            try:
+                value = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements (``list(value)`` dispatched
+                # into the override and threw the payload away with it).
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/metrics?range=.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+
+
+def _open_journal_rb(path):
+    """Binary handle to a *regular* journal file.
+
+    A leftover FIFO occupying metrics-5m.jsonl / metrics-1h.jsonl (or the raw
+    journal reached through the tier probe) used to park a bare ``open()``
+    until a writer appeared — hanging GET /api/metrics?range= and the rollup
+    pass forever.  ``O_NONBLOCK`` makes the FIFO open return at once and the
+    regular-file check turns any non-regular node into the OSError every
+    caller here already handles.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
 
 
 def _first_row_ts(path) -> int | None:
     """Timestamp of the first parseable row, reading only the file head."""
     try:
-        with open(path, "rb") as f:
+        with _open_journal_rb(path) as f:
             head = f.read(8192)
     except OSError:
         return None
@@ -241,7 +388,7 @@ def _first_row_ts(path) -> int | None:
 def _last_row_ts(path) -> int | None:
     """Timestamp of the last parseable row, reading only the file tail."""
     try:
-        with open(path, "rb") as f:
+        with _open_journal_rb(path) as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 8192))
@@ -277,7 +424,7 @@ def _rows_since(path, since_ts: int) -> list[dict]:
     while True:
         offset = max(0, size - chunk)
         try:
-            with open(path, "rb") as f:
+            with _open_journal_rb(path) as f:
                 f.seek(offset)
                 data = f.read()
         except OSError:
@@ -351,6 +498,21 @@ def _aggregate_window(rows: list[dict], window_start: int) -> dict:
         w = int(w) if w is not None and w > 0 else 1
         total_n += w
         for key, val in row.items():
+            if not isinstance(key, str):
+                continue
+            if type(key) is not str:
+                # Exact-str the key before the tuple membership below: a
+                # leftover str-subclass key whose ``__eq__`` raises gets
+                # reflected priority in ``key in ("t", "n")`` (subclass of
+                # the tuple items' type) and used to abort the whole
+                # aggregation pass — every rollup window and any decimated
+                # GET /api/metrics?range= response died with it.
+                try:
+                    key = str(key)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
             if key in ("t", "n") or key.endswith("_max"):
                 continue
             num = _finite_num(val)
@@ -449,6 +611,11 @@ def _rollup_tier_locked(src_path, dst_path, win: int, key: str, target: int) -> 
                 for wt, rows in sorted(buckets.items())
             )
             dst_path.parent.mkdir(exist_ok=True)
+            # A leftover FIFO/dir occupying the aggregate file would fail
+            # this append on every pass (append_text refuses non-regular
+            # nodes); drop it so the tier self-heals instead of stalling
+            # its watermark forever.
+            secure_io.drop_leftover_nonfile(dst_path)
             secure_io.append_text(dst_path, lines)
         except (OSError, TypeError, ValueError, RecursionError):
             # RecursionError: leftover nested aggregate after _jsonable is not
@@ -485,7 +652,8 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
         # trim forever (same failure class as metrics.py's ring buffer).
         # Leftover multi-GB jsonl: only the tail is kept (trim is dropping
         # the old prefix anyway) so the rewrite cannot OOM the sampler.
-        with open(path, "rb") as fh:
+        # _open_journal_rb: a leftover FIFO used to park this open forever.
+        with _open_journal_rb(path) as fh:
             if size > _ROWS_CAP:
                 fh.seek(max(0, size - _ROWS_CAP))
                 if fh.tell() > 0:
@@ -524,9 +692,13 @@ def maybe_rollup(now: float | None = None) -> dict:
     else:
         # Leftover YAML ``now: .inf`` / ``!!binary`` used to raise
         # ``int(now // 300)`` and take down the first rollup pass.
+        # Exception, not the three usual conversion errors: ``float()`` of a
+        # leftover subclass dispatches into its own ``__float__`` bomb.
         try:
             now_f = float(now)
-        except (TypeError, ValueError, OverflowError):
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             now_f = time.time()
         if isinstance(now, bool) or now_f != now_f or now_f in (float("inf"), float("-inf")) or abs(now_f) > 1e18:
             now_f = time.time()
@@ -544,7 +716,9 @@ def maybe_rollup(now: float | None = None) -> dict:
             # metrics.py's own hourly gate.
             try:
                 metrics.flush_pending()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
             try:
                 done["w5"] = _rollup_tier_locked(
@@ -669,7 +843,11 @@ def query_range(since: int, until: int, max_points: int = MAX_QUERY_POINTS) -> d
     since, until = since_i, until_i
     try:
         max_points = max(1, min(int(max_points), MAX_QUERY_POINTS))
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Exception: ``int()`` of a leftover subclass dispatches into its
+        # own ``__int__``/``__index__`` bomb, which is not a conversion error.
         max_points = MAX_QUERY_POINTS
     tier = _pick_tier(since, until)
     if tier == "raw":

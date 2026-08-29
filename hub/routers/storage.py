@@ -1,12 +1,46 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from hub import audit, auth, disk_manage_svc, disk_power_svc, storage_pool_svc, storage_svc
 from hub.util import LazyPool
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
+    """One audit line for a disk or pool mutation — eraseDisk is the most
+    destructive action in the panel.  Called after the service call returned,
+    so a rejected action that raised leaves no record.  FastAPI always injects
+    `request`; the None guard only keeps direct in-process calls working."""
+    audit.record(
+        event,
+        username=auth.request_username(request) if request is not None else "",
+        client=auth.request_client_id(request),
+        **fields,
+    )
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so an overview *return* wearing a raising property detonated
+    the route's own non-dict gate — a raw 500 on GET /api/storage one line
+    past the catch built to degrade exactly this (the storage_svc._isa
+    rule).  A real subclass still matches through the C-level type check.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
 
 def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
@@ -24,24 +58,66 @@ def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 router = APIRouter(tags=["storage"])
+
+
+def _rendered(payload):
+    """Response payload through the shared sanitizer before Starlette renders it.
+
+    The overview cleans itself, but the power / manage sections and the
+    mutation results were pasted into the body verbatim.  A leftover the
+    encoder cannot take — an over-cap already-int (YAML/plist hex loads
+    uncapped through ``int(x, 16)``), a lone ``\\ud800``, or a collection
+    that passes ``isinstance`` but refuses iteration — 500'd the whole
+    route where every NAS sibling answers with the field dropped or the
+    text scrubbed (the ``nas_common._jsonable`` rule this router missed).
+    """
+    return storage_svc._jsonable(payload)
 
 #: Page composer only.  Overview fans out SMART on the shared probe pool.
 _PAGE_POOL = LazyPool(3, "storage-page")
@@ -65,31 +141,80 @@ def storage(light: bool = False):
     f_managed = _PAGE_POOL.submit(disk_manage_svc.overview)
     try:
         data = f_overview.result()
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data = {"volumes": [], "disks": [], "error": _as_text(e)}
-    if not isinstance(data, dict):
+    # _isa, not bare isinstance: an overview return whose ``__class__`` is a
+    # raising property used to detonate this gate itself — a raw 500 where
+    # the degraded body is the contract.
+    if not _isa(data, dict):
         data = {"volumes": [], "disks": [], "error": _as_text(data)}
     try:
-        data["power_disks"] = f_power.result()
-    except Exception as e:
+        data["power_disks"] = _rendered(f_power.result())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data["power_disks"] = []
         data["power_error"] = _as_text(e)
+    # Shape gates behind the sanitizer: ``_rendered`` no longer raises on a
+    # junk listing return, it salvages it as text — which honoured the old
+    # except arm's job but broke the section's list/dict contract.  The
+    # degrade stays the same one the except arms answer.
+    if not _isa(data.get("power_disks"), list):
+        data["power_disks"] = []
+        data.setdefault("power_error", "power listing returned a non-list")
     try:
-        data["managed"] = f_managed.result()
-    except Exception as e:
+        data["managed"] = _rendered(f_managed.result())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         data["managed"] = {"volumes": [], "error": _as_text(e)}
+    if not _isa(data.get("managed"), dict):
+        data["managed"] = {"volumes": [], "error": "manage overview returned a non-dict"}
     return data
 
 
 @router.get("/api/storage/disks")
 def storage_disks():
-    return {"disks": disk_power_svc.list_power_disks()}
+    # Same degrade the full page gives this section: a listing that raises
+    # outright (a dying disk under the shared reads, a leftover that slips
+    # the service's own guards) used to answer a bare 500 here while
+    # GET /api/storage already reported it as ``power_error``.
+    try:
+        disks = _rendered(disk_power_svc.list_power_disks())
+    except HTTPException:
+        raise
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        return {"disks": [], "error": _as_text(e)}
+    if not _isa(disks, list):
+        # The sanitizer salvages a junk listing return as text rather than
+        # raising; keep this section's list contract with the same degrade
+        # the except arm answers.
+        return {"disks": [], "error": "power listing returned a non-list"}
+    return {"disks": disks}
 
 
 @router.get("/api/storage/manage")
 def storage_manage():
     """List volumes/partitions for mount/format management."""
-    return disk_manage_svc.overview()
+    # Mirrors the full page's ``managed`` fallback for the same reason as
+    # the disks route above: the section route must not be weaker than the
+    # page that embeds it.
+    try:
+        managed = _rendered(disk_manage_svc.overview())
+    except HTTPException:
+        raise
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        return {"volumes": [], "count": 0, "error": _as_text(e)}
+    if not _isa(managed, dict):
+        return {"volumes": [], "count": 0,
+                "error": "manage overview returned a non-dict"}
+    return managed
 
 
 class DiskPowerBody(BaseModel):
@@ -99,7 +224,7 @@ class DiskPowerBody(BaseModel):
 @router.post("/api/storage/disks/{disk_id}/power")
 def storage_disk_power(disk_id: str, body: DiskPowerBody, request: Request = None):
     try:
-        result = disk_power_svc.disk_power_action(disk_id, body.action)
+        result = _rendered(disk_power_svc.disk_power_action(disk_id, body.action))
         _audit_disk_change(audit.DISK_CHANGED, request,
                            action=body.action, disk=disk_id)
         return result
@@ -123,14 +248,14 @@ class DiskManageBody(BaseModel):
 @router.post("/api/storage/manage/{device_id}")
 def storage_manage_action(device_id: str, body: DiskManageBody, request: Request = None):
     try:
-        result = disk_manage_svc.disk_action(
+        result = _rendered(disk_manage_svc.disk_action(
             device_id,
             body.action,
             name=body.name,
             fs=body.fs,
             confirm=body.confirm,
             confirm_name=body.confirm_name,
-        )
+        ))
         _audit_disk_change(audit.DISK_CHANGED, request,
                            action=body.action, disk=device_id,
                            fs=body.fs or "")

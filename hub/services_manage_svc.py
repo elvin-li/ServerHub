@@ -1,6 +1,8 @@
 """Per-service management for the Services page: detail, logs, overrides."""
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import glob
 import os
 import plistlib
@@ -42,9 +44,13 @@ def _as_text(value) -> str:
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
 
 
@@ -68,6 +74,32 @@ def _clamp_lines(raw, default: int = 150) -> int:
     if value is None:
         value = default
     return max(10, min(value, 2000))
+
+
+def _cfg_entry_id(raw) -> str:
+    """Configured entry id as text; ``""`` drops it (the jobs._task_id rule).
+
+    YAML numeric ids (``id: 8080``) load as int.  The discovery collectors
+    already coerce them (``discovery.apps._entry_id``) so the Services page
+    renders the row — with edit/forget buttons — under ``"8080"``, but the
+    bare ``entry.get("id") == sid`` compares here still matched int against
+    str and answered ``services.script_not_found`` for a managed script the
+    page itself offered to edit.  A renderable int coerces through the
+    ``str()`` probe; an over-cap hex leftover (``id: 0xfff…`` loads uncapped
+    and its ``str()`` raises the digit-cap ValueError ``json.dumps`` would)
+    drops only its entry; bool passes ``isinstance(int)`` and must not
+    become ``"True"``.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    if isinstance(raw, str):
+        return raw.encode("utf-8", "replace").decode("utf-8").strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
 
 
 def _flat_services(force: bool = False) -> list[dict]:
@@ -108,7 +140,9 @@ _PLIST_CAP = 256 * 1024
 def _plist_dict(path: Path) -> dict | None:
     try:
         data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return data if isinstance(data, dict) else None
 
@@ -156,11 +190,18 @@ def _load_plist(label: str) -> dict:
 
 
 def _tail_file(path: str | Path, lines: int = 150) -> str:
+    text = _as_text(path)
+    if not text.strip():
+        # An over-cap plist ``<integer>`` log path scrubs to "" — reporting
+        # it as invalid beats probing Path(".") for a log file.
+        return "(invalid log path)"
     try:
-        p = Path(os.path.expanduser(_as_text(path)))
+        p = Path(os.path.expanduser(text))
     except (OSError, ValueError, TypeError, RuntimeError):
         # RuntimeError: leftover HOME unset on a ``~/…`` StandardOutPath.
-        return f"(invalid log path: {path!s})"
+        # _as_text, not ``{path!s}``: re-formatting an over-cap int here
+        # would raise the same digit-cap ValueError inside the handler.
+        return f"(invalid log path: {text})"
     try:
         if not p.is_file():
             return f"(log file does not exist: {p})"
@@ -382,13 +423,17 @@ def service_detail(sid: str) -> dict:
                             v = next((x for x in arr if x.get("id") == sid or x.get("name") == sid), None)
                             if v:
                                 break
-                        except Exception:
+                        except _CONTROL_FLOW:
+                            raise
+                        except BaseException:
                             pass
             if v:
                 detail.update({k: v.get(k) for k in ("backend", "uuid", "ips", "cpu", "memory", "path") if v.get(k) is not None})
                 if v.get("url") and not detail.get("url"):
                     detail["url"] = v["url"]
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 
     elif kind in ("app", "app-engine"):
@@ -396,7 +441,9 @@ def service_detail(sid: str) -> dict:
         for a in cfg().get("apps") or []:
             if not isinstance(a, dict):
                 continue
-            if a.get("id") == sid:
+            # _cfg_entry_id: a numeric YAML id renders as text on the page,
+            # and the bare ``== sid`` compare left its detail without config.
+            if _cfg_entry_id(a.get("id")) == sid:
                 detail["process"] = a.get("process")
                 detail["config"] = {k: a.get(k) for k in a if k not in ("id",)}
                 break
@@ -405,7 +452,8 @@ def service_detail(sid: str) -> dict:
         for s in cfg().get("scripts") or []:
             if not isinstance(s, dict):
                 continue
-            if s.get("id") == sid:
+            # Same _cfg_entry_id compare as the apps branch above.
+            if _cfg_entry_id(s.get("id")) == sid:
                 detail["start_cmd"] = s.get("start")
                 detail["stop_cmd"] = s.get("stop")
                 detail["check"] = s.get("check") or s.get("ports")
@@ -499,7 +547,15 @@ def service_logs(sid: str, lines: int = 150) -> dict:
                     paths.append(str(guess))
         chunks = []
         for p in paths[:4]:
-            chunks.append(f"===== {p} =====\n{_tail_file(p, lines)}")
+            # _utf8_clean, not ``{p}``: an over-cap plist ``<integer>`` log
+            # path (hex spelling dodges the int(str) parse cap) raised the
+            # digit-cap ValueError inside this f-string and 500'd
+            # GET /api/services/{sid}/logs — the exact sibling of the
+            # apps_manage_svc._launchd_logs leftover.
+            chunks.append(
+                f"===== {_utf8_clean(p) or '(unprintable)'} =====\n"
+                f"{_tail_file(p, lines)}"
+            )
         if not chunks:
             # launchctl print as fallback diagnostic
             rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
@@ -535,7 +591,9 @@ def service_logs(sid: str, lines: int = 150) -> dict:
             else:
                 log = "(no script log source configured; add one under settings / log_sources)"
                 source = "none"
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             log = _as_text(e)
             source = "error"
 
@@ -562,7 +620,12 @@ def service_logs(sid: str, lines: int = 150) -> dict:
             chunks = []
             for key in ("StandardErrorPath", "StandardOutPath"):
                 if pl.get(key):
-                    chunks.append(f"===== {pl[key]} =====\n{_tail_file(pl[key], lines)}")
+                    # Same over-cap plist ``<integer>`` guard as the
+                    # launchd-kind branch above: the raw f-string 500'd here.
+                    chunks.append(
+                        f"===== {_utf8_clean(pl[key]) or '(unprintable)'} =====\n"
+                        f"{_tail_file(pl[key], lines)}"
+                    )
             if not chunks:
                 rc, out, err = sh(["/bin/launchctl", "print", f"gui/{UID}/{sid}"], timeout=6)
                 chunks.append(_as_text(out) or _as_text(err) or "(no log paths)")
@@ -703,8 +766,16 @@ def _taken_service_ids() -> set[str]:
         if not isinstance(entries, list):
             continue
         for entry in entries:
-            if isinstance(entry, dict) and entry.get("id"):
-                taken.add(str(entry["id"]))
+            if not isinstance(entry, dict):
+                continue
+            # _cfg_entry_id, not bare str(): one over-cap hex YAML id
+            # (``id: 0xfff…`` loads uncapped) raised the int->str digit-cap
+            # ValueError here and 500'd POST /api/services/{sid}/adopt and
+            # GET detail of every auto row — the poisoned entry costs only
+            # itself, exactly as the collectors already drop it.
+            sid = _cfg_entry_id(entry.get("id"))
+            if sid:
+                taken.add(sid)
     return taken
 
 
@@ -941,8 +1012,11 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
     sid = cli_args.require_positional(sid, label="service id")
     patch = patch or {}
     scripts = cfg().get("scripts")
+    # _cfg_entry_id compare: a numeric YAML ``id: 8080`` renders on the page
+    # as "8080" (the collectors coerce), but the bare ``== sid`` here matched
+    # int against str and 404'd the edit of a row the page itself offered.
     if not any(
-        isinstance(s, dict) and s.get("id") == sid
+        isinstance(s, dict) and _cfg_entry_id(s.get("id")) == sid
         for s in (scripts if isinstance(scripts, list) else [])
     ):
         raise api_error("services.script_not_found", id=sid)
@@ -956,7 +1030,7 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
 
     def apply(data: dict) -> None:
         for entry in data.get("scripts") or []:
-            if not isinstance(entry, dict) or entry.get("id") != sid:
+            if not isinstance(entry, dict) or _cfg_entry_id(entry.get("id")) != sid:
                 continue
             # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be
             # stored verbatim and 500 the echoed entry on the response encode.
@@ -1016,7 +1090,9 @@ def forget_script(sid: str) -> dict:
             scripts = []
         keep = []
         for entry in scripts:
-            if isinstance(entry, dict) and entry.get("id") == sid:
+            # Same _cfg_entry_id compare as update_script: a numeric YAML id
+            # renders as text on the page, and forgetting it must find it.
+            if isinstance(entry, dict) and _cfg_entry_id(entry.get("id")) == sid:
                 removed.update(entry)
                 continue
             keep.append(entry)
@@ -1098,7 +1174,9 @@ def _bust_group_rule_views() -> None:
         from hub.discovery.containers import invalidate_containers
 
         invalidate_containers()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import threading
@@ -46,6 +47,8 @@ def _default_services_root() -> Path:
 
 
 SERVICES_ROOT = _default_services_root()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 #: Install outcomes go to the panel's own log (~/Library/Logs/serverhub.err.log).
 #: An install that fails in a browser leaves no trace anywhere else: the response
@@ -93,27 +96,120 @@ def _brew_env() -> dict:
     return env
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through.
+
+    The catalog/docker_cli rule: CPython's ``isinstance`` reads the operand's
+    ``__class__`` whenever the real-type fast check misses, so a subprocess
+    leftover whose ``__class__`` is a raising property used to detonate
+    ``_as_text``'s bytes gate itself — straight out of the screen-sharing
+    install/uninstall probes and the filebrowser/homeassistant bootout scrub.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """Subprocess leftovers (bytes/None/int/``\\ud800``) must not 500 native listing/install."""
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, str):
+    decoded = None
+    if _isinst(value, (bytes, bytearray)):
+        # Unbound base decode: a leftover subclass ``.decode`` bomb cannot fire.
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            decoded = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A *lying* ``__class__`` (claims bytes, is not): the unbound
+            # descriptor rejects the foreign operand.  A raise means "not
+            # really bytes" — render like any other object instead of 500ing
+            # the launchctl/brew output scrub (the modules9/json9 impostor
+            # class).
+            decoded = None
+    if decoded is not None:
+        text = decoded
+    elif _isinst(value, str):
         text = value
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return ""
     elif value is None:
         return ""
+    elif _isinst(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        text = str(value)
     else:
         try:
             text = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str subclass whose ``__str__`` returns self
+    # keeps its bound ``.encode`` bomb live (the modules5 unbound convention).
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; junk reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it — the
+    docker_cli / nfs_svc ``_rc_int`` rule), and every launchctl helper
+    compared the *rc* slot raw while ``_as_text`` laundered only the two
+    text streams:
+
+    * an rc-subclass whose ``__eq__`` / ``__ne__`` raises detonated the bare
+      ``rc == 0`` probes in ``_screen_sharing_on`` (a raw 500 on
+      POST /api/catalog/native-screen-sharing/install and /uninstall) and
+      the ``rc != 0`` / ``rc in (0, 3, 5)`` probes in ``_launchctl_unload``
+      (a raw 500 on POST /api/catalog/native-filebrowser/uninstall and
+      /native-homeassistant/uninstall);
+    * a >4300-digit int passed every comparison untouched and then
+      ValueError'd ``_launchctl_unload``'s ``f"exit {rc}"`` fallback and
+      ``_launchctl_load``'s ``f"bootstrap={…}"`` line past CPython's
+      int->str digit cap — the same routes, one step later.
+
+    ``int.__index__`` reads the real value underneath a subclass override;
+    a *lying* ``__class__`` impostor (claims int over no int storage)
+    TypeErrors on the unbound read and drops with the junk.  ``-255`` is no
+    honest exit status and is distinct from the ``-1`` timeout / not-found
+    sentinel, so junk can never be misread as a timeout, a vanished CLI, or
+    success.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        str(value)
+        return value
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
 
 
 def _exists(path: Path) -> bool:
@@ -244,11 +340,84 @@ def _brew_list_installed() -> set[str]:
         try:
             rc, out, _ = sh([BREW, "list", flag, "-1"], timeout=30)
             return set(out.split()) if rc == 0 else set()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     formulas, casks = fan_out(listing, ["--formula", "--cask"], max_workers=2)
     return formulas | casks
+
+
+def _installed_set(raw) -> set[str]:
+    """Laundered installed-package union for the ``pkg in inst`` probes.
+
+    This module does not own the brew snapshot the listing pool hands back
+    (tests and tooling patch ``_brew_list_installed``): a set whose
+    ``__bool__`` raises detonated the old ``... or set()`` fallback before a
+    single row was built, and a *hash-shadowing* member (same hash as a
+    catalog package name, raising ``__eq__``) detonated the C-level compare
+    inside ``pkg in inst`` — and because ``fan_out`` re-raises, either bomb
+    cost every native row of GET /api/catalog, not just itself.  Members are
+    rebuilt as exact strs (``_as_text`` reads the honest text underneath a
+    subclass override), so a bomb wrapper around a real package name still
+    answers that package.
+    """
+    if not _isinst(raw, (set, frozenset, list, tuple)):
+        return set()
+    try:
+        items = list(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A lying ``__class__`` claiming a container it is not.
+        return set()
+    out: set[str] = set()
+    for item in items:
+        text = _as_text(item)
+        if text:
+            out.add(text)
+    return out
+
+
+def _service_states(rows) -> dict[str, str]:
+    """package -> lowercase status, laundered row by row.
+
+    The shared ``brew services list`` snapshot is another module's payload
+    (and a seam tests patch).  The old inline loop read it raw — a bare
+    ``isinstance`` (detonated by a ``__class__``-property bomb), a bound
+    ``s.get`` (a dict-subclass override), ``or`` truthiness on the name (a
+    ``__bool__`` bomb) and bare ``str()`` (a >4300-digit int is the digit-cap
+    ValueError) — so one poisoned row raised out of ``list_native_apps`` and
+    emptied the entire native half of GET /api/catalog while its honest
+    siblings were dropped with it.  Junk rows now cost only themselves.
+    """
+    states: dict[str, str] = {}
+    if not _isinst(rows, (list, tuple)):
+        return states
+    try:
+        items = list(rows)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A rows object whose ``__iter__`` bombs, or a lying ``__class__``.
+        return states
+    for s in items:
+        if not _isinst(s, dict):
+            continue
+        try:
+            # Unbound dict.get: reads the C-level storage underneath a
+            # subclass ``.get`` override, and rejects a lying dict impostor.
+            name = _as_text(dict.get(s, "name"))
+            status = _as_text(dict.get(s, "status"))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if not name:
+            continue
+        states[name] = status.lower()
+    return states
 
 
 def _screen_sharing_on() -> bool:
@@ -257,14 +426,17 @@ def _screen_sharing_on() -> bool:
         ["/bin/launchctl", "print", "system/com.apple.screensharing"],
         timeout=5,
     )
-    if rc == 0 and "state = running" in _as_text(out):
+    # _rc_int, not a bare compare: a leftover rc-subclass ``__eq__`` bomb
+    # used to detonate here, straight out of the screen-sharing install and
+    # uninstall routes (this probe runs after every enable/disable attempt).
+    if _rc_int(rc) == 0 and "state = running" in _as_text(out):
         return True
     # older
     rc2, out2, _ = sh(
         ["/bin/launchctl", "list", "com.apple.screensharing"],
         timeout=4,
     )
-    return rc2 == 0
+    return _rc_int(rc2) == 0
 
 
 # Catalog definition (prefer native)
@@ -795,22 +967,19 @@ def list_native_apps(force: bool = False) -> list[dict]:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; a dead brew must not empty the Apps catalog.
-    brew_inst = _result(f_installed, set()) or set()
-    service_rows = _result(f_services, []) or []
-    host = _result(f_host, "") or ""
-
-    service_states: dict[str, str] = {}
-    for s in service_rows:
-        if not isinstance(s, dict):
-            continue
-        name = s.get("name") or ""
-        if not name:
-            continue
-        service_states[str(name)] = str(s.get("status") or "").lower()
+    # Laundered shapes, not bare ``or`` fallbacks: a snapshot whose
+    # ``__bool__`` raises used to detonate the truthiness probe itself, one
+    # step before the row loop — the same whole-half loss as a poisoned row.
+    brew_inst = _installed_set(_result(f_installed, None))
+    service_states = _service_states(_result(f_services, None))
+    # The host is only ever consumed by _resolve_url, which launders it.
+    host = _result(f_host, "")
 
     # Install and liveness probes are independent per app, and each can shell out
     # (`launchctl print`, `brew list`, a `ps` scan).  Resolve them concurrently, then
@@ -894,9 +1063,19 @@ def _process_running(process_substr: str) -> bool:
     `ps aux` across the catalog listing still left `/api/apps/managed` reading the
     table twice, because cloudflared's liveness probe kept its own copy of this
     same scan.  The cache is process-wide and short-lived, so a listing pass and
-    every other reader in the same request now share one spawn.
+    every other reader in     the same request now share one spawn.
+
+    Guarded: the table is another module's payload (and a seam tests patch).
+    A raising provider used to escape every ``probe`` in the listing pass —
+    and because ``fan_out`` re-raises, one bad scan emptied the whole native
+    half of GET /api/catalog instead of reading as "not running".
     """
-    return process_matches(process_substr)
+    try:
+        return bool(process_matches(process_substr))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
 
 class _LaunchdSnapshot:
@@ -925,7 +1104,16 @@ class _LaunchdSnapshot:
     __slots__ = ()
 
     def running_labels(self) -> frozenset[str]:
-        return launchd_running_labels()
+        # The shared listing is another module's payload (and a seam tests
+        # patch): a raising provider must read as "nothing running", not
+        # raise out of the probe and — fan_out re-raises — empty the whole
+        # native half of GET /api/catalog.
+        try:
+            return launchd_running_labels()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return frozenset()
 
 
 def _launchd_or_process_running(
@@ -935,36 +1123,108 @@ def _launchd_or_process_running(
 ) -> bool:
     if label:
         if launchd is not None:
-            if label in launchd.running_labels():
-                return True
+            try:
+                if label in launchd.running_labels():
+                    return True
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A *hash-shadowing* member planted in the shared listing
+                # (same hash as this label, raising ``__eq__``) detonates
+                # the C-level compare inside ``in`` itself; junk reads as
+                # "not running" and the process probe below still answers.
+                pass
         else:
             # No shared listing (single-app callers below); ask about this one label.
             rc, out, _ = sh(
                 ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
                 timeout=5,
             )
-            if rc == 0 and "state = running" in _as_text(out):
+            # _rc_int: a leftover rc bomb must read as "not running", not
+            # raise out of the Home Assistant install path.
+            if _rc_int(rc) == 0 and "state = running" in _as_text(out):
                 return True
     return _process_running(process_substr)
 
 
 def _port_list(raw) -> list:
-    if isinstance(raw, list):
-        items = raw
-    elif isinstance(raw, (int, str)) and str(raw).strip():
+    # _isinst gates throughout: a leftover ``__class__``-property bomb must
+    # answer False, not raise out of the listing.
+    if _isinst(raw, list):
+        try:
+            # Base copy first: a lying ``__class__`` claiming list is not
+            # actually iterable, and must cost only itself.
+            items = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return []
+    elif _isinst(raw, (int, str)):
+        try:
+            if not str(raw).strip():
+                return []
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Over-digit-cap int (str() is ValueError) or a lying impostor.
+            return []
         items = [raw]
     else:
         return []
     out = []
     for p in items:
-        if p is None or p == "" or isinstance(p, bool):
+        # ``p == ""`` used to run first: an item whose ``__eq__`` raises
+        # detonated the loop and emptied the whole row's ports instead of
+        # costing only itself.  Identity/_isinst gates carry no ``__eq__``;
+        # the empty-string drop moved into the str arm below.
+        if p is None or _isinst(p, bool):
             continue
-        if isinstance(p, float) and (p != p or p in (float("inf"), float("-inf"))):
+        if _isinst(p, float) and type(p) is float and (
+            p != p or p in (float("inf"), float("-inf"))
+        ):
             continue
-        if isinstance(p, (int, str)):
+        if _isinst(p, int):
+            if type(p) is not int:
+                try:
+                    # Base coercion to an exact int: a subclass ``__str__``/
+                    # ``__eq__`` bomb must not outlive this launder — the
+                    # row's url resolver and the store's JSON encoder both
+                    # render these (the catalog._plain_ports convention).
+                    p = int.__index__(p)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            try:
+                # Digit-cap probe: a leftover >4300-digit port renders
+                # nowhere — ``str(port)`` in _resolve_url was the ValueError
+                # that emptied the native half of GET /api/catalog.
+                str(p)
+            except ValueError:
+                continue
             out.append(p)
-        elif isinstance(p, (bytes, bytearray)):
-            text = p.decode("utf-8", "replace").strip()
+        elif _isinst(p, str):
+            try:
+                # Unbound base encode: keeps a plain str (a subclass
+                # ``__str__``/``encode`` bomb cannot ride into _resolve_url),
+                # and a lying ``__class__`` claiming str drops alone.
+                text = str.encode(p, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            if text:
+                out.append(text)
+        elif _isinst(p, (bytes, bytearray)):
+            # Unbound base decode: a subclass ``.decode`` bomb cannot fire,
+            # and a lying ``__class__`` claiming bytes drops alone.
+            base = bytes if _isinst(p, bytes) else bytearray
+            try:
+                text = base.decode(p, "utf-8", "replace").strip()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
             if text:
                 out.append(text)
     return out
@@ -972,8 +1232,33 @@ def _port_list(raw) -> list:
 
 def _resolve_url(hint: str, host: str, ports: list) -> str:
     """Fill {{HOST}} / build http URL from first web port when hint empty."""
-    host = host if isinstance(host, str) and host else "localhost"
-    if not isinstance(hint, str):
+    # _isinst + unbound base encode, not the bare isinstance gate: a host
+    # whose ``__class__`` is a raising property detonated the gate itself,
+    # a host ``__bool__`` bomb detonated the truthiness probe, and a lying
+    # ``__class__`` impostor claiming str passed the old gate and blew
+    # ``hint.replace`` — each emptied every native row of GET /api/catalog
+    # (fan_out re-raises).  Junk degrades to the same "localhost" the old
+    # gate answered for any non-str host.
+    if _isinst(host, str):
+        try:
+            host = str.encode(host, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            host = ""
+    else:
+        host = ""
+    host = host or "localhost"
+    if _isinst(hint, str):
+        try:
+            # Launders a str subclass to an exact str, so a bound
+            # ``.replace``/``.encode`` bomb cannot ride into the chain below.
+            hint = str.encode(hint, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            hint = ""
+    else:
         # A mapping leftover used to raise on hint.replace and 500 the store.
         hint = ""
     if hint:
@@ -990,7 +1275,16 @@ def _resolve_url(hint: str, host: str, ports: list) -> str:
         "32400", "51821", "8443", "8888", "3030",
     }
     for p in ports:
-        ps = str(p).split("/")[0]
+        try:
+            # _port_list already drops unrenderable ports, but this helper
+            # is also handed raw lists by callers under test; a >4300-digit
+            # int (str() is the digit-cap ValueError) or a ``__str__`` bomb
+            # costs only its own entry, never the whole URL.
+            ps = str(p).split("/")[0]
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
         if ps in webish or ps.isdigit():
             # skip pure protocol ports without UI
             if ps in ("1883", "5432", "6379", "3306", "5900", "9100", "22000"):
@@ -1013,11 +1307,18 @@ def _run(cmd: list[str], timeout: int = 600, shell: bool = False) -> dict:
         rc, msg = run_capped(
             argv, timeout=timeout, env=_brew_env(), cap=4000,
         )
-        msg = _as_text(msg)
+        # _rc_int before anything compares or stores it: the raw slot rode
+        # into the result dict, where _brew_vanished's ``== -1`` and
+        # _brew_install_ok's ``== 0`` probes ran outside this try.  Junk
+        # reads -255 — never the -1 timeout / not-found sentinel, so a bomb
+        # cannot impersonate a vanished brew.
+        rc, msg = _rc_int(rc), _as_text(msg)
         if rc == -1 and not msg.strip():
             msg = "command timed out"
         return {"ok": rc == 0, "message": (msg or f"exit {rc}").strip(), "rc": rc}
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         return {"ok": False, "message": _as_text(e), "rc": -1}
 
 
@@ -1152,7 +1453,30 @@ def _brew_install_ok(msg: str, rc: int) -> bool:
 
 
 def _host_for_url() -> str:
-    return host_ip()
+    """The advertised host for install-response URLs, laundered.
+
+    This module does not own ``host_ip`` (tests and tooling patch it): the
+    install branches read this raw into f-strings (``f"http://{...}:8125"``)
+    *after* the install itself had already succeeded, so a raising provider —
+    or a ``__str__``/``__format__`` bomb riding the value — turned a finished
+    native install into a raw 500.  Junk degrades to "", which _resolve_url
+    and the f-string fallbacks render as the localhost / empty-host shapes a
+    legitimately empty probe already produced.
+    """
+    try:
+        host = host_ip()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if not _isinst(host, str):
+        return ""
+    try:
+        return str.encode(host, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _app_url(app: dict) -> str:
@@ -1211,7 +1535,11 @@ def _forget_host_state() -> None:
 def _launchctl_is_loaded(label: str) -> bool:
     from hub.paths import UID
     rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{UID}/{label}"], timeout=5)
-    return rc == 0 and bool(out)
+    # _rc_int + _as_text: a leftover rc-subclass ``__eq__`` bomb and a
+    # stdout whose ``__bool__`` raises each used to detonate this probe —
+    # a raw 500 on the filebrowser / homeassistant uninstall routes, which
+    # ask it whether the bootout worked.
+    return _rc_int(rc) == 0 and bool(_as_text(out))
 
 
 def _launchctl_load(label: str, plist: Path) -> dict:
@@ -1225,7 +1553,7 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     # If already loaded, prefer kickstart -k (restart in place)
     if _launchctl_is_loaded(label):
         rc, out, err = sh(["/bin/launchctl", "kickstart", "-k", target], timeout=20)
-        if rc == 0:
+        if _rc_int(rc) == 0:
             return {"ok": True, "message": f"kickstart ok · {label}"}
         # fall through to re-bootstrap
         sh(["/bin/launchctl", "bootout", target], timeout=10)
@@ -1240,14 +1568,19 @@ def _launchctl_load(label: str, plist: Path) -> dict:
     # first, the confirmation would be a listing taken before the bootstrap -- so a
     # successful start could be reported as a failure.
     _forget_host_state()
-    ok = r2[0] == 0 or _launchctl_is_loaded(label)
+    ok = _rc_int(r2[0]) == 0 or _launchctl_is_loaded(label)
     # process probe fallback
     if not ok:
         time.sleep(0.5)
         ok = _launchd_or_process_running(label, label.split(".")[-1])
+    # _rc_int + _as_text on every slot: a >4300-digit rc used to ValueError
+    # this f-string past the int->str digit cap, a stream whose ``__bool__``
+    # raises used to detonate the ``or`` chain, and a lone-surrogate stream
+    # rode raw into the install response body where Starlette's UTF-8
+    # encode 500'd it after the install itself had already succeeded.
     msg = (
-        f"bootstrap={r1[0]} kickstart={r2[0]} "
-        f"{(r1[2] or r1[1] or '')} {(r2[2] or r2[1] or '')}"
+        f"bootstrap={_rc_int(r1[0])} kickstart={_rc_int(r2[0])} "
+        f"{(_as_text(r1[2]) or _as_text(r1[1]))} {(_as_text(r2[2]) or _as_text(r2[1]))}"
     ).strip()
     return {"ok": ok, "message": msg or ("ok" if ok else "start failed")}
 
@@ -1258,7 +1591,11 @@ def _launchctl_unload(label: str) -> dict:
     target = f"{dom}/{label}"
     # prefer bootout; also try legacy unload
     rc, out, err = sh(["/bin/launchctl", "bootout", target], timeout=10)
-    out, err = _as_text(out), _as_text(err)
+    # _rc_int next to the text launder: the ``rc != 0`` / ``rc in (0, 3, 5)``
+    # probes and the ``f"exit {rc}"`` fallback below each used to be a raw
+    # 500 on the filebrowser / homeassistant uninstall routes under an
+    # rc-subclass ``__ne__``/``__eq__`` bomb or a >4300-digit leftover rc.
+    rc, out, err = _rc_int(rc), _as_text(out), _as_text(err)
     if rc != 0:
         home = user_home()
         pl = (home / "Library/LaunchAgents" / f"{label}.plist") if home is not None else None
@@ -1873,11 +2210,16 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         }
 
     if method == "brew_formula":
+        # _raise_if_brew_vanished on every spawn, same as the brew_cask branch's
+        # _run_brew: a brew that vanished mid-request used to fall through the
+        # `not _is_installed(app)` fallback — which cannot see a formula while
+        # `brew list` itself is gone — and report a *successful* uninstall of
+        # an app that is still fully installed.
         pkg = app["package"]
         if app.get("service"):
-            r0 = _run([BREW, "services", "stop", pkg], timeout=120)
+            r0 = _raise_if_brew_vanished(_run([BREW, "services", "stop", pkg], timeout=120))
             logs.append(r0["message"])
-        r = _run([BREW, "uninstall", pkg], timeout=300)
+        r = _raise_if_brew_vanished(_run([BREW, "uninstall", pkg], timeout=300))
         logs.append(r["message"])
         return {
             "ok": r["ok"] or not _is_installed(app),
@@ -1891,7 +2233,7 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
         # which is a no-op, and the return below ignored it anyway.  What the
         # operator asked for is "this app is gone", so that is what gets checked.
         for pkg in reversed(app.get("packages") or []):
-            r = _run([BREW, "uninstall", pkg], timeout=300)
+            r = _raise_if_brew_vanished(_run([BREW, "uninstall", pkg], timeout=300))
             logs.append(f"[{pkg}] {r['message']}")
         return {
             "ok": not _is_installed(app),
@@ -1914,7 +2256,9 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                     "kind": "native",
                     "stack_id": app_id,
                 }
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
         return {
             "ok": True,
@@ -1933,7 +2277,9 @@ def _uninstall_native(app: dict, app_id: str, *, remove_data: bool = False) -> d
                 # keep config backup safety: only remove if remove_data
                 shutil.rmtree(ha_dir)
                 logs.append(f"removed {ha_dir}")
-            except Exception as e:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException as e:
                 return {"ok": False, "message": _as_text(e), "kind": "native", "stack_id": app_id}
             # leave plist so reinstall can rewrite; or remove
             home = user_home()

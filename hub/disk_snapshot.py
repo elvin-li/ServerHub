@@ -38,6 +38,9 @@ from typing import Any, Mapping
 
 from hub.util import cached_snapshot, fan_out, run_bytes, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: Short, and for the usual reason: these are dependency reads whose consumers
 #: already sit behind their own caches (the power-disk listing, the SMART snapshot).
 #: The window that matters is one request's worth of overlapping readers.
@@ -51,31 +54,175 @@ _DISK_RE = re.compile(r"/dev/(disk\d+)")
 _WHOLE_RE = re.compile(r"(disk\d+)")
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover token whose ``__class__`` is a *raising property*
+    detonated the sequence gate at the head of both scrubs below — and a
+    raise out of ``_disk_token`` does not drop one identifier, it collapses
+    the whole plist arm of ``root_whole_disks`` (the set the panel refuses
+    to spin down or eject), the exact narrowing storage8 sealed for the
+    ``__bool__``/``__getitem__`` bomb class.  A real subclass still matches
+    through the C-level type check (the storage_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` / ``run_bytes`` (tests and tooling patch
+    them), and an rc-subclass whose ``__eq__`` raises used to detonate the
+    bare ``rc == 0`` probes — one bombed rc raised out of ``df_lines`` into
+    all three consumer modules at once and emptied the volume table where a
+    failed read is the honest degrade (the system/health9 rule).
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        if _isa(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    A real spawn always answers an exact 3-tuple, but this module does not
+    own ``sh`` (tests and tooling patch it), and the bare
+    ``rc, out, _ = sh(...)`` unpack dispatched into the answer's own
+    iteration: a tuple *subclass* whose bound ``__iter__`` bombs — or a
+    lying ``__class__`` impostor claiming tuple over no real sequence
+    storage — raised out of ``_df_table`` into all three consumer modules
+    at once and emptied the volume table, the power rows' volume lists and
+    the mount-table arm of the boot-disk safety union in one throw (the
+    vms11/network10 ``_sh3`` rule).  The unbound base reads see the real
+    C-level storage, so an honest answer in a subclass wrapper survives
+    untouched; junk degrades to ``(-255, "", "")`` — nonzero, and never
+    ``sh``'s ``-1`` sentinel.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__getitem__(value, slice(None)))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _spawn(argv, timeout) -> tuple:
+    """One guarded spawn: an ``sh``-laundered 3-tuple even when the runner raises.
+
+    ``hub.util.sh`` itself never raises — every failure is a return code —
+    but this module does not own it, and a leftover runner that raises
+    instead of answering used to unwind out of the shared reads into every
+    consumer at once, where a failed read (empty table, cache forgotten,
+    next reader retries) is the honest degrade this module already ships
+    (the vms11 runner-seam rule).  A raising runner reads as
+    ``(-255, "", "")``: nonzero, and never the ``-1`` spawn sentinel.
+    """
+    try:
+        return _sh3(sh(argv, timeout=timeout))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return (-255, "", "")
+
+
 def _as_text(value) -> str:
     """diskutil / df leftovers arrive as bytes / int / inf, not str.
 
     A leftover ``\\ud800`` in a FUSE volume name used to 500 GET /api/storage
     under Starlette's UTF-8 encode of ``df`` mount fields.
     """
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    if _isa(value, (list, tuple)):
+        # Guarded unwrap, matching disk_manage_svc._text / disk_power_svc._text:
+        # a sequence *subclass* whose ``__bool__`` / ``__getitem__`` raises (the
+        # storage4/pool4 iteration-bomb class) used to raise straight out of this
+        # scrub — the one surface in the disk-read family whose list-unwrap was
+        # still bare after storage7 sealed its encode tail.
+        try:
+            value = value[0] if value else ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` property claiming bytes TypeErrors the
+            # base copy itself; fall through to the str probe.
+            pass
+    elif _isa(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return ""
-    elif value in (None, False, True, "") or isinstance(value, (dict, set, frozenset)):
+    elif value is None or value is False or value is True \
+            or _isa(value, (dict, set, frozenset)):
+        # Identity tests, not ``value in (None, False, True, "")``: the old
+        # containment probe reflected into a leftover's own ``__eq__`` and
+        # raised out of the scrub.  An empty string needs no special case —
+        # the unbound encode below answers "" for it anyway.
         return ""
-    elif not isinstance(value, str):
+    elif type(value) is not str:
+        # Exact-type gate, not ``not _isa(value, str)``: a *lying*
+        # ``__class__`` claiming str passed the isinstance probe untouched
+        # and the unbound ``str.encode`` below TypeError'd on the foreign
+        # layout — a raise out of the shared df/diskutil scrub itself.  A
+        # real str subclass base-copies through str() and keeps its text.
         try:
             value = str(value)
         except RecursionError:
             try:
                 return type(value).__name__
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return ""
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _disk_token(value) -> str:
@@ -85,14 +232,46 @@ def _disk_token(value) -> str:
     a healthy diskutil plist.  Leftover ``bytes`` used to stringify as
     ``b'disk0'`` (so the boot disk dropped out of the safety union);
     array-shaped leftovers used to ``re.match`` / ``set.add`` 500.
+
+    The token must scrub, never raise: it feeds ``root_whole_disks`` — the set
+    the panel refuses to spin down or eject — so a raise here does not merely
+    drop one identifier, it collapses the whole plist arm of that safety union
+    (``from_plist`` returns an empty set), silently narrowing boot-disk
+    protection.  A sequence *subclass* whose ``__bool__`` / ``__getitem__``
+    raises now degrades to "" like every other unreadable token, so the
+    surviving ``APFSPhysicalStores`` disks still contribute.
     """
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else ""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    if not isinstance(value, str):
+    if _isa(value, (list, tuple)):
+        try:
+            value = value[0] if value else ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+    if not _isa(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _whole_id(value) -> str:
@@ -119,8 +298,8 @@ def _forget_if_empty(cached, value):
 
 @cached_snapshot(_TTL)
 def _df_table() -> tuple[str, ...]:
-    rc, out, _ = sh(["/bin/df", "-P", "-k"], timeout=8)
-    return tuple(_as_text(out).splitlines()) if rc == 0 else ()
+    rc, out, _ = _spawn(["/bin/df", "-P", "-k"], 8)
+    return tuple(_as_text(out).splitlines()) if _rc_int(rc) == 0 else ()
 
 
 def df_lines(force: bool = False) -> tuple[str, ...]:
@@ -144,6 +323,15 @@ def root_devices() -> frozenset[str]:
     """
     found: set[str] = set()
     for line in df_lines()[1:]:
+        if type(line) is not str:
+            # Exact-type gate (the storage_svc.list_volumes rule): a
+            # *lying* ``__class__`` claiming str passes any isinstance
+            # probe and then AttributeErrors ``line.split()`` — one junk
+            # table line used to collapse this whole arm of the boot-disk
+            # safety union while the healthy ``/`` row sat readable.
+            line = _as_text(line)
+            if not line:
+                continue
         parts = line.split()
         if len(parts) < 6:
             continue
@@ -163,20 +351,27 @@ def _physical_whole_disks() -> tuple[str, ...]:
             timeout=_DISKUTIL_TIMEOUT,
             runner=subprocess.run,
         )
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         rc, stdout = -1, b""
-    if rc == 0 and stdout:
+    if _rc_int(rc) == 0:
+        # Truthiness and parse inside the guard: a poisoned runner's stdout
+        # ``__bool__`` bomb sat outside the old try and raised out of the
+        # shared read into all three consumer modules at once.
         try:
-            parsed = plistlib.loads(stdout)
-            if isinstance(parsed, dict):
-                wholes = parsed.get("WholeDisks")
-                if not isinstance(wholes, list):
+            parsed = plistlib.loads(stdout) if stdout else None
+            if _isa(parsed, dict):
+                wholes = dict.get(parsed, "WholeDisks")
+                if not _isa(wholes, list):
                     wholes = []
                 return tuple(t for x in wholes if (t := _disk_token(x)))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
-    rc, out, _ = sh(["/usr/sbin/diskutil", "list", "physical"], timeout=_DISKUTIL_TIMEOUT)
-    if rc != 0:
+    rc, out, _ = _spawn(["/usr/sbin/diskutil", "list", "physical"], _DISKUTIL_TIMEOUT)
+    if _rc_int(rc) != 0:
         return ()
     ids: list[str] = []
     for match in re.finditer(r"/dev/(disk\d+)\s", _as_text(out)):
@@ -193,11 +388,17 @@ def _root_info() -> Mapping[str, Any]:
             timeout=_DISKUTIL_TIMEOUT,
             runner=subprocess.run,
         )
-        if rc == 0 and stdout:
+        # _rc_int (the _physical_whole_disks rule this sibling missed): an
+        # honest rc-bomb zero from a poisoned runner used to raise into the
+        # except arm and read as "no root info" — silently narrowing the
+        # plist arm of the boot-disk safety union.
+        if _rc_int(rc) == 0 and stdout:
             parsed = plistlib.loads(stdout)
-            if isinstance(parsed, dict):
+            if _isa(parsed, dict):
                 return MappingProxyType(parsed)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return MappingProxyType({})
 
@@ -249,15 +450,22 @@ def root_whole_disks() -> frozenset[str]:
     """
     def from_text() -> set[str]:
         try:
-            rc, out, _ = sh(["/usr/sbin/diskutil", "info", "/"], timeout=_DISKUTIL_TIMEOUT)
-            return set(_DISK_RE.findall(_as_text(out))) if rc == 0 else set()
-        except Exception:
+            # _spawn / _rc_int: an honest answer in a subclass wrapper (or
+            # an rc-subclass zero) keeps this arm contributing instead of
+            # collapsing to the empty set through the except.
+            rc, out, _ = _spawn(["/usr/sbin/diskutil", "info", "/"], _DISKUTIL_TIMEOUT)
+            return set(_DISK_RE.findall(_as_text(out))) if _rc_int(rc) == 0 else set()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     def from_mount_table() -> set[str]:
         try:
             return set(root_devices())
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
 
     def from_plist() -> set[str]:
@@ -278,7 +486,9 @@ def root_whole_disks() -> frozenset[str]:
                 whole = _whole_id(device)
                 if whole:
                     found.add(whole)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return set()
         return found
 

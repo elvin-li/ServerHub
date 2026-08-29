@@ -88,6 +88,19 @@ describe('Modules refresh guard', () => {
   })
 })
 
+describe('Modules empty state', () => {
+  it('shows the empty placeholder instead of a blank page', async () => {
+    api.getModules.mockResolvedValue({ modules: [], by_category: {} })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const placeholder = wrapper.get('.placeholder')
+    expect(placeholder.text()).toBe('common.none')
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    wrapper.unmount()
+  })
+})
+
 describe('Modules failure states', () => {
   it('latches the failure banner and toasts once', async () => {
     api.getModules.mockRejectedValue(new Error('registry failed'))
@@ -103,6 +116,29 @@ describe('Modules failure states', () => {
     wrapper.unmount()
   })
 
+  it('keeps stale tiles below the failure banner on a failed refresh', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(3)
+
+    api.getModules.mockRejectedValue(new Error('registry failed'))
+    await wrapper.get('.toolbar button').trigger('click')
+    await flushPromises()
+
+    // The banner appears, the stale tiles stay readable under it, and the
+    // empty placeholder must not replace them.
+    const banner = wrapper.findComponent({ name: 'LoadFailure' })
+    expect(banner.exists(), 'failure banner').toBe(true)
+    expect(wrapper.findAll('.tile').length, 'stale tiles kept').toBe(3)
+    expect(wrapper.find('.placeholder').exists(), 'no empty placeholder').toBe(false)
+    const html = wrapper.html()
+    expect(
+      html.indexOf('load-failure'),
+      'banner above the stale rows',
+    ).toBeLessThan(html.indexOf('class="tile"'))
+    wrapper.unmount()
+  })
+
   it('does not toast a load that fails after leave', async () => {
     let rejectLoad
     api.getModules.mockImplementation(() => new Promise((_, reject) => { rejectLoad = reject }))
@@ -112,5 +148,57 @@ describe('Modules failure states', () => {
     rejectLoad(new Error('gone'))
     await flushPromises()
     expect(toast).not.toHaveBeenCalled()
+  })
+})
+
+describe('Modules leftover leftover lists', () => {
+  it('fail-closes a list leftover by_category without throwing', async () => {
+    api.getModules.mockResolvedValue({ modules: [], by_category: ['system'] })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('fail-closes mapping leftovers in a category list without throwing', async () => {
+    api.getModules.mockResolvedValue({
+      modules: 'nope',
+      by_category: {
+        system: { 0: { id: 'ghost', name: 'Ghost' } },
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    expect(wrapper.get('.toolbar [role="status"]').text()).toBe('modules.count_n 0')
+    wrapper.unmount()
+  })
+
+  it('null and primitive rows do not throw out of the tile v-for', async () => {
+    api.getModules.mockResolvedValue({
+      modules: [],
+      by_category: {
+        system: [
+          null,
+          'x',
+          { id: 'dashboard', name: 'Dashboard', description: 'Tiles', ui_routes: { 0: '/' } },
+        ],
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(3)
+    expect(wrapper.get('.toolbar [role="status"]').text()).toBe('modules.count_n 3')
+    expect(wrapper.text()).toContain('Dashboard')
+    wrapper.unmount()
+  })
+
+  it('a whole-payload list leftover renders empty instead of throwing', async () => {
+    api.getModules.mockResolvedValue(['system'])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
   })
 })

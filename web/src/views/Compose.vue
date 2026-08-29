@@ -21,9 +21,9 @@
             </thead>
             <tbody>
               <tr
-                v-for="s in stacks"
-                :key="s.id"
-                :style="selected===s.id ? 'background:var(--table-hover)' : ''"
+                v-for="s in asArray(stacks)"
+                :key="finiteText(asRecord(s).id)"
+                :style="selected===asRecord(s).id ? 'background:var(--table-hover)' : ''"
                 style="cursor:pointer"
                 @click="select(s)"
               >
@@ -34,21 +34,21 @@
                 <td
                   tabindex="0"
                   role="button"
-                  :aria-pressed="selected===s.id ? 'true' : 'false'"
+                  :aria-pressed="selected===asRecord(s).id ? 'true' : 'false'"
                   @keydown.enter.prevent="select(s)"
                   @keydown.space.prevent="select(s)"
                 >
-                  <strong>{{ finiteText(s.name) }}</strong>
-                  <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(s.path) }}</div>
+                  <strong>{{ finiteText(asRecord(s).name) }}</strong>
+                  <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(asRecord(s).path) }}</div>
                 </td>
-                <td><span class="badge" :class="s.status==='ok'?'ok':''">{{ finiteText(s.status) }}</span></td>
+                <td><span class="badge" :class="asRecord(s).status==='ok'?'ok':''">{{ finiteText(asRecord(s).status) }}</span></td>
                 <td class="ops">
-                  <button class="tiny" :disabled="!s.compose_path || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
-                  <button class="tiny hide-m" :disabled="!s.compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
-                  <button class="tiny danger" :disabled="!s.compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
+                  <button class="tiny" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
+                  <button class="tiny hide-m" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
+                  <button class="tiny danger" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
                 </td>
               </tr>
-              <tr v-if="!stacks.length && !loadError">
+              <tr v-if="!asArray(stacks).length && !loadError">
                 <td colspan="3" class="empty-row">{{ t('common.none') }}</td>
               </tr>
             </tbody>
@@ -59,7 +59,7 @@
       <div class="tile">
         <h2>
           {{ t('compose.yaml_editor') }}
-          <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(compose.compose_path) }}</span>
+          <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(asRecord(compose).compose_path) }}</span>
         </h2>
         <!-- A failed read latches here with a retry. It used to fall through to
              the pick-a-stack placeholder below: the operator had picked one,
@@ -125,7 +125,7 @@ import {
   validateCompose,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -182,7 +182,7 @@ async function loadStacks(manual = false) {
   try {
     const d = await getStacks()
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = Array.isArray(d.stacks) ? d.stacks : []
+    stacks.value = asArray(asRecord(d).stacks).map((s) => asRecord(s))
     loadError.value = ''
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
@@ -197,7 +197,7 @@ async function loadStacks(manual = false) {
 }
 
 async function select(s) {
-  selected.value = s.id
+  selected.value = asRecord(s).id
   await reloadCompose()
 }
 
@@ -207,10 +207,10 @@ async function reloadCompose() {
   const generation = ++composeGeneration
   busy.value = true
   try {
-    const j = await getCompose(id)
+    const j = asRecord(await getCompose(id))
     if (generation !== composeGeneration || !pageAlive || selected.value !== id) return
     compose.value = j
-    editor.value = j.content
+    editor.value = finiteText(j.content, '')
     msg.value = ''
     composeError.value = ''
   } catch (e) {
@@ -230,7 +230,7 @@ async function save() {
   const generation = composeGeneration
   busy.value = true
   try {
-    const j = await putCompose(id, editor.value, true)
+    const j = asRecord(await putCompose(id, editor.value, true))
     if (generation !== composeGeneration || !pageAlive) return
     toast('✅ ' + t('compose.saved'))
     const backup = finiteText(j.backup, '')
@@ -248,7 +248,7 @@ async function validate() {
   const generation = composeGeneration
   busy.value = true
   try {
-    const j = await validateCompose(editor.value, compose.value?.path)
+    const j = asRecord(await validateCompose(editor.value, asRecord(compose.value).path))
     if (generation !== composeGeneration || !pageAlive) return
     msg.value = (j.ok ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('compose.valid_toast_ok') : '❌ ' + t('compose.valid_toast_fail'))
@@ -265,9 +265,9 @@ async function create() {
   const generation = stacksGeneration
   busy.value = true
   try {
-    const j = await createCompose(newId.value.trim(), newName.value || newId.value, newContent.value)
+    const j = asRecord(await createCompose(newId.value.trim(), newName.value || newId.value, newContent.value))
     if (generation !== stacksGeneration || !pageAlive) return
-    toast('✅ ' + t('compose.created', { id: finiteText(j.id) }))
+    toast('✅ ' + t('compose.created', { id: finiteText(asRecord(j).id) }))
     showCreate.value = false
     await loadStacks(true)
     if (!pageAlive) return
@@ -282,15 +282,15 @@ async function create() {
 }
 
 async function run(s, action) {
-  const id = s.id || selected.value
+  const id = asRecord(s).id || selected.value
   if (!id || busy.value) return
   if (action === 'down' && !confirm(t('compose.confirm_down'))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(s.name, '') || finiteText(id) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(asRecord(s).name, '') || finiteText(id) }))) return
   const generation = stacksGeneration
   busy.value = true
   let holdBusy = false
   try {
-    const r = await runStack(id, action)
+    const r = asRecord(await runStack(id, action))
     if (!pageAlive) return
     if (generation !== stacksGeneration) return
     toast('🚀 ' + (finiteText(r.message, '') || t('compose.started')))
@@ -330,7 +330,7 @@ function watchJob(id) {
       return
     }
     try {
-      const j = await getStackJob(id)
+      const j = asRecord(await getStackJob(id))
       if (generation !== jobPollGeneration) return
       jobLog.value = finiteText(j.log, '')
       if (!j.running) {

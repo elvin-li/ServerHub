@@ -91,6 +91,89 @@ describe('Bookmarks summary announcement', () => {
   })
 })
 
+describe('Bookmarks leftover payloads', () => {
+  it('renders the empty placeholder for a zero-bookmark answer', async () => {
+    api.getBookmarks.mockResolvedValue({ bookmarks: [], up: 0, stopped: 0, down: 0, checked_at: '12:00:00' })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+
+  it('never prints Infinity for huge JSON numbers in the payload', async () => {
+    // A >4300-digit YAML hex id/count that slips through as a JSON number
+    // arrives as Infinity out of JSON.parse; the summary and the ms footer
+    // must fall back instead of announcing "Infinity" to the live region.
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: [
+        {
+          id: Infinity, service: 'big', name: 'Big', url: 'http://big.lan',
+          ok: false, health: 'error', status: Infinity, ms: Infinity,
+          error: null, backend: null,
+        },
+      ],
+      up: Infinity,
+      stopped: NaN,
+      down: 1,
+      checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Infinity')
+    expect(wrapper.text()).not.toContain('NaN')
+    const summary = wrapper.get('.toolbar [role="status"]')
+    expect(summary.text()).toBe('bookmarks.summary — 0 1 12:00:00')
+    wrapper.unmount()
+  })
+})
+
+describe('Bookmarks leftover leftover lists', () => {
+  it('fail-closes a mapping leftover bookmarks field without throwing', async () => {
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: { 0: { id: 'ghost', name: 'Ghost', url: 'http://ghost.lan' } },
+      up: 1, stopped: 0, down: 0, checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+
+  it('null and primitive rows do not throw out of the card v-for', async () => {
+    api.getBookmarks.mockResolvedValue({
+      bookmarks: [
+        null,
+        'x',
+        {
+          id: 'nas', service: 'nas', name: 'NAS', url: 'http://nas.local',
+          ok: true, health: 'ok', status: 200, ms: 12, error: null,
+          backend: ['not-a-map'],
+        },
+      ],
+      up: 1, stopped: 0, down: 0, checked_at: '12:00:00',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.bm-page-card').length).toBe(3)
+    expect(wrapper.text()).toContain('NAS')
+    expect(wrapper.text()).toContain('http://nas.local')
+    wrapper.unmount()
+  })
+
+  it('a whole-payload list leftover renders empty instead of throwing', async () => {
+    api.getBookmarks.mockResolvedValue(['nas'])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.bm-page-card').exists()).toBe(false)
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+})
+
 describe('Bookmarks failure states', () => {
   it('latches the failure banner and toasts once', async () => {
     api.getBookmarks.mockRejectedValue(new Error('probe sweep failed'))
@@ -103,6 +186,29 @@ describe('Bookmarks failure states', () => {
     expect(banner.attributes('detail')).toBe('probe sweep failed')
     expect(toast).toHaveBeenCalledTimes(1)
     expect(toast).toHaveBeenCalledWith('❌ probe sweep failed')
+    wrapper.unmount()
+  })
+
+  it('keeps stale cards visible below the banner when a re-check fails', async () => {
+    // Force check fails after a good first load: the operator must see the
+    // failure *and* keep the last known rows — banner above, stale grid below,
+    // never a blank page that reads as "no bookmarks".
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.bm-page-card').length).toBe(3)
+
+    api.getBookmarks.mockRejectedValue(new Error('sweep died'))
+    await wrapper.get('.toolbar button.primary').trigger('click')
+    await flushPromises()
+
+    const banner = wrapper.findComponent({ name: 'LoadFailure' })
+    expect(banner.exists(), 'failure banner').toBe(true)
+    expect(wrapper.findAll('.bm-page-card').length, 'stale rows survive').toBe(3)
+    expect(wrapper.find('.placeholder').exists(), 'not the empty state').toBe(false)
+    const html = wrapper.html()
+    expect(html.indexOf('load-failure-stub')).toBeGreaterThan(-1)
+    expect(html.indexOf('load-failure-stub'), 'banner above the grid')
+      .toBeLessThan(html.indexOf('bm-page-grid'))
     wrapper.unmount()
   })
 

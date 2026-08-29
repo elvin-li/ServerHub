@@ -92,6 +92,33 @@ describe('account self-service', () => {
     wrapper.unmount()
   })
 
+  it('does not throw when leftover codes payload is a mapping', async () => {
+    api.enrollTotp.mockResolvedValue({
+      secret: 'S3CRET', otpauth_uri: 'otpauth://totp/x', manual_entry: 'S3CR ET',
+    })
+    api.confirmTotp.mockResolvedValue({ ok: true, recovery_codes: { 0: 'AAAAA-BBBBB' } })
+    const wrapper = mountAccount()
+    await flushPromises()
+
+    await wrapper.find('.btns .primary').trigger('click')
+    await flushPromises()
+    api.getTotpStatus.mockResolvedValue({ enabled: true, recovery_remaining: 1 })
+    await wrapper.find('input[autocomplete="one-time-code"]').setValue('123456')
+    await wrapper.find('.btns .primary').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('AAAAA-BBBBB')
+    wrapper.unmount()
+  })
+
+  it('does not throw when leftover status payload is a JSON list', async () => {
+    api.getTotpStatus.mockResolvedValue(['enabled'])
+    const wrapper = mountAccount()
+    await flushPromises()
+    expect(wrapper.text()).toContain('common.off')
+    wrapper.unmount()
+  })
+
   it('walks the 2FA enrollment to the recovery codes', async () => {
     api.enrollTotp.mockResolvedValue({
       secret: 'S3CRET', otpauth_uri: 'otpauth://totp/x', manual_entry: 'S3CR ET',

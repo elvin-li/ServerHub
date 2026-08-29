@@ -25,6 +25,8 @@ _AUTO_VALUES = {"", "auto", "automatic", "dhcp", "dynamic"}
 _BIND_ONLY_HOSTS = frozenset({"0.0.0.0", "127.0.0.1", "::", "::1", "[::]", "[::1]"})
 _VAR_RE = re.compile(r"\$?\{([A-Za-z][A-Za-z0-9_.-]{0,63})\}")
 _cache_lock = threading.Lock()
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 #: Held across the detection itself, so concurrent callers that miss a cold cache
 #: wait for one answer instead of each running the probes.  Separate from
 #: `_cache_lock`, which is only ever held for the dict access: holding one lock for
@@ -40,23 +42,180 @@ _DETECT_TTL = 30.0
 _detect_generation = 0
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the gates themselves: planted in the LAN-detection cache it
+    blew ``_as_text``'s bytes gate one step ahead of every scrub and 500'd
+    ``host_ip()``'s one unguarded consumer, GET /api/system/host (the
+    docker_cli / nas8 rule).  A real subclass still matches through the
+    C-level type check; only a value that cannot answer what it is takes
+    the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 / dash11 rule, which this module's LAN-detection cache
+    never got: even a plain-dict lookup still runs the *stored keys'* own
+    ``__eq__`` during the hash probe, so a leftover str-subclass key whose
+    hash shadows ``value`` and whose ``__eq__`` raises used to detonate the
+    bare ``_detect_cache["value"]`` read in ``_cached_detection`` — a raw
+    500 on ``host_ip()``'s one unguarded consumer, GET /api/system/host.
+    Only the shadowed field degrades to its default; siblings survive.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _cache_publish(cache: dict, **fields) -> None:
+    """Cache write that a hash-shadowing planted key cannot 500.
+
+    ``dict.update`` with an exact-str keyword still runs the *stored*
+    poison key's ``__eq__`` during the insert compare, so a shadow key
+    planted over ``t`` used to raise at the very end of a successful
+    detection — the ``_detect_cache.update`` in ``_detect_lan_ip_uncached``
+    — and out of ``invalidate_routing`` (which ``network_svc._bust()``
+    reaches on every address / DNS / order / alias change).  ``clear()``
+    never compares keys, so evicting the poison and rewriting always lands.
+    """
+    try:
+        cache.update(fields)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            cache.clear()
+            cache.update(fields)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+
+
+def _sh_run(cmd, timeout) -> tuple:
+    """Spawn with the unpack inside the guard (the nginx `_sh_triple` rule).
+
+    This module does not own ``sh`` (tests and tooling patch it), and a
+    patched/odd one — raising outright, or answering a 2-tuple, a scalar,
+    a tuple subclass whose ``__iter__`` raises, or a lying-``__class__``
+    tuple impostor — used to detonate the bare ``rc, output, _ = sh(…)``
+    unpacks in ``_default_route_fields`` / ``_interface_address``.  The
+    raise rode ``detect_lan_ip`` out of ``host_ip()`` and 500'd its one
+    unguarded consumer, GET /api/system/host (and GET /api/settings).
+    Junk degrades to ``(-255, "", "")`` — nonzero, never a success rc, so
+    the callers keep their empty-answer branch.
+    """
+    try:
+        value = sh(cmd, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return (-255, "", "")
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__``/``__ne__`` raises used to detonate the
+    bare ``rc != 0`` in ``_default_route_fields`` — straight out of
+    ``host_ip()`` and 500ing GET /api/system/host (the health9 rule).
+    ``-255`` is no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        if _isa(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so host_ip JSON cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def configured_host() -> str:
@@ -76,7 +235,9 @@ def configured_host() -> str:
         from hub.config import cfg
 
         return _as_text((cfg().get("settings") or {}).get("host_ip") or "auto").strip()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return "auto"
 
 
@@ -108,8 +269,13 @@ def _default_route_fields() -> tuple[tuple[str, str], ...]:
     drops it alongside the interface and service-order caches, so a manual address
     change, a service reorder or an alias edit is reflected immediately.
     """
-    rc, output, _ = sh(["/sbin/route", "-n", "get", "default"], timeout=5)
-    if rc != 0:
+    # _sh_run: an sh answer-*shape* bomb (2-tuple, scalar, iter-bomb tuple
+    # subclass, tuple liar) used to detonate this bare unpack itself and
+    # 500 every host_ip() consumer, one seam ahead of the rc probe below.
+    rc, output, _ = _sh_run(["/sbin/route", "-n", "get", "default"], timeout=5)
+    # _rc_int: an rc-subclass ``__ne__`` bomb from a patched/odd ``sh`` used
+    # to detonate this bare probe and 500 every host_ip() consumer.
+    if _rc_int(rc) != 0:
         return ()
     fields: list[tuple[str, str]] = []
     # int / None / bytes payloads used to AttributeError on splitlines and
@@ -159,8 +325,10 @@ def default_interface(*, force: bool = False) -> str:
 
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
-    rc, output, _ = sh(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
-    return _as_text(output).strip() if rc == 0 else ""
+    # _sh_run: same answer-shape bomb class as _default_route_fields.
+    rc, output, _ = _sh_run(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
+    # _rc_int: same rc-``__eq__`` bomb class as _default_route_fields.
+    return _as_text(output).strip() if _rc_int(rc) == 0 else ""
 
 
 def interface_address(interface: str, *, force: bool = False) -> str:
@@ -190,17 +358,42 @@ def invalidate_routing() -> None:
     _interface_address.invalidate()
     with _cache_lock:
         _detect_generation += 1
-        _detect_cache.update(t=0.0, value=None)
+        # _cache_publish, not a bare update: a hash-shadowing key planted
+        # over ``value`` / ``t`` raises out of the C-level insert compare,
+        # and network_svc._bust() reaches this on every address change.
+        _cache_publish(_detect_cache, t=0.0, value=None)
 
 
 def _cached_detection(now: float) -> str:
     with _cache_lock:
-        value = _detect_cache["value"]
+        # _mapping_get, not a bare subscript: a hash-shadowing key planted
+        # over ``value`` (str subclass, same hash, raising ``__eq__``) ran
+        # the stored bomb's compare inside the C-level probe — a raw 500 on
+        # GET /api/system/host, one seam ahead of the ``t`` read already in
+        # the try below.  A poisoned slot reads as None and re-detects.
+        value = _mapping_get(_detect_cache, "value")
         try:
-            age = now - float(_detect_cache["t"])
-        except (TypeError, ValueError, OverflowError):
+            age = now - float(_mapping_get(_detect_cache, "t", 0.0))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Blanket, not the typed trio: a leftover planted in the ``t``
+            # slot whose ``__float__`` raises RuntimeError (the same bomb
+            # class its ``value`` sibling already absorbs below) used to
+            # escape the numeric catch and 500 every host_ip() consumer.
+            # Any unreadable stamp is a cache miss and re-detects.
             return ""
-        if value and age < _DETECT_TTL:
+        # Guarded truthiness: the cache normally only ever holds the exact
+        # str ``_detect_lan_ip_uncached`` writes, but a leftover whose
+        # ``__bool__`` raises used to detonate this probe and 500 every
+        # host_ip() consumer.  A bomb reads as a miss and re-detects.
+        try:
+            live = bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        if live and age < _DETECT_TTL:
             return _as_text(value)
     return ""
 
@@ -266,7 +459,10 @@ def _detect_lan_ip_uncached(now: float, *, force: bool = False) -> str:
     value = _as_text(value)
     with _cache_lock:
         if _detect_generation == began:
-            _detect_cache.update(t=now, value=value)
+            # _cache_publish: a shadow key planted over ``t`` / ``value``
+            # used to raise out of the insert compare at the very end of a
+            # successful detection — a raw 500 on GET /api/system/host.
+            _cache_publish(_detect_cache, t=now, value=value)
     return value
 
 
@@ -287,12 +483,17 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
         if not isinstance(address_book, dict):
             address_book = {}
+        # _as_text absorbs a per-entry ``__class__``-property bomb now, so
+        # one junk entry renders as junk text instead of raising into the
+        # blanket except and silently dropping every sane sibling.
         values.update({
             _as_text(key): _as_text(value)
             for key, value in address_book.items()
             if value is not None
         })
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     if isinstance(extra, dict):
         values.update({
@@ -318,6 +519,12 @@ def resolve_value(value: Any, extra: dict[str, Any] | None = None, *, _depth: in
 
     Depth-capped: leftover deeply-nested YAML used to RecursionError
     compose/catalog/bookmark payloads that walk this walker.
+
+    Deliberately raise-on-junk: every caller (containers overrides,
+    bookmarks quick_links, ``_status_quick_links``) wraps this walk in a
+    try and treats a raise as "the value is junk" — the bookmarks5 /
+    docker9 pins depend on a subclass ``items()`` / ``__iter__`` /
+    ``__class__`` bomb raising here rather than being laundered through.
     """
     if _depth > 16:
         if isinstance(value, (dict, list, tuple)):
@@ -341,7 +548,9 @@ def normalize_local_url(value: str | None) -> str:
     """Store local URLs with {host} so DHCP/interface changes do not stale them."""
     if value is None:
         return ""
-    if not isinstance(value, str):
+    # _isa + the scrub's strip: a ``__class__``-property bomb or a
+    # str-subclass ``strip`` override must not raise out of a URL write.
+    if type(value) is not str:
         raw = _as_text(value).strip()
     else:
         raw = value.strip()

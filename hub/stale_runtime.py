@@ -20,6 +20,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import plistlib
+import re
 import threading
 import time
 from pathlib import Path
@@ -32,19 +33,55 @@ log = logging.getLogger("serverhub.stale_runtime")
 #: Leftover multi-MB LaunchAgent plist used to OOM GET /api/health/checks.
 _PLIST_CAP = 256 * 1024
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 #: Same three spellings as ``hub.launcher_svc.PANEL_LABEL`` /
 #: ``PANEL_LABEL_ALTERNATES``.  Kickstarted last so other daemons come back
@@ -85,7 +122,9 @@ try:
         ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
     ]
     _LIBC.proc_pidpath.restype = ctypes.c_int
-except Exception:  # pragma: no cover - libSystem is always there on macOS
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover - libSystem is always there on macOS
     _LIBC = None
 
 
@@ -137,11 +176,31 @@ def pid_exe_path(pid) -> str | None:
     ``txt`` is the last resort — without it Gravity Next stayed green on
     a deleted Homebrew ``node``.
     """
+    if isinstance(pid, bool):
+        # ``int(True)`` is 1: a leftover bool pid used to probe launchd
+        # itself and answer /sbin/launchd for a process that never existed.
+        # ``isinstance``, deliberately: a real bool always matches the
+        # C-level exact-type check, and a *lying* ``__class__`` claiming
+        # bool is junk that reads fail-closed as unreadable here.
+        return None
     try:
         n = int(pid)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Total, not (TypeError, ValueError, OverflowError): a leftover pid
+        # whose ``__int__``/``__index__`` raises RuntimeError escaped the
+        # old tuple and rode scan() into the health fan-out, collapsing the
+        # stale-runtime row to the generic warn shape.
         return None
     if n <= 0:
+        return None
+    try:
+        # str() probe, not a range gate: a leftover already-int pid past
+        # CPython's 4300-digit cap ValueError'd ``str(n)`` inside the ps
+        # argv below and 500'd GET /api/health/checks and /api/apps/managed.
+        str(n)
+    except ValueError:
         return None
     now = time.time()
     with _exe_lock:
@@ -173,7 +232,9 @@ def _pid_exe_path_uncached(n: int) -> str | None:
         buf = ctypes.create_string_buffer(_PROC_PIDPATH_MAX)
         try:
             got = _LIBC.proc_pidpath(n, buf, _PROC_PIDPATH_MAX)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             got = 0
         if got > 0:
             path = buf.value.decode("utf-8", "replace")
@@ -205,7 +266,9 @@ def scan() -> list[dict]:
     for path in paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             continue
         if not isinstance(pl, dict):
             continue
@@ -213,11 +276,32 @@ def scan() -> list[dict]:
             continue
         if pl.get("StartInterval") or pl.get("StartCalendarInterval"):
             continue
-        label = _as_text(pl.get("Label") or path.stem)
-        pid = listing.pid_for(label)
-        if not pid:
+        # str() probe via _as_text, with the plist filename as the fallback:
+        # a leftover ``<integer>0x…</integer>`` Label parses past CPython's
+        # int->str digit cap (hex has no cap), scrubbed to "" — which used to
+        # silently drop the agent from the stale scan instead of matching it
+        # by its on-disk name.
+        label = _as_text(pl.get("Label") or path.stem) or _as_text(path.stem)
+        if not label:
             continue
-        exe = pid_exe_path(pid)
+        try:
+            # Per-agent guard: ``pid_for`` on a leftover listing — or the
+            # ``not pid`` truthiness probe on a ``__bool__``-bomb pid —
+            # used to raise out of the whole scan, costing every healthy
+            # agent's row instead of the one poisoned entry.
+            pid = listing.pid_for(label)
+            if not pid or isinstance(pid, bool):
+                continue
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        try:
+            exe = pid_exe_path(pid)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            exe = None
         if not exe:
             continue
         try:
@@ -228,7 +312,14 @@ def scan() -> list[dict]:
             continue
         try:
             pid_n = int(pid)
-        except (TypeError, ValueError, OverflowError):
+            # A leftover over-cap already-int pid passes int() untouched and
+            # the digit-cap ValueError then lands in the JSON encoder.
+            str(pid_n)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Total: a pid whose ``__int__`` raises RuntimeError must read
+            # as unknown (0), not drop the row it warns about.
             pid_n = 0
         stale.append({"label": label, "pid": pid_n, "exe": _as_text(exe)})
     return stale
@@ -316,15 +407,21 @@ def remediate(now: int | float | None = None) -> list:
                 title="ServerHub runtime",
                 message=message,
             ))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             log.exception("stale_runtime alert for %s", label)
     if kicked:
         try:
             invalidate_launchd()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         try:
             invalidate_exe_cache()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     return emitted

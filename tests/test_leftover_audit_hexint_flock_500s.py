@@ -116,10 +116,13 @@ class HexYamlHugeIntPersistTests(_TrailCase):
         self.assertEqual(rows[0]["note"], big_text)
         _starlette(rows)
 
-    def test_recent_skips_a_huge_digit_line_via_valueerror_not_decodeerror(self):
+    def test_recent_keeps_a_huge_digit_line_via_the_parse_int_hook(self):
         # json.loads of a >4300-digit literal raises the int-cap ValueError,
-        # which is NOT json.JSONDecodeError — the reader must catch the base
-        # class or the line 500s GET /api/audit/auth.
+        # which is NOT json.JSONDecodeError — the bare decode would 500 (or,
+        # caught, drop the whole row).  recent() now parses with a capped
+        # parse_int hook, so the unrenderable number loads as None and the
+        # row keeps its event instead of silently vanishing from the trail
+        # (the audit7 sweep; same drop terminal_svc.recent_audit applies).
         line = '{"event": "auth.login.failed", "attempts": ' + "9" * 4400 + "}"
         with self.assertRaises(ValueError):
             json.loads(line)
@@ -131,7 +134,10 @@ class HexYamlHugeIntPersistTests(_TrailCase):
             encoding="utf-8",
         )
         rows = audit.recent()
-        self.assertEqual([r["event"] for r in rows], ["auth.login.ok"])
+        self.assertEqual(
+            [r["event"] for r in rows], ["auth.login.failed", "auth.login.ok"]
+        )
+        self.assertIsNone(rows[0]["attempts"])
         _starlette(rows)
 
     @staticmethod

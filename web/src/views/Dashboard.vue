@@ -43,10 +43,10 @@
           <button class="tiny" @click="refresh" :disabled="loading">{{ t('common.refresh') }}</button>
         </div>
       </div>
-      <template v-for="g in status?.groups || []" :key="g.group">
+      <template v-for="g in asArray(status?.groups)" :key="g.group">
         <h2 class="member-group">{{ finiteText(g.group) }}</h2>
         <div class="dash-grid">
-          <div v-for="s in g.services || []" :key="s.id" class="tile span-4 member-svc">
+          <div v-for="s in asArray(g.services)" :key="s.id" class="tile span-4 member-svc">
             <div class="row">
               <!-- The LED is colour alone, and the sub line below prefers the
                    free-text detail over the state word, so a screen reader
@@ -68,7 +68,7 @@
       <div v-if="!status && !loadError" class="tile sub" role="status">
         {{ t('common.loading') }}
       </div>
-      <div v-else-if="!(status?.groups || []).length && !loadError" class="tile sub">
+      <div v-else-if="!asArray(status?.groups).length && !loadError" class="tile sub">
         {{ t('dashboard.member_empty') }}
       </div>
     </template>
@@ -393,7 +393,7 @@
               <i :style="{ width: barPct(diskPct) + '%' }"></i>
             </div>
             <div class="disk-list">
-              <div v-for="d in smartDisks" :key="d.id" class="disk-item">
+              <div v-for="d in asArray(smartDisks)" :key="d.id" class="disk-item">
                 <div class="disk-primary">
                   <strong :title="finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id)">{{ finiteText(d.name, '') || finiteText(d.smart?.model, '') || finiteText(d.id) }}</strong>
                   <span class="disk-primary-meta">
@@ -415,7 +415,7 @@
                 <div v-else class="disk-unavailable" :title="finiteText(d.error, '')">{{ t('dashboard.smart_unavailable_short') }}</div>
               </div>
               <div v-if="!storage" class="disk-empty">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-              <div v-else-if="!smartDisks.length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
+              <div v-else-if="!asArray(smartDisks).length" class="disk-empty">{{ t('dashboard.no_smart_disks') }}</div>
             </div>
           </div>
           <div class="am-monitor-chart">
@@ -492,7 +492,7 @@
             </thead>
             <tbody>
               <tr
-                v-for="p in topProcs"
+                v-for="p in asArray(topProcs)"
                 :key="p.pid"
                 :class="{ dim: finiteN(p.cpu, 0) < 0.5 }"
               >
@@ -507,7 +507,7 @@
                 <td class="num">{{ finiteN(p.mem) }}</td>
                 <td class="num col-hide-m">{{ withUnit(p.rss_mb, 'M') }}</td>
               </tr>
-              <tr v-if="!topProcs.length">
+              <tr v-if="!asArray(topProcs).length">
                 <td colspan="4" class="empty-row">{{ sensors ? t('common.none') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
               </tr>
             </tbody>
@@ -534,7 +534,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="v in (storage?.volumes || []).slice(0, 8)" :key="v.mount">
+            <tr v-for="v in asArray(storage?.volumes).slice(0, 8)" :key="v.mount">
               <td class="mono">
                 {{ shortMount(v) }}
                 <div class="show-m sub">{{ finiteText(v.kind) }} · {{ fmtGb(v.used_gb) }} / {{ fmtGb(v.avail_gb) }}</div>
@@ -555,7 +555,7 @@
             </tr>
             <!-- Column headings above nothing read as "still loading"; say
                  which of the two states this actually is. -->
-            <tr v-if="!(storage?.volumes || []).length">
+            <tr v-if="!asArray(storage?.volumes).length">
               <td colspan="6" class="empty-row">{{ storage ? t('main_extra.empty_volumes') : (loadError ? t('common.load_failed') : t('common.loading')) }}</td>
             </tr>
           </tbody>
@@ -567,7 +567,7 @@
       <div class="tile span-4">
         <h3>
           Docker
-          <span class="badge">{{ containers ? containers.length : '—' }}</span>
+          <span class="badge">{{ containers ? asArray(containers).length : '—' }}</span>
           <span v-if="cstatsStale" class="badge warn" :title="t('dashboard.stats_stale_hint')">
             {{ t('dashboard.stats_stale') }}
           </span>
@@ -586,7 +586,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="c in (containers || []).slice(0, 10)" :key="c.id">
+            <tr v-for="c in asArray(containers).slice(0, 10)" :key="c.id">
               <!-- The visible Status column is col-hide-m, so on a phone this
                    LED is the row's only state and colour alone says nothing
                    to a screen reader: hide the paint, spell the state — same
@@ -612,7 +612,7 @@
                 <a v-if="c.url" class="btn tiny primary" :href="finiteText(c.url, '')" target="_blank">WebUI</a>
               </td>
             </tr>
-            <tr v-if="containers && !containers.length">
+            <tr v-if="containers && !asArray(containers).length">
               <td colspan="6" class="empty-row">{{ t('dashboard.no_containers') }}</td>
             </tr>
             <tr v-else-if="!containers">
@@ -633,7 +633,7 @@
                header count. One region so a poll that moves both reads as
                one announcement, not two. -->
           <span role="status">
-            <span class="badge" :class="attention.length ? 'down' : 'ok'">{{ attention.length }}</span>
+            <span class="badge" :class="asArray(attention).length ? 'down' : 'ok'">{{ asArray(attention).length }}</span>
             <span class="sub" style="font-weight:500;text-transform:none;letter-spacing:0">
               {{ t('dashboard.services_count', { total: finiteN(status?.service_total, '—'), ok: finiteN(status?.counts?.ok, 0) }) }}
             </span>
@@ -643,9 +643,9 @@
              not because everything is healthy: the old status-gated ok branch
              fell through to an empty list that said nothing at all. -->
         <div v-if="!status" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-        <div v-else-if="!attention.length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
+        <div v-else-if="!asArray(attention).length" class="sub ok-msg">{{ t('dashboard.all_ok') }}</div>
         <div v-else class="alert-list">
-          <div v-for="s in attention.slice(0, 10)" :key="s.id" class="alert-item">
+          <div v-for="s in asArray(attention).slice(0, 10)" :key="s.id" class="alert-item">
             <!-- warn vs down was carried by the LED colour alone. -->
             <span class="led" :class="led(s.state)" aria-hidden="true"></span>
             <span class="sr-only">{{ ledText(s.state) }}</span>
@@ -654,7 +654,7 @@
               <div class="detail" style="margin:0">{{ finiteText(s.group) }} · {{ finiteText(s.detail) }}</div>
             </div>
             <button
-              v-for="a in (s.actions || []).filter(x => ['start','restart'].includes(x)).slice(0,1)"
+              v-for="a in asArray(s.actions).filter(x => ['start','restart'].includes(x)).slice(0,1)"
               :key="a"
               class="tiny primary"
               :disabled="busy"
@@ -664,8 +664,8 @@
         </div>
         <h3 style="margin-top:12px">{{ t('dashboard.recent_alerts') }}</h3>
         <div v-if="!alerts" class="sub">{{ loadError ? t('common.load_failed') : t('common.loading') }}</div>
-        <div v-else-if="!alerts.length" class="sub">{{ t('common.none') }}</div>
-        <div v-for="(a,i) in (alerts || []).slice(0,5)" :key="i" class="alert-item">
+        <div v-else-if="!asArray(alerts).length" class="sub">{{ t('common.none') }}</div>
+        <div v-for="(a,i) in asArray(alerts).slice(0,5)" :key="i" class="alert-item">
           <!-- The alert's severity was its LED colour alone; the message text
                does not necessarily repeat it. -->
           <span class="led" :class="a.level === 'ok' ? 'on' : (a.level === 'warn' ? 'warn' : 'err')" aria-hidden="true"></span>
@@ -687,7 +687,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('dashboard.col_process') }}</th><th>{{ t('dashboard.col_port') }}</th><th class="col-hide-m">{{ t('dashboard.col_addr') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(p,i) in (ports || []).slice(0, 12)" :key="i">
+            <tr v-for="(p,i) in asArray(ports).slice(0, 12)" :key="i">
               <td>
                 {{ finiteText(p.process) }}
                 <div v-if="finiteText(p.address, '')" class="show-m sub mono">{{ finiteText(p.address) }}</div>
@@ -696,7 +696,7 @@
               <td class="mono col-hide-m" style="font-size:10px">{{ finiteText(p.address) }}</td>
             </tr>
             <tr v-if="!ports"><td colspan="3" class="empty-row">{{ loadError ? t('common.load_failed') : t('common.loading') }}</td></tr>
-            <tr v-else-if="!ports.length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
+            <tr v-else-if="!asArray(ports).length"><td colspan="3" class="empty-row">{{ t('common.none') }}</td></tr>
           </tbody>
         </table>
         </div>
@@ -714,8 +714,8 @@
           <div class="hg warn"><div class="n">{{ finiteN(health.summary.warn) }}</div><div class="l">{{ t('health.warnings') }}</div></div>
           <div class="hg err"><div class="n">{{ finiteN(health.summary.error) }}</div><div class="l">{{ t('health.errors') }}</div></div>
         </div>
-        <div class="failed-checks" v-if="failedChecks.length">
-          <div v-for="c in failedChecks.slice(0, 3)" :key="c.id" class="alert-item">
+        <div class="failed-checks" v-if="asArray(failedChecks).length">
+          <div v-for="c in asArray(failedChecks).slice(0, 3)" :key="c.id" class="alert-item">
             <!-- error vs warn was the LED colour alone. -->
             <span class="led" :class="c.level === 'error' ? 'err' : 'warn'" aria-hidden="true"></span>
             <span class="sr-only">{{ c.level === 'error' ? t('common.error') : t('common.warn') }}</span>
@@ -730,26 +730,26 @@
           {{ t('dashboard.adaptive_line', {
             auto: finiteN(status.adaptive.auto_labeled, 0),
             orphan: finiteN(status.adaptive.orphan_count, 0),
-            compose: (status.adaptive.compose_projects || []).length,
-            nginx: (status.adaptive.nginx_sites || []).length,
+            compose: asArray(status.adaptive.compose_projects).length,
+            nginx: asArray(status.adaptive.nginx_sites).length,
           }) }}
         </div>
-        <div class="bm-grid" v-if="bookmarks.length" style="margin-top:10px">
+        <div class="bm-grid" v-if="asArray(bookmarks).length" style="margin-top:10px">
           <a
-            v-for="b in bookmarks.slice(0, 9)"
-            :key="b.url"
+            v-for="(b, i) in asArray(bookmarks).slice(0, 9)"
+            :key="finiteText(asRecord(b).url, '') || i"
             class="bm-card"
             :class="bmClass(b)"
-            :href="finiteText(b.url, '')"
+            :href="finiteText(asRecord(b).url, '')"
             target="_blank"
             rel="noopener"
-            :title="finiteText(b.url)"
+            :title="finiteText(asRecord(b).url)"
           >
             <!-- Decoration: .bm-meta below already spells up/stopped/down
                  (bmLabel), so the LED only repeats it in colour — same
                  treatment as the Bookmarks page cards. -->
             <span class="led" :class="bmLed(b)" aria-hidden="true"></span>
-            <span class="bm-name">{{ finiteText(b.name) }}</span>
+            <span class="bm-name">{{ finiteText(asRecord(b).name) }}</span>
             <span class="bm-meta">{{ bmLabel(b) }}</span>
           </a>
         </div>
@@ -777,7 +777,7 @@ import {
 } from '../api/client'
 import { openAssistant } from '../lib/assistant'
 import { copyToClipboard } from '../lib/clipboard'
-import { barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { injectI18n } from '../i18n'
 import { injectTheme } from '../theme'
 
@@ -878,15 +878,15 @@ const labels = computed(() => ({
   run: t('dashboard.act_run'),
 }))
 
-const sys = computed(() => status.value?.system || {})
-const cpu = computed(() => sensors.value?.cpu || {})
-const mem = computed(() => sensors.value?.memory || {})
-const net = computed(() => sensors.value?.network || {})
-const thermal = computed(() => cpu.value?.thermal || sensors.value?.thermal || {})
-const smartDisks = computed(() => storage.value?.disks || [])
-const topProcs = computed(() => sensors.value?.top_processes || [])
+const sys = computed(() => asRecord(status.value?.system))
+const cpu = computed(() => asRecord(sensors.value?.cpu))
+const mem = computed(() => asRecord(sensors.value?.memory))
+const net = computed(() => asRecord(sensors.value?.network))
+const thermal = computed(() => asRecord(cpu.value?.thermal || sensors.value?.thermal))
+const smartDisks = computed(() => asArray(storage.value?.disks))
+const topProcs = computed(() => asArray(sensors.value?.top_processes))
 const engineUp = computed(() => !!status.value?.engine_up)
-const ss = computed(() => powerData.value?.screen_sharing || {})
+const ss = computed(() => asRecord(powerData.value?.screen_sharing))
 const ncpu = computed(() => finiteN(cpu.value.ncpu || sys.value.ncpu || host.value?.ncpu, 1))
 
 const load1 = computed(() => cpu.value.load1 ?? sys.value.load1)
@@ -984,16 +984,16 @@ function formatCapacityGb(value) {
   if (gb >= 1024) return `${(gb / 1024).toFixed(gb >= 10240 ? 0 : 2)} TB`
   return `${fmtN(gb)} GB`
 }
-const smartReadableCount = computed(() => smartDisks.value.filter(d => d.smart).length)
-const smartHasWarning = computed(() => smartDisks.value.some(d => d.smart && !smartIsOk(d)))
+const smartReadableCount = computed(() => asArray(smartDisks.value).filter(d => d.smart).length)
+const smartHasWarning = computed(() => asArray(smartDisks.value).some(d => d.smart && !smartIsOk(d)))
 const smartSummaryClass = computed(() => smartHasWarning.value ? 'down' : (smartReadableCount.value ? 'ok' : ''))
 const smartSummary = computed(() => t('dashboard.smart_summary', {
   ok: smartReadableCount.value,
-  total: smartDisks.value.length,
+  total: asArray(smartDisks.value).length,
 }))
 const smartSummaryTitle = computed(() => t('dashboard.smart_summary_title', {
   ok: smartReadableCount.value,
-  total: smartDisks.value.length,
+  total: asArray(smartDisks.value).length,
 }))
 /** Activity Monitor red (system) + cyan (user). */
 const CPU_APPLE_SYS = '#FF453A'
@@ -1034,7 +1034,7 @@ const memFootnote = computed(() => {
   })}`
 })
 
-const diskArray = computed(() => storage.value?.array || {})
+const diskArray = computed(() => asRecord(storage.value?.array))
 const diskUsed = computed(() => finiteN(diskArray.value.used_gb, null) ?? finiteN(sensors.value?.disk?.root_used_gb, null) ?? finiteN(sys.value.disk_used_gb))
 const diskTotal = computed(() => finiteN(diskArray.value.total_gb, null) ?? finiteN(sensors.value?.disk?.root_total_gb, null) ?? finiteN(sys.value.disk_total_gb))
 const diskFree = computed(() => finiteN(diskArray.value.free_gb, null) ?? finiteN(sensors.value?.disk?.root_free_gb, null) ?? finiteN(sys.value.disk_free_gb))
@@ -1063,7 +1063,7 @@ const upsChipClass = computed(() => {
   return ''
 })
 const upsIcon = computed(() => {
-  const u = ups.value || {}
+  const u = asRecord(ups.value)
   if (u.charging) return BatteryCharging
   const p = Number(u.battery_percent)
   if (!Number.isFinite(p)) return Battery
@@ -1090,7 +1090,7 @@ const ollamaChipVisible = computed(() => {
   return Boolean(o && (o.installed || o.reachable || o.service?.label))
 })
 const ollamaResidentName = computed(() => {
-  const first = (ollama.value?.resident || [])[0]
+  const first = asArray(ollama.value?.resident)[0]
   return finiteText(first?.name, '')
 })
 const ollamaChipClass = computed(() => {
@@ -1160,13 +1160,13 @@ const healthSummary = computed(() => {
   const w = finiteN(health.value.summary?.warn, 0)
   return e ? `❌ ${e}` : `⚠️ ${w}`
 })
-const failedChecks = computed(() => (health.value?.checks || []).filter(c => !c.ok))
+const failedChecks = computed(() => asArray(health.value?.checks).filter(c => !c.ok))
 
 const attention = computed(() => {
   if (!status.value) return []
   const list = []
-  for (const g of status.value.groups || []) {
-    for (const s of g.services || []) {
+  for (const g of asArray(status.value.groups)) {
+    for (const s of asArray(g.services)) {
       // A deliberate stop is not actionable; only warn/down need attention
       if (s.state && s.state !== 'ok' && s.state !== 'stopped') list.push(s)
     }
@@ -1175,13 +1175,15 @@ const attention = computed(() => {
 })
 
 function bmHealth(b) {
-  if (b?.health) return b.health
-  return b?.ok ? 'ok' : 'error'
+  const row = asRecord(b)
+  if (row.health) return row.health
+  return row.ok ? 'ok' : 'error'
 }
 function bmClass(b) {
   const h = bmHealth(b)
+  const row = asRecord(b)
   if (h === 'stopped') return 'stopped'
-  if (h === 'error' || b?.ok === false) return 'down'
+  if (h === 'error' || row.ok === false) return 'down'
   return ''
 }
 function bmLed(b) {
@@ -1193,7 +1195,7 @@ function bmLed(b) {
 function bmLabel(b) {
   const h = bmHealth(b)
   if (h === 'ok') {
-    const ms = Number(b.ms)
+    const ms = Number(asRecord(b).ms)
     return Number.isFinite(ms) ? ms + ' ms' : t('dashboard.bm_up')
   }
   if (h === 'stopped') return t('dashboard.bm_stopped')
@@ -1203,7 +1205,7 @@ function bmLabel(b) {
 // Shared x-axis for the three resource charts. Index-based x used to
 // squeeze omitted rollup windows together so a 30d hole looked like a
 // 90s gap; LineChart plots these as (t - tMin) / (tMax - tMin).
-const metricTimes = computed(() => (metrics.value || []).map(p => p.t ?? null))
+const metricTimes = computed(() => asArray(metrics.value).map(p => p.t ?? null))
 
 // The `*_max` peak series only exist on aggregated points (5m/1h tiers and
 // decimated raw): averaging a whole window would hide short spikes, so the
@@ -1213,17 +1215,17 @@ const metricTimes = computed(() => (metrics.value || []).map(p => p.t ?? null))
 const cpuChartSeries = computed(() => [
   {
     name: t('dashboard.chart_cpu'),
-    values: (metrics.value || []).map(p => p.cpu_used_pct ?? null),
+    values: asArray(metrics.value).map(p => p.cpu_used_pct ?? null),
     color: 'var(--accent)',
   },
   {
     name: `${t('dashboard.chart_cpu')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.cpu_used_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.cpu_used_pct_max ?? null),
     color: 'color-mix(in srgb, var(--accent) 38%, transparent)',
   },
   {
     name: t('dashboard.chart_load_cap'),
-    values: (metrics.value || []).map(p => {
+    values: asArray(metrics.value).map(p => {
       if (p.load_pct != null) return Math.min(100, p.load_pct)
       if (p.load1 != null) return Math.min(100, (p.load1 / (p.ncpu || ncpu.value || 1)) * 100)
       return null
@@ -1241,7 +1243,7 @@ const cpuAppleChartSeries = computed(() => {
   const busy = u + s
   const sysR = busy > 0 ? s / busy : 0.35
   const userR = busy > 0 ? u / busy : 0.65
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   return [
     {
       name: t('dashboard.cpu_system'),
@@ -1259,7 +1261,7 @@ const cpuAppleChartSeries = computed(() => {
 const memChartSeries = computed(() => [
   {
     name: t('dashboard.chart_mem_pressure'),
-    values: (metrics.value || []).map(p => {
+    values: asArray(metrics.value).map(p => {
       if (p.mem_used_pct != null) return p.mem_used_pct
       if (p.mem_free_pct != null) return 100 - p.mem_free_pct
       return null
@@ -1270,7 +1272,7 @@ const memChartSeries = computed(() => [
     // No mem_free_pct fallback here: 100 - max(free) would be the window's
     // *minimum* pressure, not its peak.
     name: `${t('dashboard.chart_mem_pressure')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.mem_used_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.mem_used_pct_max ?? null),
     color: 'color-mix(in srgb, var(--ok) 38%, transparent)',
   },
 ])
@@ -1278,12 +1280,12 @@ const memChartSeries = computed(() => [
 const diskChartSeries = computed(() => [
   {
     name: t('dashboard.chart_disk'),
-    values: (metrics.value || []).map(p => p.disk_pct ?? null),
+    values: asArray(metrics.value).map(p => p.disk_pct ?? null),
     color: 'var(--warn)',
   },
   {
     name: `${t('dashboard.chart_disk')} ${t('dashboard.chart_peak')}`,
-    values: (metrics.value || []).map(p => p.disk_pct_max ?? null),
+    values: asArray(metrics.value).map(p => p.disk_pct_max ?? null),
     color: 'color-mix(in srgb, var(--warn) 38%, transparent)',
   },
 ])
@@ -1303,7 +1305,7 @@ const gpuChartTitle = computed(() => {
   return `${label} ${fmtN(gpuUtilPct.value)}%`
 })
 const gpuChartSeries = computed(() => {
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   const live = gpuUtilPct.value
   return [
     {
@@ -1341,7 +1343,7 @@ const historyHint = computed(() => {
   if (!meta || meta.since == null || meta.until == null) return ''
   const span = meta.until - meta.since
   if (span <= 0) return ''
-  const pts = metrics.value || []
+  const pts = asArray(metrics.value)
   if (!pts.length) return t('dashboard.chart_accumulating')
   const first = pts[0]?.t
   if (first == null || first - meta.since <= span * 0.1) return ''
@@ -1510,15 +1512,15 @@ async function loadSensors(force = false, { light = false } = {}) {
       // "—" until a full collect. Keep the last full extras across light
       // ticks (low-mode 20s + 90s); Refresh / high mode still replace.
       const prev = sensors.value
-      const net = next.network && Object.keys(next.network).length ? next.network : prev.network
+      const net = Object.keys(asRecord(next.network)).length ? asRecord(next.network) : prev.network
       sensors.value = {
         ...prev,
         ...next,
-        top_processes: (next.top_processes && next.top_processes.length)
-          ? next.top_processes
-          : prev.top_processes,
+        top_processes: asArray(next.top_processes).length
+          ? asArray(next.top_processes)
+          : asArray(prev.top_processes),
         network: net,
-        memory: { ...(prev.memory || {}), ...(next.memory || {}) },
+        memory: { ...asRecord(prev.memory), ...asRecord(next.memory) },
       }
     } else {
       sensors.value = next
@@ -1538,7 +1540,7 @@ async function loadMetrics() {
   try {
     const m = await getMetricsRange(wanted)
     if (generation !== metricsGeneration || !dashAlive) return
-    metrics.value = m.points || []
+    metrics.value = asArray(m.points)
     metricsMeta.value = m.since != null && m.until != null
       ? { since: m.since, until: m.until }
       : null
@@ -1561,9 +1563,9 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // list call queued behind it and put the 3s wait back on first paint.
   void getContainers(withDockerStats).then(c => {
     if (!stillHere()) return
-    containers.value = c.containers || []
-    if (c.stats && Object.keys(c.stats).length) {
-      cstats.value = c.stats
+    containers.value = asArray(c.containers)
+    if (Object.keys(asRecord(c.stats)).length) {
+      cstats.value = asRecord(c.stats)
       cstatsAt.value = Date.now()
     }
   }).catch(() => {})
@@ -1572,7 +1574,7 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
   // top_processes / proc counts, so first paint and idle 90s ticks showed "—".
   // The 20s admin tick stays light and merges last full extras.
   void loadSensors(forceSensors, { light: false })
-  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = b.bookmarks || [] }).catch(() => {})
+  void getBookmarks().then(b => { if (stillHere()) bookmarks.value = asArray(asRecord(b).bookmarks) }).catch(() => {})
   await Promise.all([
     loadMetrics(),
     getStorage(true).then(s => { if (stillHere()) storage.value = s }).catch(() => {}),
@@ -1588,8 +1590,8 @@ async function refreshHeavy(forceSensors = false, withDockerStats = false) {
     // Ports say "None" and Recent alerts say "None" as if that were verified.
     // Null keeps the placeholder row, which reads load_failed once loadError
     // (the host probe, the canonical liveness signal) reports the tick failed.
-    getAlerts(12).then(a => { if (stillHere()) alerts.value = a.alerts || [] }).catch(() => {}),
-    getListeningPorts(40).then(p => { if (stillHere()) ports.value = p.ports || [] }).catch(() => {}),
+    getAlerts(12).then(a => { if (stillHere()) alerts.value = asArray(a.alerts) }).catch(() => {}),
+    getListeningPorts(40).then(p => { if (stillHere()) ports.value = asArray(p.ports) }).catch(() => {}),
     getUps().then(u => { if (stillHere()) ups.value = u }).catch(() => {}),
     getOllamaStatus().then(o => { if (stillHere()) ollama.value = o }).catch(() => {}),
     loadPower(),

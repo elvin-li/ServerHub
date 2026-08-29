@@ -446,7 +446,7 @@ class DeleteNotADirectoryTests(unittest.TestCase):
                 ),
                 patch.object(Path, "is_dir", return_value=True),
                 patch.object(Path, "is_symlink", return_value=False),
-                patch.object(files_svc.shutil, "rmtree", side_effect=NotADirectoryError()),
+                patch.object(files_svc, "_rmtree_iterative", side_effect=NotADirectoryError()),
             ):
                 result = files_svc.delete_path(str(target), "tmp")
             self.assertTrue(result["ok"])

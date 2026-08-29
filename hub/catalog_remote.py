@@ -53,6 +53,7 @@ installing anything remains an explicit admin action.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import re
 import shutil
@@ -69,6 +70,9 @@ from hub import audit, secure_io
 from hub.errors import CODES, api_error
 from hub.paths import DATA_DIR
 from hub.util import read_text_capped, safe_json_loads, strftime_now
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 REMOTE_DIR = DATA_DIR / "catalog-remote"
 STATE_PATH = REMOTE_DIR / "state.json"
@@ -110,7 +114,12 @@ CODES.setdefault(
 CODES.setdefault("catalog_remote.admin_required", (403, "administrator access is required"))
 CODES.setdefault(
     "catalog_remote.write_failed",
-    (500, "could not write the remote catalog: {reason}"),
+    # 503 like the other could-not-write-the-disk states
+    # (settings.save_failed, compose.save_failed,
+    # cloudflared.plist_write_failed): a blocked remote-catalog directory is
+    # a dependency state, not a server defect — the 500 it replaced read
+    # like a crash to the SPA's error toast.
+    (503, "could not write the remote catalog: {reason}"),
 )
 
 #: Audit event names (kept local: hub/audit.py is shared with parallel work).
@@ -175,7 +184,15 @@ def _fetch(url: str, max_bytes: int) -> bytes:
     try:
         with _opener.open(req, timeout=FETCH_TIMEOUT) as resp:
             data = resp.read(max_bytes + 1)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (
+        urllib.error.URLError, http.client.HTTPException, OSError, ValueError,
+    ) as exc:
+        # http.client.HTTPException is neither OSError nor ValueError:
+        # ``InvalidURL`` (a nonnumeric port such as ``https://[::1]:x``, or a
+        # space / %00-unquoted control byte in the host or path) propagates
+        # raw out of ``urlopen`` — one stored junk URL used to 500 every
+        # POST /api/catalog/remote/check, and one hostile manifest entry
+        # path used to 500 the whole sync instead of costing only itself.
         raise _FetchError(_as_text(exc)) from exc
     if len(data) > max_bytes:
         raise _TooLargeError(f"response exceeds {max_bytes} bytes")
@@ -187,18 +204,42 @@ def validate_source_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    parts = urllib.parse.urlsplit(url)
+    try:
+        # urlsplit itself raises ValueError on an unbracketable netloc
+        # ("https://[boo", "https://x@["), and .hostname re-validates the
+        # bracket form.  A pasted URL or a hand-edited services.yaml used to
+        # escape as a raw 500 out of PUT /api/catalog/remote and
+        # POST /api/catalog/remote/check instead of this coded 400.
+        parts = urllib.parse.urlsplit(url)
+        hostname = parts.hostname
+        # .port re-parses the netloc tail: a nonnumeric or out-of-range port
+        # ("https://[::1]:x", "https://h:-1") is ValueError *here*, where it
+        # earns this coded 400.  Unchecked, PUT accepted such a URL and every
+        # POST /api/catalog/remote/check after it raised
+        # http.client.InvalidURL out of the fetch as a raw 500 — until the
+        # operator somehow guessed to clear the stored source.
+        parts.port
+    except ValueError:
+        raise api_error("catalog_remote.bad_url")
     # HTTPS-only, no embedded credentials: the URL is stored in services.yaml
     # and echoed by the status API, so a user:pass@host form would persist a
     # secret in plain sight (and Basic-auth sources are not supported anyway).
-    if parts.scheme != "https" or not parts.hostname or "@" in parts.netloc:
+    if parts.scheme != "https" or not hostname or "@" in parts.netloc:
+        raise api_error("catalog_remote.bad_url")
+    # http.client refuses hosts carrying space / control bytes
+    # (InvalidURL, not OSError), and urllib.request *unquotes* the host
+    # before connecting, so a %-escape ("https://example.com%00/") smuggles
+    # exactly those bytes past urlsplit.  No real https host contains
+    # either, so refuse them with the same coded 400 as every other junk URL
+    # instead of persisting a source every later check 500s on.
+    if "%" in hostname or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in hostname):
         raise api_error("catalog_remote.bad_url")
     # Same IMDS / link-local block as notify webhooks.  An administrator
     # pointing the catalog at ``https://169.254.169.254/`` is SSRF, not a
     # template source.
     from hub.http_guard import is_allowed_notify_host
 
-    if not is_allowed_notify_host(parts.hostname):
+    if not is_allowed_notify_host(hostname):
         raise api_error("catalog_remote.bad_url")
     return url
 
@@ -206,8 +247,49 @@ def validate_source_url(url: str) -> str:
 def source_url() -> str:
     from hub.config import settings_section
 
-    section = settings_section("catalog_remote")
-    return str(section.get("url") or "").strip()
+    # Guarded like config.settings_section guards cfg() itself: a leftover
+    # snapshot provider that raises must read as "no source configured",
+    # not 500 GET /api/catalog/remote and every POST /api/catalog/remote/check.
+    try:
+        section = settings_section("catalog_remote")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    # Fail-closed _isinst gate + unbound dict.get in a try (the
+    # config.settings_section convention): the bare bound ``section.get``
+    # used to be four raw 500s on the same routes — a leftover dict
+    # *subclass* whose ``.get`` bombs, a section that is not a mapping at
+    # all (``catalog_remote: []`` by hand, so ``.get`` is AttributeError),
+    # a raising ``__class__`` property detonating any bare isinstance gate,
+    # and a *hash-shadowing* key (same hash as "url", raising ``__eq__``)
+    # detonating the compare inside the C-level lookup itself.
+    if not _isinst(section, dict):
+        return ""
+    try:
+        url = dict.get(section, "url")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if type(url) is not str:
+        # _as_text, not bare str(): YAML hex/octal int spellings dodge the
+        # decimal digit-cap loader, so a hand-edited ``url: 0xfff…`` arrives
+        # in the config as a >4300-digit int whose ``str()`` is the
+        # digit-cap ValueError — it fired here and 500'd
+        # GET /api/catalog/remote and every POST /api/catalog/remote/check
+        # until the operator repaired services.yaml by hand.  Unrenderable
+        # junk degrades to junk text validate_source_url refuses with its
+        # coded 400 (or, empty, "no source configured").
+        # Exact-type gate, not isinstance: a lying ``__class__`` impostor
+        # answering str used to pass the old gate untouched and blow the
+        # ``.strip()`` below, and a raising ``__class__`` property detonated
+        # the gate itself.  A genuine str — the only shape YAML ever yields
+        # here — is still returned byte-for-byte untouched, so a
+        # lone-surrogate URL keeps its coded bad_url refusal instead of
+        # being laundered into a fetchable replacement-char host.
+        url = _as_text(url)
+    return url.strip()
 
 
 def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
@@ -226,56 +308,165 @@ def set_source_url(url: str, operator: str = "", client: str = "") -> dict:
 # ── state ─────────────────────────────────────────────────────────────────────
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` a leftover ``__class__``-property bomb cannot 500 through
+    (the catalog/native_catalog/docker_cli rule)."""
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """Exception text that cannot RecursionError leftover ``str(exc)`` or UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
-    """Drop leftover inf/NaN/``\\ud800`` so GET /api/catalog/remote cannot 500."""
+    """Drop leftover inf/NaN/``\\ud800`` so GET /api/catalog/remote cannot 500.
+
+    Base-type coercions throughout (``dict(...)`` copy, ``list(...)`` copy,
+    ``int.__index__``, ``float.__float__``, unbound ``str.encode`` /
+    ``bytes.decode``): a nested subclass whose ``items``/``__iter__``/
+    ``__eq__``/``__str__``/``encode``/``decode`` bombs used to raise out of
+    this launderer instead of costing only the poisoned value — the
+    docker_cli/jobs ``_jsonable`` convention.
+    """
     if depth > 32:
         return None
-    if isinstance(value, float):
+    if value is None:
+        return value
+    if _isinst(value, bool):
+        # ``bool`` is final, so a value that answers this gate while its real
+        # type is not ``bool`` is a *lying* ``__class__`` impostor.  The old
+        # arm returned it raw, handing Starlette's ``allow_nan=False`` encoder
+        # a non-serializable object (the modules9/json9 bool-liar).  Only a
+        # genuine bool renders; the impostor drops like the numeric liars.
+        return value if type(value) is bool else None
+    if _isinst(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, dict):
+    if _isinst(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a nested dict-subclass bomb cannot
+            # fire, and a lying ``__class__`` claiming dict rejects the copy.
+            try:
+                value = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         out = {}
         for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                key = k.decode("utf-8", "replace")
+            if _isinst(k, (bytes, bytearray)):
+                base = bytes if _isinst(k, bytes) else bytearray
+                try:
+                    key = base.decode(k, "utf-8", "replace")
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    # A lying-``__class__`` key claiming bytes rejects the
+                    # unbound decode — drop this entry, keep the siblings.
+                    continue
             else:
                 try:
-                    key = k if isinstance(k, str) else str(k)
-                except Exception:
+                    key = k if _isinst(k, str) else str(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             try:
-                key = key.encode("utf-8", "replace").decode("utf-8")
-            except Exception:
+                key = str.encode(key, "utf-8", "replace").decode("utf-8")
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 continue
             out[key] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, bool) or value is None:
-        return value
-    if isinstance(value, int):
+    if _isinst(value, (list, tuple, set, frozenset)):
+        try:
+            items = list(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Leftover nested sequence subclass whose __iter__ raises, or a
+            # lying ``__class__`` claiming a sequence it is not.
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
+    if _isinst(value, str):
+        try:
+            return str.encode(value, "utf-8", "replace").decode("utf-8")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` claiming str rejects the unbound encode.
+            return None
+    if _isinst(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__`` bomb
+                # used to blow the digit-cap probe below (only ValueError
+                # was caught).
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -283,19 +474,37 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    iso = getattr(value, "isoformat", None)
+    if _isinst(value, (bytes, bytearray)):
+        base = bytes if _isinst(value, bytes) else bytearray
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A lying ``__class__`` claiming bytes rejects the unbound decode.
+            return None
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/catalog/remote.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -333,9 +542,32 @@ def _ensure_dir() -> None:
     )
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document: one poisoned ``synced`` stamp
+    used to make :func:`_load_state` return ``{}``, and the very next
+    :func:`_save_state` — any sync or set_source — rewrote state.json from
+    that empty snapshot, silently dropping the configured source URL and
+    every synced template's version/sha records.  Dropping just the number
+    keeps the file, same as the notify_channels / smart_test_svc hooks.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _load_state() -> dict:
     try:
-        data = safe_json_loads(read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"))
+        data = safe_json_loads(
+            read_text_capped(STATE_PATH, _STATE_CAP, encoding="utf-8"),
+            # A >4300-digit leftover number is ValueError for the whole
+            # document; without the hook it wiped every override's version
+            # and warnings, not just the poisoned value.
+            parse_int=_capped_json_int,
+        )
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
@@ -416,7 +648,7 @@ def status() -> dict:
         })
     last_check = state.get("last_check")
     last_result = state.get("last_result")
-    return {
+    payload = {
         "url": source_url(),
         "configured": bool(source_url()),
         "last_check": last_check if isinstance(last_check, str) else "",
@@ -431,6 +663,13 @@ def status() -> dict:
         # manifest is only transport-trusted (see module docstring).
         "signature_verified": False,
     }
+    # Through _jsonable: an override id comes from a *filename* stem, and a
+    # leftover file named with surrogateescape bytes (or a hand-edited
+    # services.yaml url carrying a lone ``\ud800``) kept the raw surrogate
+    # here while every synced field was clean — Starlette's UTF-8 encode
+    # then 500'd GET /api/catalog/remote.
+    cleaned = _jsonable(payload)
+    return cleaned if isinstance(cleaned, dict) else {"configured": False, "overrides": []}
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -466,14 +705,21 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
         return "front matter is not valid YAML: " + _as_text(exc)
     if not isinstance(meta, dict):
         return "front matter is not a mapping"
-    if not str(meta.get("name") or "").strip():
+    # _as_text, not bare str(): YAML's hex/octal int forms dodge CPython's
+    # decimal digit cap, so a leftover ``name: 0xfff…`` (4000 hex digits)
+    # arrives as an int ``str()`` cannot render — the ValueError fired here,
+    # after the YAML try/except had already passed, and 500'd the whole
+    # POST /api/catalog/remote/check instead of rejecting one template.
+    # A *sane* numeric name/desc/id still renders (str() probe, not an
+    # isinstance(str) gate that would silently drop numeric YAML ids).
+    if not _as_text(meta.get("name") or "").strip():
         return "front matter lacks a name"
-    if not str(meta.get("desc") or "").strip():
+    if not _as_text(meta.get("desc") or "").strip():
         return "front matter lacks a desc"
     # The listing id comes from the *filename*, but a front-matter `id:` key
     # overrides it in _parse_template().  A template that claims another id
     # would impersonate a different catalog entry, so the two must agree.
-    if expected_id and str(meta.get("id") or expected_id) != expected_id:
+    if expected_id and _as_text(meta.get("id") or expected_id) != expected_id:
         return "front matter id does not match the manifest id"
     body = m.group(2)
     # The same trap tests/test_template_metadata.py pins for shipped templates:
@@ -548,7 +794,11 @@ def scan_compose_directives(text: str) -> list[str]:
             hits.add(WARN_CAP_ADD)
         if service.get("devices"):
             hits.add(WARN_DEVICES)
-        if str(service.get("network_mode") or "").strip().lower() == "host":
+        # _as_text, not bare str(): a leftover hex-huge ``network_mode`` or
+        # volume entry is an over-digit-cap int whose str() is ValueError —
+        # it fired here after ingest validation had already accepted the
+        # template, 500ing POST /api/catalog/remote/check on the last step.
+        if _as_text(service.get("network_mode") or "").strip().lower() == "host":
             hits.add(WARN_HOST_NETWORK)
         volumes = service.get("volumes")
         if not isinstance(volumes, list):
@@ -556,7 +806,7 @@ def scan_compose_directives(text: str) -> list[str]:
         for volume in volumes:
             # Both list forms: "sock:/sock" strings and {source: ...} maps.
             source = volume.get("source") if isinstance(volume, dict) else volume
-            if "docker.sock" in str(source or ""):
+            if "docker.sock" in _as_text(source or ""):
                 hits.add(WARN_DOCKER_SOCKET)
     return sorted(hits)
 
@@ -603,8 +853,15 @@ def _entry_url(index_url: str, entry: dict) -> str:
     hosts, even over HTTPS.
     """
     rel = str(entry.get("path") or entry.get("url") or f"{entry.get('id')}.yml")
-    resolved = urllib.parse.urljoin(index_url, rel)
-    a, b = urllib.parse.urlsplit(resolved), urllib.parse.urlsplit(index_url)
+    try:
+        resolved = urllib.parse.urljoin(index_url, rel)
+        a, b = urllib.parse.urlsplit(resolved), urllib.parse.urlsplit(index_url)
+    except ValueError:
+        # A manifest entry path like ``//[boo/x.yml`` makes urljoin/urlsplit
+        # raise "Invalid IPv6 URL" — one hostile entry used to 500 the whole
+        # POST /api/catalog/remote/check instead of costing only itself as
+        # the per-entry bad_url rejection.
+        return ""
     if a.scheme != "https" or a.netloc != b.netloc:
         return ""
     return resolved
@@ -635,7 +892,11 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
         raise api_error("catalog_remote.fetch_failed", reason=_as_text(exc))
 
     try:
-        manifest = safe_json_loads(raw.decode("utf-8"))
+        # parse_int hook: a >4300-digit number in *one* entry (a bogus
+        # ``size``) is ValueError for the whole document and used to fail
+        # the entire sync as bad_manifest; dropping just the number lets
+        # per-entry validation reject only what deserves it.
+        manifest = safe_json_loads(raw.decode("utf-8"), parse_int=_capped_json_int)
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise api_error(
             "catalog_remote.bad_manifest", reason="not JSON: " + _as_text(exc)
@@ -658,7 +919,18 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
     rejected: list[dict] = []
     seen: set[str] = set()
 
-    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=REMOTE_DIR))
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=REMOTE_DIR))
+    except OSError as exc:
+        # _ensure_dir() answered fine one call ago, but the staging mkdtemp
+        # is a *second* write into REMOTE_DIR: a remote dir that vanished in
+        # between (a concurrent cleanup, an operator's rm -rf of data/, a
+        # dying FUSE/SMB mount answering EIO) used to raise the raw OSError
+        # out of POST /api/catalog/remote/check as an uncoded HTTP 500 —
+        # while every neighbouring write in this module (_ensure_dir,
+        # _save_state, the per-template replace) already degrades to the
+        # coded 503 that names the dependency instead of blaming the server.
+        raise api_error("catalog_remote.write_failed", reason=_as_text(exc))
     try:
         for entry in entries:
             reason = _validate_entry(entry)

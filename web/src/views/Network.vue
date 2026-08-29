@@ -40,11 +40,11 @@
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_services') }}</span>
-        <span class="net-summary-value">{{ t('network.sum_active_n', { n: (data.services || []).filter(s => !s.disabled).length }) }}</span>
+        <span class="net-summary-value">{{ t('network.sum_active_n', { n: asServiceList(data.services).filter(s => !s.disabled).length }) }}</span>
       </div>
       <div class="net-summary-item">
         <span class="net-summary-label">{{ t('network.sum_listening') }}</span>
-        <span class="net-summary-value">{{ t('network.sum_ports_n', { n: (data.listening || []).length }) }}</span>
+        <span class="net-summary-value">{{ t('network.sum_ports_n', { n: asArray(data.listening).length }) }}</span>
       </div>
     </div>
 
@@ -134,7 +134,7 @@
             <tr><th class="col-hide-m">#</th><th>{{ t('network.th_service') }}</th><th class="col-hide-m">{{ t('network.th_device') }}</th><th class="col-hide-m">{{ t('network.th_status') }}</th><th class="col-hide-m">{{ t('network.th_mode_ip') }}</th><th>{{ t('network.th_ops') }}</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(s, idx) in orderList" :key="s.name">
+            <tr v-for="(s, idx) in asArray(orderList)" :key="s.name">
               <td class="mono col-hide-m">{{ idx + 1 }}</td>
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
@@ -149,7 +149,7 @@
               <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(s.mode) }} {{ finiteText(s.ip, '') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || idx===0" @click="moveService(idx, -1)" :aria-label="t('network.move_up')">↑</button>
-                <button class="tiny" :disabled="busy || idx===orderList.length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
+                <button class="tiny" :disabled="busy || idx===asArray(orderList).length-1" @click="moveService(idx, 1)" :aria-label="t('network.move_down')">↓</button>
                 <button class="tiny" :disabled="busy" @click="toggleService(s)">{{ s.disabled ? t('network.act_enable') : t('network.act_disable') }}</button>
                 <template v-if="isWifi(s)">
                   <button class="tiny" :disabled="busy" @click="wifi('on')">{{ t('network.wifi_on') }}</button>
@@ -157,7 +157,7 @@
                 </template>
               </td>
             </tr>
-            <tr v-if="!orderList.length && !loadError">
+            <tr v-if="!asArray(orderList).length && !loadError">
               <td colspan="6" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
@@ -203,10 +203,10 @@
           </div>
           <div style="margin-top:6px">
             {{ t('network.managed_aliases') }}
-            <span v-for="(ip, i) in (data.alias_auto.config?.ips || [])" :key="ip" class="badge" style="margin-right:4px"
-              :class="(data.alias_auto.ips||[]).find(x=>x.ip===ip)?.on_preferred ? 'ok' : 'warn'"
+            <span v-for="(ip, i) in asArray(data.alias_auto.config?.ips)" :key="ip" class="badge" style="margin-right:4px"
+              :class="asArray(data.alias_auto.ips).find(x=>x.ip===ip)?.on_preferred ? 'ok' : 'warn'"
             >{{ finiteText(ip) }}</span>
-            <span v-if="!(data.alias_auto.config?.ips||[]).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
+            <span v-if="!asArray(data.alias_auto.config?.ips).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
           </div>
           <div class="field-grid" style="margin-top:10px">
             <label>{{ t('network.alias_list') }}</label>
@@ -224,12 +224,12 @@
             <tr><th>{{ t('network.th_nic') }}</th><th>{{ t('network.th_status') }}</th><th>IP</th><th class="col-hide-m">{{ t('network.th_mask') }}</th><th class="col-hide-m">{{ t('network.th_type') }}</th><th>{{ t('network.th_ops') }}</th></tr>
           </thead>
           <tbody>
-            <template v-for="iface in (data?.interface_addresses || [])" :key="iface.device">
-              <tr v-for="(a, ai) in (iface.addresses || [])" :key="iface.device + a.ip + ai">
-                <td class="mono" v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
+            <template v-for="iface in asArray(data?.interface_addresses)" :key="iface.device">
+              <tr v-for="(a, ai) in asArray(iface.addresses)" :key="iface.device + a.ip + ai">
+                <td class="mono" v-if="ai===0" :rowspan="Math.max(1, asArray(iface.addresses).length)">
                   <strong>{{ finiteText(iface.device) }}</strong>
                 </td>
-                <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
+                <td v-if="ai===0" :rowspan="Math.max(1, asArray(iface.addresses).length)">
                   <!-- The LED is the whole status column here (the interfaces tab
                        pairs its LED with a textual badge); colour alone says
                        nothing to a screen reader, so spell the state. -->
@@ -259,7 +259,7 @@
                   >{{ t('network.edit_primary') }}</button>
                 </td>
               </tr>
-              <tr v-if="!(iface.addresses||[]).length" :key="iface.device+'-empty'">
+              <tr v-if="!asArray(iface.addresses).length" :key="iface.device+'-empty'">
                 <td class="mono"><strong>{{ finiteText(iface.device) }}</strong></td>
                 <td>
                   <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
@@ -269,7 +269,7 @@
                 <td></td>
               </tr>
             </template>
-            <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
+            <tr v-if="!asArray(data?.interface_addresses).length && !loadError">
               <td colspan="6" class="empty-row">{{ t('network.no_bindings') }}</td>
             </tr>
           </tbody>
@@ -281,7 +281,7 @@
         <div class="field-grid">
           <label>{{ t('network.th_nic') }}</label>
           <select v-model="aliasForm.device" :aria-label="t('network.th_nic')">
-            <option v-for="i in deviceOptions" :key="i" :value="i">{{ finiteText(i) }}</option>
+            <option v-for="i in asArray(deviceOptions)" :key="i" :value="i">{{ finiteText(i) }}</option>
           </select>
           <label>IP</label>
           <input v-model="aliasForm.ip" type="text" :placeholder="t('network.alias_ip_ph')"  :aria-label="t('network.alias_ip_ph')"/>
@@ -308,7 +308,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in data?.interfaces || []" :key="i.name">
+            <tr v-for="i in asArray(data?.interfaces)" :key="i.name">
               <!-- The Status column next to it spells the state in text, so
                    the LED is decoration here; without aria-hidden a screen
                    reader met a column named "status LED" whose cells said
@@ -318,21 +318,21 @@
               <td>
                 <strong>{{ finiteText(i.name) }}</strong>
                 <div class="show-m sub mono">{{ finiteText(i.mac) }}{{ finiteN(i.mtu, null) != null ? ' · MTU ' + finiteN(i.mtu) : '' }}</div>
-                <div v-if="(i.ipv6 || []).length" class="show-m sub mono">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(i.ipv6).length" class="show-m sub mono">{{ asArray(i.ipv6).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
               <td><span class="badge" :class="i.up ? 'ok' : ''">{{ finiteText(i.status, '') || (i.up ? 'up' : 'down') }}</span></td>
               <td class="mono">
-                <div v-for="(a,idx) in i.ipv4 || []" :key="idx">{{ finiteText(a.ip) }}</div>
-                <span v-if="!(i.ipv4||[]).length">—</span>
+                <div v-for="(a,idx) in asArray(i.ipv4)" :key="idx">{{ finiteText(a.ip) }}</div>
+                <span v-if="!asArray(i.ipv4).length">—</span>
               </td>
               <td class="mono col-hide-m">
-                <div v-for="(a,idx) in i.ipv4 || []" :key="'m'+idx">{{ finiteText(a.netmask) }}</div>
+                <div v-for="(a,idx) in asArray(i.ipv4)" :key="'m'+idx">{{ finiteText(a.netmask) }}</div>
               </td>
-              <td class="mono col-hide-m" style="font-size:10px">{{ (i.ipv6 || []).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m" style="font-size:10px">{{ asArray(i.ipv6).slice(0,2).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
-            <tr v-if="!(data?.interfaces||[]).length && !loadError">
+            <tr v-if="!asArray(data?.interfaces).length && !loadError">
               <td colspan="8" class="empty-row">{{ t('network.no_interfaces') }}</td>
             </tr>
           </tbody>
@@ -355,19 +355,19 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in data?.services || []" :key="s.name">
+            <tr v-for="s in asServiceList(data?.services)" :key="s.name">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
                 <span v-if="s.disabled" class="badge down">{{ t('network.disabled') }}</span>
                 <div class="show-m sub">{{ finiteText(s.mode) }}{{ finiteText(s.device, '') ? ' · ' + finiteText(s.device) : '' }}{{ finiteText(s.router, '') ? ' · ' + finiteText(s.router) : '' }}</div>
-                <div v-if="(s.dns||[]).length" class="show-m sub mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(s.dns).length" class="show-m sub mono">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
               <td class="mono col-hide-m">{{ finiteText(s.device) }}</td>
               <td class="col-hide-m"><span class="badge" :class="s.mode==='manual'?'warn':(s.mode==='dhcp'?'ok':'')">{{ finiteText(s.mode) }}</span></td>
               <td class="mono">{{ finiteText(s.ip) }}</td>
               <td class="mono col-hide-m">{{ finiteText(s.subnet) }}</td>
               <td class="mono col-hide-m">{{ finiteText(s.router) }}</td>
-              <td class="mono col-hide-m" style="font-size:11px">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m" style="font-size:11px">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="ops">
                 <button class="tiny" :disabled="busy || s.disabled" @click="openManual(s)">{{ t('network.edit_ip') }}</button>
                 <button class="tiny" :disabled="busy || s.disabled" @click="setDhcp(s)">{{ t('network.act_dhcp') }}</button>
@@ -378,7 +378,7 @@
                 </template>
               </td>
             </tr>
-            <tr v-if="!(data?.services||[]).length && !loadError">
+            <tr v-if="!asServiceList(data?.services).length && !loadError">
               <td colspan="8" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
@@ -396,24 +396,24 @@
         <div><strong>{{ finiteText(lookupResult.host) }}</strong>
           <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok ? t('common.ok') : t('common.fail') }}</span>
         </div>
-        <div class="mono" style="margin-top:8px" v-for="(a,i) in lookupResult.answers||[]" :key="i">{{ finiteText(a) }}</div>
-        <pre v-if="!lookupResult.answers?.length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
+        <div class="mono" style="margin-top:8px" v-for="(a,i) in asArray(lookupResult.answers)" :key="i">{{ finiteText(a) }}</div>
+        <pre v-if="!asArray(lookupResult.answers).length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
       </div>
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('network.service') }}</th><th>{{ t('network.dns_servers') }}</th><th class="col-hide-m">{{ t('network.search_domains') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
           <tbody>
-            <tr v-for="s in data?.services || []" :key="s.name">
+            <tr v-for="s in asServiceList(data?.services)" :key="s.name">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
-                <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(s.search_domains).length" class="show-m sub mono">{{ asArray(s.search_domains).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
-              <td class="mono">{{ (s.dns||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
-              <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
+              <td class="mono col-hide-m">{{ asArray(s.search_domains).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
-            <tr v-if="!(data?.services||[]).length && !loadError">
+            <tr v-if="!asServiceList(data?.services).length && !loadError">
               <td colspan="4" class="empty-row">{{ finiteText(data?.services_error, '') || t('network.empty_services') }}</td>
             </tr>
           </tbody>
@@ -428,13 +428,13 @@
         <!-- role=status: the count is the only feedback the filter box gives,
              and it changed silently for a screen reader. Same pattern as the
              Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredListen.length }} / {{ (data?.listening || []).length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredListen).length }} / {{ asArray(data?.listening).length }}</span>
       </div>
       <div class="table-wrap">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('network.process') }}</th><th class="col-hide-m">PID</th><th class="col-hide-m">{{ t('tools.user') }}</th><th class="col-hide-m">{{ t('network.address') }}</th><th>{{ t('network.port') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(p,i) in filteredListen" :key="i">
+            <tr v-for="(p,i) in asArray(filteredListen)" :key="i">
               <td>
                 <strong>{{ finiteText(p.process) }}</strong>
                 <div class="show-m sub">{{ finiteText(p.user) }} · {{ finiteN(p.pid) }} · {{ finiteText(p.address) }}</div>
@@ -444,7 +444,7 @@
               <td class="mono col-hide-m">{{ finiteText(p.address) }}</td>
               <td class="mono">{{ finiteN(p.port) }}</td>
             </tr>
-            <tr v-if="!filteredListen.length && !loadError">
+            <tr v-if="!asArray(filteredListen).length && !loadError">
               <td colspan="5" class="empty-row">{{ portQ.trim() ? t('common.no_match') : t('network.no_listening') }}</td>
             </tr>
           </tbody>
@@ -458,7 +458,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('network.destination') }}</th><th>{{ t('network.gateway') }}</th><th class="col-hide-m">Flags</th><th>{{ t('network.iface') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(r,i) in data?.routes || []" :key="i">
+            <tr v-for="(r,i) in asArray(data?.routes)" :key="i">
               <td class="mono">
                 {{ finiteText(r.destination) }}
                 <div v-if="r.flags" class="show-m sub">{{ finiteText(r.flags) }}</div>
@@ -467,7 +467,7 @@
               <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
-            <tr v-if="!(data?.routes||[]).length && !loadError">
+            <tr v-if="!asArray(data?.routes).length && !loadError">
               <td colspan="4" class="empty-row">{{ t('network.no_routes') }}</td>
             </tr>
           </tbody>
@@ -485,7 +485,7 @@
           <!-- role=status: the count is the only feedback the filter box gives,
                and it changed silently for a screen reader. Same pattern as the
                Services filter count. -->
-          <span class="meta-count" role="status">{{ filteredDockerPorts.length }} / {{ (data?.docker_ports || []).length }}</span>
+          <span class="meta-count" role="status">{{ asArray(filteredDockerPorts).length }} / {{ asArray(data?.docker_ports).length }}</span>
           <button @click="openPortEdit()" :disabled="busy">{{ t('network.edit_map') }}</button>
         </div>
         <div class="table-wrap" style="margin-bottom:14px">
@@ -494,7 +494,7 @@
               <tr><th>{{ t('network.container') }}</th><th class="col-hide-m">{{ t('common.status') }}</th><th>{{ t('network.host') }}</th><th class="col-hide-m">→</th><th>{{ t('network.cport') }}</th><th class="col-hide-m">{{ t('network.proto') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr>
             </thead>
             <tbody>
-              <tr v-for="(p,i) in filteredDockerPorts" :key="i">
+              <tr v-for="(p,i) in asArray(filteredDockerPorts)" :key="i">
                 <td>
                   <strong>{{ finiteText(p.container) }}</strong>
                   <div class="show-m sub">{{ finiteText(p.status) }} · {{ finiteText(p.protocol) }}</div>
@@ -508,7 +508,7 @@
                   <button class="tiny" :disabled="busy" @click="openPortEdit(p.container)">{{ t('network.change_port') }}</button>
                 </td>
               </tr>
-              <tr v-if="!filteredDockerPorts.length && !loadError">
+              <tr v-if="!asArray(filteredDockerPorts).length && !loadError">
                 <!-- A filter miss and a host with no published ports are
                      different states; the listening tab already tells them
                      apart the same way. -->
@@ -525,7 +525,7 @@
               <tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('docker.driver') }}</th><th>{{ t('network.subnet') }}</th><th class="col-hide-m">{{ t('network.gateway') }}</th><th class="col-hide-m">{{ t('network.container') }}</th><th>{{ t('network.ops') }}</th></tr>
             </thead>
             <tbody>
-              <tr v-for="n in data?.docker_networks || []" :key="n.id">
+              <tr v-for="n in asArray(data?.docker_networks)" :key="n.id">
                 <td>
                   <strong>{{ finiteText(n.name) }}</strong>
                   <div class="show-m sub">{{ finiteText(n.driver) }}{{ finiteText(n.gateway, '') ? ' · ' + finiteText(n.gateway) : '' }}</div>
@@ -535,17 +535,17 @@
                 <td class="mono">{{ finiteText(n.subnet) }}</td>
                 <td class="mono col-hide-m">{{ finiteText(n.gateway) }}</td>
                 <td class="col-hide-m" style="font-size:11px">
-                  <div v-for="c in (n.containers||[]).slice(0,6)" :key="c.id">
+                  <div v-for="c in asArray(n.containers).slice(0,6)" :key="c.id">
                     {{ finiteText(c.name, '') || finiteText(c.id) }} <span class="mono" style="color:var(--sub)">{{ finiteText(c.ipv4, '') }}</span>
                   </div>
-                  <span v-if="!(n.containers||[]).length" style="color:var(--sub)">—</span>
+                  <span v-if="!asArray(n.containers).length" style="color:var(--sub)">—</span>
                 </td>
                 <td class="ops">
                   <button class="tiny" :disabled="busy || n.builtin" @click="openConnect(n)">{{ t('network.connect') }}</button>
                   <button class="tiny" :disabled="busy || n.builtin" @click="openDisconnect(n)">{{ t('network.disconnect') }}</button>
                 </td>
               </tr>
-              <tr v-if="!(data?.docker_networks || []).length && !loadError">
+              <tr v-if="!asArray(data?.docker_networks).length && !loadError">
                 <td colspan="6" class="empty-row">{{ t('network.empty_docker_nets') }}</td>
               </tr>
             </tbody>
@@ -623,7 +623,7 @@
         <label style="font-size:12px;color:var(--sub)">{{ t('network.ctr_name') }}</label>
         <input v-model="connectContainer" type="text" list="ctr-list" style="width:100%;margin:8px 0 12px" :placeholder="t('network.ctr_name')"  :aria-label="t('network.ctr_name')"/>
         <datalist id="ctr-list">
-          <option v-for="c in containerNames" :key="c" :value="c" />
+          <option v-for="c in asArray(containerNames)" :key="c" :value="c" />
         </datalist>
         <div class="btns">
           <button class="primary" :disabled="busy || !connectContainer.trim()" @click="applyConnect">{{ t('common.confirm') }}</button>
@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -711,7 +711,7 @@ function stillOnNetwork(generation) {
 
 const filteredListen = computed(() => {
   const q = portQ.value.trim().toLowerCase()
-  const list = data.value?.listening || []
+  const list = asArray(data.value?.listening)
   if (!q) return list
   return list.filter(p =>
     (p.process || '').toLowerCase().includes(q)
@@ -722,7 +722,7 @@ const filteredListen = computed(() => {
 
 const filteredDockerPorts = computed(() => {
   const q = dockerPortQ.value.trim().toLowerCase()
-  const list = data.value?.docker_ports || []
+  const list = asArray(data.value?.docker_ports)
   if (!q) return list
   return list.filter(p =>
     (p.container || '').toLowerCase().includes(q)
@@ -733,11 +733,11 @@ const filteredDockerPorts = computed(() => {
 
 const containerNames = computed(() => {
   const s = new Set()
-  for (const p of data.value?.docker_ports || []) {
+  for (const p of asArray(data.value?.docker_ports)) {
     if (p.container) s.add(p.container)
   }
-  for (const n of data.value?.docker_networks || []) {
-    for (const c of n.containers || []) {
+  for (const n of asArray(data.value?.docker_networks)) {
+    for (const c of asArray(n.containers)) {
       if (c.name) s.add(c.name)
     }
   }
@@ -745,7 +745,7 @@ const containerNames = computed(() => {
 })
 
 const deviceOptions = computed(() => {
-  return (data.value?.interface_addresses || []).map(i => i.device)
+  return asArray(data.value?.interface_addresses).map(i => i.device)
 })
 
 const failoverModeLabel = computed(() => {
@@ -784,8 +784,22 @@ function priorityStatusKey(s) {
   return 'network.on'
 }
 
+function asServiceList(raw) {
+  return asArray(raw)
+}
+
+function cloneServiceOrder(raw) {
+  if (!Array.isArray(raw)) return []
+  try {
+    const cloned = jsonLoad(jsonDump(raw) || 'null')
+    return Array.isArray(cloned) ? cloned : []
+  } catch {
+    return []
+  }
+}
+
 function syncOrderFromData() {
-  orderList.value = JSON.parse(JSON.stringify(data.value?.services || []))
+  orderList.value = cloneServiceOrder(data.value?.services)
 }
 function resetOrderFromData() {
   syncOrderFromData()
@@ -793,8 +807,8 @@ function resetOrderFromData() {
 }
 function moveService(idx, dir) {
   const j = idx + dir
-  if (j < 0 || j >= orderList.value.length) return
-  const arr = orderList.value.slice()
+  if (j < 0 || j >= asArray(orderList.value).length) return
+  const arr = asArray(orderList.value).slice()
   const tmp = arr[idx]
   arr[idx] = arr[j]
   arr[j] = tmp
@@ -812,13 +826,13 @@ async function refresh(force = false) {
     data.value = next
     loadError.value = ''
     syncOrderFromData()
-    if (deviceOptions.value.length && !deviceOptions.value.includes(aliasForm.value.device)) {
+    if (asArray(deviceOptions.value).length && !asArray(deviceOptions.value).includes(aliasForm.value.device)) {
       aliasForm.value.device = deviceOptions.value[0]
     }
     const aa = data.value?.alias_auto
     if (aa?.config) {
       autoBindOn.value = !!aa.config.auto_bind
-      autoIpsText.value = (aa.config.ips || []).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
+      autoIpsText.value = asArray(aa.config.ips).map((n) => finiteText(n, '')).filter(Boolean).join(', ')
     }
   } catch (e) {
     if (generation !== loadGeneration) return
@@ -839,7 +853,7 @@ async function runAutoBind() {
   try {
     const j = await runAliasAutoBind()
     if (!stillOnNetwork(generation)) return
-    autoBindLog.value = JSON.stringify(j.actions || j, null, 2)
+    autoBindLog.value = jsonText(j.actions || j, finiteText(j.message, '') || t('network.failed'))
     toast(j.ok ? `✅ ${finiteText(j.message, '') || t('network.aligned')}` : `❌ ${finiteText(j.message, '') || t('network.failed')}`)
     await refresh(true)
   } catch (e) {
@@ -936,7 +950,7 @@ async function saveOrder() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceOrder(orderList.value.map(s => s.name))
+    const j = await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1010,7 +1024,7 @@ async function removeAlias(device, ip) {
 
 function openPrimaryEdit(device, addr) {
   // open manual editor for matching service
-  const svc = (data.value?.services || []).find(s => s.device === device)
+  const svc = asServiceList(data.value?.services).find(s => s.device === device)
   if (svc) {
     openManual({
       ...svc,
@@ -1077,7 +1091,7 @@ async function applyManual() {
 
 function openDns(s) {
   dnsSvc.value = s
-  dnsServers.value = (s.dns || []).map((n) => finiteText(n, '')).filter(Boolean).join('\n')
+  dnsServers.value = asArray(s.dns).map((n) => finiteText(n, '')).filter(Boolean).join('\n')
 }
 
 async function applyDns() {
@@ -1144,7 +1158,7 @@ async function doLookup() {
 function openPortEdit(container) {
   portEdit.value = container || ''
   if (container) {
-    const maps = (data.value?.docker_ports || [])
+    const maps = asArray(data.value?.docker_ports)
       .filter(p => p.container === container && finiteN(p.host_port, null) != null)
       .map(p => `${finiteN(p.host_port)}:${finiteN(p.container_port)}`)
     portEditText.value = [...new Set(maps)].join('\n')
@@ -1192,7 +1206,7 @@ function openConnect(n) {
 function openDisconnect(n) {
   connectNet.value = n
   connectMode.value = 'disconnect'
-  connectContainer.value = (n.containers || [])[0]?.name || ''
+  connectContainer.value = asArray(n.containers)[0]?.name || ''
 }
 
 async function applyConnect() {

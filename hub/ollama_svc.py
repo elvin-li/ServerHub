@@ -31,6 +31,7 @@ Mutations are deliberately narrow:
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import plistlib
@@ -56,6 +57,9 @@ from hub.http_guard import (
 from hub.jobs import run_watchdog
 from hub.paths import AGENTS_DIR
 from hub.util import cached_snapshot, read_bytes_capped, safe_json_loads, strftime_now
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 _OPENER = no_redirect_opener()
 
@@ -126,20 +130,109 @@ CODES.setdefault("ollama.bad_label", (400, "invalid launchd label: {label}"))
 LABEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare rank gates themselves: planted in the in-memory pull
+    row it 500'd GET /api/ollama/pull/log raw (``_jsonable`` /
+    ``_pull_log_lines``), and planted as a settings scalar or block it took
+    GET /api/ollama/status to a coded 500 through ``settings_text`` /
+    ``_mapping_get`` (the system/status/usage_svc rule).  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    The ``hub.jobs._truthy`` rule, which the pull store never got: a junk
+    in-memory ``running`` value whose ``__bool__`` raised used to 500
+    GET /api/ollama/pull/log, POST /api/ollama/pull *and*
+    POST /api/ollama/models/delete at once.  Fails closed to False — a bomb
+    row is junk, not a live pull, so treating it as "running" would wedge
+    the single-pull mutex forever.
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    # _isa on the bytes gate, try on the decode: a ``__class__``-property
+    # bomb detonated the bare isinstance; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and renders below.
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a bytes-subclass ``.decode`` bomb used to
+            # escape here and 500 GET /api/ollama/pull/log via _jsonable.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    # Unbound str.encode, not text.encode (the jobs6/json6 convention):
+    # ``str(x)`` of a str subclass whose ``__str__`` returns itself keeps the
+    # subclass, so the bound ``.encode`` dispatched into a leftover override
+    # — the old catch answered "" and silently dropped the real model name /
+    # log tail out of GET /api/ollama/pull/log and the pull_running 409.
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -152,9 +245,34 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* bare isinstance below — as a
+    # pull-row value, a nested ``model`` mapping value, or a status field —
+    # and 500 GET /api/ollama/pull/log raw (coded-500 on /api/ollama/status).
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor (the
+        # dash10/json9 shape).  It used to be returned verbatim — every
+        # other liar drops at its unbound base call, but the bool gate had
+        # nothing to call — and the C-level JSON encoder then refused it:
+        # a raw 500 on GET /api/ollama/pull/log (pull-row ``rc``/``model``/
+        # ``started``, or nested in a ``model`` mapping) and a raw 500 on
+        # GET /api/ollama/status riding the pull state into the snapshot.
+        return value if type(value) is bool else None
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int (the modules5 rule): an int
+                # subclass ``__str__`` bomb in a junk pull row used to blow
+                # the digit-cap probe below (only ValueError was caught) and
+                # 500 GET /api/ollama/pull/log raw.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             # A >4300-digit int (a hex plist/YAML leftover dodges the
             # str->int digit cap on parse) passes this coercer untouched and
@@ -163,37 +281,98 @@ def _jsonable(value, depth: int = 0):
         except ValueError:
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``/
+                # ``__ne__`` bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
-            elif not isinstance(k, str):
+        # Unbound base view: a dict-subclass ``items()`` bomb in a junk
+        # pull-row value used to 500 GET /api/ollama/pull/log raw — the
+        # hub.jobs/_modules ``dict`` guard this walker never got.  The try
+        # is for a lying-``__class__`` dict impostor, which TypeErrors the
+        # unbound view itself.
+        try:
+            entries = list(dict.items(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        for k, v in entries:
+            # _isa on the key gates too: a ``__class__``-property bomb
+            # riding a mapping *key* used to detonate the bare isinstance
+            # and 500 GET /api/ollama/pull/log raw.
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if _isa(value, base):
+                # Unbound base iteration: a sequence-subclass ``__iter__``
+                # bomb cannot 500 and the real elements still survive.  The
+                # try is for a lying-``__class__`` impostor, which
+                # TypeErrors the unbound iteration itself.
+                try:
+                    items = list(base.__iter__(value))
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # getattr's default only swallows AttributeError; a property /
+        # ``__getattr__`` bomb still raised out of the probe itself and
+        # 500'd GET /api/ollama/pull/log raw.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -218,25 +397,158 @@ def _safe_int(raw, default: int = 0) -> int:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif not isinstance(value, str):
+    # _isa on both gates, try on the decode: a ``__class__``-property bomb
+    # detonated the bare isinstance itself; a lying ``__class__`` (claims
+    # bytes, is not) TypeErrors the unbound decode and answers "".
+    if _isa(value, (bytes, bytearray)):
+        try:
+            value = _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    elif not _isa(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``.encode`` bomb planted as a
+    # settings value used to raise out of every ``base_url()`` caller —
+    # a raw 500 on the daemon POSTs and a whole-page coded 500 on status.
+    # In a try (the ups_svc/wireguard rule): a *lying* ``__class__``
+    # (claims str, is not — the dash10/json9 impostor) passed the gate but
+    # made the unbound descriptor itself TypeError, taking
+    # GET /api/ollama/status to the coded 500 ``status_failed`` through
+    # ``settings_text``/``configured_url`` and lying a 502 onto the daemon
+    # POSTs.  An impostor is junk text, not a URL or label: it drops to "".
+    try:
+        text = str.encode(value, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def settings_text(value) -> str:
+    """A hand-edited settings scalar as sanitized text.
+
+    ``_as_text`` gates on ``isinstance(str)``, which silently dropped numeric
+    YAML values: a hand-edited ``label: 2023`` read back as int, discovery
+    fell through to the plist scan, and Start/Stop targeted a different
+    agent.  A ``str()`` probe keeps the numeric id — guarded, because a YAML
+    hex/octal integer is parsed via ``int(raw, 16)``/``int(raw, 8)`` (exempt
+    from CPython's 4300-digit cap) and an over-cap leftover would otherwise
+    ValueError at ``str()`` time.  bool/inf/NaN and collections stay "".
+    """
+    # _isa on every gate: a ``__class__``-property bomb planted as
+    # settings.ollama.url / .label used to detonate the first bare
+    # isinstance out of every base_url()/discover_label() caller — a coded
+    # 500 on GET /api/ollama/status and a raw 500 on GET /api/settings.
+    if _isa(value, (str, bytes, bytearray)):
+        return _as_text(value)
+    if value is None or _isa(value, bool):
+        return ""
+    if not _isa(value, (int, float)):
+        return ""
+    if _isa(value, float):
+        try:
+            # Base coercion to an exact float: a subclass ``__eq__``/``__ne__``
+            # bomb used to blow the NaN/inf probes (the modules5 rule).
+            value = float.__float__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+    try:
+        # ValueError: the int->str digit cap on an over-cap hex/octal YAML
+        # leftover.  Anything else: str() of an int/float *subclass*
+        # dispatches to its overridden ``__str__``, whose bomb used to raise
+        # out of every base_url()/discover_label() caller.
+        text = str(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    if not isinstance(text, str):
+        return ""
+    return str.encode(text, "utf-8", "replace").decode("utf-8")
+
+
+def _mapping_get(mapping, key):
+    """Field read that a dict-subclass ``.get`` bomb cannot 500.
+
+    The ``hub.ups_svc._mapping_get`` rule: ``isinstance(x, dict)`` passes an
+    odd subclass whose ``get`` raises, and one such settings block used to
+    raise out of ``base_url()`` into every daemon POST (a lying 502) and take
+    GET /api/ollama/status down whole.  ``dict.get`` reads the real storage
+    underneath the override.
+    """
+    # _isa: a config node whose ``__class__`` is a raising property used to
+    # detonate the bare gate itself — the same 500 this helper exists to
+    # prevent, one line earlier.
+    if not _isa(mapping, dict):
+        return None
+    try:
+        return mapping.get(key)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        try:
+            return dict.get(mapping, key)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
 
 
 def _settings() -> dict:
     # Read through this module's ``cfg`` so tests can patch it.
     # A leftover list/string settings (same shape that 500'd /api/ups) must
-    # not AttributeError on .get("ollama").
-    settings = cfg().get("settings")
-    raw = settings.get("ollama") if isinstance(settings, dict) else None
-    return raw if isinstance(raw, dict) else {}
+    # not AttributeError on .get("ollama"); a dict-*subclass* block whose
+    # ``.get`` raises must not blow the read either (_mapping_get), and the
+    # returned mapping is copied to a plain dict so the callers' own ``.get``
+    # cannot be the next bomb — ``dict()`` copies through the C-level
+    # storage, ignoring overridden methods.
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A detonating config loader used to raise out of every base_url()
+        # / discover_label() caller — a coded 500 on GET /api/ollama/status
+        # (the hub.status._cfg_root rule).  No config reads as defaults.
+        return {}
+    raw = _mapping_get(_mapping_get(data, "settings"), "ollama")
+    # _isa: a ``__class__``-property bomb planted as the whole ollama block
+    # used to detonate this bare gate the same way.
+    if not _isa(raw, dict):
+        return {}
+    if type(raw) is dict:
+        return raw
+    try:
+        return dict(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
 
 
 def configured_url() -> str:
-    """The operator-edited URL, unvalidated."""
-    return _as_text(_settings().get("url")).strip().rstrip("/") or DEFAULT_URL
+    """The operator-edited URL, unvalidated.
+
+    ``settings_text``, not ``_as_text``: a numeric YAML leftover coerces to
+    text and is then *visibly* rejected by :func:`base_url` (url_rejected
+    warns in the UI) instead of silently reading as unconfigured.
+    """
+    # _mapping_get, not a bare ``.get``: ``_settings()`` launders the *block*
+    # but keeps its stored keys, and even a plain-dict ``.get`` probe runs a
+    # colliding stored key's own ``__eq__`` inside the C-level lookup.  A
+    # leftover str-subclass key whose text shadows ``url`` and whose
+    # ``__eq__`` raises (the host10 hash-shadow class) used to escape every
+    # ``base_url()`` caller: the coded 500 on GET /api/ollama/status, a raw
+    # 500 on POST /api/ollama/models/delete (``_cli_env``), and a lying 502
+    # on the daemon POSTs.  The shadowed field reads as unconfigured.
+    return settings_text(_mapping_get(_settings(), "url")).strip().rstrip("/") or DEFAULT_URL
 
 
 def base_url() -> str:
@@ -320,6 +632,26 @@ def _ollama_open(req, timeout):
     return opener.open(req, timeout=timeout)
 
 
+def _capped_json_int(text):
+    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
+
+    ``int()`` of a >4300-digit number is the digit-cap *ValueError* (not
+    JSONDecodeError) for the whole document, so one unrenderable literal in a
+    daemon body used to wipe the entire payload: a huge ``size`` in /api/tags
+    emptied the models AND resident lists behind a "response is not json" lie
+    on GET /api/ollama/status, and a huge ``eval_count`` beside a perfectly
+    good generation discarded the whole answer into the 502
+    ``generate_failed``/``chat_failed`` — for unload, *after* the daemon had
+    already dropped the model.  Loading the number as None keeps the payload;
+    ``_safe_int`` / ``_jsonable`` then bound the field (the docker_cli /
+    brew_cache / shares_svc drop).
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT):
     """One request to the daemon; returns the parsed JSON body.
 
@@ -352,13 +684,69 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     if len(raw) >= MAX_BODY_BYTES:
         raise ValueError("response body exceeds the parse cap")
     try:
-        parsed = safe_json_loads(raw) if raw else {}
+        parsed = safe_json_loads(raw, parse_int=_capped_json_int) if raw else {}
     except (ValueError, RecursionError):
         # RecursionError: leftover deeply-nested daemon JSON is not ValueError.
         raise ValueError("response is not json")
     if not isinstance(parsed, dict):
         raise ValueError("response is not an object")
     return parsed
+
+
+#: Connection-level errnos that mean "nothing is accepting on that port".
+_DOWN_ERRNOS = frozenset({
+    errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+    errno.EHOSTUNREACH, errno.EHOSTDOWN, errno.ENETUNREACH, errno.ENETDOWN,
+})
+
+
+def _looks_engine_down(exc) -> bool:
+    """True for connection-level failures — the daemon is not accepting at all.
+
+    Timeouts (``socket.timeout`` is ``TimeoutError``) and HTTP answers from a
+    live daemon (including auth failures) are NOT this shape: they keep their
+    original coded error.  URLError wraps the socket error in ``reason``.
+    """
+    for _ in range(4):
+        if isinstance(exc, urllib.error.HTTPError):
+            return False
+        if isinstance(exc, urllib.error.URLError):
+            exc = exc.reason
+            continue
+        break
+    if isinstance(exc, TimeoutError):
+        return False
+    if isinstance(exc, ConnectionError):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _DOWN_ERRNOS
+
+
+def _engine_confirmed_down() -> bool:
+    """Fresh /api/version probe; runs only on a failure path, never on success."""
+    try:
+        _api("/api/version")
+        return False
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return True
+
+
+def _daemon_error(exc, fallback_code: str):
+    """The coded error for a failed daemon request.
+
+    unload/test/chat used to map a stopped daemon to their generic 502
+    (``unload_failed``/``generate_failed``/``chat_failed``) — the coded 503
+    ``ollama.unreachable`` was defined and translated but never raised.  Same
+    rule as the vanished-CLI 503 in :func:`delete_model` and docker's
+    ``engine_up(force=True)``: the reclassification fires only after a fresh
+    probe on this failure path confirms the daemon is down.  Timeouts, a
+    connection dropped by a daemon that is still answering, and HTTP-level
+    failures (auth included) keep *fallback_code*'s original shape.
+    """
+    if _looks_engine_down(exc) and _engine_confirmed_down():
+        return api_error("ollama.unreachable", error=exc_detail(exc))
+    return api_error(fallback_code, error=exc_detail(exc))
 
 
 # ── parsing (pure, unit-tested against captured payloads) ────────────────────
@@ -420,6 +808,117 @@ def parse_ps(payload: dict) -> list[dict]:
 
 # ── owning launchd job discovery ─────────────────────────────────────────────
 
+def _label_set(raw) -> frozenset:
+    """*raw* as a frozenset of exact-str labels.  Never raises.
+
+    The launchd-listing seam this module always trusted: ``discover_label``
+    ran ``label in running`` / ``label in loaded`` and ``_service_state`` ran
+    ``label in jobs.loaded`` on whatever the cached listing answered.  A
+    membership probe compares the query against every stored element whose
+    hash collides — dispatching into that element's own ``__eq__`` — so a
+    leftover str-subclass label riding the cached listing (the health12 /
+    dash12 shadow-element class) detonated the bare ``in`` and took
+    GET /api/ollama/status to the coded 500 ``ollama.status_failed``; a
+    junk non-set view (None, a scalar) TypeError'd the same probes.  The
+    laundered copy holds only exact strs, so no override can fire downstream;
+    a genuine label wrapped in a bomb subclass keeps its text and still
+    reports loaded/running (do-not-weaken).
+    """
+    if not _isa(raw, (frozenset, set, list, tuple)):
+        return frozenset()
+    items = None
+    for base in (frozenset, set, list, tuple):
+        if _isa(raw, base):
+            # Unbound base iteration (the _pull_log_lines convention): a
+            # subclass ``__iter__`` bomb cannot 500, and a lying
+            # ``__class__`` impostor TypeErrors the unbound call itself.
+            try:
+                items = list(base.__iter__(raw))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return frozenset()
+            break
+    if items is None:
+        return frozenset()
+    out: set[str] = set()
+    for item in items:
+        if not _isa(item, (str, bytes, bytearray)):
+            continue
+        text = _as_text(item).strip()
+        if text:
+            out.add(text)
+    return frozenset(out)
+
+
+def _listing_attr(jobs, name):
+    """One attribute of the cached listing, or None.  Never raises.
+
+    ``jobs.loaded`` / ``jobs.running`` on a junk cached object whose
+    attribute is a *raising property* used to detonate the bare read out of
+    ``_service_state`` — the coded 500 on GET /api/ollama/status.
+    """
+    if jobs is None:
+        return None
+    try:
+        return getattr(jobs, name, None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _listing_pid(jobs, label):
+    """``jobs.pid_for(label)`` laundered to a non-negative int, or None.
+
+    Three ex-detonations on GET /api/ollama/status: a junk listing whose
+    ``pid_for`` raises blew the bare call; a str-subclass pid whose
+    ``__bool__`` bombs blew the old ``if pid`` truth test; and an
+    int-subclass pid whose ``__eq__`` bombs blew ``_safe_int``'s own
+    ``raw in (None, "")`` membership probe.  A real pid answer (str digits,
+    or a genuine int) keeps its value; junk reads as "not running".
+    """
+    if jobs is None:
+        return None
+    try:
+        raw = jobs.pid_for(label)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    if raw is None or type(raw) is bool:
+        return None
+    if _isa(raw, int):
+        try:
+            # Base coercion to an exact int (the _jsonable rule): a
+            # subclass ``__index__``/``__str__`` bomb drops instead of
+            # raising out of the snapshot.
+            n = int.__index__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    else:
+        text = _as_text(raw).strip()
+        if not text or not text.isdigit():
+            return None
+        try:
+            n = int(text)
+        except ValueError:
+            # >4300 digits: the str->int digit cap.  Not a pid.
+            return None
+    if n < 0:
+        return None
+    try:
+        # An over-cap already-int leftover would ValueError json.dumps
+        # itself at int->str time (the _safe_int rule).
+        str(n)
+    except ValueError:
+        return None
+    return n
+
+
+
 def _plist_label_if_ollama(path: Path) -> str | None:
     """The plist's Label when its content references ollama at all.
 
@@ -430,7 +929,9 @@ def _plist_label_if_ollama(path: Path) -> str | None:
     """
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if not isinstance(pl, dict):
         return None
@@ -479,7 +980,9 @@ def _agent_origins(label: str | None = None) -> str:
     path = Path(AGENTS_DIR) / f"{name}.plist"
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     if not isinstance(pl, dict):
         return ""
@@ -525,7 +1028,14 @@ def discover_label(
     *loaded* / *running* are injectable so the health path can pass empty sets
     instead of triggering a launchctl spawn.
     """
-    configured = _as_text(_settings().get("label")).strip()
+    # settings_text, not _as_text: a hand-edited numeric YAML label
+    # (``label: 2023``) used to be silently ignored here, so discovery fell
+    # through to the plist scan and Start/Stop targeted a different agent.
+    # _mapping_get, not a bare ``.get``: a leftover hash-shadowing ``label``
+    # key used to detonate the lookup's own ``__eq__`` out of every caller —
+    # the same coded 500 on GET /api/ollama/status the shadowed ``url`` key
+    # caused through configured_url().
+    configured = settings_text(_mapping_get(_settings(), "label")).strip()
     if configured:
         return configured
     candidates = _candidate_labels()
@@ -539,9 +1049,19 @@ def discover_label(
             loaded = jobs.loaded
             if running is None:
                 running = jobs.running
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             loaded = frozenset()
-    running = running or frozenset()
+    # _label_set on both views, not ``running or frozenset()``: the ``or``
+    # truth test reflected into a junk view's own ``__bool__``, and the
+    # membership loops below ran a leftover shadow element's ``__eq__``
+    # inside the C-level probe — either used to detonate out of every
+    # caller (the coded 500 on GET /api/ollama/status through
+    # ``_service_state``, and the health fan-out row).  The laundered sets
+    # hold exact strs only, so a genuine label still wins its rank.
+    loaded = _label_set(loaded)
+    running = _label_set(running)
     for label in candidates:
         if label in running:
             return label
@@ -566,12 +1086,22 @@ def _service_state(*, reachable: bool = False) -> dict:
 
     try:
         jobs = listing()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         jobs = None
-    label = discover_label(
-        loaded=jobs.loaded if jobs else frozenset(),
-        running=jobs.running if jobs else frozenset(),
-    )
+    # The try above only covered the *call*.  The reads were still bare:
+    # ``jobs.loaded if jobs else …`` ran a junk cached listing's own
+    # ``__bool__`` and then its raising ``loaded``/``running`` properties,
+    # ``label in jobs.loaded`` ran a leftover shadow element's ``__eq__``
+    # inside the membership probe, and ``if pid`` / ``_safe_int(pid)`` ran
+    # a junk pid answer's ``__bool__``/``__eq__`` — each used to detonate
+    # out of :func:`status` as the coded 500 ``ollama.status_failed``.
+    # ``_listing_attr`` + ``_label_set`` + ``_listing_pid`` launder the
+    # whole seam; a healthy listing keeps its exact answers.
+    loaded = _label_set(_listing_attr(jobs, "loaded"))
+    running = _label_set(_listing_attr(jobs, "running"))
+    label = discover_label(loaded=loaded, running=running)
     state = {
         "label": label,
         "loaded": False,
@@ -580,11 +1110,11 @@ def _service_state(*, reachable: bool = False) -> dict:
         "candidates": _candidate_labels(),
         "inferred": False,
     }
-    if label and jobs:
-        state["loaded"] = label in jobs.loaded
-        pid = jobs.pid_for(label)
+    if label:
+        state["loaded"] = label in loaded
+        pid = _listing_pid(jobs, label)
         state["running"] = pid is not None
-        state["pid"] = _safe_int(pid) if pid else None
+        state["pid"] = pid
     if reachable and not state["running"]:
         state["running"] = True
         state["loaded"] = True
@@ -605,13 +1135,17 @@ def status() -> dict:
     try:
         version = _as_text(_api("/api/version").get("version"))
         reachable = True
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         error = exc_detail(e)
     if reachable:
         try:
             models = parse_tags(_api("/api/tags"))
             resident = parse_ps(_api("/api/ps"))
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             # Version answered but tags/ps failed: still "reachable", but say why.
             error = exc_detail(e)
     binary = binary_path()
@@ -651,19 +1185,143 @@ _pull = {
 _pull_lock = threading.Lock()
 
 
+def _row_get(key, default=None):
+    """``_pull`` field read that a leftover hash-shadowing row *key* cannot 500.
+
+    The ``hub.jobs._mapping_get`` rule the pull store never got: even a
+    plain-dict ``.get`` probe compares the probe against every stored key
+    whose hash collides, dispatching into that key's own ``__eq__``.  A
+    leftover str-subclass key whose text shadows ``running`` / ``model`` /
+    ``rc`` / ``log`` and whose ``__eq__`` raises used to 500
+    GET /api/ollama/pull/log raw, take GET /api/ollama/status to the coded
+    500, and 500 POST /api/ollama/pull and /api/ollama/models/delete out of
+    the single-pull mutex scan.  Only the shadowed field degrades to its
+    default; sibling fields keep their sane data.
+    """
+    try:
+        return _pull.get(key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _reset_pull_row(row: dict) -> None:
+    """Publish *row* into ``_pull``; a hash-shadowing stored key cannot 500.
+
+    ``dict.update`` probes every inserted key against colliding stored keys
+    (their own ``__eq__`` runs inside the C-level insert), so a leftover
+    shadow key used to 500 POST /api/ollama/pull before the pull ever
+    started.  A row the insert cannot probe is junk, not a live pull: it is
+    dropped whole and the real row published into the emptied store — the
+    module-level dict keeps its identity for the tailing thread.
+    """
+    try:
+        _pull.update(row)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        _pull.clear()
+        _pull.update(row)
+
+
 def pull_state() -> dict:
-    return {
-        "running": _pull["running"],
-        "rc": _pull["rc"],
-        "model": _pull["model"],
-        "started": _pull["started"],
-        "finished": _pull["finished"],
+    """Pull-job state as the UI polls it.  Never raises.
+
+    The maintenance twin (:func:`hub.jobs.job_state`) already coerces a junk
+    in-memory row; this one served ``_pull`` raw.  GET /api/ollama/status
+    survived only because :func:`status` re-walks the whole snapshot through
+    ``_jsonable`` — GET /api/ollama/pull/log had no such pass, so a leftover
+    inf ``rc`` (or one past the int->str digit cap) 500'd the encoder there.
+    """
+    state = _jsonable({
+        # _truthy, not bool(): a __bool__-bomb leftover used to 500 this
+        # route (and take GET /api/ollama/status to a coded 500) raw.
+        # _row_get, not ``_pull.get``: a hash-shadowing row *key* used to
+        # detonate the plain lookup itself the same way.
+        "running": _truthy(_row_get("running")),
+        "rc": _row_get("rc"),
+        "model": _row_get("model"),
+        "started": _row_get("started"),
+        "finished": _row_get("finished"),
+    })
+    return state if isinstance(state, dict) else {
+        "running": False, "rc": None, "model": None,
+        "started": None, "finished": None,
     }
 
 
+def _pull_log_lines(raw) -> list[str]:
+    """String lines from a leftover pull-row ``log`` field.  Never raises.
+
+    The ``jobs._log_lines`` rule: ``log: [bytes, None, 5]`` in a junk
+    in-memory row TypeError'd ``str.join`` out of GET /api/ollama/pull/log.
+    """
+    # _isa on every gate: a leftover ``log`` (or one line in it) whose
+    # ``__class__`` is a raising property used to detonate the bare
+    # isinstance itself and 500 GET /api/ollama/pull/log raw.
+    if _isa(raw, str):
+        try:
+            # Unbound base length, not ``if raw``: truthiness of a str
+            # *subclass* dispatches into its own ``__bool__``/``__len__``,
+            # and a leftover bomb there used to 500 GET /api/ollama/pull/log
+            # raw — the one subclass shape the ollama6 sweep missed.  The
+            # try is for a lying ``__class__`` (claims str, is not), which
+            # TypeErrors the unbound call.
+            return [raw] if str.__len__(raw) else []
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return []
+    if not _isa(raw, (list, tuple)):
+        return []
+    base = list if _isa(raw, list) else tuple
+    try:
+        # Unbound base iteration: a list-subclass ``__iter__`` bomb used to
+        # 500 GET /api/ollama/pull/log past the isinstance gate (the
+        # hub.jobs._log_lines rule), and the real lines still survive.
+        items = list(base.__iter__(raw))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    out: list[str] = []
+    for item in items:
+        # _isa on the per-item gates: a ``__class__``-property bomb *line*
+        # used to detonate outside the materializing try above and 500 the
+        # route; it drops alone and the real lines still survive.
+        if _isa(item, str):
+            try:
+                # Unbound base probe: a *lying* ``__class__`` line (claims
+                # str, is not — the dash10/json9 impostor) passed the gate
+                # and was appended raw, so ``str.join`` in :func:`pull_log`
+                # TypeError'd GET /api/ollama/pull/log.  The probe reads
+                # the real storage, so a genuine str subclass (even one
+                # with bound ``__len__``/``__bool__`` bombs) still passes;
+                # only an impostor TypeErrors and drops alone.
+                str.__len__(item)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+            out.append(item)
+        elif _isa(item, (bytes, bytearray)):
+            try:
+                out.append(_decode_bytes(item))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    return out
+
+
 def pull_log() -> dict:
-    """State + joined log, same shape the maintenance log endpoint serves."""
-    return {**pull_state(), "log": "\n".join(_pull["log"])}
+    """State + joined log, same shape the maintenance log endpoint serves.
+
+    ``_utf8_text`` on the joined tail: a leftover lone surrogate in one line
+    used to 500 Starlette's strict UTF-8 encode of the response body.
+    """
+    return {**pull_state(), "log": _utf8_text("\n".join(_pull_log_lines(_row_get("log"))))}
 
 
 def start_pull(name: str) -> dict:
@@ -678,19 +1336,32 @@ def start_pull(name: str) -> dict:
     if not binary:
         raise api_error("ollama.not_installed")
     with _pull_lock:
-        if _pull["running"]:
-            raise api_error("ollama.pull_running", model=_pull.get("model") or "")
-        _pull.update(
+        # _truthy + is-None probe: a leftover __bool__-bomb ``running`` (or
+        # ``model``, via the truth test hidden in ``or``) used to 500 this
+        # POST raw instead of starting/refusing the pull.  _row_get: a
+        # hash-shadowing row key used to detonate the mutex scan itself.
+        if _truthy(_row_get("running")):
+            busy = _row_get("model")
+            raise api_error(
+                "ollama.pull_running",
+                model=_utf8_text(busy) if busy is not None else "",
+            )
+        _reset_pull_row(dict(
             running=True, rc=None, model=name,
             started=strftime_now("%H:%M:%S"), finished=None,
             log=[f"$ ollama pull {name}"],
-        )
+        ))
 
     def run():
         try:
-            _pull["rc"] = run_watchdog(
+            # _run_cli: a leftover raising runner used to skip the ``rc``
+            # write whole — the pull finished with running=False, rc=None
+            # and an empty verdict (the jobs.start_job silent-loss shape);
+            # a junk rc answer now lands laundered instead of riding raw
+            # into the pull row.
+            _pull["rc"] = _run_cli(
                 [binary, "pull", name],
-                timeout=PULL_TIMEOUT, log=_pull["log"], env=_cli_env(),
+                timeout=PULL_TIMEOUT, log=_pull["log"],
             )
         finally:
             _pull["running"] = False
@@ -703,6 +1374,67 @@ def start_pull(name: str) -> dict:
 
 # ── delete / unload / quick test ─────────────────────────────────────────────
 
+def _exact_rc(raw) -> int:
+    """A runner's exit answer as an exact, renderable int; junk reads as -1.
+
+    ``delete_model`` compared the answer raw: ``rc != 0`` dispatches into
+    the value's own ``__ne__``, so an int-subclass rc whose comparison
+    bombs (the wg11/vms11 junk-answer-shape class) used to 500
+    POST /api/ollama/models/delete before any coded error could form, and
+    a float/None/str answer rode into ``f"exit {rc}"`` or the ``rc == -1``
+    probe the same way.  A genuine subclass carrying a real code keeps its
+    value through the unbound base coercion (do-not-weaken); anything that
+    cannot answer as an int is the could-not-run sentinel.
+    """
+    if type(raw) is bool:
+        return int(raw)
+    if _isa(raw, int):
+        if type(raw) is not int:
+            try:
+                n = int.__index__(raw)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return -1
+        else:
+            n = raw
+        try:
+            # An over-cap leftover would ValueError json.dumps / the
+            # f-string render at int->str time (the _safe_int rule).
+            str(n)
+        except ValueError:
+            return -1
+        return n
+    return -1
+
+
+def _run_cli(argv, *, timeout, log) -> int:
+    """:func:`hub.jobs.run_watchdog` with the answer seam laundered.
+
+    Never raises, and always answers an exact int.  ``run_watchdog``
+    guards its own body, but the seam itself was still bare at both call
+    sites: a leftover raising runner used to 500
+    POST /api/ollama/models/delete raw, and in the pull thread it skipped
+    the ``rc`` write entirely — the job finished with no verdict at all
+    (the hub.jobs.start_job silent-loss rule).  A raise is the same
+    could-not-run -1 sentinel run_watchdog itself reports, with the error
+    text kept in the log so the UI can say why.
+    """
+    try:
+        rc = run_watchdog(argv, timeout=timeout, log=log, env=_cli_env())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        try:
+            log.append(f"!! error: {_utf8_text(e)}")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
+        return -1
+    return _exact_rc(rc)
+
+
 def delete_model(name: str) -> dict:
     """`ollama rm <name>` — argv, never a shell; confirm is enforced upstream."""
     name = validate_model_name(name)
@@ -710,13 +1442,29 @@ def delete_model(name: str) -> dict:
     if not binary:
         raise api_error("ollama.not_installed")
     with _pull_lock:
-        if _pull["running"]:
+        if _truthy(_row_get("running")):
             # rm during a pull of the same blob corrupts neither, but the
             # combination has no legitimate use; keep the story simple.
-            raise api_error("ollama.pull_running", model=_pull.get("model") or "")
+            # _truthy + is-None probe: the same __bool__-bomb leftovers that
+            # 500'd POST /api/ollama/pull used to 500 this route too.
+            # _row_get: the same hash-shadowing row keys that 500'd the pull
+            # mutex scan used to 500 this one too.
+            busy = _row_get("model")
+            raise api_error(
+                "ollama.pull_running",
+                model=_utf8_text(busy) if busy is not None else "",
+            )
     log: list[str] = []
-    rc = run_watchdog([binary, "rm", name], timeout=RM_TIMEOUT, log=log, env=_cli_env())
+    # _run_cli, not a bare run_watchdog: a leftover raising runner or a
+    # junk rc answer shape used to 500 this POST raw at the ``rc != 0``
+    # comparison / the f-string render.
+    rc = _run_cli([binary, "rm", name], timeout=RM_TIMEOUT, log=log)
     status.invalidate()
+    # _pull_log_lines + _utf8_text on the tail, not a bare str.join: a
+    # leftover runner that hands back bytes/None/int lines TypeError'd the
+    # join — on the *success* return too — and a lone surrogate in a kept
+    # line still 500'd Starlette's UTF-8 encode of the response body.
+    tail = _utf8_text("\n".join(_pull_log_lines(log)))
     if rc != 0:
         # rc -1 is run_watchdog's could-not-run sentinel — but it is also
         # what a SIGHUP-killed rm reports, so the sentinel alone must not
@@ -727,8 +1475,8 @@ def delete_model(name: str) -> dict:
         # path, never on a successful rm.
         if rc == -1 and binary_path() is None:
             raise api_error("ollama.not_installed")
-        raise api_error("ollama.rm_failed", error="\n".join(log)[-300:] or f"exit {rc}")
-    return {"ok": True, "model": name, "message": "\n".join(log)[-300:]}
+        raise api_error("ollama.rm_failed", error=tail[-300:] or f"exit {rc}")
+    return {"ok": True, "model": name, "message": tail[-300:]}
 
 
 def unload_model(name: str) -> dict:
@@ -741,8 +1489,10 @@ def unload_model(name: str) -> dict:
     name = validate_model_name(name)
     try:
         _api("/api/generate", {"model": name, "keep_alive": 0}, timeout=UNLOAD_TIMEOUT)
-    except Exception as e:
-        raise api_error("ollama.unload_failed", error=exc_detail(e))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        raise _daemon_error(e, "ollama.unload_failed")
     status.invalidate()
     return {"ok": True, "model": name}
 
@@ -765,8 +1515,10 @@ def quick_test(name: str, prompt: str, num_predict: int = 128) -> dict:
     t0 = time.monotonic()
     try:
         resp = _api("/api/generate", payload, timeout=GENERATE_TIMEOUT)
-    except Exception as e:
-        raise api_error("ollama.generate_failed", error=exc_detail(e))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        raise _daemon_error(e, "ollama.generate_failed")
     elapsed = time.monotonic() - t0
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -862,8 +1614,10 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
     t0 = time.monotonic()
     try:
         resp = _api("/api/chat", payload, timeout=GENERATE_TIMEOUT)
-    except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        raise _daemon_error(e, "ollama.chat_failed")
     msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
@@ -899,11 +1653,15 @@ def _open_chat_http(payload: dict):
         err = ""
         try:
             err = e.read(400).decode("utf-8", "replace")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             err = exc_detail(e)
         raise api_error("ollama.chat_failed", error=(err or exc_detail(e))[:200])
-    except Exception as e:
-        raise api_error("ollama.chat_failed", error=exc_detail(e))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
+        raise _daemon_error(e, "ollama.chat_failed")
 
 
 def start_chat_stream(name: str, messages: list, num_predict: int = 128):
@@ -933,7 +1691,9 @@ def start_chat_stream(name: str, messages: list, num_predict: int = 128):
         finally:
             try:
                 resp.close()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
 
     return lines()
@@ -974,7 +1734,9 @@ def health_checks() -> list[dict]:
     try:
         version = _as_text(_api("/api/version").get("version"))
         resident = parse_ps(_api("/api/ps"))
-    except Exception as e:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:
         rows.append({
             "id": "ollama_api",
             "name": row_name,

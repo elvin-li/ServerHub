@@ -4,8 +4,8 @@
       <h1>{{ t('apps.title') }}</h1>
       <span class="meta">
         {{ t('apps.meta') }}
-        · {{ finiteN(overview.total, catalog.length) }} {{ t('apps.templates') }}
-        · {{ finiteN(overview.installed, 0) }} {{ t('apps.installed_n') }}
+        · {{ finiteN(asRecord(overview).total, asArray(catalog).length) }} {{ t('apps.templates') }}
+        · {{ finiteN(asRecord(overview).installed, 0) }} {{ t('apps.installed_n') }}
       </span>
     </div>
 
@@ -21,10 +21,10 @@
         <!-- role=status: the count is the only feedback the search box, category
              select and toggles give, and it changed silently for a screen
              reader. Same pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ catalog.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(catalog).length }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
-          <option v-for="c in categories" :key="c.id" :value="c.id">
-            {{ catLabel(c.id) }}{{ countLabel(c.id) }}
+          <option v-for="c in asArray(categories)" :key="finiteText(asRecord(c).id)" :value="asRecord(c).id">
+            {{ catLabel(asRecord(c).id) }}{{ countLabel(asRecord(c).id) }}
           </option>
         </select>
         <label class="chk"><input type="checkbox" v-model="onlyFeatured" /> {{ t('apps.featured_only') }}</label>
@@ -40,69 +40,81 @@
 
       <div class="cat-pills">
         <button
-          v-for="c in quickCats"
-          :key="c.id"
+          v-for="c in asArray(quickCats)"
+          :key="finiteText(asRecord(c).id)"
           type="button"
           class="cat-pill"
-          :class="{ active: cat === c.id }"
-          :aria-pressed="cat === c.id"
-          @click="cat = c.id"
-        >{{ catLabel(c.id) }}{{ countLabel(c.id) }}</button>
+          :class="{ active: cat === asRecord(c).id }"
+          :aria-pressed="cat === asRecord(c).id"
+          @click="cat = asRecord(c).id"
+        >{{ catLabel(asRecord(c).id) }}{{ countLabel(asRecord(c).id) }}</button>
       </div>
 
+      <!-- Above the grid: on a failed refresh the cards below are the *stale*
+           listing, and the failure banner used to render underneath them —
+           off-screen on any populated catalog, so the page looked healthy
+           while showing old data. Same placement the Managed tab uses.
+           role=status on the placeholders: the empty/no-match split is the
+           grid's only answer to a filter change and it changed silently for
+           a screen reader (the same treatment the filter count carries). -->
+      <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
+      <div v-else-if="!catalogLoaded" class="placeholder" role="status">{{ t('common.loading') }}</div>
+      <div v-else-if="!asArray(filtered).length" class="placeholder" role="status">
+        {{ asArray(catalog).length ? t('common.no_match') : t('apps.empty') }}
+      </div>
       <div class="app-grid">
         <article
-          v-for="tpl in filtered"
-          :key="tpl.id"
+          v-for="tpl in asArray(filtered)"
+          :key="finiteText(asRecord(tpl).id)"
           class="app-card"
           :class="{
-            featured: tpl.featured,
-            installed: tpl.installed,
-            native: tpl.kind === 'native',
+            featured: asRecord(tpl).featured,
+            installed: asRecord(tpl).installed,
+            native: asRecord(tpl).kind === 'native',
           }"
         >
           <header class="app-head">
-            <h3 class="app-title" :title="finiteText(tpl.name)">{{ finiteText(tpl.name) }}</h3>
+            <h3 class="app-title" :title="finiteText(asRecord(tpl).name)">{{ finiteText(asRecord(tpl).name) }}</h3>
             <div class="app-badges">
-              <span class="chip" :class="tpl.kind === 'native' ? 'chip-native' : 'chip-docker'">
-                {{ tpl.kind === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
+              <span class="chip" :class="asRecord(tpl).kind === 'native' ? 'chip-native' : 'chip-docker'">
+                {{ asRecord(tpl).kind === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
               </span>
               <span
-                v-if="tpl.source === 'remote'"
+                v-if="asRecord(tpl).source === 'remote'"
                 class="chip chip-remote"
                 :title="t('catalog_remote.badge_title')"
-              >{{ t('catalog_remote.badge') }}{{ finiteText(tpl.remote_version, '') ? ` ${finiteText(tpl.remote_version)}` : '' }}</span>
-              <span v-if="tpl.featured" class="chip chip-feat">{{ t('apps.featured') }}</span>
-              <span v-if="tpl.installed" class="chip chip-ok">{{ t('apps.installed') }}</span>
-              <span v-if="tpl.running" class="chip chip-ok">{{ t('common.running') }}</span>
+              >{{ t('catalog_remote.badge') }}{{ finiteText(asRecord(tpl).remote_version, '') ? ` ${finiteText(asRecord(tpl).remote_version)}` : '' }}</span>
+              <span v-if="asRecord(tpl).featured" class="chip chip-feat">{{ t('apps.featured') }}</span>
+              <span v-if="asRecord(tpl).installed" class="chip chip-ok">{{ t('apps.installed') }}</span>
+              <span v-if="asRecord(tpl).running" class="chip chip-ok">{{ t('common.running') }}</span>
             </div>
           </header>
 
           <div class="app-meta">
-            <span class="cat-tag">{{ catLabel(tpl.category) }}</span>
-            <span v-for="tg in (tpl.tags || []).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
+            <span class="cat-tag">{{ catLabel(asRecord(tpl).category) }}</span>
+            <span v-for="tg in asArray(asRecord(tpl).tags).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
           </div>
 
-          <p class="app-desc">{{ finiteText(tpl.desc) }}</p>
+          <p class="app-desc">{{ finiteText(asRecord(tpl).desc) }}</p>
 
-          <div v-if="(tpl.ports || []).length" class="app-ports mono">
-            ports: {{ (tpl.ports || []).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
+          <div v-if="asArray(asRecord(tpl).ports).length" class="app-ports mono">
+            ports: {{ asArray(asRecord(tpl).ports).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
           </div>
-          <div v-if="(tpl.images || []).length" class="app-images mono" :title="(tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
-            {{ (tpl.images || []).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ (tpl.images || []).length > 2 ? '…' : '' }}
+          <div v-if="asArray(asRecord(tpl).images).length" class="app-images mono" :title="asArray(asRecord(tpl).images).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
+            {{ asArray(asRecord(tpl).images).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ asArray(asRecord(tpl).images).length > 2 ? '…' : '' }}
           </div>
-          <div v-if="tpl.package" class="app-ports mono">brew: {{ finiteText(tpl.package) }}</div>
+          <div v-if="asRecord(tpl).package" class="app-ports mono">brew: {{ finiteText(asRecord(tpl).package) }}</div>
           <div v-if="catalogOpenUrl(tpl)" class="app-ports mono">{{ catalogOpenUrl(tpl) }}</div>
 
           <footer class="app-actions">
             <button
-              v-if="!tpl.installed"
+              v-if="!asRecord(tpl).installed"
               type="button"
               class="primary"
               :disabled="busy"
               @click="openInstall(tpl)"
             >
-              {{ tpl.kind === 'native' ? t('apps.deploy_native') : t('apps.deploy') }}
+              {{ asRecord(tpl).kind === 'native' ? t('apps.deploy_native') : t('apps.deploy') }}
             </button>
             <template v-else>
               <button
@@ -112,13 +124,13 @@
                 @click="doUninstall(tpl)"
               >{{ t('apps.uninstall') }}</button>
               <button
-                v-if="tpl.kind === 'docker' || (tpl.kind === 'native' && tpl.running != null)"
+                v-if="asRecord(tpl).kind === 'docker' || (asRecord(tpl).kind === 'native' && asRecord(tpl).running != null)"
                 type="button"
                 :disabled="busy"
                 @click="goManage(tpl)"
               >{{ t('apps.manage') }}</button>
               <button
-                v-if="tpl.path && tpl.kind !== 'native'"
+                v-if="asRecord(tpl).path && asRecord(tpl).kind !== 'native'"
                 type="button"
                 @click="openPath(tpl)"
               >{{ t('apps.open_stack') }}</button>
@@ -131,7 +143,7 @@
               >{{ t('apps.open_url') }}</button>
             </template>
             <button
-              v-if="tpl.source === 'remote'"
+              v-if="asRecord(tpl).source === 'remote'"
               type="button"
               :disabled="busy || remoteBusy"
               @click="restoreBuiltin(tpl)"
@@ -139,9 +151,6 @@
           </footer>
         </article>
       </div>
-      <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
-      <div v-else-if="!catalogLoaded" class="placeholder">{{ t('common.loading') }}</div>
-      <div v-else-if="!filtered.length" class="placeholder">{{ t('apps.empty') }}</div>
     </template>
 
     <!-- Managed inventory: native + docker + launchd + vm -->
@@ -151,7 +160,7 @@
         <!-- role=status: the count is the only feedback the search box and kind
              select give, and it changed silently for a screen reader. Same
              pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ (managed.items || []).length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredManaged).length }} / {{ asArray(asRecord(managed).items).length }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
@@ -164,13 +173,13 @@
         <!-- role=status: the breakdown is Refresh's only answer and it changed
              silently for a screen reader — the same treatment the filter count
              beside it (and every sibling .meta-count) already carries. -->
-        <span class="meta-count" role="status" v-if="managed.counts">
-          {{ finiteN(managed.counts.total) }} ·
-          {{ t('apps.kind_native') }} {{ finiteN(managed.counts.native) }} ·
-          Docker {{ finiteN(managed.counts.docker) }} ·
-          {{ t('apps.kind_launchd') }} {{ finiteN(managed.counts.launchd, 0) }} ·
-          VM {{ finiteN(managed.counts.vm) }} ·
-          {{ t('common.running') }} {{ finiteN(managed.counts.running) }}
+        <span class="meta-count" role="status" v-if="asRecord(managed).counts">
+          {{ finiteN(asRecord(asRecord(managed).counts).total) }} ·
+          {{ t('apps.kind_native') }} {{ finiteN(asRecord(asRecord(managed).counts).native) }} ·
+          Docker {{ finiteN(asRecord(asRecord(managed).counts).docker) }} ·
+          {{ t('apps.kind_launchd') }} {{ finiteN(asRecord(asRecord(managed).counts).launchd, 0) }} ·
+          VM {{ finiteN(asRecord(asRecord(managed).counts).vm) }} ·
+          {{ t('common.running') }} {{ finiteN(asRecord(asRecord(managed).counts).running) }}
         </span>
       </div>
 
@@ -204,50 +213,50 @@
                  It also duplicated the tab stop the "Detail" button in the actions
                  cell already provides, which is the keyboard path to the same
                  openDetail(it). -->
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)">
+            <tr v-for="it in asArray(filteredManaged)" :key="finiteText(asRecord(it).id)" @click="openDetail(it)">
               <td>
-                <strong>{{ finiteText(it.name) }}</strong>
-                <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
-                <div class="show-m sub-line">{{ kindLabel(it.kind) }}</div>
-                <div v-if="finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-                <div class="show-m sub-line mono">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend, '') }}</div>
+                <strong>{{ finiteText(asRecord(it).name) }}</strong>
+                <div class="sub-line" v-if="asRecord(it).status_text">{{ finiteText(asRecord(it).status_text) }}</div>
+                <div class="show-m sub-line">{{ kindLabel(asRecord(it).kind) }}</div>
+                <div v-if="finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div class="show-m sub-line mono">{{ finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '') || finiteText(asRecord(it).backend, '') }}</div>
                 <div class="show-m" @click.stop>
                   <!-- Named after the app: a column of switches all announced as
                        "Autostart" cannot be told apart in a form-controls
                        listing — same fix as the Scheduler enable toggles. -->
                   <MacSwitch
-                    v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
-                    :checked="!!it.autostart"
-                    :disabled="busy || it.kind === 'vm'"
-                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
-                    :title="finiteText(it.autostart_detail, '')"
+                    v-if="asRecord(it).autostart != null || asRecord(it).kind === 'docker' || asRecord(it).autostart_id"
+                    :checked="!!asRecord(it).autostart"
+                    :disabled="busy || asRecord(it).kind === 'vm'"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
+                    :title="finiteText(asRecord(it).autostart_detail, '')"
                     @click.stop
                     @change="toggleManagedAutostart(it, $event)"
                   />
                 </div>
               </td>
               <td class="col-hide-m">
-                <span class="chip" :class="kindChip(it.kind)">{{ kindLabel(it.kind) }}</span>
+                <span class="chip" :class="kindChip(asRecord(it).kind)">{{ kindLabel(asRecord(it).kind) }}</span>
               </td>
               <td>
-                <span class="chip" :class="it.state === 'ok' ? 'chip-ok' : (it.state === 'warn' ? 'chip-feat' : 'chip-muted')">
-                  {{ stateLabel(it.state) }}
+                <span class="chip" :class="asRecord(it).state === 'ok' ? 'chip-ok' : (asRecord(it).state === 'warn' ? 'chip-feat' : 'chip-muted')">
+                  {{ stateLabel(asRecord(it).state) }}
                 </span>
               </td>
-              <td class="mono ports-cell col-hide-m">{{ finiteText(it.ports_summary, '') || (it.ips || []).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono ports-cell col-hide-m">{{ finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="col-hide-m" @click.stop>
                 <MacSwitch
-                  v-if="it.autostart != null || it.kind === 'docker' || it.autostart_id"
-                  :checked="!!it.autostart"
-                  :disabled="busy || it.kind === 'vm'"
-                  :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
-                  :title="finiteText(it.autostart_detail, '')"
+                  v-if="asRecord(it).autostart != null || asRecord(it).kind === 'docker' || asRecord(it).autostart_id"
+                  :checked="!!asRecord(it).autostart"
+                  :disabled="busy || asRecord(it).kind === 'vm'"
+                  :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
+                  :title="finiteText(asRecord(it).autostart_detail, '')"
                   @click.stop
                   @change="toggleManagedAutostart(it, $event)"
                 />
                 <span v-else class="sub-line">—</span>
               </td>
-              <td class="mono path-cell col-hide-m" :title="finiteText(it.path, '') || finiteText(it.package, '')">{{ finiteText(it.path, '') || finiteText(it.package, '') || finiteText(it.backend) }}</td>
+              <td class="mono path-cell col-hide-m" :title="finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '')">{{ finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '') || finiteText(asRecord(it).backend) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <!-- A native <button> activates on Enter/Space and sits in the
@@ -258,7 +267,7 @@
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
                   <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
-                  <button v-if="canAct(it, 'logs') || it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
+                  <button v-if="canAct(it, 'logs') || asRecord(it).kind === 'docker' || asRecord(it).kind === 'native' || asRecord(it).kind === 'launchd'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
                   <button
                     v-if="openUrl(it)"
                     type="button"
@@ -270,8 +279,10 @@
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredManaged.length && !managedError">
-              <td colspan="7" class="empty-row">{{ t('apps.managed_empty') }}</td>
+            <!-- Same split: a kind/search filter that matches nothing must not
+                 claim the host has no managed apps. -->
+            <tr v-if="!asArray(filteredManaged).length && !managedError">
+              <td colspan="7" class="empty-row">{{ asArray(asRecord(managed).items).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -298,7 +309,7 @@
       <LoadFailure v-if="autostartError" :detail="autostartError" :retry="() => loadAutostart(true)" :busy="loading" />
       <div v-else-if="!autostartLoaded" class="hint-line">{{ t('common.loading') }}</div>
       <template v-else>
-      <div v-for="grp in autostartGroups" :key="grp" class="auto-group">
+      <div v-for="grp in asArray(autostartGroups)" :key="grp" class="auto-group">
         <h2 class="section-title">{{ finiteText(grp) }}</h2>
         <div class="managed-table-wrap" style="margin-bottom:14px">
           <table class="managed-table">
@@ -312,37 +323,37 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="it in (autostartByGroup[grp] || [])" :key="it.id">
+              <tr v-for="it in asArray(autostartByGroup[grp])" :key="finiteText(asRecord(it).id)">
                 <td>
-                  <strong>{{ finiteText(it.name) }}</strong>
-                  <div class="sub-line mono" v-if="it.program">{{ finiteText(it.program) }}</div>
-                  <div class="show-m sub-line mono">{{ finiteText(it.detail, '') || finiteText(it.plist, '') }}</div>
+                  <strong>{{ finiteText(asRecord(it).name) }}</strong>
+                  <div class="sub-line mono" v-if="asRecord(it).program">{{ finiteText(asRecord(it).program) }}</div>
+                  <div class="show-m sub-line mono">{{ finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist, '') }}</div>
                   <div class="show-m sub-line">
-                    {{ it.running ? t('common.running') : t('common.stopped') }}{{ finiteText(it.policy, '') ? ' · ' + finiteText(it.policy) : '' }}
+                    {{ asRecord(it).running ? t('common.running') : t('common.stopped') }}{{ finiteText(asRecord(it).policy, '') ? ' · ' + finiteText(asRecord(it).policy) : '' }}
                   </div>
                 </td>
                 <td class="col-hide-m">
-                  <span class="chip" :class="it.running ? 'chip-ok' : 'chip-muted'">
-                    {{ it.running ? t('common.running') : t('common.stopped') }}
+                  <span class="chip" :class="asRecord(it).running ? 'chip-ok' : 'chip-muted'">
+                    {{ asRecord(it).running ? t('common.running') : t('common.stopped') }}
                   </span>
-                  <span v-if="finiteText(it.policy, '')" class="sub-line mono"> {{ finiteText(it.policy) }}</span>
+                  <span v-if="finiteText(asRecord(it).policy, '')" class="sub-line mono"> {{ finiteText(asRecord(it).policy) }}</span>
                 </td>
                 <td>
                   <MacSwitch
-                    :checked="!!it.autostart"
+                    :checked="!!asRecord(it).autostart"
                     :disabled="busy"
-                    :aria-label="t('apps.autostart_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
                     @change="setAutostartItem(it, $event)"
                   />
                 </td>
-                <td class="mono path-cell col-hide-m" :title="finiteText(it.detail, '') || finiteText(it.plist)">{{ finiteText(it.detail, '') || finiteText(it.plist) }}</td>
+                <td class="mono path-cell col-hide-m" :title="finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist)">{{ finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist) }}</td>
                 <td class="actions-cell">
-                  <div class="act-row" v-if="it.kind === 'docker'">
+                  <div class="act-row" v-if="asRecord(it).kind === 'docker'">
                     <select
                       class="policy-select"
-                      :value="finiteText(it.policy, '') || 'no'"
+                      :value="finiteText(asRecord(it).policy, '') || 'no'"
                       :disabled="busy"
-                      :aria-label="t('apps.policy_name', { name: finiteText(it.name, '') || finiteText(it.id) })"
+                      :aria-label="t('apps.policy_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
                       <option value="no">no</option>
@@ -351,10 +362,10 @@
                       <option value="on-failure">on-failure</option>
                     </select>
                   </div>
-                  <span v-else class="sub-line">{{ finiteText(it.kind) }}</span>
+                  <span v-else class="sub-line">{{ finiteText(asRecord(it).kind) }}</span>
                 </td>
               </tr>
-              <tr v-if="!(autostartByGroup[grp] || []).length">
+              <tr v-if="!asArray(autostartByGroup[grp]).length">
                 <td colspan="5" class="empty-row">—</td>
               </tr>
             </tbody>
@@ -369,10 +380,10 @@
       <aside ref="detailPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="apps-detail-title" tabindex="-1">
         <div class="drawer-head">
           <div>
-            <h2 id="apps-detail-title" class="drawer-title">{{ finiteText(detail.name) }}</h2>
+            <h2 id="apps-detail-title" class="drawer-title">{{ finiteText(asRecord(detail).name) }}</h2>
             <div class="app-badges" style="margin-top:6px">
-              <span class="chip" :class="kindChip(detail.kind)">{{ kindLabel(detail.kind) }}</span>
-              <span class="chip" :class="detail.state === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(detail.state) }}</span>
+              <span class="chip" :class="kindChip(asRecord(detail).kind)">{{ kindLabel(asRecord(detail).kind) }}</span>
+              <span class="chip" :class="asRecord(detail).state === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(asRecord(detail).state) }}</span>
             </div>
           </div>
           <button type="button" @click="closeDetail">{{ t('common.close') }}</button>
@@ -445,7 +456,7 @@
         </section>
 
         <!-- Cloudflare Tunnel panel -->
-        <section class="drawer-sec" v-if="detail.source_id === 'native-cloudflared' || detail.cloudflared">
+        <section class="drawer-sec" v-if="asRecord(detail).source_id === 'native-cloudflared' || asRecord(detail).cloudflared">
           <h3>{{ t('apps.cf_title') }}</h3>
           <p class="sub-line" style="margin-bottom:10px">
             {{ t('apps.cf_hint') }}
@@ -453,19 +464,19 @@
             {{ t('apps.cf_hint_tail') }}
           </p>
           <div class="app-badges" style="margin-bottom:10px">
-            <span class="chip" :class="cfStatus.logged_in ? 'chip-ok' : 'chip-muted'">
-              {{ cfStatus.logged_in ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
+            <span class="chip" :class="asRecord(cfStatus).logged_in ? 'chip-ok' : 'chip-muted'">
+              {{ asRecord(cfStatus).logged_in ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
             </span>
-            <span class="chip" :class="cfStatus.running ? 'chip-ok' : 'chip-muted'">
-              {{ cfStatus.running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
+            <span class="chip" :class="asRecord(cfStatus).running ? 'chip-ok' : 'chip-muted'">
+              {{ asRecord(cfStatus).running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
             </span>
-            <span v-if="cfStatus.has_token && cfStatus.token_ok === false" class="chip chip-warn">
+            <span v-if="asRecord(cfStatus).has_token && asRecord(cfStatus).token_ok === false" class="chip chip-warn">
               {{ t('apps.cf_token_invalid') }}
             </span>
-            <span v-else-if="!cfStatus.running && cfStatus.crash_loop" class="chip chip-warn">
+            <span v-else-if="!asRecord(cfStatus).running && asRecord(cfStatus).crash_loop" class="chip chip-warn">
               {{ t('apps.cf_crash_loop') }}
             </span>
-            <span v-if="cfStatus.active_tunnel" class="chip chip-muted mono">{{ finiteText(cfStatus.active_tunnel) }}</span>
+            <span v-if="asRecord(cfStatus).active_tunnel" class="chip chip-muted mono">{{ finiteText(asRecord(cfStatus).active_tunnel) }}</span>
           </div>
 
           <div class="credential-actions" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -479,9 +490,9 @@
             <button type="button" :disabled="busy || cfBusy" @click="openManagedLogs(detail)">{{ t('apps.logs') }}</button>
           </div>
 
-          <div v-if="cfStatus.login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
+          <div v-if="asRecord(cfStatus).login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
-            <a :href="finiteText(cfStatus.login_url, '')" target="_blank" rel="noopener">{{ finiteText(cfStatus.login_url) }}</a>
+            <a :href="finiteText(asRecord(cfStatus).login_url, '')" target="_blank" rel="noopener">{{ finiteText(asRecord(cfStatus).login_url) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
           </div>
 
@@ -490,12 +501,15 @@
             <div class="form-field">
               <select v-model="cfSelectedTunnel" :disabled="cfBusy" style="width:100%;padding:8px;border-radius:8px" :aria-label="t('apps.cf_existing_tunnel')">
                 <option value="">{{ t('apps.cf_select_ph') }}</option>
-                <option v-for="tn in (cfStatus.tunnels || [])" :key="tn.id" :value="tn.name">
-                  {{ finiteText(tn.name) }} ({{ String(finiteText(tn.id)).slice(0, 8) }}…){{ tn.active ? ` · ${t('apps.cf_connected')}` : '' }}
+                <option v-for="tn in asArray(asRecord(cfStatus).tunnels)" :key="finiteText(asRecord(tn).id)" :value="asRecord(tn).name">
+                  {{ finiteText(asRecord(tn).name) }} ({{ String(finiteText(asRecord(tn).id)).slice(0, 8) }}…){{ asRecord(tn).active ? ` · ${t('apps.cf_connected')}` : '' }}
                 </option>
               </select>
-              <div class="field-help" v-if="!(cfStatus.tunnels || []).length">
-                {{ cfStatus.logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}
+              <!-- Error vs empty: a failed tunnel-list fetch used to render as
+                   "No tunnels found", silently hiding the failure. -->
+              <div class="field-help" v-if="!asArray(asRecord(cfStatus).tunnels).length" role="status">
+                <template v-if="asRecord(cfStatus).logged_in && finiteText(asRecord(cfStatus).tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(asRecord(cfStatus).tunnels_error, '') }}</template>
+                <template v-else>{{ asRecord(cfStatus).logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
               </div>
             </div>
             <label class="form-label">{{ t('apps.cf_new_tunnel') }}</label>
@@ -524,122 +538,122 @@
           <pre v-if="cfMsg" class="install-log" style="margin-top:12px;max-height:180px" role="log" aria-live="polite">{{ finiteText(cfMsg) }}</pre>
         </section>
 
-        <section class="drawer-sec" v-if="detail.kind !== 'vm'">
+        <section class="drawer-sec" v-if="asRecord(detail).kind !== 'vm'">
           <h3>{{ t('apps.col_autostart') }}</h3>
           <div class="auto-toggle">
             <MacSwitch
-              :checked="!!detail.autostart"
+              :checked="!!asRecord(detail).autostart"
               :disabled="busy"
               :aria-label="t('apps.col_autostart')"
-              @change="toggleManagedAutostart({ id: detail.id, kind: detail.kind, autostart_id: detail.autostart_id, source_id: detail.source_id }, $event)"
+              @change="toggleManagedAutostart({ id: asRecord(detail).id, kind: asRecord(detail).kind, autostart_id: asRecord(detail).autostart_id, source_id: asRecord(detail).source_id }, $event)"
             />
             <span>{{ t('apps.autostart_help') }}</span>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="detail.path || detail.compose_file || detail.package || detail.plist_hint">
+        <section class="drawer-sec" v-if="asRecord(detail).path || asRecord(detail).compose_file || asRecord(detail).package || asRecord(detail).plist_hint">
           <h3>{{ t('apps.sec_paths') }}</h3>
           <div class="kv-list mono">
-            <div v-if="finiteText(detail.path, '')"><span class="k">path</span>{{ finiteText(detail.path) }}</div>
-            <div v-if="finiteText(detail.compose_file, '')"><span class="k">compose</span>{{ finiteText(detail.compose_file) }}</div>
-            <div v-if="finiteText(detail.package, '')"><span class="k">package</span>{{ finiteText(detail.package) }}</div>
-            <div v-if="finiteText(detail.plist_hint, '')"><span class="k">plist</span>{{ finiteText(detail.plist_hint) }}</div>
-            <div v-if="finiteText(detail.backend, '')"><span class="k">backend</span>{{ finiteText(detail.backend) }}</div>
-            <div v-if="finiteText(detail.uuid, '')"><span class="k">uuid</span>{{ finiteText(detail.uuid) }}</div>
+            <div v-if="finiteText(asRecord(detail).path, '')"><span class="k">path</span>{{ finiteText(asRecord(detail).path) }}</div>
+            <div v-if="finiteText(asRecord(detail).compose_file, '')"><span class="k">compose</span>{{ finiteText(asRecord(detail).compose_file) }}</div>
+            <div v-if="finiteText(asRecord(detail).package, '')"><span class="k">package</span>{{ finiteText(asRecord(detail).package) }}</div>
+            <div v-if="finiteText(asRecord(detail).plist_hint, '')"><span class="k">plist</span>{{ finiteText(asRecord(detail).plist_hint) }}</div>
+            <div v-if="finiteText(asRecord(detail).backend, '')"><span class="k">backend</span>{{ finiteText(asRecord(detail).backend) }}</div>
+            <div v-if="finiteText(asRecord(detail).uuid, '')"><span class="k">uuid</span>{{ finiteText(asRecord(detail).uuid) }}</div>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.data_paths||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).data_paths).length">
           <h3>{{ t('apps.sec_data') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(p,i) in detail.data_paths" :key="i">{{ finiteText(p) }}</li>
+            <li v-for="(p,i) in asArray(asRecord(detail).data_paths)" :key="i">{{ finiteText(p) }}</li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.databases||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).databases).length">
           <h3>{{ t('apps.sec_db') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(d,i) in detail.databases" :key="i">{{ finiteText(d.type) }} · {{ finiteText(d.path) }} <span v-if="d.mount">→ {{ finiteText(d.mount) }}</span></li>
+            <li v-for="(d,i) in asArray(asRecord(detail).databases)" :key="i">{{ finiteText(asRecord(d).type) }} · {{ finiteText(asRecord(d).path) }} <span v-if="asRecord(d).mount">→ {{ finiteText(asRecord(d).mount) }}</span></li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.ports||[]).length || (detail.listening||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).ports).length || asArray(asRecord(detail).listening).length">
           <h3>{{ t('apps.sec_ports') }}</h3>
-          <table class="mini-table" v-if="(detail.ports||[]).length">
+          <table class="mini-table" v-if="asArray(asRecord(detail).ports).length">
             <thead><tr><th>{{ t('apps.col_ports') }}</th><th>target</th><th>ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(p,i) in detail.ports" :key="i">
-                <td class="mono">{{ finiteText(p.published) }}</td>
-                <td class="mono">{{ finiteText(p.target) }}</td>
-                <td class="mono">{{ finiteText(p.container, '') }}</td>
+              <tr v-for="(p,i) in asArray(asRecord(detail).ports)" :key="i">
+                <td class="mono">{{ finiteText(asRecord(p).published) }}</td>
+                <td class="mono">{{ finiteText(asRecord(p).target) }}</td>
+                <td class="mono">{{ finiteText(asRecord(p).container, '') }}</td>
               </tr>
             </tbody>
           </table>
-          <div v-if="(detail.listening||[]).length" class="sub-line" style="margin-top:8px">
+          <div v-if="asArray(asRecord(detail).listening).length" class="sub-line" style="margin-top:8px">
             {{ t('apps.listening') }}:
-            <span v-for="(l,i) in detail.listening" :key="i" class="mono"> {{ finiteText(l.name) }} </span>
+            <span v-for="(l,i) in asArray(asRecord(detail).listening)" :key="i" class="mono"> {{ finiteText(asRecord(l).name) }} </span>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.networks||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).networks).length">
           <h3>{{ t('apps.sec_network') }}</h3>
           <table class="mini-table">
             <thead><tr><th>network</th><th>IP</th><th>gw / ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(n,i) in detail.networks" :key="i">
-                <td class="mono">{{ finiteText(n.network) }}</td>
-                <td class="mono">{{ finiteText(n.ip) }}</td>
-                <td class="mono">{{ finiteText(n.gateway, '') || finiteText(n.container, '') }}</td>
+              <tr v-for="(n,i) in asArray(asRecord(detail).networks)" :key="i">
+                <td class="mono">{{ finiteText(asRecord(n).network) }}</td>
+                <td class="mono">{{ finiteText(asRecord(n).ip) }}</td>
+                <td class="mono">{{ finiteText(asRecord(n).gateway, '') || finiteText(asRecord(n).container, '') }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.mounts||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).mounts).length">
           <h3>{{ t('apps.sec_mounts') }}</h3>
           <table class="mini-table">
             <thead><tr><th>src</th><th>dst</th><th>type</th></tr></thead>
             <tbody>
-              <tr v-for="(m,i) in detail.mounts" :key="i">
-                <td class="mono path-cell" :title="finiteText(m.source)">{{ finiteText(m.source) }}</td>
-                <td class="mono">{{ finiteText(m.destination) }}</td>
-                <td>{{ finiteText(m.type) }}</td>
+              <tr v-for="(m,i) in asArray(asRecord(detail).mounts)" :key="i">
+                <td class="mono path-cell" :title="finiteText(asRecord(m).source)">{{ finiteText(asRecord(m).source) }}</td>
+                <td class="mono">{{ finiteText(asRecord(m).destination) }}</td>
+                <td>{{ finiteText(asRecord(m).type) }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.containers||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).containers).length">
           <h3>{{ t('apps.sec_containers') }}</h3>
           <table class="mini-table">
             <thead><tr><th>name</th><th>image</th><th>state</th><th>ports</th></tr></thead>
             <tbody>
-              <tr v-for="(c,i) in detail.containers" :key="i">
-                <td class="mono">{{ finiteText(c.name) }}</td>
-                <td class="mono path-cell">{{ finiteText(c.image) }}</td>
-                <td>{{ finiteText(c.state) }}</td>
-                <td class="mono path-cell">{{ finiteText(c.ports) }}</td>
+              <tr v-for="(c,i) in asArray(asRecord(detail).containers)" :key="i">
+                <td class="mono">{{ finiteText(asRecord(c).name) }}</td>
+                <td class="mono path-cell">{{ finiteText(asRecord(c).image) }}</td>
+                <td>{{ finiteText(asRecord(c).state) }}</td>
+                <td class="mono path-cell">{{ finiteText(asRecord(c).ports) }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.ips||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).ips).length">
           <h3>VM IP</h3>
-          <div class="mono">{{ (detail.ips || []).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
+          <div class="mono">{{ asArray(asRecord(detail).ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.env_sample||[]).length">
+        <section class="drawer-sec" v-if="asArray(asRecord(detail).env_sample).length">
           <h3>Env</h3>
-          <pre class="env-pre">{{ (detail.env_sample || []).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
+          <pre class="env-pre">{{ asArray(asRecord(detail).env_sample).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
         </section>
 
-        <section class="drawer-sec" v-if="detail.notes">
+        <section class="drawer-sec" v-if="asRecord(detail).notes">
           <h3>{{ t('apps.sec_notes') }}</h3>
-          <p class="notes">{{ finiteText(detail.notes) }}</p>
+          <p class="notes">{{ finiteText(asRecord(detail).notes) }}</p>
         </section>
 
-        <p class="sub-line" v-if="detail.host_ip">Host IP: {{ finiteText(detail.host_ip) }}</p>
+        <p class="sub-line" v-if="asRecord(detail).host_ip">Host IP: {{ finiteText(asRecord(detail).host_ip) }}</p>
       </aside>
     </div>
 
@@ -647,39 +661,39 @@
     <div ref="installPanel" v-if="installTpl" class="modal-bg" @click.self="installTpl = null" role="presentation">
       <div class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-install-title">
         <div class="modal-head">
-          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ finiteText(installTpl.name) }}</h3>
+          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ finiteText(asRecord(installTpl).name) }}</h3>
           <button type="button" @click="installTpl = null">{{ t('common.close') }}</button>
         </div>
-        <p class="modal-desc">{{ finiteText(installTpl.desc) }}</p>
-        <p v-if="finiteText(installTpl.notes, '')" class="notes">{{ finiteText(installTpl.notes) }}</p>
+        <p class="modal-desc">{{ finiteText(asRecord(installTpl).desc) }}</p>
+        <p v-if="finiteText(asRecord(installTpl).notes, '')" class="notes">{{ finiteText(asRecord(installTpl).notes) }}</p>
         <!-- Elevated-access compose directives found when the remote template
              was synced: accepted (the admin's source choice is the trust
              root), but never silently. -->
-        <div v-if="(installTpl.compose_warnings || []).length" class="tpl-danger" role="alert">
+        <div v-if="asArray(asRecord(installTpl).compose_warnings).length" class="tpl-danger" role="alert">
           <strong>{{ t('catalog_remote.warn_title') }}</strong>
-          {{ (installTpl.compose_warnings || []).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
+          {{ asArray(asRecord(installTpl).compose_warnings).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
         </div>
-        <p v-if="installTpl.source === 'remote' && installTpl.builtin_available" class="tpl-danger" role="alert">
+        <p v-if="asRecord(installTpl).source === 'remote' && asRecord(installTpl).builtin_available" class="tpl-danger" role="alert">
           {{ t('catalog_remote.overrides_builtin_note') }}
         </p>
-        <p v-if="installTpl.kind === 'native'" class="path-line mono">
-          → {{ t('apps.native_install') }} · {{ finiteText(installTpl.method, '') || 'system' }}{{ finiteText(installTpl.package, '') ? ` · ${finiteText(installTpl.package)}` : '' }}
+        <p v-if="asRecord(installTpl).kind === 'native'" class="path-line mono">
+          → {{ t('apps.native_install') }} · {{ finiteText(asRecord(installTpl).method, '') || 'system' }}{{ finiteText(asRecord(installTpl).package, '') ? ` · ${finiteText(asRecord(installTpl).package)}` : '' }}
         </p>
-        <p v-else class="path-line mono">→ ~/Services/{{ finiteText(installTpl.id) }}/docker-compose.yml</p>
+        <p v-else class="path-line mono">→ ~/Services/{{ finiteText(asRecord(installTpl).id) }}/docker-compose.yml</p>
 
-        <div v-if="(installTpl.vars || []).length" class="form-grid">
-          <template v-for="v in installTpl.vars" :key="v.name">
-            <label class="form-label">{{ finiteText(v.label, '') || finiteText(v.name) }}</label>
+        <div v-if="asArray(asRecord(installTpl).vars).length" class="form-grid">
+          <template v-for="v in asArray(asRecord(installTpl).vars)" :key="finiteText(asRecord(v).name)">
+            <label class="form-label">{{ finiteText(asRecord(v).label, '') || finiteText(asRecord(v).name) }}</label>
             <div class="form-field">
 <!-- The form-label beside this grid cell is not associated (no for/id), so
                    the input had no accessible name; mirror the label's text. -->
               <input
-                v-model="installVars[v.name]"
-                :type="v.secret ? 'password' : 'text'"
-                :aria-label="finiteText(v.label, '') || finiteText(v.name)"
-                :placeholder="v.default === '' && v.secret ? t('apps.auto_password') : (v.required === false ? t('apps.optional') : '')"
+                v-model="installVars[asRecord(v).name]"
+                :type="asRecord(v).secret ? 'password' : 'text'"
+                :aria-label="finiteText(asRecord(v).label, '') || finiteText(asRecord(v).name)"
+                :placeholder="asRecord(v).default === '' && asRecord(v).secret ? t('apps.auto_password') : (asRecord(v).required === false ? t('apps.optional') : '')"
               />
-              <div v-if="finiteText(v.help, '')" class="field-help">{{ finiteText(v.help) }}</div>
+              <div v-if="finiteText(asRecord(v).help, '')" class="field-help">{{ finiteText(asRecord(v).help) }}</div>
             </div>
           </template>
         </div>
@@ -743,31 +757,31 @@
           <div>{{ t('catalog_remote.load_failed') }}</div>
           <div class="sub mono" style="margin-top:4px">{{ finiteText(remoteError) }}</div>
         </div>
-        <p v-if="remoteInfo && !remoteInfo.configured && !remoteUrl" class="sub-line">
+        <p v-if="remoteInfo && !asRecord(remoteInfo).configured && !remoteUrl" class="sub-line">
           {{ t('catalog_remote.not_configured') }}
         </p>
-        <p v-if="finiteText(remoteInfo?.last_check, '')" class="sub-line">
-          {{ t('catalog_remote.last_check') }}: {{ finiteText(remoteInfo.last_check) }}
-          <template v-if="remoteInfo.last_result">
-            · {{ summaryLine(remoteInfo.last_result) }}
+        <p v-if="finiteText(asRecord(remoteInfo)?.last_check, '')" class="sub-line">
+          {{ t('catalog_remote.last_check') }}: {{ finiteText(asRecord(remoteInfo).last_check) }}
+          <template v-if="asRecord(remoteInfo).last_result">
+            · {{ summaryLine(asRecord(remoteInfo).last_result) }}
           </template>
         </p>
         <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
           {{ summaryLine(remoteResult) }}
-          <ul v-if="(remoteResult.rejected || []).length" class="plain-list mono" style="margin-top:6px">
-            <li v-for="r in remoteResult.rejected" :key="r.id">
+          <ul v-if="asArray(remoteResult.rejected).length" class="plain-list mono" style="margin-top:6px">
+            <li v-for="r in asArray(remoteResult.rejected)" :key="r.id">
               {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
             </li>
           </ul>
         </div>
-        <section v-if="(remoteInfo?.overrides || []).length">
+        <section v-if="asArray(asRecord(remoteInfo)?.overrides).length">
           <h4 class="modal-title" style="font-size:14px;margin:8px 0">{{ t('catalog_remote.overrides_title') }}</h4>
           <table class="mini-table">
             <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
-              <tr v-for="o in remoteInfo.overrides" :key="o.id">
-                <td class="mono">{{ finiteText(o.id) }}</td>
-                <td class="mono">{{ finiteText(o.version) }}</td>
+              <tr v-for="o in asArray(asRecord(remoteInfo).overrides)" :key="finiteText(asRecord(o).id)">
+                <td class="mono">{{ finiteText(asRecord(o).id) }}</td>
+                <td class="mono">{{ finiteText(asRecord(o).version) }}</td>
                 <td>
                   <button type="button" class="act-btn" :disabled="remoteBusy" @click="restoreBuiltin(o)">
                     {{ t('catalog_remote.restore_builtin') }}
@@ -832,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -953,37 +967,45 @@ const CAT_I18N = {
 
 const jobMap = computed(() => {
   const m = {}
-  for (const j of jobs.value) if (j.stack_id) m[j.stack_id] = j.job_id
+  for (const j of asArray(jobs.value)) if (j.stack_id) m[j.stack_id] = j.job_id
   return m
 })
 
+function fieldText(value) {
+  const text = finiteText(value, '')
+  return typeof text === 'string' ? text : ''
+}
+
 const filteredManaged = computed(() => {
-  let list = managed.value.items || []
-  if (mkind.value !== 'all') list = list.filter(x => x.kind === mkind.value)
-  const s = mq.value.trim().toLowerCase()
+  let list = asArray(asRecord(managed.value).items)
+  if (mkind.value !== 'all') list = list.filter(x => asRecord(x).kind === mkind.value)
+  const rawQ = mq.value
+  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
   if (s) {
-    list = list.filter(x =>
-      (x.name || '').toLowerCase().includes(s)
-      || (x.id || '').toLowerCase().includes(s)
-      || (x.path || '').toLowerCase().includes(s)
-      || (x.package || '').toLowerCase().includes(s)
-      || (x.ports_summary || '').toLowerCase().includes(s)
-    )
+    list = list.filter(x => {
+      const rec = asRecord(x)
+      return fieldText(rec.name).toLowerCase().includes(s)
+        || fieldText(rec.id).toLowerCase().includes(s)
+        || fieldText(rec.path).toLowerCase().includes(s)
+        || fieldText(rec.package).toLowerCase().includes(s)
+        || fieldText(rec.ports_summary).toLowerCase().includes(s)
+    })
   }
   return list
 })
 
 const autostartGroups = computed(() => {
-  const g = autostart.value.groups || []
+  const bag = asRecord(autostart.value)
+  const g = asArray(bag.groups)
   if (g.length) return g
-  const set = new Set((autostart.value.items || []).map(i => i.group || t('common.other')))
+  const set = new Set(asArray(bag.items).map(i => asRecord(i).group || t('common.other')))
   return [...set]
 })
 
 const autostartByGroup = computed(() => {
   const m = {}
-  for (const it of autostart.value.items || []) {
-    const g = it.group || t('common.other')
+  for (const it of asArray(asRecord(autostart.value).items)) {
+    const g = asRecord(it).group || t('common.other')
     ;(m[g] || (m[g] = [])).push(it)
   }
   return m
@@ -1026,7 +1048,7 @@ function stateLabel(s) {
 function canAct(it, act) {
   if (!it) return false
   if (act === 'uninstall') return true
-  const acts = it.actions || []
+  const acts = asArray(it.actions)
   if (acts.includes(act)) return true
   // fallbacks when backend omits flags
   if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd')) return true
@@ -1038,19 +1060,20 @@ function canAct(it, act) {
 
 function isScreenSharing(it) {
   if (!it) return false
-  const id = `${it.id || ''} ${it.source_id || ''}`
-  const name = (it.name || '').toLowerCase()
+  const rec = asRecord(it)
+  const id = `${fieldText(rec.id)} ${fieldText(rec.source_id)}`
+  const name = fieldText(rec.name).toLowerCase()
   return id.includes('screen-sharing')
     || name.includes('屏幕共享') // cjk-input: matches the service name macOS reports in a zh locale
     || name.includes('screen sharing')
-    || (it.url || '').startsWith('vnc://')
-    || (it.url_hint || '').startsWith('vnc://')
-    || it.open_protocol === 'vnc'
+    || fieldText(rec.url).startsWith('vnc://')
+    || fieldText(rec.url_hint).startsWith('vnc://')
+    || rec.open_protocol === 'vnc'
 }
 
 function browseHost() {
   return finiteText(window.location.hostname, '')
-    || finiteText(managed.value?.host_ip, '')
+    || finiteText(asRecord(managed.value).host_ip, '')
     || 'localhost'
 }
 
@@ -1061,19 +1084,20 @@ function openUrl(it) {
   if (isScreenSharing(it)) {
     return `vnc://${browseHost()}`
   }
-  const rawUrl = it.url || it.url_hint || ''
+  const rec = asRecord(it)
+  const rawUrl = fieldText(rec.url) || fieldText(rec.url_hint)
   if (rawUrl) {
     const host = browseHost()
     return rawUrl.replaceAll('{{HOST}}', host).replaceAll('{{HOST_IP}}', host)
   }
-  const ps = it.ports_summary || ''
+  const ps = fieldText(rec.ports_summary)
   const m = ps.match(/(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]):(\d+)->/) || ps.match(/^(\d{2,5})$/)
   if (m) {
     return `http://${browseHost()}:${m[1]}`
   }
   // native ports list like "8125"
-  if (it.ports_summary && /^\d{2,5}/.test(it.ports_summary.trim())) {
-    const port = it.ports_summary.trim().split(/[,\s]/)[0]
+  if (ps && /^\d{2,5}/.test(ps.trim())) {
+    const port = ps.trim().split(/[,\s]/)[0]
     if (!['1883', '5432', '6379', '3306', '5900', '9100'].includes(port)) {
       return `http://${browseHost()}:${port}`
     }
@@ -1093,9 +1117,9 @@ function catalogOpenUrl(tpl) {
   const ut = finiteText(tpl.url_template, '')
   if (!ut) {
     // ports-only fallback for web-ish services
-    const ports = tpl.ports || []
+    const ports = asArray(asRecord(tpl).ports)
     for (const p of ports) {
-      const ps = String(p).split('/')[0]
+      const ps = fieldText(p).split('/')[0]
       if (/^\d+$/.test(ps) && !['1883', '5432', '6379', '3306', '5900', '9100', '22000', '53'].includes(ps)) {
         const host = finiteText(window.location.hostname, '') || 'localhost'
         return `http://${host}:${ps}`
@@ -1105,7 +1129,7 @@ function catalogOpenUrl(tpl) {
   }
   const host = finiteText(window.location.hostname, '') || 'localhost'
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
-  const vars = tpl.vars || []
+  const vars = asArray(tpl.vars)
   for (const v of vars) {
     if (v && v.name && v.default != null && v.default !== '') {
       out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
@@ -1182,7 +1206,7 @@ function goManage(tpl) {
     const id = tpl.kind === 'native'
       ? `native:${tpl.id}`
       : `docker:${tpl.id}`
-    const hit = (managed.value.items || []).find(x => x.id === id || x.source_id === tpl.id)
+    const hit = asArray(asRecord(managed.value).items).find(x => asRecord(x).id === id || asRecord(x).source_id === tpl.id)
     if (hit) openDetail(hit)
   }, 400)
 }
@@ -1193,9 +1217,13 @@ async function loadManaged(force = false) {
   const generation = ++managedGeneration
   loading.value = true
   try {
-    const next = await getManagedApps(force)
+    const payload = asRecord(await getManagedApps(force))
     if (generation !== managedGeneration) return
-    managed.value = next
+    managed.value = {
+      ...payload,
+      items: asArray(payload.items),
+      counts: payload.counts == null ? null : asRecord(payload.counts),
+    }
     managedError.value = ''
   } catch (e) {
     if (generation !== managedGeneration) return false
@@ -1216,12 +1244,13 @@ async function loadManaged(force = false) {
 }
 
 function softText(j, fallbackKey = 'common.fail') {
-  if (j?.code) {
-    const key = `err.${j.code}`
-    const translated = t(key, j.params || {})
+  const rec = asRecord(j)
+  if (rec.code) {
+    const key = `err.${rec.code}`
+    const translated = t(key, asRecord(rec.params))
     if (translated !== key) return translated
   }
-  return finiteText(j?.message, '') || t(fallbackKey)
+  return finiteText(rec.message, '') || t(fallbackKey)
 }
 
 let appsDataGeneration = 0
@@ -1235,9 +1264,14 @@ async function loadAutostart(force = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
-    const next = await getAutostartApps(force)
+    const payload = asRecord(await getAutostartApps(force))
     if (generation !== appsDataGeneration) return
-    autostart.value = next
+    autostart.value = {
+      ...payload,
+      items: asArray(payload.items),
+      groups: asArray(payload.groups),
+      counts: payload.counts == null ? null : asRecord(payload.counts),
+    }
     autostartError.value = ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
@@ -1253,13 +1287,13 @@ async function loadAutostart(force = false) {
 
 async function setAutostartItem(it, enabled) {
   const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
-  if (!confirm(t(key, { name: finiteText(it.name) }))) return
+  if (!confirm(t(key, { name: finiteText(asRecord(it).name) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
     const result = await setAppAutostart(it.id, enabled)
     if (!stillOnApps(generation)) return
-    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(it.name)}` : '❌ ' + softText(result))
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(asRecord(it).name)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
@@ -1271,8 +1305,8 @@ async function setAutostartItem(it, enabled) {
 }
 
 async function setDockerPolicy(it, policy) {
-  if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(it.name, '') || finiteText(it.id), policy: finiteText(policy) }))) return
-  const name = (it.id || '').replace(/^docker-ctr:/, '').replace(/^docker:/, '')
+  if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id), policy: finiteText(policy) }))) return
+  const name = fieldText(it.id).replace(/^docker-ctr:/, '').replace(/^docker:/, '')
   const generation = appsDataGeneration
   busy.value = true
   try {
@@ -1313,7 +1347,7 @@ async function runAutostartNow() {
 async function toggleManagedAutostart(it, enabled) {
   if (!it.autostart_id) {
     const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
-    if (!confirm(t(key, { name: finiteText(it.name) }))) return
+    if (!confirm(t(key, { name: finiteText(asRecord(it).name) }))) return
   }
   const generation = appsDataGeneration
   busy.value = true
@@ -1344,7 +1378,7 @@ async function openDetail(it) {
   const generation = ++detailGeneration
   busy.value = true
   try {
-    const d = await getManagedAppDetail(it.id)
+    const d = asRecord(await getManagedAppDetail(it.id))
     if (generation !== detailGeneration) return
     // merge list-level autostart flags
     d.autostart = it.autostart
@@ -1387,9 +1421,9 @@ async function cfRefresh() {
   const generation = appsDataGeneration
   cfBusy.value = true
   try {
-    const status = await getCloudflareStatus()
+    const status = asRecord(await getCloudflareStatus())
     if (!stillOnApps(generation)) return
-    cfStatus.value = status
+    cfStatus.value = { ...status, tunnels: asArray(status.tunnels) }
     if (status.active_tunnel && !cfSelectedTunnel.value) {
       cfSelectedTunnel.value = status.active_tunnel
     }
@@ -1613,7 +1647,7 @@ async function loadCredential(app, generation = detailGeneration) {
     notes: '',
   }
   try {
-    const result = await getAppCredential(app.id)
+    const result = asRecord(await getAppCredential(app.id))
     if (generation !== detailGeneration) return
     credential.value = result
     credentialForm.value = {
@@ -1713,12 +1747,15 @@ async function openManagedLogs(it) {
   curJob.value = null
   const generation = ++managedLogGeneration
   logOpen.value = true
-  logTitle.value = (finiteText(it.name, '') || finiteText(it.id)) + ' · logs'
+  logTitle.value = (finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id)) + ' · logs'
   logText.value = t('common.loading')
   try {
-    const result = await getManagedAppLogs(it.id, 150)
+    const result = asRecord(await getManagedAppLogs(it.id, 150))
     if (generation !== managedLogGeneration) return
-    logText.value = finiteText(result.log, '') || finiteText(result.message)
+    const logBody = typeof result.log === 'string' || typeof result.log === 'number'
+      ? finiteText(result.log, '')
+      : jsonText(result.log, '')
+    logText.value = logBody || finiteText(result.message)
   } catch (e) {
     if (generation !== managedLogGeneration) return
     logText.value = finiteText(e.message, '')
@@ -1728,7 +1765,7 @@ async function openManagedLogs(it) {
 async function doManagedAction(it, action) {
   if (!it?.id) return
   if (['stop', 'restart', 'update'].includes(action)
-    && !confirm(t('services.confirm_action', { name: finiteText(it.name, '') || finiteText(it.id), action: finiteText(action) }))) return
+    && !confirm(t('services.confirm_action', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id), action: finiteText(action) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
@@ -1751,7 +1788,7 @@ async function doManagedUninstall(it) {
   const confirmKey = it.kind === 'launchd'
     ? 'apps.confirm_uninstall_launchd'
     : 'apps.confirm_uninstall_managed'
-  if (!confirm(t(confirmKey, { name: finiteText(it.name, '') || finiteText(it.id) }))) return
+  if (!confirm(t(confirmKey, { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) }))) return
   const removeData = it.kind === 'docker'
     ? confirm(t('apps.confirm_remove_data'))
     : it.kind === 'launchd'
@@ -1775,29 +1812,34 @@ async function doManagedUninstall(it) {
 
 const quickCats = computed(() => {
   const prefer = ['all', 'native', 'docker', 'featured', 'network', 'remote', 'media', 'files', 'ops', 'monitor']
-  const map = Object.fromEntries((categories.value || []).map(c => [c.id, c]))
+  const map = Object.fromEntries(asArray(categories.value).map((c) => {
+    const rec = asRecord(c)
+    return [rec.id, rec]
+  }))
   return prefer.map(id => map[id] || { id, label: id }).filter(Boolean)
 })
 
 const filtered = computed(() => {
-  let list = catalog.value || []
-  if (cat.value === 'featured') list = list.filter(x => x.featured)
-  else if (cat.value === 'native') list = list.filter(x => x.kind === 'native')
-  else if (cat.value === 'docker') list = list.filter(x => (x.kind || 'docker') === 'docker')
-  else if (cat.value && cat.value !== 'all') list = list.filter(x => x.category === cat.value)
-  if (onlyFeatured.value) list = list.filter(x => x.featured)
-  if (hideInstalled.value) list = list.filter(x => !x.installed)
-  const s = q.value.trim().toLowerCase()
+  let list = asArray(catalog.value)
+  if (cat.value === 'featured') list = list.filter(x => asRecord(x).featured)
+  else if (cat.value === 'native') list = list.filter(x => asRecord(x).kind === 'native')
+  else if (cat.value === 'docker') list = list.filter(x => (asRecord(x).kind || 'docker') === 'docker')
+  else if (cat.value && cat.value !== 'all') list = list.filter(x => asRecord(x).category === cat.value)
+  if (onlyFeatured.value) list = list.filter(x => asRecord(x).featured)
+  if (hideInstalled.value) list = list.filter(x => !asRecord(x).installed)
+  const rawQ = q.value
+  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
   if (s) {
-    list = list.filter(x =>
-      (x.name || '').toLowerCase().includes(s)
-      || (x.desc || '').toLowerCase().includes(s)
-      || (x.id || '').toLowerCase().includes(s)
-      || (x.package || '').toLowerCase().includes(s)
-      || (x.tags || []).some(tg => String(tg).toLowerCase().includes(s))
-      || (x.category || '').toLowerCase().includes(s)
-      || (x.kind || '').toLowerCase().includes(s)
-    )
+    list = list.filter(x => {
+      const rec = asRecord(x)
+      return fieldText(rec.name).toLowerCase().includes(s)
+        || fieldText(rec.desc).toLowerCase().includes(s)
+        || fieldText(rec.id).toLowerCase().includes(s)
+        || fieldText(rec.package).toLowerCase().includes(s)
+        || asArray(rec.tags).some(tg => fieldText(tg).toLowerCase().includes(s))
+        || fieldText(rec.category).toLowerCase().includes(s)
+        || fieldText(rec.kind).toLowerCase().includes(s)
+    })
   }
   return list
 })
@@ -1808,7 +1850,7 @@ function catLabel(id) {
     const tr = t(key)
     if (tr && tr !== key) return tr
   }
-  const c = (categories.value || []).find(x => x.id === id)
+  const c = asArray(categories.value).find(x => x.id === id)
   return finiteText(c?.label, '') || finiteText(id, '') || 'other'
 }
 
@@ -1818,7 +1860,7 @@ function countLabel(id) {
     return n != null ? ` (${n})` : ''
   }
   if (id === 'featured') {
-    const n = (catalog.value || []).filter(x => x.featured).length
+    const n = asArray(catalog.value).filter(x => x.featured).length
     return n ? ` (${n})` : ''
   }
   if (id === 'native') {
@@ -1829,7 +1871,7 @@ function countLabel(id) {
     const n = finiteN(overview.value.docker_count, null)
     return n != null ? ` (${n})` : ''
   }
-  const n = finiteN((overview.value.counts || {})[id], null)
+  const n = finiteN(asRecord(overview.value.counts)[id], null)
   return n ? ` (${n})` : ''
 }
 
@@ -1837,10 +1879,10 @@ async function refresh(manual = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
-    const d = await getStacks()
+    const d = asRecord(await getStacks())
     if (generation !== appsDataGeneration) return
-    stacks.value = d.stacks || []
-    jobs.value = d.jobs || []
+    stacks.value = asArray(d.stacks)
+    jobs.value = asArray(d.jobs)
   } catch (e) {
     if (generation !== appsDataGeneration) return
     // The job-completion poll calls this in the background (the server, not
@@ -1855,11 +1897,12 @@ async function refresh(manual = false) {
 async function loadCatalog() {
   const generation = appsDataGeneration
   try {
-    const d = await getCatalog()
+    const d = asRecord(await getCatalog())
     if (generation !== appsDataGeneration) return
-    catalog.value = d.templates || []
+    catalog.value = asArray(d.templates)
     overview.value = d
-    if (d.categories?.length) categories.value = d.categories
+    const cats = asArray(d.categories)
+    if (cats.length) categories.value = cats
     catalogError.value = ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
@@ -1876,7 +1919,10 @@ function openInstall(tpl) {
   installUrl.value = ''
   installCreds.value = ''
   const vars = {}
-  for (const v of tpl.vars || []) vars[v.name] = v.default || ''
+  for (const v of asArray(asRecord(tpl).vars)) {
+    const rec = asRecord(v)
+    if (rec.name) vars[rec.name] = rec.default || ''
+  }
   installVars.value = vars
 }
 
@@ -1894,7 +1940,7 @@ function summaryLine(r) {
 async function loadRemote() {
   const generation = appsDataGeneration
   try {
-    const next = await getCatalogRemote()
+    const next = asRecord(await getCatalogRemote())
     if (generation !== appsDataGeneration) return
     remoteInfo.value = next
     remoteError.value = ''
@@ -1941,7 +1987,7 @@ async function checkRemoteUpdates() {
   }
   remoteBusy.value = true
   try {
-    const result = await checkCatalogRemoteUpdates()
+    const result = asRecord(await checkCatalogRemoteUpdates())
     if (!stillOnApps(generation)) return
     remoteResult.value = result
     toast('✅ ' + summaryLine(result))
@@ -1957,7 +2003,7 @@ async function checkRemoteUpdates() {
 }
 
 async function restoreBuiltin(item) {
-  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(item.id) }))) return
+  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(asRecord(item).id) }))) return
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
@@ -1986,8 +2032,8 @@ async function doInstall() {
   if (!installTpl.value) return
   const isNative = installTpl.value.kind === 'native'
   const msg = isNative
-    ? t('apps.confirm_native', { name: finiteText(installTpl.value.name) })
-    : t('apps.confirm_msg', { name: finiteText(installTpl.value.name), id: finiteText(installTpl.value.id) })
+    ? t('apps.confirm_native', { name: finiteText(asRecord(installTpl.value).name) })
+    : t('apps.confirm_msg', { name: finiteText(asRecord(installTpl.value).name), id: finiteText(asRecord(installTpl.value).id) })
   if (!confirm(msg)) return
   const generation = appsDataGeneration
   busy.value = true
@@ -1995,7 +2041,7 @@ async function doInstall() {
   installUrl.value = ''
   installCreds.value = ''
   try {
-    const r = await installCatalog(installTpl.value.id, installVars.value)
+    const r = asRecord(await installCatalog(installTpl.value.id, installVars.value))
     if (!stillOnApps(generation)) return
     installLog.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n→ ${finiteText(r.path)}` : '')
     if (finiteText(r.notes, '')) installLog.value += `\n\n${finiteText(r.notes)}`
@@ -2011,7 +2057,7 @@ async function doInstall() {
     // a pkg-based cask, for instance, explains that brew cannot be elevated and
     // prints the command to run on the Mac instead. The full text is right there
     // in installLog; a five-line toast just hides the rest of the page.
-    toast(r.ok ? `✅ ${finiteText(installTpl.value.name)}` : '❌ ' + firstLine(r.message))
+    toast(r.ok ? `✅ ${finiteText(asRecord(installTpl.value).name)}` : '❌ ' + firstLine(r.message))
     if (r.ok) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
@@ -2030,8 +2076,8 @@ async function doUninstall(tpl) {
   const isNative = tpl.kind === 'native'
   if (!confirm(
     isNative
-      ? t('apps.confirm_uninstall_native', { name: finiteText(tpl.name) })
-      : t('apps.confirm_uninstall', { name: finiteText(tpl.name), id: finiteText(tpl.id) })
+      ? t('apps.confirm_uninstall_native', { name: finiteText(asRecord(tpl).name) })
+      : t('apps.confirm_uninstall', { name: finiteText(asRecord(tpl).name), id: finiteText(asRecord(tpl).id) })
   )) return
 
   // Docker: optional keep compose dir (default remove)
@@ -2047,7 +2093,7 @@ async function doUninstall(tpl) {
   try {
     const r = await uninstallCatalog(tpl.id, { remove_data: removeData })
     if (!stillOnApps(generation)) return
-    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(tpl.name)}` : '❌ ' + firstLine(r.message))
+    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(asRecord(tpl).name)}` : '❌ ' + firstLine(r.message))
     if (r.message && !r.ok) {
       // show detail in console-friendly toast only; full msg may be long
     }
@@ -2063,8 +2109,8 @@ async function doUninstall(tpl) {
 }
 
 async function run(s, action) {
-  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(s.name) }))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(s.name) }))) return
+  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(asRecord(s).name) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(asRecord(s).name) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
@@ -2096,7 +2142,7 @@ function openJob(jobId, title) {
       return
     }
     try {
-      const j = await getStackJob(curJob.value)
+      const j = asRecord(await getStackJob(curJob.value))
       if (generation !== jobPollGeneration) return
       logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : '')
       if (!j.running) {

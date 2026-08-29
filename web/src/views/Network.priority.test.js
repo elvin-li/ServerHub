@@ -163,6 +163,27 @@ describe('Network service priority status', () => {
     wrapper.unmount()
   })
 
+  it('does not throw when services is a non-array leftover', async () => {
+    const wrapper = await mountNetwork({
+      services: { name: 'Wi-Fi', hardware_port: 'Wi-Fi' },
+      wifi_power: { ok: true, on: true, device: 'en0', message: 'On' },
+    })
+    expect(wrapper.text()).toContain('network.empty_services')
+    expect(wrapper.text()).toContain('network.sum_active_n')
+    wrapper.unmount()
+  })
+
+  it('does not throw when service order cloning hits a circular graph', async () => {
+    const circular = wifiService()
+    circular.self = circular
+    const wrapper = await mountNetwork({
+      services: [circular],
+      wifi_power: { ok: true, on: true, device: 'en0', message: 'On' },
+    })
+    expect(wrapper.text()).toContain('network.empty_services')
+    wrapper.unmount()
+  })
+
   it('exposes radio power buttons on the Wi-Fi priority row', async () => {
     const wrapper = await mountNetwork({
       services: [wifiService(), ethernetService()],

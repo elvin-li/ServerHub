@@ -23,20 +23,55 @@ from hub.util import read_bytes_capped, sh, utf8_env
 _PROCESS_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 #: Leftover multi-MB LaunchAgent plist used to OOM start/stop and GET registry.
 _PLIST_CAP = 256 * 1024
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 action JSON."""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _path_is_file(path) -> bool:
@@ -48,7 +83,14 @@ def _path_is_file(path) -> bool:
 
 def _app_process_name(name: str) -> str:
     """Refuse osascript interpolation of an option-shaped or quoted process name."""
-    value = str(name or "").strip()
+    try:
+        value = str(name or "").strip()
+    except ValueError:
+        # A hand-edited hex leftover (``process: 0xfff…`` loads uncapped
+        # through YAML) raised the int->str digit-cap ValueError here and
+        # 500'd POST /api/action; it can never name a real process, so it
+        # gets the same coded 400 as an option-shaped name.
+        raise api_error("actions.bad_process_name")
     if not _PROCESS_NAME_RE.fullmatch(value):
         raise api_error("actions.bad_process_name")
     return value
@@ -58,7 +100,16 @@ def _script_argv(command) -> list[str]:
     if isinstance(command, (list, tuple)):
         # ``str()`` not ``_as_text``: leftover ``!!binary`` ``b'--all'`` must
         # stay ``"b'--all'"``, not decode into a real ``--all`` option.
-        argv = [str(part) for part in command]
+        argv = []
+        for part in command:
+            try:
+                argv.append(str(part))
+            except ValueError:
+                # A hand-edited hex leftover (``start: [cmd, 0xfff…]`` loads
+                # uncapped through YAML) raised the int->str digit-cap
+                # ValueError here and 500'd POST /api/action; the scalar path
+                # already collapses the same leftover into this coded 400.
+                raise api_error("actions.empty_script")
     else:
         try:
             argv = shlex.split(str(command))
@@ -107,7 +158,9 @@ def _job_pid_and_status(label: str) -> tuple[str, str] | None:
     try:
         from hub.launchd_cache import listing
         entry = listing(force=True).jobs.get(label)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if entry is None:
         return None
@@ -158,7 +211,9 @@ def _confirm_launchd_alive(label: str, rc: int, out: str, err: str,
 def _plist_dict(path) -> dict | None:
     try:
         data = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     return data if isinstance(data, dict) else None
 
@@ -180,15 +235,38 @@ def _set_plist_disabled(path: str, disabled: bool) -> None:
     secure_io.replace_bytes(path, plistlib.dumps(pl))
 
 
+def _registry_id(raw) -> str:
+    """Registry key text for a configured id; ``""`` drops the entry.
+
+    YAML numeric ids (``id: 8080``) load as int and the strict
+    ``isinstance(sid, str)`` gate silently hid the entry from this registry
+    while ``collect_apps`` / ``collect_scripts`` still rendered its row with
+    start/stop buttons — POST /api/action answered ``actions.unknown_target``
+    for a service the dashboard itself offered.  The jobs._task_id rule: a
+    renderable int coerces through the ``str()`` probe; an over-cap hex
+    leftover (``id: 0xfff…`` loads uncapped; its ``str()`` raises the same
+    digit-cap ValueError ``json.dumps`` would) drops only its entry; bool
+    passes ``isinstance(int)`` and must not become ``"True"``.  Matches
+    ``discovery.apps._entry_id`` so the id a row serves is the key here.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    if isinstance(raw, str):
+        return _as_text(raw).strip()
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return ""
+    try:
+        return str(raw)
+    except ValueError:
+        return ""
+
+
 def registry():
     reg = {}
     for a in cfg().get("apps") or []:
         if not isinstance(a, dict):
             continue
-        sid = a.get("id")
-        if not isinstance(sid, str) or not sid:
-            continue
-        sid = _as_text(sid).strip()
+        sid = _registry_id(a.get("id"))
         if not sid:
             continue
         if a.get("container_engine") or a.get("docker_engine"):
@@ -198,10 +276,7 @@ def registry():
     for s in cfg().get("scripts") or []:
         if not isinstance(s, dict):
             continue
-        sid = s.get("id")
-        if not isinstance(sid, str) or not sid:
-            continue
-        sid = _as_text(sid).strip()
+        sid = _registry_id(s.get("id"))
         if not sid:
             continue
         reg[sid] = ("script", s)
@@ -243,7 +318,9 @@ def registry():
                 reg.setdefault(oid, ("vm", {"backend": "orb", "name": oname or oid}))
             if oname:
                 reg.setdefault(oname, ("vm", {"backend": "orb", "name": oname}))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     return reg
 
@@ -286,7 +363,9 @@ def run_action(target, action):
                 return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
             except HTTPException:
                 raise
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 raise api_error("actions.unknown_target", target=target)
         raise api_error("actions.unknown_target", target=target)
     kind, meta = reg[target]
@@ -308,7 +387,9 @@ def run_action(target, action):
                 _launchctl(["enable", f"{dom}/{label}"])
                 try:
                     _set_plist_disabled(meta["path"], False)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     pass
             rc, o, e = _launchctl(["bootstrap", dom, meta["path"]])
             if not _bootstrap_ok_to_kickstart(rc, o, e):
@@ -382,7 +463,9 @@ def run_action(target, action):
             return (0 if r.get("ok") else 1, _as_text(r.get("message") or ""), "")
         except HTTPException:
             raise
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             name = cli_args.require_positional(target, label="vm")
             if action == "start":
                 return sh([UTMCTL, "start", name], timeout=60)

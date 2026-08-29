@@ -456,9 +456,13 @@ class TestCodedErrors(unittest.TestCase):
             compose_svc.create_stack("bad.id", None, "services: {}\n")
         self.assertEqual(raised.exception.detail["code"], "compose.bad_stack_id")
 
+        # A log source id is only ever a dict key (the tail is a plain file
+        # read, no argv), so an option-like id that matches nothing is an
+        # honest 404 rather than the argv-injection 400 — the strict gate
+        # also 400'd legal configured ids like ``id: 日志``.
         with self.assertRaises(HTTPException) as raised:
             logs_svc.tail_log("--all")
-        self.assertEqual(raised.exception.detail["code"], "cli.invalid_value")
+        self.assertEqual(raised.exception.detail["code"], "logs.unknown_source")
 
         with self.assertRaises(HTTPException) as raised:
             logs_svc.tail_log("definitely-missing-source")
@@ -513,13 +517,16 @@ class TestCodedErrors(unittest.TestCase):
                 nginx_svc.test_config()
         self.assertEqual(raised.exception.detail["code"], "nginx.conf_missing")
 
+        # A vanished nginx binary is the coded 503, disk-confirmed — the raw
+        # sh sentinel {ok: false, message: "not found"} was untranslatable.
         with (
             patch.object(nginx_svc, "NGINX_CONF", RealPath(__file__)),
             patch.object(nginx_svc, "NGINX_BIN", "/no/such/nginx-binary"),
         ):
-            result = nginx_svc.test_config()
-        self.assertFalse(result["ok"])
-        self.assertIn("not found", result["message"])
+            with self.assertRaises(HTTPException) as raised:
+                nginx_svc.test_config()
+        self.assertEqual(raised.exception.detail["code"], "nginx.not_found")
+        self.assertEqual(raised.exception.status_code, 503)
 
         with patch.object(autostart_svc.Path, "home", return_value=RealPath("/tmp/opt50h-no-home")):
             with self.assertRaises(HTTPException) as raised:
@@ -545,7 +552,15 @@ class TestCodedErrors(unittest.TestCase):
             disk_power_svc.wake_disk("not-a-disk")
         self.assertEqual(raised.exception.detail["code"], "disk_power.invalid_id")
 
-        with patch.object(disk_power_svc, "list_power_disks", return_value=[]):
+        # A genuine miss: the listing answered (so diskutil is alive) and the
+        # disk is simply not in it.  An *empty* listing on a host whose fresh
+        # disk probe says diskutil is gone is the coded 503
+        # disk_power.diskutil_missing instead — pinned in
+        # test_array4_leftover_diskutil_vanished_503.
+        with patch.object(
+            disk_power_svc, "list_power_disks",
+            return_value=[{"id": "disk0", "system": True, "can_sleep": False}],
+        ):
             with self.assertRaises(HTTPException) as raised:
                 disk_power_svc.sleep_disk("disk99")
         self.assertEqual(raised.exception.detail["code"], "disk_power.not_found")

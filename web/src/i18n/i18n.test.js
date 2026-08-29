@@ -41,7 +41,7 @@ function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) walk(full, out)
-    else if (/\.(vue|js)$/.test(entry.name) && !entry.name.endsWith('.test.js')) {
+    else if (/\.(vue|js)$/.test(entry.name) && !entry.name.endsWith('.test.js') && entry.name !== '__knip-canary__.js') {
       out.push(full)
     }
   }

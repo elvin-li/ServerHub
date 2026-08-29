@@ -38,7 +38,7 @@ from hub.host_address import default_interface
 from hub.launchd_cache import loaded_labels
 from hub.macos_admin import run_admin_sequence, sudo_capture
 from hub.paths import DATA_DIR
-from hub.secure_io import replace_secret_text
+from hub.secure_io import drop_leftover_nonfile, replace_secret_text
 from hub.util import fan_out, read_text_capped, sh
 
 #: Leftover multi-MB ``/etc/pf.conf`` / LaunchDaemon plist used to OOM
@@ -77,24 +77,75 @@ PF_MARKER = "# ServerHub WireGuard NAT"
 
 _STAGE_DIR = DATA_DIR
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _stage_file(path: Path, content: str) -> bool:
+    """Write a staging file under data/, clearing an empty leftover occupant.
+
+    Every remediation stages its payload here before the privileged copy.  A
+    leftover directory occupying one of these fixed names (``pf.conf.check``,
+    ``pf.conf.staged``, ``pf-anchor-wireguard``, the two LaunchDaemon plists)
+    made :func:`replace_secret_text`'s final ``os.replace`` raise
+    IsADirectoryError — a raw 500 out of POST /api/wireguard/remediate before
+    any privileged step ran.  An empty leftover is removed and the write
+    self-heals; anything else reports False so the caller answers its coded
+    failure instead.
+    """
+    drop_leftover_nonfile(path)
+    try:
+        replace_secret_text(path, content)
+        return True
+    except OSError:
+        return False
+
 
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so GET /api/wireguard/readiness cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _default_wan_interface() -> str:
@@ -360,7 +411,9 @@ def _daemon_defects(text: str) -> list[str]:
         return []
     try:
         payload = plistlib.loads(text.encode("utf-8", "replace"))
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # launchd will not load what plistlib cannot read, so this is a real fault
         # rather than a parsing inconvenience -- but fall back to the old substring
         # test first, so a plist that is merely unusual is not mislabelled.
@@ -645,18 +698,42 @@ def peer_origin_conflict() -> dict:
     pinned to some other server's public key and none of them can ever complete a
     handshake here.
     """
-    raw = wireguard_svc.peer_records()
-    records = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    # This probe does not own the provider (tests and tooling patch
+    # ``peer_records``, the wireguard_svc._ping_targets rule): a listing that
+    # raises, a list *subclass* whose ``__iter__`` bombs inside the old
+    # comprehension, or a dict-subclass row whose bound ``.get`` raises used
+    # to escape through :func:`readiness` — a raw 500 on GET
+    # /api/wireguard/readiness where a junk row already dropped silently.
+    try:
+        raw = wireguard_svc.peer_records()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        raw = []
+    records = wireguard_svc._plain_rows(raw)
     if not records:
         return {"conflict": False, "reason": "no_peers", "foreign": 0, "total": 0}
-    foreign = [r for r in records if not r.get("known") and not r.get("reissuable")]
+    # _mapping_get, not bound ``.get`` (the wireguard_svc hash-shadow rule):
+    # ``_plain_rows``'s exact ``dict(row)`` copies preserve poisoned *keys*,
+    # and a stored key whose hash collides with "known" / "reissuable" /
+    # "public_key" and whose ``__eq__`` raises used to detonate the probe
+    # loop inside these pulls — a raw 500 on GET /api/wireguard/readiness
+    # for a row every other junk shape already drops silently.
+    foreign = [
+        r for r in records
+        if not wireguard_svc._truthy(wireguard_svc._mapping_get(r, "known"))
+        and not wireguard_svc._truthy(wireguard_svc._mapping_get(r, "reissuable"))
+    ]
     conflict = len(foreign) == len(records)
     return {
         "conflict": conflict,
         "reason": "all_peers_foreign" if conflict else "",
         "foreign": len(foreign),
         "total": len(records),
-        "foreign_keys": [_as_text(r.get("public_key"))[:16] for r in foreign[:10]],
+        "foreign_keys": [
+            _as_text(wireguard_svc._mapping_get(r, "public_key"))[:16]
+            for r in foreign[:10]
+        ],
     }
 
 
@@ -1093,7 +1170,10 @@ def _validate_pf_conf(body: str, anchor_path: Path) -> dict:
     """
     probe_body = body.replace(f'from "{PF_ANCHOR_PATH}"', f'from "{anchor_path}"')
     probe = _STAGE_DIR / "pf.conf.check"
-    replace_secret_text(probe, probe_body)
+    if not _stage_file(probe, probe_body):
+        # Nothing was parsed, so this is not a pf.conf verdict: flag it so
+        # the caller reports the write failure rather than "pf.conf invalid".
+        return {"ok": False, "message": "", "stage_failed": str(probe)}
     rc, out, err = sh([PFCTL, "-n", "-f", str(probe)], timeout=15)
     if rc == 0:
         return {"ok": True, "message": ""}
@@ -1123,7 +1203,8 @@ def install_nat() -> dict:
 
     anchor_body = render_anchor(subnet, egress)
     staged_anchor = _STAGE_DIR / "pf-anchor-wireguard"
-    replace_secret_text(staged_anchor, anchor_body)
+    if not _stage_file(staged_anchor, anchor_body):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged_anchor)}
 
     try:
         current = read_text_capped(PF_CONF, _PF_CONF_CAP, errors="replace")
@@ -1132,11 +1213,14 @@ def install_nat() -> dict:
 
     desired = render_pf_conf(current)
     check = _validate_pf_conf(desired, staged_anchor)
+    if check.get("stage_failed"):
+        return {"ok": False, "error": "stage_write_failed", "path": check["stage_failed"]}
     if not check["ok"]:
         return {"ok": False, "error": "pf_conf_invalid", "message": check["message"]}
 
     staged_conf = _STAGE_DIR / "pf.conf.staged"
-    replace_secret_text(staged_conf, desired)
+    if not _stage_file(staged_conf, desired):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged_conf)}
 
     commands = [
         ["/bin/mkdir", "-p", str(PF_ANCHOR_DIR)],
@@ -1174,6 +1258,12 @@ def remove_nat() -> dict:
     if _anchor_reference_lines(current) or PF_MARKER in current:
         desired = "\n".join(_without_our_lines(current)).strip("\n") + "\n"
         check = _validate_pf_conf(desired, PF_ANCHOR_PATH)
+        if check.get("stage_failed"):
+            return {
+                "ok": False,
+                "error": "stage_write_failed",
+                "path": check["stage_failed"],
+            }
         if not check["ok"]:
             return {
                 "ok": False,
@@ -1181,7 +1271,8 @@ def remove_nat() -> dict:
                 "message": check["message"],
             }
         staged = _STAGE_DIR / "pf.conf.staged"
-        replace_secret_text(staged, desired)
+        if not _stage_file(staged, desired):
+            return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
         commands += [
             [CP, str(PF_CONF), f"{PF_CONF}.serverhub.bak"],
             [CP, str(staged), str(PF_CONF)],
@@ -1211,7 +1302,8 @@ def install_daemon() -> dict:
     daemon = daemon_state()
     target = Path(daemon["plist_path"])
     staged = _STAGE_DIR / f"{daemon['label']}.plist"
-    replace_secret_text(staged, _daemon_plist_body())
+    if not _stage_file(staged, _daemon_plist_body()):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
 
     commands: list[list[str]] = []
     if daemon["loaded"] or daemon["installed"]:
@@ -1321,7 +1413,8 @@ def install_wstunnel(*, restrict_to: str | None = None) -> dict:
         return {"ok": False, "error": "bad_wstunnel_target", "target": dest[:60]}
 
     staged = _STAGE_DIR / f"{wireguard_wstunnel.LABEL}.plist"
-    replace_secret_text(staged, body)
+    if not _stage_file(staged, body):
+        return {"ok": False, "error": "stage_write_failed", "path": str(staged)}
     target = wireguard_wstunnel.PLIST_PATH
     result = run_admin_sequence(
         [

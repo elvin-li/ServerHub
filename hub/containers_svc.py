@@ -15,12 +15,18 @@ from fastapi import HTTPException
 from hub import cli_args
 from hub.config import cfg, maintenance_env, override
 from hub.errors import api_error, soft_fail
-from hub.docker_cli import _as_text, _jsonable, docker, docker_json, engine_up, inspect_object, looks_engine_down, redact_env
+from hub.docker_cli import (
+    _as_text, _isa, _jsonable, cli_on_disk, docker, docker_json, engine_up,
+    inspect_object, looks_cli_vanished, looks_engine_down, parse_int_capped,
+    redact_env,
+)
 from hub.paths import DATA_DIR, DOCKER, user_home
 from hub.host_address import resolve_value
 from hub.secure_io import replace_bytes
 from hub.status import invalidate_status
 from hub.util import iter_capped_lines, read_text_capped, run_capped, safe_json_loads, strftime_now, ttl_memo, utf8_env
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 # long-running compose / pull jobs (reuse pattern of maintenance)
 _cjobs: dict = {}
@@ -49,8 +55,181 @@ def _job_epoch() -> int:
     """Finite unix timestamp. Leftover ``time.time() = inf`` OverflowError'd job ids."""
     try:
         return int(time.time())
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return 0
+
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Alias of docker_cli._isa so compose9 unit pins and docker9 listing
+    gates share one fail-closed helper.
+    """
+    return _isa(value, types)
+
+
+def _job_scalar(value):
+    """A job-row scalar (``rc`` / ``started`` / ``finished``) scrubbed for JSON.
+
+    These fields are echoed to clients through ``_jsonable``, whose entry
+    ``isinstance(value, bool)`` reads a leftover value's ``__class__`` on the
+    real-type miss — so a poisoned scalar whose ``__class__`` is a raising
+    property 500'd GET /api/stacks (via ``job_public``) and
+    GET /api/stacks/jobs/{id}.  Laundering each field on its own degrades the
+    one bomb to ``None`` (the field drops) while its sibling fields survive.
+    """
+    try:
+        isinstance(value, str)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    try:
+        return _jsonable(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _log_text(value) -> str:
+    """One job-log line as JSON-safe text; a ``__class__`` bomb drops to ''.
+
+    ``_as_text``'s entry ``isinstance(value, (bytes, bytearray))`` reads the
+    operand's ``__class__`` on the real-type miss, so a leftover log line whose
+    ``__class__`` is a raising property 500'd the log join on
+    GET /api/stacks/jobs/{id}.
+    """
+    try:
+        isinstance(value, str)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        return _as_text(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _plain_job(value) -> dict | None:
+    """A ``_cjobs`` / config-stack row as a plain ``dict``, or None.
+
+    Rows this module writes are already plain (the AST test pins the two
+    writers), but the store outlives requests and a leftover dict-*subclass*
+    row (passes the isinstance gate, then ``.get()`` raises) used to 500
+    GET /api/stacks and GET /api/stacks/jobs/{id} — and raise inside the
+    single-runner mutex scan — until the panel restarted.  ``dict()`` copies
+    through the C-level storage, so an overridden method cannot fire; a
+    subclass whose copy itself raises is junk and drops.  Same guard as
+    hub.jobs._plain_dict.
+
+    The KEYS are laundered too, not just the mapping type: one str-*subclass*
+    key anywhere in the row makes every later ``row.get("field")`` fall off
+    CPython's exact-str fast path onto generic comparison, and when the
+    poisoned key's hash collides with the looked-up field name the reflected
+    operand hands the subclass ``__eq__`` priority — a ``__eq__`` bomb riding
+    a ``stacks:`` row's key used to raise out of ``_stack_paths``'s
+    ``s.get("id")`` / ``s.get("path")`` and 500 GET /api/stacks, GET/PUT
+    /api/compose/{id}, POST /api/compose/{id}/validate and every stack-job
+    start (the docker7 unbound-``dict.get`` guard covered the cfg *root*,
+    not a key inside a row).  ``str.__str__`` copies through the C storage,
+    so laundering cannot itself detonate; non-str keys drop — no reader
+    ever looks a row up by one.
+
+    The entry gate is ``_isa``, not a bare isinstance: ``isinstance``
+    consults ``value.__class__`` when the exact-type check misses, so a
+    leftover row whose ``__class__`` is a *raising property* used to
+    detonate the gate itself and 500 GET /api/stacks,
+    GET /api/stacks/jobs/{id} and — through the single-runner mutex scan —
+    POST /api/stacks/{id}/run (the nas8 / catalog10 rule).
+    """
+    if not _isa(value, dict):
+        return None
+    if type(value) is not dict:
+        try:
+            value = dict(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    # Iterating a plain dict's keys never dispatches into a subclass, so
+    # this probe cannot raise; the common all-exact-str row returns as-is.
+    if all(type(k) is str for k in value):
+        return value
+    out = {}
+    for k, v in value.items():
+        if type(k) is str:
+            out[k] = v
+        elif _isa(k, str):
+            # _isa: a ``__class__``-property-bomb KEY blew the bare gate.
+            # str.__str__ TypeErrors on a lying-``__class__`` impostor and
+            # the junk key drops like any other non-str.
+            try:
+                out[str.__str__(k)] = v
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+    return out
+
+
+def _truthy(value) -> bool:
+    """``bool(value)`` that survives a leftover ``__bool__`` bomb.
+
+    Fails closed to False: a bomb row is junk, not a live job, so treating
+    it as "running" would wedge the single-runner mutex forever (the
+    hub.jobs._truthy rule).
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _plain_text(value) -> str | None:
+    """A ``_cjobs`` string field as an *exact* ``str``, or None.
+
+    The isinstance gates on the job scans stop non-str junk, but a leftover
+    str-*subclass* field in a poisoned row passes them and detonates on the
+    first operator that consults the subclass: ``==`` used to raise out of
+    the ``stack_job_log`` fallback scan (the reflected operand gives the
+    subclass ``__eq__`` priority even when the plain str is on the left),
+    ``bool()`` (``__len__``) out of the ``latest_stack_jobs`` truthiness
+    check, and ``hash()`` out of its ``by[sid]`` insert — each one a 500 on
+    GET /api/stacks or GET /api/stacks/jobs/{id} until the panel restarted.
+    ``str.__str__`` copies through the C-level storage, so an override
+    cannot fire (the docker_cli._jsonable unbound convention).
+
+    ``_isa`` on the subclass gate: a leftover field whose ``__class__`` is
+    a raising property used to detonate the bare isinstance and 500 the
+    job scans this helper exists to protect (the nas8 rule).  A lying
+    ``__class__`` impostor TypeErrors the unbound copy and drops to None.
+    """
+    if type(value) is str:
+        return value
+    if _isa(value, str):
+        try:
+            return str.__str__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return None
+
+
+def _row_running(value) -> bool:
+    """Whether a (possibly junk) ``_cjobs`` row counts as a live job."""
+    row = _plain_job(value)
+    if row is None:
+        return False
+    return _truthy(row.get("running"))
 
 
 def _evict_old_jobs() -> None:
@@ -65,10 +244,7 @@ def _evict_old_jobs() -> None:
     """
     if len(_cjobs) <= JOB_HISTORY_MAX:
         return
-    for key in [
-        k for k, v in _cjobs.items()
-        if not (isinstance(v, dict) and v.get("running"))
-    ]:
+    for key in [k for k, v in _cjobs.items() if not _row_running(v)]:
         if len(_cjobs) <= JOB_HISTORY_MAX:
             break
         _cjobs.pop(key, None)
@@ -87,7 +263,10 @@ def _register_job(tid: str, *, stack_id: str, action: str) -> dict:
     stack_id = stack_id if isinstance(stack_id, str) else ""
     action = action if isinstance(action, str) else str(action or "")
     with _cjobs_lock:
-        if any(isinstance(j, dict) and j.get("running") for j in _cjobs.values()):
+        # _row_running, not a bare ``j.get("running")``: a leftover
+        # dict-subclass row (or a __bool__-bomb value) used to 500 every
+        # job-starting route through this mutex scan.
+        if any(_row_running(j) for j in _cjobs.values()):
             raise api_error("container.job_running")
         _cjobs[tid] = {
             "running": True,
@@ -280,10 +459,14 @@ def _stats_cached() -> dict:
     key can only ever be a set that is already out of date.  One entry on a 15s
     TTL is also exactly what the dict this replaces did.
     """
-    engine_ok, items = _container_list_cached()
+    # The laundered view, not the raw memo: a leftover planted in the list
+    # store used to detonate this unpack (and the ``i["id"]`` subscript on a
+    # poisoned row) inside the stats refresh itself — a raw 500 on
+    # GET /api/containers one seam past the listing's own guard.
+    engine_ok, items = _cached_list_view()
     if not engine_ok:
         return {}
-    return _fetch_stats([i["id"] for i in items if i.get("raw_state") == "running"])
+    return _fetch_stats([i.get("id") for i in items if i.get("raw_state") == "running"])
 
 
 def invalidate_container_lists():
@@ -291,12 +474,123 @@ def invalidate_container_lists():
     _stats_cached.invalidate()
 
 
+def _listing_pair(pair) -> tuple[bool, list] | None:
+    """The listing memo's ``(engine-up, rows)`` as plain data, or None if junk.
+
+    ``type(pair) is tuple`` / ``type(flag) is bool`` exact checks, the
+    ``_cache_view`` convention: a tuple *subclass* whose ``__getitem__`` /
+    ``__iter__`` raises, and a ``__bool__``-bomb flag, are junk — not
+    evidence of engine state or of containers.  Rows are re-founded through
+    ``_plain_job`` (C-level dict copy, laundered keys) and ``_jsonable``
+    (JSON-safe values), so a poisoned row costs itself, not the listing.
+    """
+    if type(pair) is not tuple or len(pair) != 2:
+        return None
+    flag, rows = pair
+    if type(flag) is not bool:
+        return None
+    if type(rows) is not list:
+        if not _isa(rows, list):
+            return None
+        try:
+            # list() through the C storage: a list-subclass ``__iter__``
+            # bomb cannot fire past the gate.
+            rows = list(rows)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    out = []
+    for row in rows:
+        row = _plain_job(row)
+        if row is None:
+            continue
+        cleaned = _jsonable(row)
+        if _isa(cleaned, dict):
+            out.append(cleaned)
+    return flag, out
+
+
+def _cached_list_view() -> tuple[bool, list]:
+    """``_container_list_cached()`` with a leftover in the memo store defused.
+
+    ``ttl_memo``'s cache dict is a module-lifetime store that outlives every
+    request (the docker11 ``_engine_cache`` class), and its answer went out
+    to a bare ``flag, rows = …`` unpack plus per-row ``dict(x)`` copies: a
+    leftover planted in the store — a junk stamp that detonates the
+    freshness probe, a non-tuple hit, a 2-tuple whose value is a scalar, a
+    ``__class__``-property-bomb row, a ``__bool__``-bomb flag — used to 500
+    GET /api/containers and GET /api/stacks until the TTL lapsed.  Junk is
+    evicted (``invalidate`` never compares keys, the health11 rule) and the
+    probe re-runs once; junk that survives eviction reads as engine-unknown
+    — the same coded ``engine_up: False`` answer as a stopped engine, never
+    a raw 500.
+    """
+    for attempt in (0, 1):
+        try:
+            pair = _container_list_cached()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A poisoned KEY detonates inside the memo's own cache.get on
+            # hash collision; the raise carries no listing.
+            pair = None
+        view = _listing_pair(pair)
+        if view is not None:
+            return view
+        if attempt == 0:
+            try:
+                _container_list_cached.invalidate()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return False, []
+    return False, []
+
+
+def _cached_stats_view() -> dict:
+    """``_stats_cached()`` with a leftover in the memo store defused.
+
+    Same store class and same eviction as :func:`_cached_list_view`; junk
+    that survives eviction reads as "no stats" — rows list without their
+    cpu/mem columns instead of a raw 500 on GET /api/containers.
+    """
+    for attempt in (0, 1):
+        try:
+            raw = _stats_cached()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            raw = None
+        row = _plain_job(raw)
+        if row is not None:
+            cleaned = _jsonable(row)
+            if _isa(cleaned, dict):
+                return cleaned
+        if attempt == 0:
+            try:
+                _stats_cached.invalidate()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return {}
+    return {}
+
+
 def _load_update_status() -> dict:
     try:
         # Path.exists() re-raises EIO/ESTALE; that used to 500 GET /api/containers.
         if not UPDATE_STATUS_PATH.exists():
             return {}
-        data = safe_json_loads(read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP))
+        # parse_int_capped: a leftover >4300-digit number made ``json.loads``
+        # itself raise ValueError (not JSONDecodeError), so this whole read
+        # fell to {} and the next _save_update_status silently wiped every
+        # other image's journal entry.  The hook loads the huge literal as
+        # None and the siblings survive.
+        data = safe_json_loads(
+            read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP),
+            parse_int=parse_int_capped,
+        )
         if not isinstance(data, dict):
             return {}
         cleaned = _jsonable(data)
@@ -327,14 +621,40 @@ def _field_text(value, fallback: str = "") -> str:
 
     ``name: .inf``, ``group: 2026-08-19``, ``!!binary`` and a ``!!set`` each
     used to leak into GET /api/containers and /api/stacks.
+
+    Every rank gate is ``_isa``, not a bare isinstance: a leftover stack
+    field whose ``__class__`` is a raising property used to detonate the
+    first gate below and 500 GET /api/stacks and POST /api/stacks/{id}/run
+    ahead of every scrub in this funnel (the nas8 rule).
     """
-    if value is None or isinstance(value, bool):
+    if value is None or _isa(value, bool):
         return fallback
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a leftover float-subclass
+                # ``__eq__``/``__ne__``/``__float__`` bomb in a stack id/name/group
+                # used to blow the NaN/inf probes below and 500 GET /api/stacks
+                # and GET /api/compose/{id} (the docker_cli._jsonable convention).
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return fallback
         if value != value or value in (float("inf"), float("-inf")):
             return fallback
         return str(value)
-    if isinstance(value, int):
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass ``__str__``
+                # / ``__index__`` bomb used to blow the digit-cap probe below
+                # (only ValueError was caught) and 500 the same routes.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return fallback
         try:
             return str(value)
         except ValueError:
@@ -345,20 +665,46 @@ def _field_text(value, fallback: str = "") -> str:
             # raise here and 500 GET /api/stacks, GET /api/containers and
             # GET /api/compose/{id}.
             return fallback
-    if isinstance(value, str):
+    if _isa(value, str):
         text = value
-    elif isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, (dict, list, tuple, set, frozenset)):
+    elif _isa(value, (bytes, bytearray)):
+        try:
+            # Unbound base decode: a leftover bytes-subclass ``.decode`` bomb
+            # in a stack/override field used to 500 GET /api/stacks here.
+            # The try is for a *lying* ``__class__`` (claims bytes, is not):
+            # the unbound call TypeErrors and the impostor falls back.
+            base = bytes if _isa(value, bytes) else bytearray
+            text = base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return fallback
+    elif _isa(value, (dict, list, tuple, set, frozenset)):
         return fallback
     else:
         try:
             text = str(value)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
-    if not text:
+    # Exact-str copy through the C storage: ``str()`` of a subclass whose
+    # ``__str__`` returns self keeps the subclass (and the str branch above
+    # never converted at all), so a bound ``.encode`` / ``__len__`` bomb in
+    #     a leftover stack id/name used to detonate on the two lines below and
+    # 500 GET /api/stacks (the docker6 _plain_text convention).  The try is
+    # for a lying-``__class__`` str impostor: the unbound copy TypeErrors
+    # on a value that only *claims* to be a str, which used to 500 the same
+    # routes one line past the gate it lied to.
+    try:
+        text = str.__str__(text)
+        if not text:
+            return fallback
+        return text.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return fallback
-    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _optional_text(value) -> str | None:
@@ -367,13 +713,28 @@ def _optional_text(value) -> str | None:
 
 
 def _str_list(raw) -> list[str]:
-    """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500."""
-    if not isinstance(raw, list):
+    """Stack ``containers:`` as strings.  ``.inf`` / a scalar leftover must not 500.
+
+    ``_isa`` gates: a ``containers:`` value (or item) whose ``__class__`` is
+    a raising property used to detonate the bare isinstance and 500
+    GET /api/stacks (the nas8 rule).
+    """
+    if not _isa(raw, list):
+        return []
+    try:
+        # list() through the C storage: a leftover list-subclass whose
+        # ``__iter__`` raises used to 500 GET /api/stacks past the gate.
+        rows = list(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return []
     out = []
-    for n in raw:
-        if not isinstance(n, str) or not n:
+    for n in rows:
+        if not _isa(n, str):
             continue
+        # _field_text, not a raw ``not n`` truthiness probe: a str-subclass
+        # item whose ``__len__`` raised used to 500 the same routes.
         text = _field_text(n)
         if text:
             out.append(text)
@@ -450,10 +811,26 @@ def _build_container_list() -> tuple[bool, list]:
         project = p[6] if len(p) > 6 else ""
         service = p[7] if len(p) > 7 else ""
         size = p[8] if len(p) > 8 else ""
-        ov = resolve_value(override(name))
+        try:
+            # Guarded: a leftover str-subclass override KEY whose ``__eq__``
+            # raises detonates inside ``dict.get`` when its hash collides
+            # with this container's name, and a dict-subclass ``items()`` /
+            # list-subclass ``__iter__`` bomb nested in an override value
+            # raises out of ``resolve_value``'s walk — each one used to 500
+            # GET /api/containers and GET /api/stacks until services.yaml
+            # was hand-edited.  A bombed override is junk; the row lists
+            # without it.
+            ov = resolve_value(override(name))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            ov = {}
         if not isinstance(ov, dict):
             ov = {}
-        if ov.get("hide"):
+        # _truthy, not a bare truth test: a ``__bool__``-bomb ``hide`` used
+        # to 500 the same listings.  Fails open to "show" — junk is not a
+        # hide instruction.
+        if _truthy(ov.get("hide")):
             continue
         if state == "running" and "unhealthy" in status:
             st = "warn"
@@ -515,7 +892,10 @@ def _build_container_list() -> tuple[bool, list]:
         rc2, jout, _ = docker("inspect", *names, timeout=15)
         if rc2 == 0:
             try:
-                arr = safe_json_loads(jout)
+                # parse_int_capped: one leftover >4300-digit number anywhere
+                # in the batch inspect used to ValueError the decode and drop
+                # every row's enrichment (network/mounts/autostart) at once.
+                arr = safe_json_loads(jout, parse_int=parse_int_capped)
             except (TypeError, ValueError, RecursionError):
                 # RecursionError: leftover deeply-nested inspect JSON is not ValueError.
                 arr = []
@@ -598,7 +978,9 @@ def _build_container_list() -> tuple[bool, list]:
                     else:
                         it["update"] = st_u.get("update") if st_u else None
                     it["shell"] = "/bin/sh"
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
     return True, items
 
@@ -628,25 +1010,33 @@ def _fetch_stats(running_names: list[str]) -> dict:
 
 
 def list_containers(with_stats: bool = True) -> dict:
-    engine_up_flag, cached_items = _container_list_cached()
-    # Shallow copy per item, as before: the cached list is now shared with every
-    # other reader of this TTL window, so a caller that edits a row -- or a
-    # serialiser that adds to it -- must not reach into the cache.
-    items = [dict(x) for x in cached_items]
+    # The laundered views rebuild fresh scrubbed rows per call, so a caller
+    # that edits a row -- or a serialiser that adds to it -- still cannot
+    # reach into the shared cache, and a leftover planted in either memo
+    # store degrades to the coded engine-down / no-stats answers instead of
+    # a raw 500 (the old per-item ``dict(x)`` copy was itself the detonator
+    # for a ``__class__``-property-bomb row).
+    engine_up_flag, items = _cached_list_view()
 
     if not engine_up_flag:
         return {"engine_up": False, "containers": [], "stats": {}, "projects": []}
 
     stats = {}
     if with_stats:
-        stats = dict(_stats_cached())
+        stats = _cached_stats_view()
 
     projects = {}
     for it in items:
-        key = it.get("project") or "_ungrouped"
+        key = it.get("project")
+        # Exact-str probe, not a bare ``or``: a junk row's cleaned project
+        # can be a list/dict — unhashable as a dict key one line down.
+        if type(key) is not str or not key:
+            key = "_ungrouped"
         projects.setdefault(key, {"name": key if key != "_ungrouped" else "other", "count": 0, "running": 0})
         projects[key]["count"] += 1
-        if it["raw_state"] == "running":
+        # .get: a junk row that survived the scrub may lack the column; a
+        # bare subscript KeyError'd the whole listing for one planted row.
+        if it.get("raw_state") == "running":
             projects[key]["running"] += 1
 
     return {
@@ -702,7 +1092,9 @@ def batch_action(names: list[str], action: str) -> dict:
             if detail.get("code"):
                 entry["code"] = _as_text(detail["code"])
             results.append(entry)
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             results.append({"id": _as_text(n), "ok": False, "message": _as_text(e)})
     return {"ok": ok_n == len(names), "done": ok_n, "total": len(names), "results": results}
 
@@ -811,14 +1203,18 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
                     }
                     flag = "update available" if r["update"] else ("up to date" if r["status"] == "false" else "unknown")
                     j["log"].append(f"  {flag}")
-                except Exception as e:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException as e:
                     j["log"].append(f"  !! {_as_text(e)}")
                     status[img] = {"status": "undef", "update": None, "error": _as_text(e)}
             status["_checked_at"] = strftime_now("%Y-%m-%d %H:%M:%S")
             _save_update_status(status)
             j["rc"] = 0
             j["log"].append("== check complete ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -945,8 +1341,21 @@ def _raise_if_engine_down(*chunks) -> None:
     TTL, and the seconds right after the engine stops are exactly when a
     stale "up" would misclassify the failure.  Output that merely looks
     engine-down while the engine answers "up" keeps its original mapping.
+
+    The docker CLI *itself* vanishing mid-request (OrbStack uninstalled, a
+    dying mount) is the same operator-facing state, but ``sh`` reports it as
+    the two-word sentinel ``"not found"`` — which ``looks_engine_down``
+    never matches, so every mutation here used to hand that raw sentinel
+    back as an uncoded ``ok: false``.  Classified on the same two-gate shape
+    as the compose/actions/tools twins: the sentinel must match AND a fresh
+    on-disk probe must confirm the binary is actually gone (``cli_on_disk``
+    — the sentinel alone is any FileNotFoundError spawn).  Both probes run
+    only on this failure path; timeouts (``"timeout"``) and real CLI exits
+    keep their original shape.
     """
-    if not looks_engine_down("\n".join(_as_text(c) for c in chunks if c)):
+    texts = [_as_text(c) for c in chunks if c]
+    vanished = any(looks_cli_vanished(t) for t in texts) and not cli_on_disk()
+    if not (looks_engine_down("\n".join(texts)) or vanished):
         return
     if not engine_up(force=True):
         raise api_error("container.engine_down")
@@ -1030,8 +1439,8 @@ def start_update_container_job(name: str) -> dict:
                         stack_hit = s
                         break
                 if stack_hit:
-                    cf = stack_hit["compose_path"]
-                    wd = stack_hit["path"]
+                    # os-level text for the spawn (see start_stack_job).
+                    wd, cf = _stack_io_paths(stack_hit)
                     for cmd in (
                         [DOCKER, "compose", "-f", cf, "pull"],
                         [DOCKER, "compose", "-f", cf, "up", "-d", "--force-recreate"],
@@ -1071,7 +1480,9 @@ def start_update_container_job(name: str) -> dict:
             if j.get("rc") is None:
                 j["rc"] = 0
             j["log"].append("== done ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -1345,11 +1756,21 @@ def rename_container(name: str, new_name: str) -> dict:
     return {"ok": rc == 0, "message": out if rc == 0 else (err or out)}
 
 
-def create_run_container(body: dict) -> dict:
-    """docker run -d with common options from panel form."""
+def build_run_args(body: dict) -> tuple[list, str, str]:
+    """Validate *body* and build the ``docker run`` argv.  No side effects.
+
+    Factored out of :func:`create_run_container` so recreate flows can run
+    every gate *before* their destructive stop/rm.  ``docker_update_ports``
+    used to stop and remove the container first and only then reach these
+    checks — a container name past the panel's 64-char form cap (legal for
+    docker, routine for compose-generated names) or a digest-pinned image
+    past the 201-char image cap turned "edit ports" into "destroy the
+    container": the coded 400 arrived after ``docker rm`` and nothing was
+    ever recreated.
+
+    Returns ``(argv-after-"docker", image, name)``.
+    """
     import re
-    if not engine_up():
-        raise api_error("container.engine_down")
     # leftover RecursionError on ``str(env-item)`` / leftover ``\\ud800``
     # used to 500 POST /api/containers/run.
     image = _as_text(body.get("image") or "").strip()
@@ -1401,7 +1822,14 @@ def create_run_container(body: dict) -> dict:
         args += _as_text(cmd).strip().split()
     elif isinstance(cmd, list):
         args += [_as_text(x) for x in cmd if _as_text(x)]
+    return args, image, name
 
+
+def create_run_container(body: dict) -> dict:
+    """docker run -d with common options from panel form."""
+    if not engine_up():
+        raise api_error("container.engine_down")
+    args, image, name = build_run_args(body)
     rc, out, err = docker(*args, timeout=180)
     invalidate_status()
     out, err = _as_text(out), _as_text(err)
@@ -1457,15 +1885,75 @@ def _stack_paths() -> list[dict]:
     """Resolve compose stacks from config + auto-scan Services/*."""
     stacks = []
     seen = set()
-    for s in cfg().get("stacks") or []:
-        if not isinstance(s, dict):
+    # dict.get through the C storage, with both the snapshot provider and
+    # the lookup guarded: a leftover cfg() root that is a dict *subclass*
+    # with a bombing ``.get`` (or a str-subclass key whose ``__eq__`` raises
+    # on hash collision with "stacks") used to 500 GET /api/stacks,
+    # GET /api/compose/{id} and POST /api/stacks/{id}/run.
+    try:
+        data = cfg()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        data = None
+    try:
+        raw = dict.get(data, "stacks") if isinstance(data, dict) else None
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        raw = None
+    # _isa, not a bare isinstance: a ``stacks:`` value whose ``__class__``
+    # is a raising property used to detonate this gate itself and 500
+    # GET /api/stacks and POST /api/stacks/{id}/run (the nas8 rule).
+    if _isa(raw, list):
+        try:
+            # list() through the C storage: a leftover list-subclass whose
+            # ``__iter__`` raises used to 500 GET /api/stacks and every
+            # stack-job start.
+            rows = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            rows = []
+    else:
+        rows = []
+    for s in rows:
+        # _plain_job's C-level dict copy, not a bare isinstance gate: a
+        # leftover dict-subclass row whose ``.get()`` raised used to 500
+        # GET /api/stacks and POST /api/stacks/{id}/run one line later.
+        s = _plain_job(s)
+        if s is None:
             continue
         path = s.get("path")
-        if isinstance(path, str) and path:
+        # _isa + a guarded copy: a ``path`` whose ``__class__`` is a raising
+        # property used to detonate the bare isinstance, and a lying
+        # ``__class__`` impostor used to TypeError the unbound copy — each
+        # one a 500 on GET /api/stacks and POST /api/stacks/{id}/run.
+        if _isa(path, str):
+            # Exact-str copy: a str-subclass path whose ``__len__`` raised
+            # used to detonate the truthiness probe below.
+            try:
+                path = str.__str__(path)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                path = None
+        else:
+            path = None
+        if type(path) is str and path:
             try:
                 p = Path(path)
-                compose_name = s.get("compose_file") or "docker-compose.yml"
-                if not isinstance(compose_name, str) or not compose_name:
+                # No bare ``or`` over the raw value: a leftover
+                # ``__bool__``-bomb ``compose_file`` used to 500 here.
+                compose_name = s.get("compose_file")
+                if _isa(compose_name, str):
+                    try:
+                        compose_name = str.__str__(compose_name)
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        compose_name = None
+                if type(compose_name) is not str or not compose_name:
                     compose_name = "docker-compose.yml"
                 compose = p / compose_name
             except (OSError, ValueError, TypeError):
@@ -1483,15 +1971,26 @@ def _stack_paths() -> list[dict]:
                             break
                     except (OSError, ValueError):
                         continue
-            sid = s.get("id")
-            if not isinstance(sid, str) or not sid:
-                sid = p.name
+            # _field_text probe, not an isinstance(str) gate: YAML ``id: 42``
+            # loads as an int, and the gate silently renamed the stack to its
+            # directory name — POST /api/stacks/42/run then 404'd a stack the
+            # operator could see.  A huge hex int past the digit cap still
+            # falls back (the probe eats its str() ValueError).
+            sid = _field_text(s.get("id")) or p.name
             stacks.append({
                 "id": _field_text(sid) or "stack",
                 "name": _field_text(s.get("name")) or _field_text(p.name) or "stack",
                 "path": _field_text(str(p)),
                 "compose_file": _field_text(compose.name) if present else None,
                 "compose_path": _field_text(str(compose)) if present else None,
+                # The os-level text that actually names the file.  The
+                # published ``path``/``compose_path`` fields are scrubbed for
+                # Starlette's UTF-8 encode, so a surrogateescape name (one
+                # non-UTF-8 byte in a directory name) published text that
+                # named nothing on disk — same class as the logs tail miss.
+                # ``list_stacks`` strips these before rows are published.
+                "os_path": str(p),
+                "os_compose_path": str(compose) if present else None,
                 "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
@@ -1500,9 +1999,18 @@ def _stack_paths() -> list[dict]:
             except (OSError, ValueError, RuntimeError):
                 # Path.resolve() raises RuntimeError on a leftover symlink loop.
                 seen.add(str(p))
-        elif s.get("containers"):
-            sid = s.get("id")
-            if not isinstance(sid, str) or not sid:
+        elif _truthy(s.get("containers")):
+            # _truthy: a ``__bool__``-bomb ``containers`` value is junk, not
+            # a stack — it used to 500 the listing instead of dropping.
+            # One _field_text probe does both jobs: it scrubs the lone
+            # surrogate a YAML ``id: "\ud800"`` loads as (its raw form used
+            # to 500 GET /api/stacks on Starlette's UTF-8 encode), and it
+            # renders a numeric YAML ``id: 42`` — the isinstance(str) gate
+            # that stood here silently dropped that stack from the listing.
+            # Only genuinely unrenderable ids (huge hex ints past the digit
+            # cap, mappings) still skip the entry.
+            sid = _field_text(s.get("id"))
+            if not sid:
                 continue
             # Same _field_text pass as the path branch above: YAML double
             # quotes load ``id: "\ud800"`` as a *lone surrogate* str, which
@@ -1517,6 +2025,8 @@ def _stack_paths() -> list[dict]:
                 "path": None,
                 "compose_file": None,
                 "compose_path": None,
+                "os_path": None,
+                "os_compose_path": None,
                 "containers": _str_list(s.get("containers")),
                 "source": "config",
             })
@@ -1546,10 +2056,34 @@ def _stack_paths() -> list[dict]:
             "path": _field_text(str(comp.parent)),
             "compose_file": _field_text(comp.name),
             "compose_path": _field_text(str(comp)),
+            # Scan names come straight off the filesystem, so this is the
+            # branch where the os text and the scrubbed text actually differ:
+            # glob returns surrogateescape strs for non-UTF-8 bytes, and the
+            # scrubbed twin (``?`` replacement) named a file that does not
+            # exist — GET /api/compose/{id} answered ``no_compose_file`` for
+            # a compose the scan had just found, and a stack run could act on
+            # a *sibling* directory whose name really contains the ``?``.
+            "os_path": str(comp.parent),
+            "os_compose_path": str(comp),
             "containers": [],
             "source": "scan",
         })
     return stacks
+
+
+def _stack_io_paths(stack: dict) -> tuple[str | None, str | None]:
+    """(workdir, compose file) os-level text for I/O against *stack*.
+
+    Falls back to the published scrubbed fields so callers that build stack
+    dicts by hand (tests, tooling) keep their historical behavior.
+    """
+    workdir = stack.get("os_path")
+    if not isinstance(workdir, str) or not workdir:
+        workdir = stack.get("path")
+    compose = stack.get("os_compose_path")
+    if not isinstance(compose, str) or not compose:
+        compose = stack.get("compose_path")
+    return workdir, compose
 
 
 def list_stacks() -> list:
@@ -1586,11 +2120,29 @@ def list_stacks() -> list:
         s["running_containers"] = found
         running_ok = any(by_name.get(n, {}).get("raw_state") == "running" for n in found)
         s["status"] = "ok" if running_ok else ("exists" if found else "idle")
+        # The os-level twins may carry lone surrogates (that is their whole
+        # point) and would 500 Starlette's UTF-8 encode of GET /api/stacks;
+        # rows publish only the scrubbed path fields.
+        s.pop("os_path", None)
+        s.pop("os_compose_path", None)
     return stacks
+
+
+#: The four compose verbs POST /api/stacks/{id}/run accepts.
+_STACK_ACTIONS = frozenset({"update", "up", "down", "pull"})
 
 
 def start_stack_job(stack_id: str, action: str = "update") -> dict:
     """action: update (pull+up), up, down, pull"""
+    if action not in _STACK_ACTIONS:
+        # The body ``action`` used to be embedded raw in the job id
+        # (``stack-<id>-<action>-<epoch>``) and the job dict: anything unknown
+        # silently fell to the update branch, and a leftover lone-surrogate
+        # action 500'd the run response on Starlette's UTF-8 encode — and,
+        # because the poisoned job dict outlives the request, every later
+        # GET /api/stacks and GET /api/stacks/jobs/{id} until the panel
+        # restarted.  Same allowed-set gate as container_action / prune.
+        raise api_error("container.bad_action", action=action)
     stacks = {s["id"]: s for s in _stack_paths()}
     stack = stacks.get(stack_id)
     if not stack:
@@ -1601,8 +2153,12 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     tid = f"stack-{stack_id}-{action}-{_job_epoch()}"
     j0 = _register_job(tid, stack_id=stack_id, action=action)
 
-    compose_path = stack["compose_path"]
-    workdir = stack["path"]
+    # I/O runs against the os-level path text, not the published scrubbed
+    # twin: for a surrogateescape directory name the scrubbed text names a
+    # different (usually nonexistent, possibly *sibling*) file.  ``as_argv``
+    # still refuses argv it cannot encode, so a genuinely unspawnable name
+    # fails closed in the job log instead of acting on the wrong compose.
+    workdir, compose_path = _stack_io_paths(stack)
 
     def run():
         j = j0
@@ -1632,7 +2188,9 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
             else:
                 j["rc"] = 0
                 j["log"].append("== done ==")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             j["log"].append(f"!! {_as_text(e)}")
             j["rc"] = -1
         finally:
@@ -1646,47 +2204,123 @@ def start_stack_job(stack_id: str, action: str = "update") -> dict:
     return {"ok": True, "job_id": tid, "message": "job started"}
 
 
+def _job_field(value) -> str | None:
+    """A job-dict string echoed to clients, surrogate-scrubbed.
+
+    Job dicts outlive the request that created them, so one poisoned field
+    (a leftover lone surrogate, a non-str shape) used to 500 every later
+    GET /api/stacks render until the panel restarted.  The entry gates now
+    keep such values out of new jobs; this funnel keeps a dict poisoned any
+    other way from taking the listing routes down with it.
+
+    ``_isa``: a field whose ``__class__`` is a raising property used to
+    detonate the bare gate and 500 the same renders (the nas8 rule).
+    """
+    return _as_text(value) if _isa(value, str) else None
+
+
+def _job_log_lines(raw) -> list:
+    """The iterable items of a job-row ``log`` field.  Never raises.
+
+    ``list()`` through the C storage: a leftover list-subclass whose
+    ``__iter__`` raises used to 500 the log route past the isinstance gate
+    (the hub.jobs._log_lines rule).  ``_isa``: a ``log`` value whose
+    ``__class__`` is a raising property used to detonate the gate itself.
+    """
+    if not _isa(raw, list):
+        return []
+    try:
+        return list(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+
+
 def stack_job_log(job_id: str) -> dict:
+    missing = {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
     if not isinstance(job_id, str):
-        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
-    j = _cjobs.get(job_id)
-    if not isinstance(j, dict):
-        # also allow latest job for stack
+        return missing
+    # _plain_job: a dict-subclass row whose .get() raised used to 500 here.
+    try:
+        j = _plain_job(_cjobs.get(job_id))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # The lookup itself can detonate: a leftover str-subclass KEY whose
+        # ``__eq__`` raises is compared against the queried id when their
+        # hashes collide (same string content), and the bomb raised out of
+        # ``dict.get`` — a raw 500 on the one poll that named the poisoned
+        # job.  The fallback scan below re-finds it through _plain_text.
         j = None
+    if j is None:
+        # also allow latest job for stack
         for k, v in reversed(list(_cjobs.items())):
-            if not isinstance(v, dict):
+            row = _plain_job(v)
+            if row is None:
                 continue
-            if v.get("stack_id") == job_id or k == job_id:
-                j = v
-                job_id = k
+            # _plain_text, not bare isinstance gates: a str-*subclass*
+            # ``__eq__``-bomb stack_id (or key) in ANY row passed the gate
+            # and still raised out of this scan — the reflected operand
+            # gives the subclass priority even with the plain str on the
+            # left — and 500'd the poll for every other job.
+            sid = _plain_text(row.get("stack_id"))
+            key = _plain_text(k)
+            if sid == job_id or (key is not None and key == job_id):
+                j = row
+                if key is not None:
+                    job_id = key
                 break
-    if not isinstance(j, dict):
-        return {"running": False, "rc": None, "log": "(not started yet)", "job_id": job_id}
-    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
-    return {"running": j.get("running"), "rc": j.get("rc"), "started": j.get("started"),
-            "finished": j.get("finished"),
-            "log": "\n".join(_as_text(x) for x in raw_log) or "(waiting for output…)",
-            "job_id": job_id, "stack_id": j.get("stack_id"), "action": j.get("action"),
-            # machine-readable failure class (container.engine_down) so the
-            # SPA can translate instead of rendering raw daemon stderr
-            "code": j.get("code") if isinstance(j.get("code"), str) else None}
+    if j is None:
+        return {"running": False, "rc": None, "log": "(not started yet)",
+                "job_id": _as_text(job_id)}
+    payload = {
+        # _truthy / _job_scalar: a __bool__-bomb ``running``, an over-cap-digit
+        # ``rc`` and a lone-surrogate ``started`` in a poisoned row all used
+        # to 500 Starlette's encoder; the log join already scrubbed items but
+        # the scalar fields were echoed raw.  _job_scalar also seals the
+        # ``__class__``-property bomb that blew ``_jsonable``'s own entry gate.
+        "running": _truthy(j.get("running")), "rc": _job_scalar(j.get("rc")),
+        "started": _job_scalar(j.get("started")),
+        "finished": _job_scalar(j.get("finished")),
+        "log": "\n".join(_log_text(x) for x in _job_log_lines(j.get("log")))
+               or "(waiting for output…)",
+        "job_id": _as_text(job_id),
+        "stack_id": _job_field(j.get("stack_id")),
+        "action": _job_field(j.get("action")),
+        # machine-readable failure class (container.engine_down) so the
+        # SPA can translate instead of rendering raw daemon stderr
+        "code": _job_field(j.get("code"))}
+    cleaned = _jsonable(payload)
+    return cleaned if _isinst(cleaned, dict) else missing
 
 
 def latest_stack_jobs() -> list:
     # return recent unique by stack
     by = {}
     for k, v in _cjobs.items():
-        if not isinstance(v, dict):
+        row = _plain_job(v)
+        if row is None:
             continue
-        sid = v.get("stack_id")
-        if isinstance(sid, str) and sid:
-            by[sid] = {**job_public(k, v)}
+        # _plain_text: a str-subclass stack_id in a poisoned row used to
+        # detonate the truthiness check (``__len__`` bomb) or the ``by[sid]``
+        # insert (``__hash__`` bomb) and 500 GET /api/stacks.
+        sid = _plain_text(row.get("stack_id"))
+        if sid:
+            by[sid] = {**job_public(k, row)}
     return list(by.values())
 
 
 def job_public(jid, j):
-    if not isinstance(j, dict):
+    j = _plain_job(j)
+    if j is None:
         j = {}
-    return {"job_id": jid, "stack_id": j.get("stack_id"), "action": j.get("action"),
-            "running": j.get("running"), "rc": j.get("rc"), "finished": j.get("finished"),
-            "code": j.get("code") if isinstance(j.get("code"), str) else None}
+    payload = {"job_id": _as_text(jid),
+               "stack_id": _job_field(j.get("stack_id")),
+               "action": _job_field(j.get("action")),
+               "running": _truthy(j.get("running")),
+               "rc": _job_scalar(j.get("rc")),
+               "finished": _job_scalar(j.get("finished")),
+               "code": _job_field(j.get("code"))}
+    cleaned = _jsonable(payload)
+    return cleaned if _isinst(cleaned, dict) else {"job_id": _as_text(jid)}

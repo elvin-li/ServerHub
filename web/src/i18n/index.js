@@ -1,4 +1,5 @@
 import { computed, inject, ref } from 'vue'
+import { asArray, asRecord } from '../lib/finite'
 
 const MESSAGES = {}
 const MESSAGE_LOADERS = {
@@ -49,7 +50,7 @@ function detectLocale() {
   // English rather than falling through on the first entry alone.
   const tags = typeof navigator === 'undefined'
     ? []
-    : [...(navigator.languages || []), navigator.language || '']
+    : [...asArray(navigator.languages), navigator.language || '']
   for (const tag of tags) {
     const hit = matchLocale(tag)
     if (hit) return hit
@@ -92,8 +93,9 @@ function getByPath(obj, path) {
 
 function format(str, params) {
   if (!params || typeof str !== 'string') return str
+  const rec = asRecord(params)
   return str.replace(/\{(\w+)\}/g, (_, k) =>
-    params[k] != null ? String(params[k]) : `{${k}}`
+    rec[k] != null ? String(rec[k]) : `{${k}}`
   )
 }
 

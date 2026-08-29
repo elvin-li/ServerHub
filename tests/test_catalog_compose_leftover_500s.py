@@ -932,9 +932,17 @@ class StackPathSurrogateLeftoverTests(unittest.TestCase):
             mock.patch.object(Path, "is_dir", return_value=False),
         ):
             stacks = containers_svc._stack_paths()
-        _starlette(stacks)
-        self.assertTrue(any(s.get("id") == "x" for s in stacks))
-        for s in stacks:
+        # _stack_paths now deliberately keeps the raw os-level twins
+        # (os_path/os_compose_path — they must keep the surrogate text so
+        # file I/O reaches the real path); list_stacks strips them before
+        # rows are published.  Mirror that publish step here.
+        published = [
+            {k: v for k, v in s.items() if k not in ("os_path", "os_compose_path")}
+            for s in stacks
+        ]
+        _starlette(published)
+        self.assertTrue(any(s.get("id") == "x" for s in published))
+        for s in published:
             self.assertNotIn("\ud800", s.get("path") or "")
             self.assertNotIn("\ud800", s.get("id") or "")
             self.assertNotIn("\ud800", s.get("name") or "")

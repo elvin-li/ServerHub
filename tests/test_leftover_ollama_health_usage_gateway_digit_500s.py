@@ -19,14 +19,15 @@ so this battery pins the survivors instead of fixing anything:
   over-cap ``eval_duration`` reads as 0 — both answer None past POST
   /api/ollama/test and /api/ollama/chat, never inf into Starlette's
   ``allow_nan=False`` encoder;
-* the daemon URL's port is never validated (``local_http_origin`` checks the
-  hostname only), so ``urlsplit(base_url()).port`` — which raises ValueError
-  for both over-cap and out-of-range ports — is reachable from an
-  operator-edited ``settings.ollama.url``.  ``status()`` absorbs it into the
-  ``error`` field (the open dies on ``InvalidURL`` before any socket), and the
-  one bare ``.port`` in ``ollama_svc.health_checks`` is absorbed by
-  ``health_svc._ollama_checks``'s guard as a warn row, so GET
-  /api/ollama/status and GET /api/health/checks both stay 200-shaped;
+* the daemon URL's port is validated since the settings7 sweep:
+  ``http_guard._url_parts`` probes ``SplitResult.port`` (which raises
+  ValueError for both over-cap and out-of-range ports), so an
+  operator-edited ``settings.ollama.url`` carrying one is rejected by the
+  origin gate and ``base_url()`` falls back to the loopback default —
+  ``status()`` reports the default URL unreachable and
+  ``ollama_svc.health_checks``'s bare ``urlsplit(base_url()).port`` read
+  can no longer raise, so GET /api/ollama/status and GET
+  /api/health/checks both stay 200-shaped with their rows intact;
 * the health page's own port read (``_panel_port``): an over-cap or
   out-of-range ``SERVERHUB_PORT`` answers the 8086 default;
 * the usage explorer's request bounds: an over-cap ``limit`` caps at 50 and an
@@ -133,33 +134,45 @@ class OllamaTokensPerSecondDigitPinTests(unittest.TestCase):
 
 
 class OllamaHugePortUrlPinTests(unittest.TestCase):
-    """``local_http_origin`` never validates the port, so an operator-edited
-    ``settings.ollama.url`` with an over-cap or out-of-range port survives into
-    ``base_url()`` — and ``SplitResult.port`` raises ValueError for both."""
+    """An operator-edited ``settings.ollama.url`` with an over-cap or
+    out-of-range port (``SplitResult.port`` raises ValueError for both) is
+    rejected by the origin gate since the settings7 sweep, so ``base_url()``
+    falls back to the loopback default instead of carrying the poison into
+    every probe."""
 
     def _cfg(self, url: str):
         return mock.patch.object(
             ollama_svc, "cfg", lambda: {"settings": {"ollama": {"url": url}}}
         )
 
-    def test_status_absorbs_the_huge_port_into_the_error_field(self):
-        # http.client refuses the >4300-digit port as InvalidURL before any
-        # socket is opened; status() folds that into the unreachable shape.
+    def test_status_reports_the_default_url_unreachable_over_a_huge_port(self):
+        # The origin gate rejects the >4300-digit port, base_url() falls
+        # back to the default, and status() folds the (refused) probe of
+        # that default into the unreachable shape.
         self.addCleanup(ollama_svc.status.invalidate)
         with (
             self._cfg(f"http://127.0.0.1:{_HUGE_DIGITS}"),
             mock.patch.object(ollama_svc, "binary_path", return_value=None),
             mock.patch.object(ollama_svc, "_candidate_labels", return_value=[]),
+            mock.patch.object(
+                ollama_svc, "_api",
+                side_effect=ConnectionRefusedError(61, "refused"),
+            ),
         ):
             snap = ollama_svc.status(force=True)
         self.assertFalse(snap["reachable"])
         self.assertTrue(snap["error"])
+        self.assertEqual(snap["url"], ollama_svc.DEFAULT_URL)
+        self.assertTrue(snap["url_rejected"])
         _starlette(snap)
 
-    def test_health_page_degrades_the_ollama_row_not_the_payload(self):
-        # ollama_svc.health_checks reads ``urlsplit(base_url()).port`` bare;
-        # the ValueError is absorbed by health_svc._ollama_checks so GET
-        # /api/health/checks keeps its other rows instead of 500ing.
+    def test_health_page_keeps_the_named_ollama_row_over_the_leftover(self):
+        # ollama_svc.health_checks reads ``urlsplit(base_url()).port`` bare.
+        # Before the settings7 sweep the bad-port URL survived the origin
+        # gate and that read ValueError'd — health_svc._ollama_checks then
+        # collapsed every Ollama row into one generic "check failed" row.
+        # The gate now rejects the URL, base_url() falls back to the
+        # default, and the row keeps its name and the real probe failure.
         for port in (_HUGE_DIGITS, "99999"):
             with (
                 self.subTest(port=port[:12]),
@@ -168,13 +181,18 @@ class OllamaHugePortUrlPinTests(unittest.TestCase):
                     ollama_svc, "_candidate_labels",
                     return_value=["local.ollama.serve"],
                 ),
+                mock.patch.object(
+                    ollama_svc, "_api",
+                    side_effect=ConnectionRefusedError(61, "refused"),
+                ),
             ):
                 rows = health_svc._ollama_checks()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]["id"], "ollama_api")
                 self.assertEqual(rows[0]["level"], "warn")
                 self.assertFalse(rows[0]["ok"])
-                self.assertIn("check failed:", rows[0]["detail"])
+                self.assertEqual(rows[0]["name"], "Ollama local LLM API :11434")
+                self.assertIn("API unreachable", rows[0]["detail"])
                 _starlette(rows)
 
     def test_a_sane_port_still_names_the_health_row(self):

@@ -23,6 +23,8 @@ is deliberately not touched — reachability is probed at the socket level).
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import json
 import os
 import urllib.error
@@ -65,29 +67,55 @@ REDIS_PORT = 6379
 PG_PORT = 5433
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if isinstance(value, bytes) else bytearray
+    return base.decode(value, "utf-8", "replace")
+
+
 def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500.
+
+    Unbound ``str.encode`` (the ``_decode_bytes`` convention): a str-subclass
+    ``encode`` bomb from the sh seam used to raise through the *bound* encode
+    here, out of ``run_checks``, and collapse the whole Immich block of GET
+    /api/health/checks into one "check failed" row.  A str instance also
+    skips ``str()`` entirely, so a subclass ``__str__`` bomb keeps its real
+    text instead of degrading to "".
+    """
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    try:
-        text = str(value)
-    except RecursionError:
+        return _decode_bytes(value)
+    if not isinstance(value, str):
         try:
-            return type(value).__name__
-        except Exception:
+            value = str(value)
+        except RecursionError:
+            try:
+                return type(value).__name__
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return ""
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
-        return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _as_text(value) -> str:
-    """docker ps / ping leftovers: bytes used to TypeError ``partition`` / ``in``."""
+    """docker ps / ping leftovers: bytes used to TypeError ``partition`` / ``in``.
+
+    Unbound decode: a bytes-*subclass* ``decode`` bomb from the same sh seam
+    used to raise out of ``run_checks`` — collapsing the whole Immich block of
+    GET /api/health/checks into one "check failed" row, wiping the sane
+    sibling checks with the poisoned one.
+    """
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
+        value = _decode_bytes(value)
     elif not isinstance(value, str):
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    # Unbound base encode: a str-subclass ``encode`` bomb cannot 500.
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 def _jsonable(value, depth: int = 0):
@@ -95,12 +123,27 @@ def _jsonable(value, depth: int = 0):
 
     Inf in a leftover ping body was already dropped; a leftover ``\\ud800`` in
     docker ps / ping text still 500'd GET /api/health at UTF-8 encode time.
+
+    Probes are unbound base-type calls (``int.__index__``, ``float.__float__``,
+    ``bytes``/``bytearray.decode``, ``dict.items``, ``base.__iter__``, guarded
+    getattr — the modules5 convention): the *bound* probes this carried before
+    blew on the subclass-bomb classes, and a raise out of here wiped the whole
+    Immich section of GET /api/health/checks to one collapsed row.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -111,36 +154,64 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
         out = {}
-        for k, v in value.items():
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500 and the real entries still survive.
+        for k, v in dict.items(value):
             if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
+                k = _decode_bytes(k)
             elif not isinstance(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / ``__getattr__`` raising non-AttributeError past
+        # getattr's default.
+        iso = None
     if callable(iso):
         try:
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -180,7 +251,9 @@ def _http(url: str, timeout: float = 3.0):
         return e.code, ""
     except RedirectRefused as e:
         return None, _utf8_text(e)
-    except Exception as e:  # URLError, socket.timeout, ...
+    except _CONTROL_FLOW:
+        raise
+    except BaseException as e:  # URLError, socket.timeout, ...
         return None, _utf8_text(e)
 
 
@@ -195,10 +268,13 @@ def worker_pid() -> int | None:
     try:
         # Line 1 is the pid; start-worker-native.sh writes the process' `lstart`
         # on line 2 so a recycled pid can be told apart from the real worker.
-        # Cap the read: ``read_text()`` of a leftover multi-MB pidfile used
-        # to OOM GET /api/photoshub.
-        with open(WORKER_PID, encoding="utf-8", errors="replace") as fh:
-            raw = fh.read(256)
+        # read_text_capped, not a bare ``open()``: a leftover FIFO occupying
+        # the pidfile used to park ``open()`` until a writer appeared —
+        # wedging GET /api/health forever instead of raising the OSError this
+        # handler already eats.  The cap also refuses a leftover multi-MB
+        # pidfile (EFBIG lands in the same OSError arm) that ``read_text()``
+        # used to load whole.
+        raw = read_text_capped(WORKER_PID, 256, encoding="utf-8", errors="replace")
         # Cap leaves a str; index lines, not characters — raw[1] was the digit
         # after the first pid char and always failed the lstart match.
         lines = raw.splitlines()

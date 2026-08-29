@@ -8,7 +8,7 @@
     <div class="toolbar">
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <span v-if="loaded" class="badge" :class="view?.configured ? 'ok' : ''">
-        {{ view?.configured ? t('pool.state_configured', { n: (view?.members || []).length }) : t('pool.state_unconfigured') }}
+        {{ view?.configured ? t('pool.state_configured', { n: asArray(view?.members).length }) : t('pool.state_unconfigured') }}
       </span>
       <span class="badge accent">{{ t('pool.badge_no_raid') }}</span>
     </div>
@@ -33,14 +33,14 @@
 
     <!-- Configured members that are not mounted right now. -->
     <div
-      v-if="(view?.missing_members || []).length"
+      v-if="asArray(view?.missing_members).length"
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
       <h2 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h2>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
-        <span v-for="m in view.missing_members" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
+        <span v-for="m in asArray(view.missing_members)" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
       </p>
     </div>
 
@@ -111,33 +111,33 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in selectedMembers" :key="m.mount">
+          <tr v-for="m in asArray(selectedMembers)" :key="finiteText(asRecord(m).mount)">
             <td class="mono">
-              <strong>{{ finiteText(m.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(m.disk_id) }} · {{ finiteText(m.filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(m.used_gb) }} / {{ fmtGb(m.avail_gb) }}</div>
+              <strong>{{ finiteText(asRecord(m).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(m).disk_id) }} · {{ finiteText(asRecord(m).filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(asRecord(m).used_gb) }} / {{ fmtGb(asRecord(m).avail_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(m.disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(m.filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(m).disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(m).filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).total_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).used_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).avail_gb) }}</td>
             <td style="min-width:100px">
-              {{ withUnit(m.pct, '%') }}
-              <div class="pct-bar" :class="barClass(m.pct)" style="margin-top:3px">
-                <i :style="{ width: barPct(m.pct) + '%' }"></i>
+              {{ withUnit(asRecord(m).pct, '%') }}
+              <div class="pct-bar" :class="barClass(asRecord(m).pct)" style="margin-top:3px">
+                <i :style="{ width: barPct(asRecord(m).pct) + '%' }"></i>
               </div>
             </td>
             <td class="ops">
               <button
                 class="tiny"
                 :disabled="busy"
-                :aria-label="t('pool.remove_aria', { mount: finiteText(m.mount) })"
-                @click="removeMember(m.mount)"
+                :aria-label="t('pool.remove_aria', { mount: finiteText(asRecord(m).mount) })"
+                @click="removeMember(asRecord(m).mount)"
               >{{ t('pool.remove') }}</button>
             </td>
           </tr>
-          <tr v-if="!selectedMembers.length && !loadError">
+          <tr v-if="!asArray(selectedMembers).length && !loadError">
             <td colspan="8" class="empty-row">{{ t('pool.empty_members') }}</td>
           </tr>
         </tbody>
@@ -160,27 +160,32 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in availableCandidates" :key="c.mount">
+          <tr v-for="c in asArray(availableCandidates)" :key="finiteText(asRecord(c).mount)">
             <td class="mono">
-              <strong>{{ finiteText(c.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(c.disk_id) }} · {{ finiteText(c.filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(c.total_gb) }}</div>
+              <strong>{{ finiteText(asRecord(c).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(c).disk_id) }} · {{ finiteText(asRecord(c).filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(asRecord(c).total_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(c.disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(c.filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(c.total_gb) }}</td>
-            <td>{{ fmtGb(c.avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(c).disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(c).filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(c).total_gb) }}</td>
+            <td>{{ fmtGb(asRecord(c).avail_gb) }}</td>
             <td class="ops">
               <button
                 class="tiny primary"
                 :disabled="busy"
-                :aria-label="t('pool.add_aria', { mount: finiteText(c.mount) })"
-                @click="addMember(c.mount)"
+                :aria-label="t('pool.add_aria', { mount: finiteText(asRecord(c).mount) })"
+                @click="addMember(asRecord(c).mount)"
               >{{ t('pool.add') }}</button>
             </td>
           </tr>
-          <tr v-if="!availableCandidates.length && !loadError">
-            <td colspan="6" class="empty-row">{{ t('pool.empty_candidates') }}</td>
+          <!-- Two different truths share this row: with every eligible disk
+               already selected, "no eligible disks" would wrongly claim the
+               host lost its disks (the common.no_match split Brew/Tools pin). -->
+          <tr v-if="!asArray(availableCandidates).length && !loadError">
+            <td colspan="6" class="empty-row" role="status">
+              {{ asArray(allCandidates).length ? t('pool.all_in_pool') : t('pool.empty_candidates') }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -203,19 +208,19 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in shownFaults" :key="r.mount">
+          <tr v-for="r in asArray(shownFaults)" :key="finiteText(asRecord(r).mount)">
             <td class="mono">
-              <strong>{{ finiteText(r.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>
+              <strong>{{ finiteText(asRecord(r).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(r).disk_id) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(r.disk_id) }}</td>
-            <td style="color:var(--warn-text)">{{ fmtGb(r.at_risk_gb) }}</td>
-            <td style="color:var(--ok-text)">{{ fmtGb(r.survives_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(r).disk_id) }}</td>
+            <td style="color:var(--warn-text)">{{ fmtGb(asRecord(r).at_risk_gb) }}</td>
+            <td style="color:var(--ok-text)">{{ fmtGb(asRecord(r).survives_gb) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
           </tr>
-          <tr v-if="!shownFaults.length && !loadError">
+          <tr v-if="!asArray(shownFaults).length && !loadError">
             <td colspan="5" class="empty-row">{{ t('pool.empty_faults') }}</td>
           </tr>
         </tbody>
@@ -226,7 +231,7 @@
     <div class="tile" style="margin-bottom:12px">
       <div class="field-grid">
         <label for="pool-name">{{ t('pool.name_label') }}</label>
-        <input id="pool-name" v-model="poolName" type="text" :placeholder="t('pool.name_ph')" />
+        <input id="pool-name" v-model="poolName" type="text" maxlength="64" :placeholder="t('pool.name_ph')" />
 
         <label for="pool-policy">{{ t('pool.policy_label') }}</label>
         <select id="pool-policy" v-model="policy">
@@ -278,7 +283,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
-import { barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -308,24 +313,24 @@ const policies = computed(() => view.value?.policies || ['most-free', 'least-use
 
 /** Every poolable volume the backend reported, members and unassigned alike. */
 const allCandidates = computed(() => [
-  ...(view.value?.members || []),
-  ...(view.value?.unassigned || []),
+  ...asArray(view.value?.members).map((row) => asRecord(row)),
+  ...asArray(view.value?.unassigned).map((row) => asRecord(row)),
 ])
 
 const selectedMembers = computed(() => {
-  const by = new Map(allCandidates.value.map((c) => [c.mount, c]))
-  return selected.value.map((m) => by.get(m)).filter(Boolean)
+  const by = new Map(asArray(allCandidates.value).map((c) => [asRecord(c).mount, asRecord(c)]))
+  return asArray(selected.value).map((m) => by.get(m)).filter(Boolean).map((row) => asRecord(row))
 })
 
 const availableCandidates = computed(() => {
-  const chosen = new Set(selected.value)
-  return allCandidates.value.filter((c) => !chosen.has(c.mount))
+  const chosen = new Set(asArray(selected.value))
+  return asArray(allCandidates.value).map((c) => asRecord(c)).filter((c) => !chosen.has(c.mount))
 })
 
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
-const shownSummary = computed(() => preview.value?.summary || view.value?.summary || {})
+const shownSummary = computed(() => asRecord(preview.value?.summary || view.value?.summary))
 const shownTarget = computed(() => preview.value?.next_write_target ?? view.value?.next_write_target)
-const shownFaults = computed(() => preview.value?.fault_model || view.value?.fault_model || [])
+const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model).map((row) => asRecord(row)))
 
 function barClass(pct) {
   if (pct >= 90) return 'danger'
@@ -346,7 +351,7 @@ function policyLabel(p) {
 function syncFromView(data) {
   view.value = data
   preview.value = null
-  selected.value = (data.members || []).map((m) => m.mount)
+  selected.value = asArray(data.members).map((m) => m.mount)
   poolName.value = data.name || 'pool'
   minFreeGb.value = Number(data.min_free_gb) || 0
   if (data.policy) policy.value = data.policy
@@ -373,11 +378,11 @@ async function refresh() {
 }
 
 function addMember(mount) {
-  if (!selected.value.includes(mount)) selected.value = [...selected.value, mount]
+  if (!asArray(selected.value).includes(mount)) selected.value = [...asArray(selected.value), mount]
 }
 
 function removeMember(mount) {
-  selected.value = selected.value.filter((m) => m !== mount)
+  selected.value = asArray(selected.value).filter((m) => m !== mount)
 }
 
 // A stale preview describing a different member set is worse than none: the
@@ -394,7 +399,7 @@ async function doPreview() {
     const planned = await planStoragePool(selected.value, policy.value)
     if (generation !== loadGeneration || !pageAlive) return
     preview.value = planned
-    lastMsg.value = t('pool.msg_preview', { n: selected.value.length })
+    lastMsg.value = t('pool.msg_preview', { n: asArray(selected.value).length })
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

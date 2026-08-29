@@ -435,11 +435,21 @@ class ConfigLeftoverDirEioTests(unittest.TestCase):
         self.assertEqual(config.cfg(), {})
         self.assertEqual(config._read_disk(), {})
 
-    def test_leftover_huge_int_does_not_500_cfg(self):
-        """yaml.safe_load ValueError on a 5000-digit int is not YAMLError."""
-        self.yaml.write_text("settings:\n  port: " + "9" * 5000 + "\n")
-        self.assertEqual(config.cfg(), {})
-        self.assertEqual(config._read_disk(), {})
+    def test_leftover_huge_int_does_not_500_or_wipe_cfg(self):
+        """yaml.safe_load ValueError on a 5000-digit int is not YAMLError.
+
+        Degrading to ``{}`` was the old shape: it hid the WHOLE config (auth
+        block included, so the panel read "setup required") and the next
+        mutate() persisted that wipe.  The capped-int retry keeps every
+        sibling and drops only the unrenderable scalar.
+        """
+        self.yaml.write_text(
+            "settings:\n  keep: kept\n  port: " + "9" * 5000 + "\n"
+        )
+        self.assertEqual(config.cfg()["settings"]["keep"], "kept")
+        self.assertIsNone(config.cfg()["settings"]["port"])
+        self.assertEqual(config._read_disk()["settings"]["keep"], "kept")
+        self.assertIsNone(config._read_disk()["settings"]["port"])
 
     def test_leftover_bool_tag_does_not_500_cfg(self):
         """yaml.safe_load KeyError on ``!!bool 2`` is not YAMLError."""

@@ -34,6 +34,9 @@ from fastapi import WebSocket
 
 from hub.config import settings_section
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 #: A console ticket only has to survive the round trip from the REST response to
 #: the WebSocket upgrade the browser opens immediately afterwards.
 TICKET_TTL_SECONDS = 30
@@ -102,30 +105,221 @@ def console_id_for_utm(vm_uuid: str) -> str:
     return f"utm:{vm_uuid}"
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that survives a leftover ``__class__``-property bomb.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    detonated the bare type gates themselves — planted as the allowlist
+    map, an allowlist key, an entry, or an entry's protocol/host/port
+    value — and 500'd the console-session mint while ``capability()``
+    silently emptied the whole UTM listing.  A real subclass still matches
+    through the C-level type check (the storage_pool/vms_svc rule).
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _mapping_get(mapping, key, default=None):
+    """Entry field read that a hostile mapping *key* cannot 500.
+
+    ``_entry_for``'s laundering ``dict(value)`` copy keeps hostile keys, so
+    a leftover str-subclass key whose hash shadows ``enabled`` / ``port`` /
+    ``host`` / ``protocol`` / ``view_only`` and whose ``__eq__`` raises
+    used to detonate the plain-dict ``entry.get`` probes in
+    ``resolve_target`` — a 500 on the mint, an emptied UTM listing via
+    ``capability()``.  Only the shadowed field degrades to its default.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
 def _allowlist() -> dict[str, Any]:
-    settings = settings_section("vm_console")
-    allowlist = settings.get("allowlist")
-    return allowlist if isinstance(allowlist, dict) else {}
+    # Guarded read: ``settings_section`` re-raises a cfg snapshot provider
+    # bomb (its try covers only the ``cfg()`` call, not the gates after),
+    # and the bare ``isinstance`` gate here detonated on an allowlist whose
+    # ``__class__`` is a raising property — both 500'd the mint and emptied
+    # the UTM listing via ``capability()``.
+    try:
+        settings = settings_section("vm_console")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    allowlist = _mapping_get(settings, "allowlist")
+    return allowlist if _isa(allowlist, dict) else {}
+
+
+def _exact_str(value) -> str:
+    """Exact-str copy without calling any overridable method.
+
+    surrogatepass keeps the comparison faithful to what was stored; every
+    caller then runs bound ``.strip()`` / ``.lower()`` safely.
+    """
+    if type(value) is str:
+        return value
+    try:
+        return str.encode(value, "utf-8", "surrogatepass").decode(
+            "utf-8", "surrogatepass"
+        )
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _probe_text(value) -> str:
+    """Comparable text for an allowlist key / protocol field.
+
+    A ``str()`` probe, not an ``isinstance(x, str)`` gate: a numeric YAML key
+    still compares as its decimal text instead of being silently dropped.  A
+    leftover YAML hex key/value (``0x…`` dodges CPython's int(str) digit cap,
+    so the *already-int* blows bare ``str()`` at 4300+ digits) used to
+    ValueError out of ``_entry_for`` / ``resolve_target`` — a 500 on the
+    console session mint, and an empty UTM listing via ``capability()``.
+    ``!!binary`` keys decode instead of comparing as ``"b'…'"``.
+
+    Hands back an *exact* str (unbound base decode, exact-str copies): a
+    str-subclass leftover used to ride out with its bound ``.strip()`` /
+    ``.lower()`` bombs live, and a bytes-subclass ``__bytes__``/``decode``
+    bomb raised out of the ``bytes(value)`` copy — both 500'd the mint.
+
+    ``_isa`` on the gates: a key/value whose ``__class__`` is a raising
+    property detonated the bare ``isinstance`` itself.
+    """
+    if _isa(value, str):
+        return _exact_str(value)
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
+        return base.decode(value, "utf-8", "replace")
+    try:
+        return _exact_str(str(value))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _entry_for(vm_uuid: str) -> dict[str, Any] | None:
     allowlist = _allowlist()
-    for key, value in allowlist.items():
-        if str(key).strip().lower() == str(vm_uuid).strip().lower():
-            return value if isinstance(value, dict) else None
+    wanted = _probe_text(vm_uuid).strip().lower()
+    # Unbound dict.items and a laundered entry: settings_section only
+    # launders the top-level section, so a leftover allowlist that is a dict
+    # *subclass* (bombing ``items()``) or an entry with a bombing ``.get``
+    # used to 500 the console-session mint out of resolve_target.
+    for key, value in dict.items(allowlist):
+        if _probe_text(key).strip().lower() == wanted:
+            # _isa: an entry whose ``__class__`` is a raising property
+            # detonated this bare gate ahead of the laundering below.
+            if not _isa(value, dict):
+                return None
+            if type(value) is dict:
+                # The exact stored entry, not a copy: callers compare and
+                # cache it, and a plain dict has nothing to launder.
+                return value
+            try:
+                return dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+    return None
+
+
+def _flag(value) -> bool:
+    """Truthiness of a leftover allowlist flag without a subclass ``__bool__`` 500.
+
+    ``not entry.get("enabled")`` and ``bool(entry.get("view_only"))`` used to
+    run a leftover value's bombing ``__bool__`` straight into a 500 on the
+    console-session mint (and an empty UTM listing via ``capability()``).
+    """
+    try:
+        return bool(value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _coerce_port(value) -> int | None:
+    """A TCP port from a leftover allowlist value, or None.
+
+    ``int(raw_port or 0)`` used to run a leftover subclass's ``__bool__`` (the
+    ``or``) or ``__int__`` bomb, so a poisoned ``port`` 500'd the mint and
+    emptied the UTM listing.  Numbers are base-coerced (``int.__index__`` /
+    ``float.__float__``) so a subclass override never runs; a string keeps its
+    exact-str copy before ``int()``.  ``_isa`` on the gates: a port whose
+    ``__class__`` is a raising property detonated the first bare
+    ``isinstance`` itself.
+    """
+    if value is None or _isa(value, bool):
+        return None
+    if _isa(value, int):
+        try:
+            return int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            return None
+    if _isa(value, str):
+        text = _exact_str(value).strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
     return None
 
 
 def _as_host_text(value) -> str:
-    """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts."""
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            value = bytes(value).decode("utf-8")
-        except UnicodeDecodeError:
-            return ""
-    if not isinstance(value, str):
+    """Allowlist host as text.  YAML ``!!binary`` is bytes; leftover numbers are not hosts.
+
+    ``_isa`` on the gates: a host whose ``__class__`` is a raising property
+    detonated the bare ``isinstance`` and 500'd the mint.
+    """
+    if _isa(value, (bytes, bytearray)):
+        decoded = None
+        for base in (bytes, bytearray):
+            try:
+                decoded = base.decode(value, "utf-8")
+                break
+            except UnicodeDecodeError:
+                return ""
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
+        if decoded is not None:
+            value = decoded
+    if not _isa(value, str):
         return ""
-    return value.strip()
+    text = _exact_str(value).strip()
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _is_loopback(host: str) -> bool:
@@ -165,40 +359,56 @@ def _is_loopback(host: str) -> bool:
 
 def resolve_target(console_id: str, *, vm_uuid: str | None = None) -> ConsoleTarget | None:
     """Resolve a console_id to its configured loopback endpoint, or None."""
-    text = console_id.strip() if isinstance(console_id, str) else ""
+    text = console_id.strip() if _isa(console_id, str) else ""
     if not _CONSOLE_ID_RE.match(text):
         return None
     uuid = text.split(":", 1)[1]
     if vm_uuid is not None and uuid.lower() != str(vm_uuid).strip().lower():
         return None
     entry = _entry_for(uuid)
-    if not entry or not entry.get("enabled"):
+    # ``_mapping_get`` for every field, not the plain-dict ``entry.get``:
+    # the laundering copy keeps hostile hash-shadowing keys, whose stored
+    # ``__eq__`` still ran during the bound get's probe — the mint 500'd,
+    # capability() emptied the listing.
+    # ``_flag``: ``not entry.get("enabled")`` used to run a leftover value's
+    # bombing ``__bool__`` (the mint 500'd, capability() emptied the listing).
+    if not entry or not _flag(_mapping_get(entry, "enabled")):
         return None
-    protocol = str(entry.get("protocol") or "vnc").strip().lower()
+    # ``entry.get("protocol") or "vnc"`` ran that value's ``__bool__`` too.
+    # ``_flag`` keeps the old ``or`` default (a *falsy* protocol → vnc) while a
+    # bombing ``__bool__`` reads as falsy rather than 500ing; a truthy-but-junk
+    # value (e.g. a huge-int hex leftover) still laundered to "" and is refused.
+    raw_protocol = _mapping_get(entry, "protocol")
+    if not _flag(raw_protocol):
+        protocol = "vnc"
+    else:
+        protocol = _probe_text(raw_protocol).strip().lower()
     if protocol != "vnc":
         return None
-    raw_host = entry.get("host")
-    host = "127.0.0.1" if raw_host in (None, "") else _as_host_text(raw_host)
+    raw_host = _mapping_get(entry, "host")
+    # ``raw_host in (None, "")`` ran a str-subclass reflected ``__eq__`` bomb.
+    # ``_as_host_text`` is already bomb-safe and returns a plain str; an
+    # omitted (``is None``) or explicitly-blank host defaults to loopback,
+    # while a present-but-unusable host stays empty and is refused below
+    # rather than being silently upgraded to the loopback default.
+    host = _as_host_text(raw_host)
     if not host:
-        return None
-    raw_port = entry.get("port")
+        if raw_host is None or (_isa(raw_host, str) and not _exact_str(raw_host)):
+            host = "127.0.0.1"
+        else:
+            return None
     # Bool is an int (``True`` → port 1).  JSON ``1e309`` / YAML ``port: .inf``
     # OverflowError ``int(inf)``; a 400-digit leftover int is not a TCP port.
-    if isinstance(raw_port, bool):
-        return None
-    try:
-        port = int(raw_port or 0)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not 1 <= port <= 65535 or not _is_loopback(host):
+    port = _coerce_port(_mapping_get(entry, "port"))
+    if port is None or not 1 <= port <= 65535 or not _is_loopback(host):
         return None
     return ConsoleTarget(
         console_id=console_id_for_utm(uuid),
         vm_uuid=uuid,
         protocol=protocol,
         host=host,
+        view_only=_flag(_mapping_get(entry, "view_only")),
         port=port,
-        view_only=bool(entry.get("view_only")),
     )
 
 
@@ -392,7 +602,9 @@ async def bridge(websocket, reader: asyncio.StreamReader, writer: asyncio.Stream
                 state["reason"] = "disconnect"
             except (BrokenPipeError, ConnectionResetError):
                 state["reason"] = "console_closed"
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 state["reason"] = "io_error"
     finally:
         for task in tasks:
@@ -467,15 +679,13 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
         })
         reason, sent, received = await bridge(websocket, reader, writer)
     finally:
-        if writer is not None:
-            try:
-                writer.close()
-            except Exception:
-                pass
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
+        # Release and audit *before* any await: a cancellation landing in
+        # this teardown (server shutdown/reload tearing the handler task
+        # down mid-bridge) re-raises CancelledError out of ``await
+        # writer.wait_closed()`` — it is a BaseException, so the ``except
+        # Exception`` guard did not hold it — and ``release_session`` never
+        # ran.  With MAX_SESSIONS_PER_VM=1 that leaked reservation kept the
+        # VM's console answering the coded too_many_sessions until restart.
         release_session(session.session_id)
         terminal_svc._audit({
             "ts": terminal_svc._now(), "event": "vm_console_end",
@@ -484,8 +694,23 @@ async def console_websocket(websocket: WebSocket, console_id: str) -> None:
             "duration_ms": terminal_svc._duration_ms(started, time.monotonic()),
             "bytes_from_client": sent, "bytes_to_client": received,
         })
+        if writer is not None:
+            try:
+                writer.close()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                pass
+            try:
+                await writer.wait_closed()
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                pass
         try:
             await websocket.close(code=1000 if reason == "console_closed" else 1001)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -10,6 +11,9 @@ import time
 from hub import secure_io
 from hub.paths import DATA_DIR
 from hub.util import safe_json_loads, sh, tail_file_lines
+
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
@@ -38,8 +42,12 @@ def _ncpu() -> int:
     if cached is not None and now - _ncpu_cache["t"] < _NCPU_TTL:
         try:
             n = int(cached)
-        except (TypeError, ValueError, OverflowError):
-            # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``.
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # Leftover planted ``n: .inf`` OverflowError'd ``int(inf)``;
+            # BaseException because ``int()`` of a leftover subclass dispatches
+            # into its own ``__int__``/``__index__`` bomb.
             n = 0
         if n > 0:
             return n
@@ -48,12 +56,35 @@ def _ncpu() -> int:
     n = macos_sysctl.sysctl_int("hw.ncpu", timeout=2, sh=sh)
     try:
         n = int(n) if n is not None else 1
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         n = 1
     if n <= 0:
         n = 1
     _ncpu_cache.update(t=now, n=n)
     return n
+
+
+def _plain_dict(value) -> dict | None:
+    """*value* as a plain ``dict``, or None.
+
+    A leftover dict-*subclass* snapshot (usage5's row-bomb class: passes the
+    isinstance gate, then ``.get()`` / ``__bool__`` raises) used to kill the
+    sampler tick past metrics4's shape guards — the jsonl row was silently
+    lost and maybe_rollup() skipped with it.  ``dict()`` copies through the
+    C-level storage, so an overridden method cannot fire.
+    """
+    if type(value) is dict:
+        return value
+    if isinstance(value, dict):
+        try:
+            return dict(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return None
 
 
 def _sensors_snapshot() -> dict | None:
@@ -65,30 +96,52 @@ def _sensors_snapshot() -> dict | None:
     """
     try:
         from hub import sensors_svc
-        hit = sensors_svc.peek_sensors()
+        # _plain_dict, not a bare isinstance: a leftover dict-subclass hit
+        # whose .get()/__bool__ raised used to pass the gate and kill the
+        # tick in _sample() one call later.
+        hit = _plain_dict(sensors_svc.peek_sensors())
         if hit is not None:
             return hit
         from hub.resource_mode import is_high
         if is_high():
-            return sensors_svc.collect_sensors()
-        return sensors_svc.collect_light()
-    except Exception:
+            snap = sensors_svc.collect_sensors()
+        else:
+            snap = sensors_svc.collect_light()
+        # A leftover non-dict planted in the sensors cache used to come back
+        # verbatim, and _sample()'s snapshot.get() AttributeError killed the
+        # tick — no jsonl row and no maybe_rollup() pass until the cache
+        # expired.
+        return _plain_dict(snap)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
 def _cpu_used_quick(sensors: dict | None = None) -> float | None:
     """Lightweight CPU used % without full top if sensors cache warm."""
-    s = sensors if sensors is not None else _sensors_snapshot()
+    # _plain_dict on a caller-provided snapshot: a leftover dict-subclass
+    # whose .get() raised escaped the numeric-only except below.
+    s = _plain_dict(sensors) if sensors is not None else _sensors_snapshot()
     try:
-        if s and s.get("cpu_used_pct") is not None:
+        # isinstance, not truthiness: a leftover non-dict snapshot used to
+        # AttributeError .get() past the numeric-only except below.
+        # Exception, not the three usual conversion errors: ``float()`` of a
+        # leftover float-subclass field dispatches into its own ``__float__``,
+        # whose modules5 bomb killed the sampler tick past metrics5's guards.
+        if isinstance(s, dict) and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
     try:
         load1 = os.getloadavg()[0]
         n = _ncpu()
         return round(min(100.0, load1 / n * 100), 1)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -104,12 +157,20 @@ def _sample() -> dict:
     load_pct = round(min(200.0, load1 / ncpu * 100), 1) if ncpu else None
 
     net_rx = net_tx = None
-    sensors_hit = bool(s)
-    if s:
-        net = s.get("network") or {}
+    sensors_hit = isinstance(s, dict) and bool(s)
+    if sensors_hit:
+        # isinstance, not ``or {}``: a leftover truthy non-dict ``network`` /
+        # ``memory`` in the snapshot ("down", a list) used to AttributeError
+        # .get() here, killing the sampler tick — the jsonl row was silently
+        # lost and maybe_rollup() was skipped with it.
+        net = s.get("network")
+        if not isinstance(net, dict):
+            net = {}
         net_rx = net.get("rx_bps")
         net_tx = net.get("tx_bps")
-        m = s.get("memory") or {}
+        m = s.get("memory")
+        if not isinstance(m, dict):
+            m = {}
         if m.get("pressure_used_pct") is not None:
             mem_used_pct = m["pressure_used_pct"]
             mem_free = m.get("pressure_free_pct", mem_free)
@@ -119,7 +180,11 @@ def _sample() -> dict:
         if s.get("cpu_used_pct") is not None:
             try:
                 cpu_used = min(100.0, max(0.0, float(s["cpu_used_pct"])))
-            except (TypeError, ValueError, OverflowError):
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # Exception: a leftover float-subclass ``__float__`` bomb in
+                # the snapshot is not one of the three conversion errors.
                 pass
         gpu = s.get("gpu")
         if isinstance(gpu, dict):
@@ -130,7 +195,11 @@ def _sample() -> dict:
                     v = float(raw)
                     if v == v and v not in (float("inf"), float("-inf")):
                         gpu_util_pct = round(min(100.0, max(0.0, v)), 1)
-                except (TypeError, ValueError, OverflowError):
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    # Exception: a leftover float-subclass ``__float__`` bomb
+                    # is not one of the three conversion errors.
                     pass
 
     if not sensors_hit or mem_free is None:
@@ -177,7 +246,16 @@ def _flush_buf_locked(force_trim: bool = False) -> None:
     # sampler, and a ring-buffer rewrite in one used to swap away samples the
     # other had just appended to the pre-replace inode.
     with secure_io.file_lock(METRICS_FILE):
-        secure_io.append_text(METRICS_FILE, chunk)
+        # A leftover FIFO occupying metrics.jsonl used to park this append
+        # forever — while holding _lock, so GET /api/metrics wedged behind
+        # it.  Drop the non-regular node (dir/FIFO/socket) so the append
+        # recreates a real journal; a disk that still refuses loses this
+        # chunk, not the sampler thread.
+        secure_io.drop_leftover_nonfile(METRICS_FILE)
+        try:
+            secure_io.append_text(METRICS_FILE, chunk)
+        except OSError:
+            return
         _last_flush = time.time()
         now = time.time()
         if force_trim or now - _last_trim >= _TRIM_INTERVAL:
@@ -215,20 +293,65 @@ def flush_pending() -> None:
         _flush_buf_locked()
 
 
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    return ""
+
+
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    if value is None:
+        return ""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    if not isinstance(text, str):
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -238,12 +361,32 @@ def _jsonable(value, depth: int = 0):
     down ``GET /api/metrics`` at encode time.  A leftover ``\\ud800`` string
     or key still 500'd the same encoder (``ensure_ascii=False`` then UTF-8).
     ``t`` is handled separately by :func:`sample_ts`.
+
+    The remaining bound probes still blew on the modules5 subclass-bomb
+    classes (already neutralized in sensors_svc._jsonable, never ported
+    here): an int subclass whose ``__str__`` raises (only ValueError was
+    caught around the digit-cap probe), a float subclass whose
+    ``__eq__``/``__float__`` raises (the NaN probe and the inf
+    tuple-membership probe both call it), and a bytes/bytearray subclass
+    whose ``decode`` raises — as a value and as a mapping key.  Each used
+    to raise straight out of this sanitizer, killing the sampler tick in
+    record_sample() and escaping latest_sample()'s alert path.  Hence the
+    unbound base-type coercions below, the modules5 convention.
     """
     if depth > 32:
         return None
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -252,36 +395,73 @@ def _jsonable(value, depth: int = 0):
             return None
         return value
     if isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
     if isinstance(value, str):
         return _utf8_text(value)
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+        return _decode_bytes(value)
     if isinstance(value, dict):
+        if type(value) is not dict:
+            # dict() copies through the C-level storage, ignoring overridden
+            # items()/keys()/__iter__ — a leftover subclass method bomb
+            # cannot fire (same guard as sensors_svc._jsonable).
+            try:
+                value = dict(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         out = {}
         for k, v in value.items():
             if not isinstance(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+        for base in (list, tuple, set, frozenset):
+            if isinstance(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements (``list(value)`` dispatched
+                # into the override and threw the payload away with it).
+                return [_jsonable(v, depth + 1) for v in base.__iter__(value)]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/metrics.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -307,6 +487,16 @@ def sample_ts(raw) -> int | None:
                 return None
     if not isinstance(raw, (int, float)):
         return None
+    # Base coercion first: ``float(raw)`` / ``int(raw)`` dispatch into a
+    # subclass ``__float__`` / ``__int__`` / ``__trunc__``, whose modules5
+    # bomb is none of the errors caught below and used to escape.
+    if type(raw) not in (int, float):
+        try:
+            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
     # A leftover 400-digit ``t`` (or ``?since=`` of the same) used to
     # OverflowError ``float(raw)`` / ``time.time() - since`` on the range path.
     try:
@@ -324,8 +514,10 @@ def sample_ts(raw) -> int | None:
 def record_sample(sample: dict | None = None, *, immediate: bool = False) -> dict:
     """Record one sample. Batched to disk unless immediate=True."""
     global _last_sample
-    if sample is not None and not isinstance(sample, dict):
-        sample = None
+    if sample is not None:
+        # _plain_dict: a caller-provided dict-subclass whose __bool__ raised
+        # used to blow up the ``sample or`` truthiness below and lose the row.
+        sample = _plain_dict(sample)
     s = _jsonable(sample or _sample())
     if not isinstance(s, dict):
         s = {"t": sample_ts(time.time()) or 0}
@@ -360,13 +552,14 @@ def latest_sample() -> dict | None:
     # cold start: tail last line only
     try:
         if METRICS_FILE.exists():
-            # read last ~4KB
-            with open(METRICS_FILE, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 4096))
-                chunk = f.read().decode(errors="replace")
-            lines = [ln for ln in chunk.splitlines() if ln.strip()]
+            # tail_file_lines, not a bare open(): a leftover FIFO occupying
+            # metrics.jsonl used to park the open forever (alert thresholds
+            # call this on the request path).  It raises OSError instead,
+            # which the guard below already absorbs.
+            lines = [
+                ln for ln in tail_file_lines(METRICS_FILE, 64, max_bytes=4096)
+                if ln.strip()
+            ]
             if lines:
                 parsed = safe_json_loads(lines[-1], loads=json.loads)
                 if isinstance(parsed, dict):
@@ -383,9 +576,13 @@ def history(minutes: int = 60) -> list:
     now = sample_ts(time.time()) or 0
     try:
         span = int(minutes) * 60
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # Leftover ``minutes: .inf`` / ``int(time.time())`` on inf used to
-        # OverflowError GET /api/metrics.
+        # OverflowError GET /api/metrics.  Exception, not the three usual
+        # conversion errors: ``int()`` of a leftover subclass dispatches
+        # into its own ``__int__``/``__index__``, whose bomb is neither.
         span = 3600
     if span < 0:
         span = 3600
@@ -453,15 +650,21 @@ def _loop(interval: int = 90):
             try:
                 from hub import metrics_rollup
                 metrics_rollup.maybe_rollup()
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
         _stop.wait(interval)
     # flush remaining on stop
     try:
         flush_metrics()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass
 
 
@@ -497,5 +700,7 @@ def stop_sampler(timeout: float = 3.0) -> None:
     _thread = None
     try:
         flush_metrics()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         pass

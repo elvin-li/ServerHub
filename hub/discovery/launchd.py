@@ -48,6 +48,8 @@ _HTTP_REQ = (
 _HTTP_STRIKES = 3
 _http_misses: dict[str, int] = {}
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 
 def _tls_alive(port) -> bool:
     """True when loopback:*port* completes a TLS handshake.
@@ -64,7 +66,9 @@ def _tls_alive(port) -> bool:
             raw.settimeout(_TLS_TIMEOUT)
             with _TLS_CTX.wrap_socket(raw, server_hostname="127.0.0.1"):
                 return True
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -85,7 +89,9 @@ def _http_alive(port) -> bool:
     """
     try:
         port_n = int(port)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # YAML leftover ``port: .inf``: ``int(inf)`` is OverflowError, not
         # ValueError.  This probe runs behind ``fan_out``, which re-raises
         # and would empty GET /api/status rather than skip one agent.
@@ -104,7 +110,9 @@ def _http_alive(port) -> bool:
                 timed_out = True
     except (TimeoutError, socket.timeout):
         return False
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return _tls_alive(port_n)
     if timed_out:
         return False
@@ -161,7 +169,9 @@ def _probe_port(port) -> bool | None:
     """Port reachability that never raises, for use inside the pool."""
     try:
         return port_open(port)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return False
 
 
@@ -178,7 +188,9 @@ def _renderable_port(value):
     if isinstance(value, int) and not isinstance(value, bool):
         try:
             str(value)
-        except ValueError:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     return value
 
@@ -193,7 +205,9 @@ def _enrich(entry):
     item, pl, pid = entry
     try:
         return enrich_service(item, pl=pl, pid=pid)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return item
 
 
@@ -211,7 +225,9 @@ def _annotate_ollama_agent(item: dict) -> None:
 
         if label not in _candidate_labels():
             return
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return
     if not item.get("port"):
         item["port"] = 11434
@@ -239,7 +255,9 @@ def discover_launchd():
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pl = {}
         if not isinstance(pl, dict):
             pl = {}
@@ -290,7 +308,9 @@ def discover_launchd():
         ):
             try:
                 orphans = pids_for_argv(arguments)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 orphans = []
             if orphans:
                 pid = str(orphans[0])
@@ -420,7 +440,9 @@ def discover_launchd():
             if pid not in (None, "-"):
                 try:
                     exe = pid_exe_path(pid)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     exe = None
             exe_missing = False
             if exe:

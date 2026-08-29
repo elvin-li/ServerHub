@@ -8,6 +8,9 @@ import time
 from hub.paths import SMARTCTL
 from hub.util import LazyPool, sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 _pool = LazyPool(4, "hub-system")
 
 
@@ -17,23 +20,108 @@ def shutdown_executor() -> None:
 _smart_cache = {"t": 0.0, "v": None}
 
 
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    planted in the SMART cache detonated ``_jsonable``'s rank gates, raised
+    out of ``collect_system`` and silently wiped the whole ``system`` tile
+    from GET /api/status (the docker_cli / nas8 rule).  A real subclass
+    still matches through the C-level type check; only a value that cannot
+    answer what it is takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 rule on the system tile: even a plain-dict lookup runs the
+    *stored keys'* own ``__eq__`` during the hash probe, so a leftover
+    str-subclass key whose hash shadows ``v`` / ``t`` planted in the SMART
+    cache used to detonate the bare ``_smart_cache["v"]`` subscript and the
+    due-probe arithmetic — raising out of ``collect_system`` and silently
+    wiping the whole ``system`` tile (load, disk, uptime and SMART
+    together) from GET /api/status.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _jsonable(value, depth: int = 0):
@@ -46,12 +134,44 @@ def _jsonable(value, depth: int = 0):
     A >4300-digit leftover int in the SMART cache still passed through
     untouched: CPython's int->str digit limit then ValueError'd
     ``json.dumps`` itself.
+
+    The bound probes still blew on the modules5 subclass-bomb classes: an
+    int subclass whose ``__str__`` raises, a float subclass whose
+    ``__eq__``/``__ne__`` raises, a bytes subclass whose ``decode`` raises
+    (as a value and as a mapping key), a dict subclass whose ``items()``
+    raises, a sequence subclass whose ``__iter__`` raises, and an object
+    whose ``isoformat`` *access* raises (getattr's default only swallows
+    AttributeError).  One such bomb in the SMART cache raised out of
+    ``collect_system`` and the status build's fallback silently wiped the
+    whole ``system`` tile — load, disk and uptime died with the poison.
+    Hence the unbound base-type calls below, the modules5 convention.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* isinstance below — as a value
+    # or a mapping key in the SMART cache — raising out of collect_system
+    # and wiping the whole ``system`` tile from GET /api/status.
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor.  It
+        # used to be returned verbatim — every other liar drops at its
+        # unbound base call, but the bool gate had nothing to call — and
+        # the C-level JSON encoder then refused it out of the SMART cache:
+        # a raw 500 on GET /api/status?force through the system tile.
+        return value if type(value) is bool else None
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -59,45 +179,168 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot raise and the real entries still survive.
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = dict.items(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if _isa(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.  The try is for a
+                # lying-``__class__`` impostor, which TypeErrors here.
+                try:
+                    items = base.__iter__(value)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/status system.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``in`` probes; a bomb reads as failure.
+
+    This module does not own ``sh`` (tests and tooling patch it), and an
+    rc-*subclass* whose ``__eq__`` raises used to detonate the bare
+    ``rc == 0`` / ``rc in (0, 4)`` probes in ``collect_system``'s main body
+    — one bomb wiped the whole ``system`` tile (load, disk, uptime and
+    SMART together) from GET /api/status (the health9 rule).  ``-255`` is
+    no honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if isinstance(rc, bool):
+            return int(rc)
+        if isinstance(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _sh3(value) -> tuple:
+    """Exact ``(rc, out, err)`` storage from a possibly-poisoned ``sh`` answer.
+
+    The nginx/docker11 guarded-shape rule: this module does not own ``sh``
+    (tests and tooling patch it), and a leftover riding the *shape* of the
+    return — a 2-tuple, a scalar, a tuple subclass whose ``__iter__``
+    raises, a lying-``__class__`` tuple impostor — used to detonate the
+    bare ``rc, out, _ = …`` unpacks in ``collect_system``'s main body and
+    wipe the whole system tile from GET /api/status.  Junk degrades to
+    ``(-255, "", "")``: nonzero, never a success rc.
+    """
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
 
 
 def _sysctl_int(value) -> int | None:
     """int from a sysctl `-n` payload that may be str, bytes, or already int."""
-    if isinstance(value, bool) or value is None:
+    if _isa(value, bool) or value is None:
         return None
-    if isinstance(value, int):
+    if _isa(value, int):
+        try:
+            # Base coercion before the ``>= 0`` probe: a leftover int
+            # subclass whose comparison methods raise (the modules5 bomb
+            # class) used to escape this helper's callers.
+            value = int.__index__(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
     if not text.isdigit():
@@ -181,7 +424,9 @@ def collect_system():
         used = getattr(du, "used", 0) or 0
         total = getattr(du, "total", 0) or 0
         free = getattr(du, "free", 0) or 0
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         # A dying root mount used to OSError/RuntimeError collect_system
         # and empty the ``system`` object on GET /api/status.
         used = total = free = None
@@ -191,7 +436,17 @@ def collect_system():
     # reads below are independent, and two of them are the slow ones:
     # `memory_pressure -Q` and — once every 10 minutes — a `sudo -n smartctl`.
     # Running them in sequence made the whole status refresh wait for their sum.
-    smart_due = time.time() - _smart_cache["t"] > 600
+    # Guarded stamp read: a hash-shadowing ``t`` key (the C-level probe
+    # runs the stored bomb's ``__eq__``) or a clock bomb planted in the
+    # slot (``__float__`` / ``__rsub__`` / ``__gt__`` raising) used to
+    # detonate this bare arithmetic and wipe the whole system tile.  An
+    # unreadable stamp reads as due and re-probes.
+    try:
+        smart_due = time.time() - float(_mapping_get(_smart_cache, "t", 0.0)) > 600
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        smart_due = True
     def _ncpu_and_memsize():
         # One worker, two cheap integer sysctls: ctypes first, shell fallback.
         # The pool is already full with boot / memory_pressure / (sometimes)
@@ -214,14 +469,20 @@ def collect_system():
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; memory_pressure must not drop load/disk from /api/status.
-    rc, out, _ = _result(f_boot, (1, "", ""))
+    # _sh3 on every unpack: an sh answer-shape bomb used to detonate the
+    # bare tuple unpack itself and wipe the whole tile.
+    rc, out, _ = _sh3(_result(f_boot, (1, "", "")))
     out = _as_text(out)
     uptime_h = 0.0
-    if rc == 0 and "sec =" in out:
+    # _rc_int on every probe below: an rc-``__eq__`` bomb from a patched/odd
+    # ``sh`` used to raise here and wipe the whole system tile.
+    if _rc_int(rc) == 0 and "sec =" in out:
         try:
             boot = int(out.split("sec =")[1].split(",")[0].strip())
         except (IndexError, TypeError, ValueError, OverflowError):
@@ -235,7 +496,7 @@ def collect_system():
                 n = _finite_float(uptime_h)
                 uptime_h = n if n is not None else 0.0
 
-    rc, out, _ = _result(f_mem, (1, "", ""))
+    rc, out, _ = _sh3(_result(f_mem, (1, "", "")))
     mem_free = _mem_free_pct(out)
 
     ncpu_i, mem_n = _result(f_hw, (None, None))
@@ -245,10 +506,18 @@ def collect_system():
         mem_n = _sysctl_int(mem_n)
     mem_total_gb = _bytes_to_gb(mem_n, 1) if mem_n is not None else None
 
-    smart = _smart_cache["v"]
+    # _mapping_get: a hash-shadowing ``v`` key planted in the cache used to
+    # detonate this bare subscript the same way as the stamp above.
+    smart = _mapping_get(_smart_cache, "v")
+    # _isa: the cache normally only ever holds the plain dict this function
+    # writes, but a leftover non-dict (a ``__class__``-property bomb, a
+    # scalar) planted as the whole value is junk — degrade the SMART field
+    # alone rather than serving it as a garbage string in the payload.
+    if smart is not None and not _isa(smart, dict):
+        smart = None
     if f_smart is not None:
-        rc, out, _ = _result(f_smart, (1, "", ""))
-        if rc in (0, 4):
+        rc, out, _ = _sh3(_result(f_smart, (1, "", "")))
+        if _rc_int(rc) in (0, 4):
             smart = {}
             for line in _as_text(out).splitlines():
                 if "Data Units Written" in line and "[" in line:
@@ -269,7 +538,20 @@ def collect_system():
                     parts = line.split()
                     if len(parts) >= 10:
                         smart.setdefault("temp", f"{parts[9]} Celsius")
-            _smart_cache.update(t=time.time(), v=smart)
+            try:
+                _smart_cache.update(t=time.time(), v=smart)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                # A shadow key raises out of the insert compare at the end
+                # of a successful probe; clear() never compares keys.
+                try:
+                    _smart_cache.clear()
+                    _smart_cache.update(t=time.time(), v=smart)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    pass
     n = ncpu_i or 1
     load_pct = None
     if load1 is not None:

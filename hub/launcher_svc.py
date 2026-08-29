@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shlex
 import subprocess
 import tempfile
@@ -20,6 +21,8 @@ from hub.paths import BASE, user_home
 from hub.util import LazyPool, sh, utf8_env
 
 _pool = LazyPool(4, "hub-launcher")
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
 def shutdown_executor() -> None:
@@ -118,18 +121,49 @@ def resolve_legacy_menubar() -> tuple[Path, str]:
 
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        text = value.decode("utf-8", "replace")
-    elif isinstance(value, str):
-        text = value
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            text = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 def _job_state(label: str) -> str | None:
@@ -189,7 +223,9 @@ def status() -> dict:
             # GET /api/launcher from 500-ing while workers drain.
             try:
                 return None, fn(*args), True
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 return None, default, True
 
     def finish(future, default, done):
@@ -197,7 +233,9 @@ def status() -> dict:
             return default
         try:
             return future.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return default
 
     app_running = submit(_app_running, app, default=False, skip=app is None)
@@ -230,7 +268,9 @@ def _atomic_plist(path: Path, payload: dict) -> None:
     try:
         try:
             handle = os.fdopen(fd, "wb")
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             os.close(fd)
             raise
         with handle:

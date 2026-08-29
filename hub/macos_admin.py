@@ -24,6 +24,7 @@ into its own password dialog.
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
 import tempfile
@@ -35,19 +36,55 @@ from typing import Iterator
 
 from hub.util import sh, utf8_env
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
 
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = bytes(value).decode("utf-8", "replace")
-    elif value is None:
+    if value is None:
         return ""
-    else:
+    for base in (bytes, bytearray):
         try:
-            value = str(value)
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str(value)
+    except RecursionError:
+        try:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
 
 
 SUDO = "/usr/bin/sudo"
@@ -103,14 +140,24 @@ def _validate(commands: Sequence[Sequence[str]]) -> str | None:
     """Shared argv hygiene; returns the joined shell command or an error code."""
     if not commands or any(not command for command in commands):
         return None
-    if any("\x00" in str(part) for command in commands for part in command):
+    try:
+        rendered = [[str(part) for part in command] for command in commands]
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A leftover argv part whose str() raises — an *already-int* past
+        # CPython's int->str digit cap (YAML/plist hex loads uncapped through
+        # ``int(x, 16)``), or a hostile __str__ — can never be a valid argv.
+        # The bare str() used to raise the digit-cap ValueError out of
+        # run_admin and 500 the caller unhandled; ``invalid_command`` is the
+        # coded refusal every other malformed argv already earns.
+        return None
+    if any("\x00" in part for command in rendered for part in command):
         return None
     # A semicolon is intentional: some idempotent launchctl commands report an
     # error when the requested state already exists.  The caller always verifies
     # the resulting system state instead of trusting this process status alone.
-    return "; ".join(
-        shlex.join([str(part) for part in command]) for command in commands
-    )
+    return "; ".join(shlex.join(command) for command in rendered)
 
 
 #: Privileged CLIs (``tmutil``, ``diskutil``, ``wg-quick``) can chatter for the

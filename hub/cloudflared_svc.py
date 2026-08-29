@@ -6,6 +6,8 @@ broken bare `brew services cloudflared` (no args / no config) is avoided.
 """
 from __future__ import annotations
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
 import base64
 import json
 import os
@@ -65,23 +67,67 @@ LOGIN_URL_FILE = STATE_DIR / "login.url"
 _login_proc: subprocess.Popen | None = None
 
 
+def _safe_isinstance(value, classinfo) -> bool:
+    """``isinstance`` that survives a raising ``__class__`` property.
+
+    When the real type check misses, ``isinstance`` consults
+    ``value.__class__`` — and a property (or ``__getattr__``) that raises
+    propagates out of the probe itself, so a leftover wearing one used to
+    500 every scrub that typed it.  Only the AttributeError CPython already
+    swallows is free; everything else lands here.
+    """
+    try:
+        return isinstance(value, classinfo)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    base = bytes if _safe_isinstance(value, bytes) else bytearray
+    try:
+        return base.decode(value, "utf-8", "replace")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A lying ``__class__`` property that merely *claims* bytes reaches
+        # here as a non-bytes object, so the unbound descriptor TypeErrors.
+        # bytes(value) gives its ``__bytes__`` one guarded chance (a bomb
+        # there is caught too) before the field drops to empty.
+        try:
+            return bytes(value).decode("utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return ""
+
+
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` so cloudflared JSON cannot UTF-8 500."""
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    elif value is None:
+    if _safe_isinstance(value, (bytes, bytearray)):
+        return _decode_bytes(value)
+    if value is None:
         return ""
-    else:
+    try:
+        value = str(value)
+    except RecursionError:
         try:
-            value = str(value)
-        except RecursionError:
-            try:
-                return type(value).__name__
-            except Exception:
-                return ""
-        except Exception:
+            return type(value).__name__
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
+    # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
+    # bomb rode this line into a 500 (the tunnels_error arm of GET /status
+    # and login_start's failure message were the live carriers).
+    return str.encode(value, "utf-8", "replace").decode("utf-8")
 
 
 #: Cloudflare connector tokens always start with ``eyJ`` (base64 of ``{"``).
@@ -294,6 +340,34 @@ def _bin() -> str:
     raise api_error("cloudflared.not_installed")
 
 
+def _rc_int(rc) -> int:
+    """Exact-int exit status for the ``sh()`` seam.
+
+    Every rc consumer here compares (``rc != -1``, ``rc == 0``); an
+    int-subclass whose ``__eq__``/``__ne__`` raises — handed over by a
+    poisoned in-process sh seam — used to blow the comparison itself and
+    500 GET /status (via ``_launchd_job_info``), POST /create,
+    POST /route-dns and POST /start (via ``fetch_token``).
+    ``int.__index__`` is the base coercion, so the subclass dunders never
+    run; junk that cannot coerce becomes -255, which is nonzero (a
+    failure) and never -1 (never misread as a vanished CLI).
+    """
+    if type(rc) is int:
+        return rc
+    try:
+        return int.__index__(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
 def _cli_vanished(rc, err, binary) -> bool:
     """Whether an ``sh()`` result means cloudflared itself vanished mid-request.
 
@@ -309,7 +383,7 @@ def _cli_vanished(rc, err, binary) -> bool:
     *still-present* cloudflared that printed exactly ``not found`` and died
     keeps its raw result.  The re-check runs only on this failure path.
     """
-    if rc != -1 or _as_text(err).strip() != "not found":
+    if _rc_int(rc) != -1 or _as_text(err).strip() != "not found":
         return False
     return not _path_is_file(Path(_as_text(binary)))
 
@@ -321,12 +395,44 @@ def _jsonable_state(value, depth: int = 0):
     ``name: 2026-08-19`` / ``!!binary`` / ``!!set`` still leaked
     ``datetime.date`` / bytes / set into GET /api/cloudflared/status
     (``active_tunnel`` / ``mode``) because this walker returned them as-is.
+    A *subclass* leftover from an in-process caller still ran its own
+    dunders through these probes (the modules5 unbound-base rule this
+    walker never got): a dict ``items()`` bomb or a triples ``items()``,
+    an int ``__str__`` bomb, a float ``__eq__`` bomb, a bytes ``decode``
+    bomb, a str ``encode`` bomb (value or key), a sequence ``__iter__``
+    bomb, and an ``isoformat`` property / ``__getattr__`` bomb each used
+    to raise out of the scrub and 500 GET /api/cloudflared/status,
+    POST /restart and POST /uninstall-service.
     """
     if depth > 16:
         return None
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, int):
+    if value is None:
+        return None
+    # _safe_isinstance throughout: a leftover whose ``__class__`` is a
+    # raising property blew the *first* isinstance probe below and 500'd
+    # GET /api/cloudflared/status (and every scrubbed mutation) before any
+    # branch ran.  With the guard it types as nothing and salvages as text.
+    if _safe_isinstance(value, bool):
+        if type(value) is bool:
+            return value
+        # Only a lying ``__class__`` property lands here (bool is final).
+        # It used to ride through as-is and 500 the encoder.
+        try:
+            return bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _safe_isinstance(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -336,41 +442,125 @@ def _jsonable_state(value, depth: int = 0):
             # encoder the value reached.  Drop it like non-finite floats.
             return None
         return value
-    if isinstance(value, float):
+    if _safe_isinstance(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
-        return value.encode("utf-8", "replace").decode("utf-8")
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            if isinstance(k, (bytes, bytearray)):
-                k = k.decode("utf-8", "replace")
-            elif not isinstance(k, str):
+    if _safe_isinstance(value, str):
+        # str() then unbound base encode: a str-subclass ``encode`` bomb
+        # used to raise out of the surrogate laundering itself.
+        try:
+            value = str(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
+    if _safe_isinstance(value, (bytes, bytearray)):
+        return _decode_bytes(value)
+    if _safe_isinstance(value, dict):
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500, and the real entries still survive.
+        # The view call itself is guarded: a lying ``__class__`` property
+        # claiming dict is not one, so the unbound descriptor TypeError'd
+        # out of the old bare call — such a leftover falls through to the
+        # text salvage instead.
+        try:
+            rows = dict.items(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            rows = None
+        if rows is not None:
+            out = {}
+            for k, v in rows:
+                if _safe_isinstance(k, (bytes, bytearray)):
+                    k = _decode_bytes(k)
+                elif not _safe_isinstance(k, str):
+                    try:
+                        k = str(k)
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        continue
+                # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status
+                # — and a str-subclass key whose ``encode`` raises blew the
+                # laundering itself, so both go through str() + the unbound
+                # base encode.
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
-            # Leftover ``\\ud800`` keys used to 500 GET /api/cloudflared/status.
-            k = k.encode("utf-8", "replace").decode("utf-8")
-            out[k] = _jsonable_state(v, depth + 1)
-        return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable_state(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+                k = str.encode(k, "utf-8", "replace").decode("utf-8")
+                out[k] = _jsonable_state(v, depth + 1)
+            return out
+    if _safe_isinstance(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if not _safe_isinstance(value, base):
+                continue
+            # Unbound base iteration: a subclass ``__iter__`` bomb
+            # cannot 500 and the real elements still survive.  Guarded
+            # like the dict view: a lying ``__class__`` claiming the base
+            # TypeErrors the unbound call and salvages as text instead.
+            try:
+                elems = list(base.__iter__(value))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                break
+            return [_jsonable_state(v, depth + 1) for v in elems]
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # getattr's default only swallows AttributeError; a property or
+        # ``__getattr__`` bomb still raised out of the probe itself.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/cloudflared/status.
             return _jsonable_state(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
     try:
         return _as_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _json_int(digits: str) -> int | None:
+    """``json.loads`` int hook: null the one number the encoder cannot hold.
+
+    Past CPython's ~4300-digit int<->str cap the decoder's own ``int()``
+    conversion raises *bare ValueError* — not JSONDecodeError — and the
+    except-ValueError fallback in :func:`_load_state` read that as a corrupt
+    document.  One over-cap counter written by an operator script silently
+    wiped the whole serverhub-state.json to ``{}``: GET /api/cloudflared/status
+    (and the Apps page) lost ``active_tunnel`` / ``mode``, restart reported
+    "Nothing to restart", and the next read-modify-write (start / uninstall)
+    persisted the wipe to disk.  A ``str()``-probe-style guard, not an
+    isinstance gate: every renderable numeric id still parses as an int.
+    """
+    try:
+        return int(digits)
+    except ValueError:
         return None
 
 
@@ -378,7 +568,10 @@ def _load_state() -> dict:
     _ensure_dirs()
     if _path_is_file(STATE_FILE):
         try:
-            data = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP) or "{}")
+            data = safe_json_loads(
+                read_text_capped(STATE_FILE, _STATE_CAP) or "{}",
+                parse_int=_json_int,
+            )
         except (OSError, ValueError, RecursionError):
             # RecursionError: leftover deeply-nested tunnel state is not ValueError.
             return {}
@@ -621,9 +814,14 @@ def _launchd_job_info(label: str = LABEL) -> dict:
     try:
         uid = os.getuid()
         rc, out, _ = sh(["/bin/launchctl", "print", f"gui/{uid}/{label}"], timeout=5)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return empty
-    if rc != 0:
+    # _rc_int: this compare sits *outside* the try, so an rc-subclass
+    # ``__ne__`` bomb from a poisoned sh seam used to ride _is_running
+    # into a 500 on GET /api/cloudflared/status.
+    if _rc_int(rc) != 0:
         return empty
     parsed = _parse_launchctl_print(out)
     parsed["loaded"] = True
@@ -705,7 +903,7 @@ def _list_tunnels_uncached() -> list[dict] | None:
     # 10s, not 30: this sits on a page load, and a Cloudflare that has not
     # answered in ten seconds is not going to make the page useful.
     rc, out, err = sh([_bin(), "tunnel", "list"], timeout=10)
-    if rc != 0:
+    if _rc_int(rc) != 0:
         return None
     text = _as_text(out) + "\n" + _as_text(err)
     tunnels: list[dict] = []
@@ -736,11 +934,42 @@ def _list_tunnels_uncached() -> list[dict] | None:
 def _tunnel_argv(value: str, *, empty_code: str = "cloudflared.tunnel_required") -> str:
     """Tunnel name/UUID that cannot be read as a cloudflared option."""
     # Nested non-strings in serverhub-state.json used to raise ``.strip``.
-    if not isinstance(value, str):
-        if value in (None, ""):
+    # _safe_isinstance: a leftover whose ``__class__`` is a raising property
+    # blew this typing probe itself instead of the coded 400.
+    if _safe_isinstance(value, int) and not _safe_isinstance(value, bool):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: an int-subclass ``__str__``
+                # bomb from an in-process caller used to raise a
+                # non-ValueError past the digit-cap net below and 500.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                raise api_error("cloudflared.invalid_name")
+        # ``tunnel_name: 123`` written unquoted by an operator script parses
+        # as an int; the plain isinstance gate below silently refused to
+        # restart tunnel "123".  str() probe, so an over-cap leftover stays a
+        # coded 400 (ValueError under the digit cap) instead of a 500.
+        try:
+            value = str(value)
+        except ValueError:
+            raise api_error("cloudflared.invalid_name")
+    if not _safe_isinstance(value, str):
+        try:
+            empty = value in (None, "")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A leftover ``__eq__`` bomb on a non-string used to raise out
+            # of this emptiness probe itself instead of the coded 400.
+            empty = False
+        if empty:
             raise api_error(empty_code)
         raise api_error("cloudflared.invalid_name")
-    text = value.strip()
+    # Unbound base strip: a str-subclass ``strip`` bomb cannot 500, and the
+    # result is an exact str for the safety gates below.
+    text = str.strip(value)
     if not text:
         raise api_error(empty_code)
     if not cli_args.is_safe_positional(text):
@@ -755,6 +984,7 @@ def fetch_token(tunnel: str) -> str:
         raise api_error("cloudflared.not_logged_in")
     bin_path = _bin()
     rc, out, err = sh([bin_path, "tunnel", "token", tunnel], timeout=45)
+    rc = _rc_int(rc)
     if _cli_vanished(rc, err, bin_path):
         raise api_error("cloudflared.not_installed")
     token = _as_text(out).strip().splitlines()
@@ -841,9 +1071,27 @@ def _write_launchagent_token() -> Path:
         "WorkingDirectory": str(STATE_DIR),
         "EnvironmentVariables": _launch_env(),
     }
-    secure_io.replace_bytes(
-        PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
-    )
+    # A leftover directory occupying the plist path made os.replace raise
+    # IsADirectoryError out of replace_bytes and 500 POST /start,
+    # /start-token and /restart (and the Apps autostart toggle).  Drop an
+    # empty leftover so the start self-heals; anything the drop cannot
+    # remove (a non-empty directory) stays a coded 503.
+    secure_io.drop_leftover_nonfile(PLIST)
+    try:
+        secure_io.replace_bytes(
+            PLIST, plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
+        )
+    except (OSError, ValueError) as e:
+        # ValueError: a leftover surrogateescape HOME (a non-UTF-8 home
+        # directory decoded by os.environ) reaches this payload through
+        # _launch_env / the HOME-derived paths, and plistlib.dumps raises
+        # UnicodeEncodeError — not OSError — which used to 500 POST /start,
+        # /start-token, /restart and the Apps autostart toggle.  launchd
+        # could never load such a plist anyway, so it is the same coded 503
+        # as any other unwritable-plist state.
+        raise api_error(
+            "cloudflared.plist_write_failed", error=_as_text(e) or "error"
+        )
     return PLIST
 
 
@@ -875,7 +1123,9 @@ def _recent_tunnel_error() -> str:
     """Human reason from the last log lines, or empty when nothing matches."""
     try:
         lines = tail_file_lines(LOG_FILE, 40)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
     text = _as_text("\n".join(lines)).lower()
     if "token is not valid" in text:
@@ -978,7 +1228,9 @@ def status() -> dict:
             return [], None
         try:
             return list_tunnels(), None
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             return [], _as_text(e)
 
     # The liveness check is local and the tunnel list is a round-trip to
@@ -1004,7 +1256,9 @@ def status() -> dict:
     bin_path = None
     try:
         bin_path = _bin()
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         bin_path = None
     has_token = _path_is_file(TOKEN_FILE)
     token_ok = token_looks_valid(_read_saved_token()) if has_token else False
@@ -1086,9 +1340,10 @@ def login_start() -> dict:
     cwd = str(CF_HOME) if _path_is_dir(CF_HOME) else None
     global _login_proc
     _close_login_proc()
+    bin_path = _bin()
     try:
         proc = subprocess.Popen(
-            [_bin(), "tunnel", "login"],
+            [bin_path, "tunnel", "login"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1099,6 +1354,15 @@ def login_start() -> dict:
             stdin=subprocess.DEVNULL,
         )
     except (OSError, ValueError, TypeError, RecursionError) as e:
+        # Same class _cli_vanished handles for sh(): _bin() probed the disk,
+        # so a cloudflared uninstalled between that probe and the spawn is
+        # FileNotFoundError here, and the uncoded ok:false message blamed
+        # "the login" instead of the missing binary.  The disk re-check runs
+        # only on this failure path and keeps every other spawn failure —
+        # including a FileNotFoundError for a vanished cwd while the binary
+        # is still present — as the raw result rather than inventing a lie.
+        if isinstance(e, FileNotFoundError) and not _path_is_file(Path(bin_path)):
+            raise api_error("cloudflared.not_installed")
         return {
             "ok": False,
             "message": "Could not start cloudflared login: " + (_as_text(e) or "error"),
@@ -1212,7 +1476,10 @@ def login_poll() -> dict:
 
 
 def create_tunnel(name: str) -> dict:
-    name = re.sub(r"[^a-zA-Z0-9._-]", "", (name or "").strip())
+    # _as_text + unbound strip: ``(name or "").strip()`` ran a str-subclass
+    # ``__bool__`` / ``strip`` bomb from an in-process caller (the HTTP route
+    # is pydantic-typed) and raised past the sanitize into a 500.
+    name = re.sub(r"[^a-zA-Z0-9._-]", "", str.strip(_as_text(name)))
     # The charset class includes ``-``, so ``--help`` survived the strip and
     # became ``cloudflared tunnel create --help``.
     if not name or not cli_args.is_safe_positional(name):
@@ -1221,6 +1488,7 @@ def create_tunnel(name: str) -> dict:
         raise api_error("cloudflared.login_required")
     bin_path = _bin()
     rc, out, err = sh([bin_path, "tunnel", "create", name], timeout=60)
+    rc = _rc_int(rc)
     if _cli_vanished(rc, err, bin_path):
         raise api_error("cloudflared.not_installed")
     # The account list just changed; do not let the page show the old one.
@@ -1239,7 +1507,12 @@ def start_with_tunnel(tunnel: str) -> dict:
     _write_launchagent_token()
     r = _launchctl_bootstrap()
     _raise_if_start_failed(r)
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``update`` bomb
+    # from the _load_state seam used to 500 POST /start after the tunnel
+    # itself was already up.  The scrub answers an exact dict.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.update({"mode": "token", "tunnel_name": tunnel, "updated": time.time()})
     _save_state(st)
     return {
@@ -1255,14 +1528,23 @@ def start_with_token(token: str, label: str | None = None) -> dict:
     token = _normalize_token(token)
     if not token_looks_valid(token):
         raise api_error("cloudflared.invalid_token")
+    # _as_text + unbound strip: ``(label or "").strip()`` ran a str-subclass
+    # ``__bool__`` / ``strip`` bomb from an in-process caller (the HTTP route
+    # is pydantic-typed) and 500'd after the tunnel was already up.
+    label_text = str.strip(_as_text(label))
     _write_token(token)
     _write_launchagent_token()
     r = _launchctl_bootstrap()
     _raise_if_start_failed(r)
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``update`` bomb
+    # from the _load_state seam used to 500 POST /start-token after the
+    # tunnel itself was already up.  The scrub answers an exact dict.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.update({
         "mode": "token",
-        "tunnel_name": (label or "").strip() or "token",
+        "tunnel_name": label_text or "token",
         "updated": time.time(),
     })
     _save_state(st)
@@ -1281,7 +1563,9 @@ def stop() -> dict:
         if "cloudflared" in low and ("tunnel" in low or "token" in low):
             try:
                 os.kill(pid, signal.SIGTERM)
-            except Exception:
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 pass
     time.sleep(0.5)
     return {
@@ -1317,7 +1601,11 @@ def restart() -> dict:
 def route_dns(tunnel: str, hostname: str) -> dict:
     """cloudflared tunnel route dns <tunnel> <hostname>"""
     tunnel = _tunnel_argv(tunnel, empty_code="cloudflared.route_args_required")
-    hostname = (hostname or "").strip().lower()
+    # _as_text + unbound strip: ``(hostname or "").strip()`` ran a
+    # str-subclass ``__bool__`` / ``strip`` bomb from an in-process caller
+    # (the HTTP route is pydantic-typed) and raised into a 500.  ``lower``
+    # was already safe — strip answers an exact str — and stays bound.
+    hostname = str.strip(_as_text(hostname)).lower()
     if not hostname or not cli_args.is_safe_hostname(hostname):
         raise api_error("cloudflared.route_args_required")
     if not _logged_in():
@@ -1327,6 +1615,7 @@ def route_dns(tunnel: str, hostname: str) -> dict:
         [bin_path, "tunnel", "route", "dns", tunnel, hostname],
         timeout=60,
     )
+    rc = _rc_int(rc)
     if _cli_vanished(rc, err, bin_path):
         raise api_error("cloudflared.not_installed")
     msg = (_as_text(out) + "\n" + _as_text(err)).strip()
@@ -1334,11 +1623,36 @@ def route_dns(tunnel: str, hostname: str) -> dict:
 
 
 def logs(lines: int = 120) -> dict:
+    # Base coercions ahead of the probes: an int-subclass ``__bool__`` bomb
+    # (the ``or`` below) or a float-subclass ``__eq__`` bomb (the NaN/inf
+    # probe) passed by an in-process caller used to raise past the numeric
+    # except net and 500.  The HTTP route is pydantic-typed, so this only
+    # guards direct calls.
+    if _safe_isinstance(lines, int) and not _safe_isinstance(lines, bool) and type(lines) is not int:
+        try:
+            lines = int.__index__(lines)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            lines = 120
+    elif _safe_isinstance(lines, float) and type(lines) is not float:
+        try:
+            lines = float.__float__(lines)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            lines = 120
     try:
         n = int(lines or 120)
     except (TypeError, ValueError, OverflowError):
         n = 120
-    if isinstance(lines, float) and (
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A junk ``__bool__``/``__int__`` bomb on a non-numeric leftover is
+        # not one of the numeric conversion errors.
+        n = 120
+    if _safe_isinstance(lines, float) and (
         lines != lines or lines in (float("inf"), float("-inf"))
     ):
         n = 120
@@ -1356,7 +1670,9 @@ def logs(lines: int = 120) -> dict:
         try:
             tail = "\n".join(tail_file_lines(p, lines))
             chunks.append(f"===== {p} =====\n{tail}")
-        except Exception as e:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException as e:
             chunks.append(
                 f"===== {p} =====\n(read error: {_as_text(e) or 'error'})"
             )
@@ -1375,9 +1691,18 @@ def uninstall_service() -> dict:
             if _path_is_file(p):
                 p.unlink()
                 removed.append(str(p))
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             pass
-    st = _load_state()
+    # Scrub before the read-modify-write: a dict-subclass ``pop`` bomb from
+    # the _load_state seam used to 500 POST /uninstall-service after the
+    # agent was already stopped and the plist/token already removed.  The
+    # scrub answers an exact dict, so the pops and the persisted journal
+    # keep every sane sibling.
+    st = _jsonable_state(_load_state())
+    if not isinstance(st, dict):
+        st = {}
     st.pop("tunnel_name", None)
     st.pop("mode", None)
     _save_state(st)

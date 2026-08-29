@@ -13,38 +13,193 @@ from pathlib import Path
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh, strftime_now
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+_ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def _isa(value, kinds) -> bool:
+    """``isinstance`` that a leftover ``__class__``-property bomb cannot 500.
+
+    ``isinstance`` consults ``value.__class__`` when the exact-type check
+    misses, so a leftover whose ``__class__`` is a *raising property*
+    planted in the sensors / top caches detonated ``_jsonable``'s rank
+    gates one step ahead of every scrub and 500'd GET /api/system/sensors
+    (the docker_cli / nas8 rule).  A real subclass still matches through
+    the C-level type check; only a value that cannot answer what it is
+    takes the non-matching branch.
+    """
+    try:
+        return isinstance(value, kinds)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _decode_bytes(value) -> str:
+    """Unbound base decode: a leftover subclass ``.decode`` bomb cannot 500."""
+    for base in (bytes, bytearray):
+        try:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+
+
+def _mapping_get(mapping, key, default=None):
+    """Field read that a hostile mapping *key* cannot 500.
+
+    The health11 rule on the sensors surface: even a plain-dict lookup runs
+    the *stored keys'* own ``__eq__`` during the hash probe, so a leftover
+    str-subclass key whose hash shadows ``v`` / ``t`` planted in the module
+    caches used to detonate the bare ``_cache["v"]`` / ``_cache["t"]``
+    subscripts in ``peek_sensors`` / ``collect_sensors`` — a raw 500 on
+    GET /api/system/sensors before any scrub ran.
+    """
+    if not _isa(mapping, dict):
+        return default
+    try:
+        return dict.get(mapping, key, default)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return default
+
+
+def _cache_age(now, stamp) -> float:
+    """Age of a cache stamp; an unreadable leftover stamp reads as expired.
+
+    The host_address._cached_detection rule: a clock bomb planted in a
+    ``t`` slot (``__float__`` / ``__rsub__`` / comparison raising) used to
+    detonate the bare ``time.time() - _cache["t"]`` arithmetic and 500
+    GET /api/system/sensors.  Junk reads as infinitely old and re-collects.
+    """
+    try:
+        return now - float(stamp)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return float("inf")
+
+
+def _rc_int(rc) -> int:
+    """Exact exit status for the ``==`` / ``!=`` probes; a bomb reads as failure.
+
+    The health9 rule: this module does not own ``sh`` (tests and tooling
+    patch it), and an rc-subclass whose ``__eq__`` / ``__ne__`` raises used
+    to detonate the bare probes in the collector legs.  ``-255`` is no
+    honest exit status, so a bomb keeps the failure branch.
+    """
+    try:
+        if type(rc) is bool:
+            return int(rc)
+        if _isa(rc, int):
+            return int.__index__(rc)
+        return int(rc)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return -255
+
+
+def _sh_run(cmd, timeout) -> tuple:
+    """Spawn with the unpack inside the guard (the nginx `_sh_triple` rule).
+
+    A real ``sh`` never raises and always answers ``(rc, out, err)``, but a
+    patched or odd one — raising outright, or answering a 2-tuple, a
+    scalar, a tuple subclass whose ``__iter__`` raises, or a
+    lying-``__class__`` tuple impostor — used to detonate the bare
+    ``rc, out, _ = sh(…)`` unpacks: through ``_memory_base`` it was a raw
+    500 on the light GET /api/system/sensors tick, and through the pooled
+    legs a silent leg wipe.  Junk degrades to ``(-255, "", "")`` — nonzero,
+    never a success rc.
+    """
+    try:
+        value = sh(cmd, timeout=timeout)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return (-255, "", "")
+    if type(value) is tuple:
+        items = value
+    elif _isa(value, tuple):
+        try:
+            items = tuple(tuple.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    elif _isa(value, list):
+        try:
+            items = tuple(list.__iter__(value))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return (-255, "", "")
+    else:
+        return (-255, "", "")
+    if len(items) != 3:
+        return (-255, "", "")
+    return items
+
 
 def _as_text(value) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if value is None:
         return ""
-    try:
-        value = str(value)
-    except RecursionError:
+    for base in (bytes, bytearray):
         try:
-            return type(value).__name__
-        except Exception:
+            return base.decode(value, "utf-8", "replace")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+    try:
+        return str.encode(str.__str__(value), "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        pass
+    try:
+        cls = type(value)
+        if cls.__str__ is object.__str__ and cls.__repr__ is object.__repr__:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return value.encode("utf-8", "replace").decode("utf-8")
-
-
-def _utf8_text(value) -> str:
-    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
     try:
         text = str(value)
     except RecursionError:
         try:
             return type(value).__name__
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return ""
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return ""
-    return text.encode("utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
+    return "" if _ADDR_REPR_RE.search(text) else text
+
+
+def _utf8_text(value) -> str:
+    """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    return _as_text(value)
 
 
 def _jsonable(value, depth: int = 0):
@@ -58,12 +213,50 @@ def _jsonable(value, depth: int = 0):
     byte counters that each parse under the cap) still passed through
     untouched: CPython's int->str digit limit then ValueError'd
     ``json.dumps`` itself.
+
+    A leftover dict-*subclass* planted in the peek cache whose ``.items()``
+    raised (usage5's row-bomb class, one level below the shape bombs) used
+    to raise straight out of this sanitizer and 500 GET /api/system/sensors;
+    same for a list subclass whose ``__iter__`` raised, and for an object
+    whose ``isoformat`` attribute *access* raised (property bomb /
+    ``__getattr__`` raising non-AttributeError past getattr's default).
+
+    The remaining bound probes still blew on the modules5 subclass-bomb
+    classes: an int subclass whose ``__str__`` raises (only ValueError was
+    caught around the digit-cap probe), a float subclass whose
+    ``__eq__``/``__ne__`` raises (the NaN probe and the inf tuple-membership
+    probe both call it), and a bytes/bytearray subclass whose ``decode``
+    raises — as a value and as a mapping key — each 500'd
+    GET /api/system/sensors on the cache-hit path and the light peek.
+    Hence the unbound base-type calls below, the modules5 convention.
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    # _isa on every rank gate: a leftover whose ``__class__`` is a raising
+    # property used to detonate the *first* isinstance below — as a value,
+    # a mapping key or the whole planted cache — and 500
+    # GET /api/system/sensors on the cache hit, the light peek and the
+    # cold collect's final sweep.
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isa(value, bool):
+        # ``bool`` cannot be subclassed, so anything passing this gate that
+        # is not the exact type is a *lying* ``__class__`` impostor.  It
+        # used to be returned verbatim — every other liar drops at its
+        # unbound base call, but the bool gate had nothing to call — and
+        # the C-level JSON encoder then refused it: a raw 500 on cache-hit
+        # GET /api/system/sensors and the light peek.
+        return value if type(value) is bool else None
+    if _isa(value, int):
+        if type(value) is not int:
+            try:
+                # Base coercion to an exact int: a subclass ``__str__``
+                # bomb used to blow the digit-cap probe below.
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         try:
             str(value)
         except ValueError:
@@ -71,37 +264,95 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
+        if type(value) is not float:
+            try:
+                # Base coercion to an exact float: a subclass ``__eq__``
+                # bomb used to blow the NaN/inf probes below.
+                value = float.__float__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isa(value, (bytes, bytearray)):
+        try:
+            # The try is for a lying ``__class__`` (claims bytes, is not):
+            # the unbound decode TypeErrors and the impostor drops.
+            return _decode_bytes(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isa(value, dict):
         out = {}
-        for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+        # Unbound base view: a dict subclass whose ``items()`` raises or
+        # yields non-pairs cannot 500 and the real entries still survive.
+        # The try is for a lying-``__class__`` dict impostor, which
+        # TypeErrors the unbound view itself.
+        try:
+            entries = dict.items(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        for k, v in entries:
+            if _isa(k, (bytes, bytearray)):
+                try:
+                    k = _decode_bytes(k)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
+            elif not _isa(k, str):
                 try:
                     k = str(k)
-                except Exception:
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, depth + 1) for v in value]
-    iso = getattr(value, "isoformat", None)
+    if _isa(value, (list, tuple, set, frozenset)):
+        for base in (list, tuple, set, frozenset):
+            if _isa(value, base):
+                # Unbound base iteration: a subclass ``__iter__`` bomb
+                # cannot drop the real elements.  The try is for a
+                # lying-``__class__`` impostor, which TypeErrors here.
+                try:
+                    items = base.__iter__(value)
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    return None
+                return [_jsonable(v, depth + 1) for v in items]
+        return None
+    try:
+        iso = getattr(value, "isoformat", None)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Property bomb / __getattr__ raising something that is not
+        # AttributeError escapes getattr's default.
+        iso = None
     if callable(iso):
         try:
             # isoformat() is usually a str; a leftover that returns inf
             # used to skip the float sanitizer and 500 GET /api/system/sensors.
             return _jsonable(iso(), depth + 1)
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return None
     try:
         return _utf8_text(value)
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -110,6 +361,16 @@ def _sysctl_int(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            # Base coercion before the ``>= 0`` probe: a leftover int
+            # subclass whose comparison methods raise (the modules5 bomb
+            # class) used to escape this helper's callers.
+            try:
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         return value if value >= 0 else None
     text = _as_text(value).strip()
     if not text.isdigit():
@@ -124,10 +385,17 @@ def _sysctl_int(value) -> int | None:
 
 
 def _finite_float(value) -> float | None:
-    """float from a sensor token, or None for inf/NaN/overflow."""
+    """float from a sensor token, or None for inf/NaN/overflow.
+
+    Exception, not the three usual conversion errors: ``float()`` of a
+    leftover float-subclass dispatches into its own ``__float__``, whose
+    modules5 bomb used to raise out of every parser leg that funnels here.
+    """
     try:
         n = float(value)
-    except (TypeError, ValueError, OverflowError):
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
     if n != n or n in (float("inf"), float("-inf")):
         return None
@@ -161,7 +429,9 @@ class _HostCpuLoadInfo(ctypes.Structure):
 try:
     _libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
     _libc.mach_host_self.restype = ctypes.c_uint
-except Exception:  # pragma: no cover — non-macOS / sandbox
+except _CONTROL_FLOW:
+    raise
+except BaseException:  # pragma: no cover — non-macOS / sandbox
     _libc = None
 
 _cpu_ticks_prev: list[int] | None = None
@@ -181,7 +451,9 @@ def _read_cpu_ticks() -> list[int] | None:
         if rc != 0:
             return None
         return list(info.ticks)  # [user, system, idle, nice]
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
@@ -281,10 +553,45 @@ def _parse_size_to_gb(token: str) -> float | None:
 
 def _cpu_and_mem_from_top_cached() -> dict:
     now = time.time()
-    if _top_cache["v"] is not None and now - _top_cache["t"] < _top_ttl():
-        return _top_cache["v"]
+    # _mapping_get / _cache_age: a hash-shadowing ``v``/``t`` key or a
+    # clock bomb planted in the top cache used to detonate these bare
+    # reads and silently wipe the top leg (PhysMem, load, process counts).
+    hit = _mapping_get(_top_cache, "v")
+    if hit is not None and _cache_age(now, _mapping_get(_top_cache, "t")) < _top_ttl():
+        # Plain-dict the hit: a leftover dict-subclass planted in the top
+        # cache used to pass ``or {}`` truthiness / ``.get()`` bombs straight
+        # into _collect_sensors_uncached and 500 GET /api/system/sensors;
+        # a leftover non-dict fell through to AttributeError the same way.
+        # A poisoned hit re-collects instead.  _isa, not bare isinstance: a
+        # ``__class__``-property bomb planted as the whole hit used to
+        # detonate the gate itself and silently wipe the top leg (PhysMem,
+        # load, process counts) for a full TTL.
+        if type(hit) is dict:
+            return hit
+        if _isa(hit, dict):
+            try:
+                return dict(hit)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                pass
     value = _cpu_and_mem_from_top() or {}
-    _top_cache.update(t=now, v=value)
+    if not isinstance(value, dict):
+        value = {}
+    try:
+        _top_cache.update(t=now, v=value)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A shadow key raises out of the insert compare; clear() never
+        # compares keys, so evicting the poison and rewriting always lands.
+        try:
+            _top_cache.clear()
+            _top_cache.update(t=now, v=value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
     return value
 
 
@@ -295,8 +602,8 @@ def _cpu_and_mem_from_top() -> dict:
     macOS. Accurate CPU busy% comes from _cpu_from_ticks() (Mach deltas). The
     CPU line is still parsed as a last-resort fallback only.
     """
-    rc, out, _ = sh(["/usr/bin/top", "-l", "1", "-n", "0", "-s", "0"], timeout=10)
-    if rc != 0:
+    rc, out, _ = _sh_run(["/usr/bin/top", "-l", "1", "-n", "0", "-s", "0"], timeout=10)
+    if _rc_int(rc) != 0:
         return {}
     data: dict = {}
     for line in _as_text(out).splitlines():
@@ -369,11 +676,15 @@ def _cpu_and_mem_from_top() -> dict:
 def _static_hw() -> dict:
     """ncpu / total RAM / page size — stable, cached 5 min."""
     now = time.time()
-    if _static["ncpu"] is not None and now - _static["t"] < _STATIC_TTL:
+    # _mapping_get / _cache_age: _memory_base runs on the request thread
+    # for the light tick, so a shadow key or clock bomb planted here used
+    # to 500 GET /api/system/sensors?light rather than wipe one leg.
+    ncpu_hit = _mapping_get(_static, "ncpu")
+    if ncpu_hit is not None and _cache_age(now, _mapping_get(_static, "t")) < _STATIC_TTL:
         return {
-            "ncpu": _static["ncpu"],
-            "mem_total_gb": _static["mem_gb"],
-            "page_size": _static["page_size"],
+            "ncpu": ncpu_hit,
+            "mem_total_gb": _mapping_get(_static, "mem_gb"),
+            "page_size": _mapping_get(_static, "page_size", 16384),
         }
     from hub import macos_sysctl
 
@@ -383,7 +694,19 @@ def _static_hw() -> dict:
     mem_gb = _bytes_to_gb(mem_n) if mem_n is not None else None
     page_n = pgsz
     page_size = page_n if page_n else 16384
-    _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
+    try:
+        _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # Same shadow-key insert-compare class as the top cache write.
+        try:
+            _static.clear()
+            _static.update(t=now, ncpu=ncpu_i, mem_gb=mem_gb, page_size=page_size)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
     return {"ncpu": ncpu_i, "mem_total_gb": mem_gb, "page_size": page_size}
 
 
@@ -396,7 +719,10 @@ def _memory_base() -> dict:
         load1 = _finite_float(raw_load[0])
         load5 = _finite_float(raw_load[1])
         load15 = _finite_float(raw_load[2])
-    rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
+    # _sh_run, not a bare unpack: an sh answer-shape bomb here used to be a
+    # raw 500 on the light GET /api/system/sensors tick — _memory_base is
+    # the one collector leg collect_light calls on the request thread.
+    rc, out, _ = _sh_run(["/usr/bin/memory_pressure", "-Q"], timeout=4)
     free_pct = None
     pages_free = pages_spec = pages_inactive = pages_wired = None
     for line in _as_text(out).splitlines():
@@ -529,8 +855,8 @@ def _top_processes(limit: int = 8) -> list:
 def _network_rates() -> dict:
     """Aggregate interface bytes and compute RX/TX B/s since last sample."""
     global _net_prev
-    rc, out, _ = sh(["/usr/sbin/netstat", "-ibn"], timeout=5)
-    if rc != 0:
+    rc, out, _ = _sh_run(["/usr/sbin/netstat", "-ibn"], timeout=5)
+    if _rc_int(rc) != 0:
         return {}
     # netstat -ibn: multiple rows per iface. Prefer Link# rows (have MAC) and real NICs.
     by_name: dict[str, dict] = {}
@@ -560,15 +886,27 @@ def _network_rates() -> dict:
     total_tx = sum(i["tx_bytes"] for i in ifaces)
     now = time.time()
     rx_bps = tx_bps = None
-    if _net_prev["t"] and now > _net_prev["t"]:
-        dt = now - _net_prev["t"]
+    # Guarded stamp read: a shadow key or clock bomb planted in _net_prev
+    # used to detonate the bare truthiness / compare and wipe the net leg.
+    try:
+        prev_t = float(_mapping_get(_net_prev, "t", 0.0))
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        prev_t = 0.0
+    if prev_t and now > prev_t:
+        dt = now - prev_t
         if dt > 0.5:
             # A leftover 400-digit Ibytes counter used to OverflowError
-            # `int((total - prev) / dt)` on the second sample.
+            # `int((total - prev) / dt)` on the second sample.  Blanket
+            # except: a planted counter whose ``__rsub__`` raises anything
+            # is junk the same way.
             try:
-                rx_bps = max(0, int((total_rx - _net_prev["rx"]) / dt))
-                tx_bps = max(0, int((total_tx - _net_prev["tx"]) / dt))
-            except (OverflowError, ValueError, TypeError):
+                rx_bps = max(0, int((total_rx - _mapping_get(_net_prev, "rx", 0)) / dt))
+                tx_bps = max(0, int((total_tx - _mapping_get(_net_prev, "tx", 0)) / dt))
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
                 rx_bps = tx_bps = None
     _net_prev = {"t": now, "rx": total_rx, "tx": total_tx}
     return {
@@ -596,8 +934,8 @@ def _thermal() -> dict | None:
     for binary, args in helpers:
         if not binary:
             continue
-        rc, out, _ = sh([binary, *args], timeout=4)
-        if rc == 0:
+        rc, out, _ = _sh_run([binary, *args], timeout=4)
+        if _rc_int(rc) == 0:
             m = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:°?C)?", _as_text(out), re.I)
             if m:
                 value = float(m.group(1))
@@ -606,8 +944,8 @@ def _thermal() -> dict | None:
                     source = Path(binary).name
                     break
 
-    rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "machdep.xcpm.cpu_thermal_level"], timeout=2)
-    level_n = _sysctl_int(out) if rc == 0 else None
+    rc, out, _ = _sh_run(["/usr/sbin/sysctl", "-n", "machdep.xcpm.cpu_thermal_level"], timeout=2)
+    level_n = _sysctl_int(out) if _rc_int(rc) == 0 else None
     if level_n is not None:
         level = level_n
         return {
@@ -618,9 +956,9 @@ def _thermal() -> dict | None:
             "available": temp_c is not None,
         }
 
-    rc, out, _ = sh(["/usr/bin/pmset", "-g", "therm"], timeout=3)
+    rc, out, _ = _sh_run(["/usr/bin/pmset", "-g", "therm"], timeout=3)
     text = _as_text(out).lower()
-    if rc != 0 or "error:" in text or "failed to get" in text:
+    if _rc_int(rc) != 0 or "error:" in text or "failed to get" in text:
         pressure = "unknown"
     elif "no thermal warning" in text:
         pressure = "normal"
@@ -644,6 +982,16 @@ def _nonneg_bytes(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
+        if type(value) is not int:
+            # Base coercion before the range probe: a leftover int subclass
+            # whose comparison methods raise (the modules5 bomb class) used
+            # to blow ``0 <= value`` and escape the GPU leg's guards.
+            try:
+                value = int.__index__(value)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                return None
         return value if 0 <= value <= 2**62 else None
     n = _finite_float(value)
     if n is None:
@@ -685,11 +1033,11 @@ def _gpu() -> dict | None:
     never 500s when the accelerator is missing or the plist is leftover junk.
     """
     try:
-        rc, out, _ = sh(
+        rc, out, _ = _sh_run(
             ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
             timeout=4,
         )
-        if rc != 0 or not out:
+        if _rc_int(rc) != 0 or not out:
             return None
         raw = out.encode("utf-8", "replace") if isinstance(out, str) else out
         parsed = plistlib.loads(raw)
@@ -727,15 +1075,17 @@ def _gpu() -> dict | None:
                     "model": model,
                 }
         return best
-    except Exception:
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
         return None
 
 
 def _uptime() -> dict:
-    rc, out, _ = sh(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
+    rc, out, _ = _sh_run(["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
     hours = 0.0
     text = _as_text(out)
-    if rc == 0 and "sec =" in text:
+    if _rc_int(rc) == 0 and "sec =" in text:
         try:
             boot = int(text.split("sec =")[1].split(",")[0].strip())
             hours = (time.time() - boot) / 3600 if boot else 0.0
@@ -766,9 +1116,17 @@ def peek_sensors() -> dict | None:
     Re-sanitizes: leftover inf / bytes / ``\\ud800`` in the peek cache
     used to 500 GET /api/system/sensors?light=1 at encode time.
     """
-    v = _cache["v"]
-    if v is not None and time.time() - _cache["t"] < _sensors_ttl():
-        return _jsonable(v)
+    # _mapping_get / _cache_age: a hash-shadowing ``v``/``t`` key or a
+    # clock bomb planted in the module cache used to detonate these bare
+    # reads and 500 the light GET /api/system/sensors tick.
+    v = _mapping_get(_cache, "v")
+    if v is not None and _cache_age(time.time(), _mapping_get(_cache, "t")) < _sensors_ttl():
+        cleaned = _jsonable(v)
+        # Same isinstance guard as collect_sensors' cache hit: a leftover
+        # non-dict planted in the cache used to escape here verbatim —
+        # GET /api/system/sensors?light=1 answered a JSON array, and the
+        # metrics sampler then AttributeError'd on snapshot.get().
+        return cleaned if isinstance(cleaned, dict) else None
     return None
 
 
@@ -847,18 +1205,29 @@ def collect_light() -> dict:
 
 
 def collect_sensors(force: bool = False) -> dict:
-    if not force and _cache["v"] and time.time() - _cache["t"] < _sensors_ttl():
+    # ``is not None``, not truthiness: a leftover dict-subclass planted in
+    # the cache whose ``__bool__`` raised used to 500 GET /api/system/sensors
+    # before _jsonable ever saw it (peek_sensors was already immune because
+    # it tests ``is not None``).
+    # _mapping_get / _cache_age on every cache touch: a hash-shadowing
+    # ``v``/``t`` key or a clock bomb planted in the module cache used to
+    # detonate the bare subscripts / age arithmetic here — a raw 500 on
+    # GET /api/system/sensors before any scrub ran.  An unreadable cache
+    # reads as a miss and re-collects.
+    hit = _mapping_get(_cache, "v")
+    if not force and hit is not None and _cache_age(time.time(), _mapping_get(_cache, "t")) < _sensors_ttl():
         # Re-sanitize: leftover inf / ``\ud800`` planted in the cache used
         # to 500 GET /api/system/sensors (the light peek already re-sanitized).
-        cleaned = _jsonable(_cache["v"])
+        cleaned = _jsonable(hit)
         return cleaned if isinstance(cleaned, dict) else {}
 
     with _refresh_lock:
         # Single-flight: concurrent dashboard/metrics callers share one sample.
         # Coalesce back-to-back force=True (metrics + UI) within 1s.
-        age = time.time() - _cache["t"] if _cache["v"] else 1e9
-        if _cache["v"] is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
-            cleaned = _jsonable(_cache["v"])
+        hit = _mapping_get(_cache, "v")
+        age = _cache_age(time.time(), _mapping_get(_cache, "t")) if hit is not None else 1e9
+        if hit is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
+            cleaned = _jsonable(hit)
             return cleaned if isinstance(cleaned, dict) else {}
         return _collect_sensors_uncached()
 
@@ -878,7 +1247,9 @@ def _collect_sensors_uncached() -> dict:
     def _result(fut, fallback):
         try:
             return fut.result()
-        except Exception:
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             return fallback
 
     # `.result()` re-raises; one wedged `top`/`pmset` must not 500 the dashboard.
@@ -1020,5 +1391,20 @@ def _collect_sensors_uncached() -> dict:
         "load15": load15,
     }
     v = _jsonable(v)
-    _cache.update(t=time.time(), v=v)
+    try:
+        _cache.update(t=time.time(), v=v)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        # A hash-shadowing key planted in the module cache raises out of
+        # the C-level insert compare at the very end of a successful
+        # collection — pre-fix a raw 500 on GET /api/system/sensors.
+        # clear() never compares keys, so evict the poison and rewrite.
+        try:
+            _cache.clear()
+            _cache.update(t=time.time(), v=v)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            pass
     return v

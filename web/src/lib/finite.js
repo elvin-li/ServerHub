@@ -6,6 +6,16 @@
  * used to render "Infinity".
  */
 
+/** Hostile leftover lists used to be mappings; `.filter`/`.map` then threw. */
+export function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+/** Hostile leftover mappings used to be lists; Object.values/v-for then threw. */
+export function asRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)
@@ -39,7 +49,29 @@ export function barPct(value) {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0
 }
 
-/** Epoch-seconds leftover stamps used to become "Invalid Date" or "Infinity". */
+/** Leftover circular/bigint mappings used to throw out of JSON.stringify. */
+export function jsonDump(value, space) {
+  try {
+    const text = JSON.stringify(value, null, space)
+    return text == null ? '' : text
+  } catch {
+    return ''
+  }
+}
+
+export function jsonText(value, fallback = '—', space) {
+  const text = jsonDump(value, space)
+  return text === '' ? fallback : text
+}
+
+/** Leftover invalid JSON used to throw out of JSON.parse. */
+export function jsonLoad(text, fallback = null) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return fallback
+  }
+}
 export function fmtTs(value, fallback = '—') {
   const n = finiteN(value, null)
   if (n == null || n <= 0) return fallback

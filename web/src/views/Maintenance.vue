@@ -10,7 +10,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ filtered.length }} / {{ tasks.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(tasks).length }}</span>
     </div>
     <!-- The standard failed-load banner every sibling list page uses. The old
          inline placeholder only rendered once the table had rows, so a failed
@@ -30,38 +30,41 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in filtered" :key="task.id">
+          <tr v-for="task in asArray(filtered)" :key="finiteText(asRecord(task).id)">
             <td>
-              <strong>{{ finiteText(task.name) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(task.id) }}</div>
-              <div v-if="finiteText(task.desc, '')" class="show-m sub">{{ finiteText(task.desc) }}</div>
+              <strong>{{ finiteText(asRecord(task).name) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(task).id) }}</div>
+              <div v-if="finiteText(asRecord(task).desc, '')" class="show-m sub">{{ finiteText(asRecord(task).desc) }}</div>
             </td>
-            <td class="col-hide-m" style="max-width:360px">{{ finiteText(task.desc) }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ finiteText(asRecord(task).desc) }}</td>
             <td>
-              <span v-if="task.running" class="badge warn">{{ t('maintenance.running') }}</span>
-              <span v-else-if="task.rc === 0" class="badge ok">✅ {{ finiteText(task.finished) }}</span>
-              <span v-else-if="task.rc != null" class="badge down">❌ {{ finiteN(task.rc) }}</span>
+              <span v-if="asRecord(task).running" class="badge warn">{{ t('maintenance.running') }}</span>
+              <span v-else-if="asRecord(task).rc === 0" class="badge ok">✅ {{ finiteText(asRecord(task).finished) }}</span>
+              <span v-else-if="asRecord(task).rc != null" class="badge down">❌ {{ finiteN(asRecord(task).rc) }}</span>
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="asRecord(task).running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
           <!-- Gated on !loadError like Brew/Audit/Scheduler: the LoadFailure
                banner is the whole story for a failed read, and an empty claim
                under it would be false. -->
-          <tr v-if="!filtered.length && !loadError">
+          <tr v-if="!asArray(filtered).length && !loadError">
             <td colspan="4" class="empty-row">
               <template v-if="!loaded">{{ t('common.loading') }}</template>
               <!-- A configured-empty page deserves a pointer to where tasks are
                    defined, not a bare "None": the list only ever fills from the
                    maintenance: section of services.yaml (see the example file). -->
-              <template v-else-if="!tasks.length">
+              <template v-else-if="!asArray(tasks).length">
                 {{ t('maintenance.empty_hint') }}
                 <span class="mono">services.yaml → maintenance:</span>
               </template>
-              <template v-else>{{ t('common.none') }}</template>
+              <!-- Tasks exist but the filter hid them all: say the filter
+                   missed (the Brew/Health/Services common.no_match split),
+                   not a bare "None" that reads as configured-empty. -->
+              <template v-else>{{ t('common.no_match') }}</template>
             </td>
           </tr>
         </tbody>
@@ -88,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -111,15 +114,22 @@ let pollTimer = null
 let pollGeneration = 0
 let listTimer = null
 
-const anyRunning = computed(() => tasks.value.some(row => row.running))
+const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
 const filtered = computed(() => {
+  const list = asArray(tasks.value)
   const qq = q.value.trim().toLowerCase()
-  if (!qq) return tasks.value
-  return tasks.value.filter(row =>
-    (row.name || '').toLowerCase().includes(qq)
-    || (row.id || '').toLowerCase().includes(qq)
-    || (row.desc || '').toLowerCase().includes(qq)
-  )
+  if (!qq) return list
+  // String(...): the API deliberately serves an under-cap int name/desc
+  // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
+  // on it — typing one character in the filter box blanked the whole page.
+  // asRecord: a leftover list cell that is not a mapping (null / string)
+  // used to throw on ``row.name`` and blank the whole page.
+  return list.filter(row => {
+    const rec = asRecord(row)
+    return String(rec.name ?? '').toLowerCase().includes(qq)
+      || String(rec.id ?? '').toLowerCase().includes(qq)
+      || String(rec.desc ?? '').toLowerCase().includes(qq)
+  })
 })
 
 let listGeneration = 0
@@ -129,7 +139,14 @@ async function refresh() {
   try {
     const list = await getMaintenance()
     if (generation !== listGeneration || !pageAlive) return false
-    tasks.value = Array.isArray(list) ? list : (list?.tasks || [])
+    // asArray first: a leftover mapping (or ``{tasks: …}`` envelope) used
+    // to throw on ``.length`` / ``.filter`` / ``v-for``.  asRecord on the
+    // envelope, then asArray of ``.tasks``, fail-closes a hostile nested
+    // list.  Each row is asRecord so a leftover null cell cannot throw
+    // later.  Do not wrap a Set as asArray — this payload is never a Set.
+    const rows = asArray(list)
+    const fromEnvelope = asArray(asRecord(list).tasks)
+    tasks.value = (rows.length ? rows : fromEnvelope).map((row) => asRecord(row))
     loadError.value = ''
     return true
   } catch (e) {
@@ -142,6 +159,7 @@ async function refresh() {
 }
 
 async function run(task) {
+  const rec = asRecord(task)
   if (anyRunning.value) return
   // Always confirm. Every maintenance entry is an arbitrary shell command that
   // runs against the host (brew upgrade, HA update, container rebuild), so the
@@ -149,18 +167,18 @@ async function run(task) {
   // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
   // absent from the documented example task, so the destructive entries shipped
   // unguarded.
-  if (!confirm(t('maintenance.confirm_run', { name: finiteText(task.name) }))) return
+  if (!confirm(t('maintenance.confirm_run', { name: finiteText(rec.name) }))) return
   const generation = listGeneration
-  task.running = true
+  rec.running = true
   try {
-    await runMaintenance(task.id)
+    await runMaintenance(rec.id)
     if (generation !== listGeneration || !pageAlive) return
-    toast('🚀 ' + t('maintenance.started', { name: finiteText(task.name) }))
-    openLog(task)
+    toast('🚀 ' + t('maintenance.started', { name: finiteText(rec.name) }))
+    openLog(rec)
     await refresh()
   } catch (e) {
     if (generation !== listGeneration || !pageAlive) return
-    task.running = false
+    rec.running = false
     toast('❌ ' + finiteText(e.message || e))
   }
 }
@@ -175,7 +193,7 @@ async function pollLog(generation) {
   const id = curId.value
   if (!id || generation !== pollGeneration || !pageAlive) return
   try {
-    const j = await getMaintenanceLog(id)
+    const j = asRecord(await getMaintenanceLog(id))
     if (generation !== pollGeneration || curId.value !== id || !pageAlive) return
     logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(j.rc) })))
     if (!j.running) {
@@ -196,8 +214,9 @@ async function pollLog(generation) {
 
 function openLog(task) {
   stopLogPolling()
-  curId.value = task.id
-  logTitle.value = finiteText(task.name)
+  const rec = asRecord(task)
+  curId.value = rec.id
+  logTitle.value = finiteText(rec.name)
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
   const generation = pollGeneration
