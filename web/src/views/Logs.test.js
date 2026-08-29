@@ -138,7 +138,7 @@ describe('Logs leave-guards', () => {
     wrapper.unmount()
   })
 
-  it('does not interpolate leftover Infinity sizes', async () => {
+  it('does not render leftover infinite sizes as Infinity', async () => {
     api.getLogSources.mockResolvedValue({
       sources: [{ id: 'panel', name: 'Panel', exists: true, size: Number.POSITIVE_INFINITY }],
     })

@@ -102,13 +102,11 @@ class TailerListSeamTests(_LogsSandbox):
         self.assertEqual(payload["log"], "")
         self.assertEqual(payload["lines"], 0)
 
-    def test_iter_bomb_list_keeps_honest_rows_not_500(self):
-        # Unbound list.__iter__ skips a leftover subclass __iter__ bomb
-        # (stronger union) so honest rows survive instead of emptying.
+    def test_iter_bomb_list_keeps_stored_rows(self):
         payload = self._tail(
             self._cfg(), "s1", tailer=lambda *a, **k: IterBombList(["kept"]))
-        self.assertIn("kept", payload["log"])
-        self.assertNotEqual(payload["lines"], 0)
+        self.assertEqual(payload["log"], "kept")
+        self.assertEqual(payload["lines"], 1)
 
     def test_class_bomb_tailer_answer_answers_empty_lines_not_500(self):
         payload = self._tail(
@@ -155,11 +153,11 @@ class AddrBeltTests(_LogsSandbox):
 
 
 class ControlFlowStillPropagatesTests(unittest.TestCase):
-    def test_keyboardinterrupt_from_isa_propagates(self):
-        class _KI:
+    def test_keyboardinterrupt_from_class_property_propagates(self):
+        class _KIClass:
             @property
             def __class__(self):  # type: ignore[override]
                 raise KeyboardInterrupt
 
         with self.assertRaises(KeyboardInterrupt):
-            logs_svc._rows_list(_KI())
+            logs_svc._rows_list(_KIClass())
