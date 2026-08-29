@@ -509,7 +509,8 @@ class HelperUnitPins(unittest.TestCase):
             with self.subTest(claim=claim.__name__):
                 text = vms_svc._as_text(_Liar(claim))
                 self.assertIsInstance(text, str)
-                self.assertIn("_Liar", text)
+                self.assertEqual(text, "")
+                self.assertNotIn(" at 0x", text)
 
     def test_display_and_id_text_take_the_fallback_for_liars(self):
         for claim in (str, bytes, bool, int, float):

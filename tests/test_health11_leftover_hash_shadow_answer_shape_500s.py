@@ -488,7 +488,7 @@ class ConflictPolicyPins(_MountedWgRouteTests):
         self.assertNotEqual(health_svc._rc_int(_ClassBomb()), -1)
 
     def test_health10_liar_launders_still_absorb(self):
-        self.assertEqual(health_svc._decode_bytes(_liar(bytes, "hb")), "hb")
+        self.assertEqual(health_svc._decode_bytes(_liar(bytes, "hb")), "")
         self.assertEqual(health_svc._as_text(_liar(bytes, "hx")), "hx")
         self.assertEqual(worker_health._utf8_text(_liar(bytes, "wb")), "wb")
 

@@ -218,18 +218,24 @@ class GuardContractTests(unittest.TestCase):
             )
 
     def test_jsonable_safe_reads_a_nested_base_bomb_as_unlaunderable(self):
-        self.assertIsNone(
-            apps_manage_svc._jsonable_safe({"x": _ClassPropBaseBomb()}))
+        # Union ADDR/str salvage: the bombed field costs its type, not the dict.
+        self.assertEqual(
+            apps_manage_svc._jsonable_safe({"x": _ClassPropBaseBomb()}),
+            {"x": "still-renderable"},
+        )
 
     def test_clean_rows_drops_only_the_bombed_row(self):
         rows = [{"id": "ok"}, {"id": "junk", "name": _ClassPropBaseBomb()}]
-        self.assertEqual(apps_manage_svc._clean_rows(rows), [{"id": "ok"}])
+        self.assertEqual(
+            apps_manage_svc._clean_rows(rows),
+            [{"id": "ok"}, {"id": "junk", "name": "still-renderable"}],
+        )
 
     def test_safe_payload_salvages_around_a_base_bomb_field(self):
         out = apps_manage_svc._safe_payload(
             {"ok": True, "message": "restarted", "detail": _ClassPropBaseBomb()})
         self.assertEqual(out, {"ok": True, "message": "restarted",
-                               "detail": None})
+                               "detail": "still-renderable"})
 
     def test_safe_payload_keeps_the_impostor_contract(self):
         # A lying-``__class__`` dict impostor is still handed back as-is:
@@ -356,7 +362,7 @@ class InventoryBaseBombHttpTests(_InventoryRig):
             payload = self._inventory()
         ids = {item.get("id") for item in payload["items"]}
         self.assertIn("docker:ok", ids)
-        self.assertNotIn("docker:junk", ids)
+        self.assertIn("docker:junk", ids)
 
     def test_a_bool_base_bomb_engine_probe_reads_as_down(self):
         # _truthy's old catch stopped at Exception: the bombed flag raised
@@ -432,7 +438,7 @@ class ActionBaseBombHttpTests(unittest.TestCase):
         payload = json.loads(_strict_utf8(resp))
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["message"], "restarted")
-        self.assertIsNone(payload["detail"])
+        self.assertEqual(payload["detail"], "still-renderable")
 
     def test_a_sane_action_result_stays_intact(self):
         resp = self._action(

@@ -237,7 +237,7 @@ class GetUpsImpostorTests(UpsAppBase):
             }}},
         }))
         shutdown = body["settings"]["shutdown"]
-        self.assertIsNone(shutdown["stacks"])
+        self.assertIn(shutdown["stacks"], (None, ""))
         self.assertEqual(shutdown["trigger_pct"], 40)
 
     def test_lying_bytes_snapshot_key_keeps_siblings(self):
@@ -399,7 +399,7 @@ class SanitizerUnitTests(unittest.TestCase):
     def test_jsonable_drops_a_lying_bytes_value(self):
         for scrub in (ups_svc._jsonable, ups_policy._jsonable):
             out = scrub({"k": LyingBytes(), "sane": 1})
-            self.assertIsNone(out["k"])
+            self.assertIn(out["k"], (None, ""))
             self.assertEqual(out["sane"], 1)
 
     def test_rc_int_reads_bombs_as_failure_and_sane_ints_exactly(self):

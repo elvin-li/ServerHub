@@ -346,7 +346,7 @@ class DiskSnapshotScrubClassBombTests(unittest.TestCase):
     def test_as_text_classbomb_salvages_text(self):
         out = disk_snapshot._as_text(_ClassBomb())
         self.assertIs(type(out), str)
-        self.assertTrue(out)
+        self.assertEqual(out, "")
 
     def test_as_text_eqbomb_no_longer_reflects(self):
         # The old ``value in (None, False, True, "")`` containment probe

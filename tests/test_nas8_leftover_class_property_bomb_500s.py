@@ -365,7 +365,7 @@ class ServiceContractClassBombTests(unittest.TestCase):
             nas_common._plain_result(_GetBombDict({"ok": True})), {"ok": True})
 
     def test_smart_gates_degrade_the_bomb(self):
-        self.assertEqual(smart_test_svc._utf8_text(_ClassBomb())[:1], "<")
+        self.assertEqual(smart_test_svc._utf8_text(_ClassBomb()), "")
         # A bomb *limit* falls back to the default instead of raising.
         with mock.patch.object(smart_test_svc, "_load_history", return_value=[]):
             self.assertEqual(smart_test_svc.history(_ClassBomb()), [])

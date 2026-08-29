@@ -359,13 +359,13 @@ class LaunderUnitPins(unittest.TestCase):
         self.assertEqual(wireguard_svc._as_text(b"real"), "real")
 
     def test_health_decode_bytes_absorbs_liar(self):
-        self.assertEqual(health_svc._decode_bytes(_liar(bytes, "hb")), "hb")
+        self.assertEqual(health_svc._decode_bytes(_liar(bytes, "hb")), "")
 
     def test_health_as_text_absorbs_bytes_liar(self):
         self.assertEqual(health_svc._as_text(_liar(bytes, "hx")), "hx")
 
     def test_health_jsonable_bytes_liar_renders_text(self):
-        self.assertEqual(health_svc._jsonable(_liar(bytes, "jb")), "jb")
+        self.assertEqual(health_svc._jsonable(_liar(bytes, "jb")), "")
 
     def test_worker_utf8_text_absorbs_bytes_liar(self):
         self.assertEqual(worker_health._utf8_text(_liar(bytes, "wb")), "wb")

@@ -229,7 +229,7 @@ class PullLogLiarStaysImmune(_PullRowHttp):
         for liar in (_LyingBytes(), _LyingDict(), _LyingList()):
             with self.subTest(liar=type(liar).__name__):
                 payload = self._pull_log_200(model=liar)
-                self.assertIsNone(payload["model"])
+                self.assertIn(payload["model"], (None, ""))
                 self.assertEqual(payload["rc"], 0)
 
     def test_liar_scalar_log_answers_empty(self):

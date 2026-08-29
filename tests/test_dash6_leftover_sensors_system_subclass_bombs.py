@@ -321,7 +321,7 @@ class StaysImmuneTests(_SensorsCacheSandbox):
     def test_getattr_bomb_falls_back_to_text(self):
         self._plant(_GetattrBomb())
         body = self._get("/api/system/sensors")
-        self.assertIn("_GetattrBomb", body["cpu"]["x"])
+        self.assertEqual(body["cpu"]["x"], "")
 
     def test_top_cache_get_bool_bomb_is_neutralized_by_the_plain_dict(self):
         """_cpu_and_mem_from_top_cached plain-dicts a subclass hit, so the

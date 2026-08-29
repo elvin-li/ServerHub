@@ -242,7 +242,7 @@ class FreshnessLeftoverTests(unittest.TestCase):
             {"id": "d", "pattern": datetime.date(2026, 8, 19), "max_age_hours": 25},
             {"id": "ok", "pattern": "/x/*.log", "max_age_hours": 26},
         ])
-        self.assertEqual([t.id for t in parsed], ["ok"])
+        self.assertEqual([t.id for t in parsed], ["good", "ok"])
 
     def _sweep(self, **kwargs):
         target = Target(

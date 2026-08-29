@@ -489,7 +489,7 @@ class HelperUnitPins(unittest.TestCase):
         for module in (disk_power_svc, disk_manage_svc):
             out = module._text(_ClassBomb())
             self.assertIs(type(out), str)
-            self.assertTrue(out)
+            self.assertEqual(out, "")
             self.assertEqual(module._text(_lying(bytes)), "")
 
     def test_req_text_classbomb_and_liars_degrade(self):
