@@ -499,7 +499,7 @@ describe('dashboard and storage surface leftovers', () => {
     // screen reader announced — nothing said what expands, and nothing said
     // whether it already had.
     const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
-    const toggle = mainArray.match(/<button[^>]*v-if="m\.smart\?\.attrs\?\.length"[\s\S]*?>/)
+    const toggle = mainArray.match(/<button[^>]*v-if="asArray\(m\.smart\?\.attrs\)\.length"[\s\S]*?>/)
     expect(toggle, 'SMART attribute expander').toBeTruthy()
     expect(toggle[0]).toMatch(/:aria-label="t\('main_extra\.smart_attrs_toggle'/)
     expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(m\.id\)"/)
@@ -966,7 +966,7 @@ describe('logs and tools surface leftovers', () => {
     // The count is the answer to the Refresh click and it changed silently
     // for a screen reader — the last refresh-driven count on this page
     // without a live region.
-    expect(tools).toMatch(/role="status">\{\{ t\('tools\.tasks_n', \{ n: timers\.length \}\) \}\}<\/span>/)
+    expect(tools).toMatch(/role="status">\{\{ t\('tools\.tasks_n', \{ n: asArray\(timers\)\.length \}\) \}\}<\/span>/)
   })
 
   it('tells engine-off apart from an empty container-size list', () => {
@@ -3459,7 +3459,7 @@ describe('leftover Infinity interpolations', () => {
     expect(audit).toMatch(/finiteText\(e\.outcome\)/)
     expect(audit).not.toMatch(/\{\{\s*e\.client\s*\}\}/)
     expect(audit).toMatch(/`\$\{finiteText\(k\)\}=\$\{finiteText\(v\)\}`/)
-    expect(audit).toMatch(/n: finiteN\(entries\.length\)/)
+    expect(audit).toMatch(/n: finiteN\(asArray\(entries\)\.length\)/)
     expect(audit).toMatch(/max: finiteN\(maxRetained\)/)
     expect(audit).toMatch(/asArray\(entries\.value\)\.slice\(\)\.reverse\(\)/)
     expect(audit).toMatch(/v-for="\(e, i\) in asArray\(filteredRows\)"/)
@@ -3710,7 +3710,7 @@ describe('leftover Infinity interpolations', () => {
     expect(logs).toMatch(/finiteText\(s\.name\)/)
     expect(logs).not.toMatch(/\{\{\s*meta\.path\s*\}\}/)
     expect(logs).toMatch(/finiteText\(meta\.path\)/)
-    expect(logs).toMatch(/n: finiteN\(displayLines\.length\)/)
+    expect(logs).toMatch(/n: finiteN\(asArray\(displayLines\)\.length\)/)
     expect(logs).not.toMatch(/displayLines\.value\.join\('\\n'\)/)
     expect(logs).toMatch(/displayLines\.value\.map\(\(l\) => finiteText\(l, ''\)\)/)
     expect(logs).not.toMatch(/\{\{\s*displayText\s*\}\}/)
@@ -3953,7 +3953,7 @@ describe('Users and Account leftover a11y', () => {
     // The empty-row alert only exists while the table is empty; once rows were
     // on screen a failed re-load surfaced nowhere (loadAccounts never toasts).
     const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
-    expect(users).toMatch(/<LoadFailure\s+v-if="accountsError && accounts\.length"/)
+    expect(users).toMatch(/<LoadFailure\s+v-if="accountsError && asArray\(accounts\)\.length"/)
     // Both inline failure spots offer a non-submitting retry.
     expect(users).toMatch(/v-if="accountsError"[^>]*type="button" @click="loadAccounts"/)
     const retries = users.match(
