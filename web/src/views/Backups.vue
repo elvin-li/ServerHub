@@ -301,7 +301,7 @@ const loadError = ref('')
 // The API caps the rows it returns but reports how many exist, so the page can
 // tell "these are all of them" apart from "these are the newest 40".
 const total = ref(0)
-const hiddenCount = computed(() => Math.max(0, total.value - backups.value.length))
+const hiddenCount = computed(() => Math.max(0, total.value - asArray(backups.value).length))
 const postgresTargets = ref([])
 const immich = ref({ available: false, last: null, layers: null })
 const layers = computed(() => immich.value.layers || null)
@@ -317,7 +317,7 @@ const originalsHeadline = computed(() => {
   return layerPresent(layer)
 })
 const pgLabel = computed(() => {
-  const names = postgresTargets.value.map((t) => t.id).filter(Boolean)
+  const names = asArray(postgresTargets.value).map((t) => t.id).filter(Boolean)
   if (names.length === 1) return t('backups.pg_named', { name: finiteText(names[0]) })
   if (names.length > 1) return t('backups.pg')
   return t('backups.pg')
@@ -523,7 +523,7 @@ async function openPreview(job) {
 }
 
 async function doPg() {
-  const names = postgresTargets.value.map((t) => finiteText(t.id, '')).filter(Boolean).join(', ') || 'PostgreSQL'
+  const names = asArray(postgresTargets.value).map((t) => finiteText(t.id, '')).filter(Boolean).join(', ') || 'PostgreSQL'
   if (!confirm(t('backups.confirm_pg', { names }))) return
   busy.value = true
   msg.value = t('backups.backing_up')

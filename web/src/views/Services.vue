@@ -363,22 +363,22 @@ const flat = computed(() => {
 })
 
 const kindOptions = computed(() => {
-  const set = new Set(flat.value.map(s => s.kind).filter(Boolean))
+  const set = new Set(asArray(flat.value).map(s => s.kind).filter(Boolean))
   return [...set].sort()
 })
 
 const groupOptions = computed(() => {
-  const set = new Set(flat.value.map(s => s.group).filter(Boolean))
+  const set = new Set(asArray(flat.value).map(s => s.group).filter(Boolean))
   return [...set].sort()
 })
 
-const downIds = computed(() => flat.value.filter(s => s.state === 'down').map(s => s.id))
-const warnIds = computed(() => flat.value.filter(s => s.state === 'warn').map(s => s.id))
+const downIds = computed(() => asArray(flat.value).filter(s => s.state === 'down').map(s => s.id))
+const warnIds = computed(() => asArray(flat.value).filter(s => s.state === 'warn').map(s => s.id))
 
 const stateRank = { down: 0, warn: 1, stopped: 2, ok: 3, unknown: 4 }
 
 const filtered = computed(() => {
-  let list = flat.value
+  let list = asArray(flat.value)
   if (onlyBad.value) list = list.filter(s => s.state !== 'ok' && s.state !== 'stopped')
   if (stateF.value) list = list.filter(s => s.state === stateF.value)
   if (kindF.value) list = list.filter(s => s.kind === kindF.value)
@@ -411,7 +411,7 @@ const filtered = computed(() => {
 
 const filteredGroups = computed(() => {
   const map = new Map()
-  for (const s of filtered.value) {
+  for (const s of asArray(filtered.value)) {
     const g = s.group || t('services.other_group')
     if (!map.has(g)) map.set(g, [])
     map.get(g).push(s)
@@ -419,7 +419,7 @@ const filteredGroups = computed(() => {
   return [...map.entries()].map(([group, services]) => ({ group, services }))
 })
 
-const allSelected = computed(() => filtered.value.length > 0 && filtered.value.every(s => selected.value.has(s.id)))
+const allSelected = computed(() => asArray(filtered.value).length > 0 && asArray(filtered.value).every(s => selected.value.has(s.id)))
 
 function toggleSelect(id) {
   const n = new Set(selected.value)
@@ -429,7 +429,7 @@ function toggleSelect(id) {
 }
 
 function toggleSelectAll(e) {
-  if (e.target.checked) selected.value = new Set(filtered.value.map(s => s.id))
+  if (e.target.checked) selected.value = new Set(asArray(filtered.value).map(s => s.id))
   else selected.value = new Set()
 }
 

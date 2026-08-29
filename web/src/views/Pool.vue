@@ -318,13 +318,13 @@ const allCandidates = computed(() => [
 ])
 
 const selectedMembers = computed(() => {
-  const by = new Map(allCandidates.value.map((c) => [c.mount, c]))
-  return selected.value.map((m) => by.get(m)).filter(Boolean)
+  const by = new Map(asArray(allCandidates.value).map((c) => [c.mount, c]))
+  return asArray(selected.value).map((m) => by.get(m)).filter(Boolean)
 })
 
 const availableCandidates = computed(() => {
-  const chosen = new Set(selected.value)
-  return allCandidates.value.filter((c) => !chosen.has(c.mount))
+  const chosen = new Set(asArray(selected.value))
+  return asArray(allCandidates.value).filter((c) => !chosen.has(c.mount))
 })
 
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
@@ -378,11 +378,11 @@ async function refresh() {
 }
 
 function addMember(mount) {
-  if (!selected.value.includes(mount)) selected.value = [...selected.value, mount]
+  if (!asArray(selected.value).includes(mount)) selected.value = [...asArray(selected.value), mount]
 }
 
 function removeMember(mount) {
-  selected.value = selected.value.filter((m) => m !== mount)
+  selected.value = asArray(selected.value).filter((m) => m !== mount)
 }
 
 // A stale preview describing a different member set is worse than none: the
@@ -399,7 +399,7 @@ async function doPreview() {
     const planned = await planStoragePool(selected.value, policy.value)
     if (generation !== loadGeneration || !pageAlive) return
     preview.value = planned
-    lastMsg.value = t('pool.msg_preview', { n: selected.value.length })
+    lastMsg.value = t('pool.msg_preview', { n: asArray(selected.value).length })
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

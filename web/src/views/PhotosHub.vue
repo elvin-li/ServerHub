@@ -364,7 +364,7 @@ const originalsColor = computed(() => {
 })
 const allSelected = computed(() => {
   const assets = asArray(pending.value?.assets)
-  return assets.length > 0 && selected.value.length === assets.length
+  return assets.length > 0 && asArray(selected.value).length === assets.length
 })
 const immichHref = computed(() => safeHttpUrl(data.value?.links?.immich))
 const panelHref = computed(() => safeHttpUrl(data.value?.links?.panel))
@@ -631,12 +631,12 @@ async function run(action) {
 }
 
 async function removeSelected() {
-  if (!selected.value.length) return
+  if (!asArray(selected.value).length) return
   if (!confirm(t('photoshub.confirm_remove'))) return
   const generation = loadGeneration
   pendingLoading.value = true
   try {
-    await postPhotosHubPendingRemove(selected.value)
+    await postPhotosHubPendingRemove(asArray(selected.value))
     if (generation !== loadGeneration || !pageAlive) return
     await loadPending()
     if (generation !== loadGeneration || !pageAlive) return

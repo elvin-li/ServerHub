@@ -275,7 +275,7 @@ onMounted(async () => {
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = asArray(d?.stacks)
     stacksError.value = ''
-    if (!stackId.value && stacks.value.length) stackId.value = stacks.value[0].id
+    if (!stackId.value && asArray(stacks.value).length) stackId.value = asArray(stacks.value)[0].id
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
     stacks.value = []

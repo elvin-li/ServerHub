@@ -540,7 +540,7 @@ const engineMem = computed(() => {
   return (n / 2 ** 30).toFixed(1)
 })
 
-const systemCount = computed(() => containers.value.filter(c => c.system).length)
+const systemCount = computed(() => asArray(containers.value).filter(c => c.system).length)
 
 const filteredContainers = computed(() => {
   let list = containers.value
@@ -557,7 +557,7 @@ const filteredContainers = computed(() => {
 })
 
 const displayGroups = computed(() => {
-  const list = filteredContainers.value
+  const list = asArray(filteredContainers.value)
   // The empty and filter-miss placeholders own the no-rows case; an empty
   // "All" table with only headers under them would just restate it.
   if (!list.length) return []
@@ -608,14 +608,15 @@ function cpuNum(s) {
   return Number.isFinite(n) ? n : null
 }
 function allSelected(items) {
-  return items.length && items.every(c => selected.value.includes(c.id))
+  const list = asArray(items)
+  return list.length && list.every(c => asArray(selected.value).includes(c.id))
 }
 function toggleAll(items, ev) {
-  const ids = items.map(c => c.id)
+  const ids = asArray(items).map(c => c.id)
   if (ev.target.checked) {
-    selected.value = Array.from(new Set([...selected.value, ...ids]))
+    selected.value = Array.from(new Set([...asArray(selected.value), ...ids]))
   } else {
-    selected.value = selected.value.filter(id => !ids.includes(id))
+    selected.value = asArray(selected.value).filter(id => !ids.includes(id))
   }
 }
 
@@ -717,12 +718,12 @@ async function doAll(action) {
 }
 
 async function batchSel(action) {
-  if (!selected.value.length) return
-  if (!confirm(t('docker.confirm_batch', { action: finiteText(action), n: finiteN(selected.value.length, 0) }))) return
+  if (!asArray(selected.value).length) return
+  if (!confirm(t('docker.confirm_batch', { action: finiteText(action), n: finiteN(asArray(selected.value).length, 0) }))) return
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await batchContainers(action, selected.value)
+    const j = await batchContainers(action, asArray(selected.value))
     if (!stillOnList(generation)) return
     batchToast(j)
     scheduleRefresh(1000)

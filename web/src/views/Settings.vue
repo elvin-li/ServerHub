@@ -2237,7 +2237,7 @@ async function saveUps() {
     require_both: f.shutdown.require_both,
     stacks: f.shutdown.stacksMode === 'all'
       ? 'all'
-      : upsStackRows.value.filter((r) => r.selected).map((r) => r.id),
+      : asArray(upsStackRows.value).filter((r) => r.selected).map((r) => r.id),
     stop_scripts: [...f.shutdown.stop_scripts],
   }
   // Same rule the server enforces (ups.policy_no_condition), said upfront.

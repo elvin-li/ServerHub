@@ -505,7 +505,7 @@ const nav = computed(() => {
 
 const activeGroup = computed(() => {
   const path = route.path
-  for (const item of nav.value) {
+  for (const item of asArray(nav.value)) {
     if (item.exact && path === item.to) return item
     if (item.match && item.match.some(m => path === m || path.startsWith(m + '/'))) return item
     if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
@@ -876,7 +876,7 @@ const cmdResults = computed(() => {
   return [...fromNav, ...fromCatalog].slice(0, 8)
 })
 const cmdFlat = computed(() => {
-  const items = cmdResults.value.map((n) => ({ type: 'nav', ...n }))
+  const items = asArray(cmdResults.value).map((n) => ({ type: 'nav', ...n }))
   const q = cmdQuery.value.trim()
   if (authState.canManage && q) {
     items.push({ type: 'ai', query: q, to: '__ai__' })

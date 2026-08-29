@@ -84,7 +84,7 @@ const displayLines = computed(() => {
   if (!f) return all
   return all.filter(l => l.toLowerCase().includes(f))
 })
-const displayText = computed(() => displayLines.value.map((l) => finiteText(l, '')).join('\n'))
+const displayText = computed(() => asArray(displayLines.value).map((l) => finiteText(l, '')).join('\n'))
 
 function fmtSize(n) {
   if (n == null || n === 0) return '0 B'
@@ -106,7 +106,7 @@ async function loadSources() {
     const d = await getLogSources()
     if (generation !== loadGeneration || !pageAlive) return false
     sources.value = asArray(d.sources)
-    if (!sourceId.value && sources.value.length) sourceId.value = sources.value[0].id
+    if (!sourceId.value && asArray(sources.value).length) sourceId.value = asArray(sources.value)[0].id
     loadError.value = ''
     return true
   } catch (e) {
@@ -152,7 +152,7 @@ async function load(manual = false) {
 }
 
 function retry() {
-  if (sources.value.length) return load(true)
+  if (asArray(sources.value).length) return load(true)
   return loadSources().then((ok) => { if (ok) return load(true) })
 }
 

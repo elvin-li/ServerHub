@@ -950,7 +950,7 @@ async function saveOrder() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceOrder(orderList.value.map(s => s.name))
+    const j = await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')

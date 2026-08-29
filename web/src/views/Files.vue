@@ -228,9 +228,9 @@ async function loadOverview() {
     if (request !== listRequest) return false
     roots.value = asArray(j.roots)
     fb.value = asRecord(j.filebrowser)
-    if (!rootId.value && roots.value.length) {
-      rootId.value = roots.value[0].id
-      currentPath.value = roots.value[0].path
+    if (!rootId.value && asArray(roots.value).length) {
+      rootId.value = asArray(roots.value)[0].id
+      currentPath.value = asArray(roots.value)[0].path
     }
     return true
   } catch (e) {
@@ -287,7 +287,7 @@ function openItem(it) {
 
 function toggleSel(path) {
   if (selected.value.includes(path)) {
-    selected.value = selected.value.filter(p => p !== path)
+    selected.value = asArray(selected.value).filter(p => p !== path)
   } else {
     selected.value = [...selected.value, path]
   }
@@ -364,12 +364,12 @@ async function doDeleteOne(it) {
 }
 
 async function doDeleteSelected() {
-  if (!selected.value.length) return
+  if (!asArray(selected.value).length) return
   const items = asArray(listing.value?.items)
-  const hasDir = selected.value.some((path) => items.find((it) => it.path === path)?.is_dir)
+  const hasDir = asArray(selected.value).some((path) => items.find((it) => it.path === path)?.is_dir)
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
-  if (!confirm(t(key, { n: selected.value.length }))) return
-  const paths = [...selected.value]
+  if (!confirm(t(key, { n: asArray(selected.value).length }))) return
+  const paths = [...asArray(selected.value)]
   const request = listRequest
   busy.value = true
   let ok = 0

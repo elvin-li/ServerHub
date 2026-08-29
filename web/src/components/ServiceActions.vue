@@ -85,13 +85,13 @@ const acts = computed(() =>
 // use. The drawer keeps full-size Start/Stop buttons.
 const showPowerSwitch = computed(() =>
   props.variant !== 'drawer'
-  && (acts.value.includes('start') || acts.value.includes('stop')),
+  && (asArray(acts.value).includes('start') || asArray(acts.value).includes('stop')),
 )
 
 const buttonActs = computed(() => (
   showPowerSwitch.value
-    ? acts.value.filter((a) => a !== 'start' && a !== 'stop')
-    : acts.value
+    ? asArray(acts.value).filter((a) => a !== 'start' && a !== 'stop')
+    : asArray(acts.value)
 ))
 
 const powerOn = computed(() => {

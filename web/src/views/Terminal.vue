@@ -175,7 +175,7 @@ async function load() {
         shell: c.shell || '/bin/sh',
       }))
       .filter(c => c.id)
-    if (!container.value && containers.value.length) container.value = containers.value[0].id
+    if (!container.value && asArray(containers.value).length) container.value = asArray(containers.value)[0].id
     containerListError.value = ''
   } catch (error) {
     // Container discovery is optional -- the template falls back to a free-text

@@ -372,12 +372,12 @@ const iconMap = {
 }
 const serviceIcon = (id) => iconMap[id] || Archive
 const systemServices = computed(() => asArray(data.value?.system_services))
-const coreServices = computed(() => systemServices.value.filter((service) => service.controllable))
-const managedServices = computed(() => systemServices.value.filter((service) => !service.controllable))
+const coreServices = computed(() => asArray(systemServices.value).filter((service) => service.controllable))
+const managedServices = computed(() => asArray(systemServices.value).filter((service) => !service.controllable))
 const shareCount = computed(() => asArray(data.value?.smb).length)
 const tmStatus = computed(() => asRecord(data.value?.time_machine))
 const hostName = computed(() => finiteText(data.value?.host?.name, '') || t('shares.unknown'))
-const activeCoreCount = computed(() => coreServices.value.filter((service) => service.enabled === true).length)
+const activeCoreCount = computed(() => asArray(coreServices.value).filter((service) => service.enabled === true).length)
 const stateClass = (enabled) => enabled === true ? 'ok' : enabled === false ? 'stopped' : 'warn'
 const stateText = (enabled) => enabled === true
   ? t('common.on')
