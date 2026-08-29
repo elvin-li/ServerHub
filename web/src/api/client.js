@@ -1,4 +1,5 @@
 import { t } from '../i18n/index.js'
+import { asRecord } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -39,7 +40,7 @@ function errorText(payload, statusText) {
   const d = payload?.detail
   if (d && typeof d === 'object' && !Array.isArray(d) && d.code) {
     const key = `err.${d.code}`
-    const translated = t(key, d.params || {})
+    const translated = t(key, asRecord(d.params))
     // Privileged-operation failures carry the tool's own stderr tail in
     // params.detail; appending it keeps the generic "operation failed" text
     // from hiding the actual cause (e.g. wg-quick's error line).
@@ -243,7 +244,7 @@ export const doAction = async (target, action) => {
     // request through json(), which handles auth loss, timeout and localization.
     if (error.status) {
       return {
-        ...(error.body || {}),
+        ...(asRecord(error.body)),
         ok: false,
         message: error.message,
         status: error.status,
@@ -1030,7 +1031,7 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
           err.status = 502
           throw err
         }
-        const msg = chunk.message || {}
+        const msg = asRecord(chunk.message)
         if (msg.content) content += msg.content
         if (msg.thinking) thinking += msg.thinking
         const snap = { ok: true, model, content, thinking, done: Boolean(chunk.done) }

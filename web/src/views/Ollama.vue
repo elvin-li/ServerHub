@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -714,7 +714,7 @@ async function pollPullLog(generation) {
   } catch (e) {
     if (generation !== pullGeneration) return
     // Transient failure: say so in the box and keep tailing.
-    pullInfo.value = { ...(pullInfo.value || {}), log: `${pullInfo.value?.log || ''}\n⚠ ${e.message || e}`.trim() }
+    pullInfo.value = { ...asRecord(pullInfo.value), log: `${pullInfo.value?.log || ''}\n⚠ ${e.message || e}`.trim() }
   }
   if (generation === pullGeneration) {
     pullTimer = setTimeout(() => { void pollPullLog(generation) }, 1500)

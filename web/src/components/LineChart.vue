@@ -120,11 +120,11 @@ import { asArray, finiteText } from '../lib/finite'
 const { t } = injectI18n()
 
 const props = defineProps({
-  series: { type: Array, default: () => [] },
+  series: { type: [Array, Object], default: () => [] },
   // Epoch seconds aligned with series values. When two or more finite
   // timestamps exist, x is (t - tMin) / (tMax - tMin) so a rollup that
   // omitted a window leaves a gap instead of compressing time.
-  times: { type: Array, default: null },
+  times: { type: [Array, Object], default: null },
   height: { type: Number, default: 120 },
   min: { type: Number, default: null },
   max: { type: Number, default: null },
@@ -267,8 +267,8 @@ function yPct(v) {
 }
 
 const timeExtent = computed(() => {
-  const ts = props.times
-  if (!Array.isArray(ts) || !ts.length) return null
+  const ts = asArray(props.times)
+  if (!ts.length) return null
   let lo = Infinity
   let hi = -Infinity
   for (const epoch of ts) {
@@ -385,7 +385,7 @@ function xOf(i, n) {
   const plotW = W - PAD.l - PAD.r
   const ext = timeExtent.value
   if (ext) {
-    const t = Array.isArray(props.times) ? props.times[i] : null
+    const t = asArray(props.times)[i]
     if (typeof t === 'number' && Number.isFinite(t)) {
       return PAD.l + ((t - ext.lo) / (ext.hi - ext.lo)) * plotW
     }

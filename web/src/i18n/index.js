@@ -1,5 +1,5 @@
 import { computed, inject, ref } from 'vue'
-import { asArray } from '../lib/finite'
+import { asArray, asRecord } from '../lib/finite'
 
 const MESSAGES = {}
 const MESSAGE_LOADERS = {
@@ -93,8 +93,9 @@ function getByPath(obj, path) {
 
 function format(str, params) {
   if (!params || typeof str !== 'string') return str
+  const rec = asRecord(params)
   return str.replace(/\{(\w+)\}/g, (_, k) =>
-    params[k] != null ? String(params[k]) : `{${k}}`
+    rec[k] != null ? String(rec[k]) : `{${k}}`
   )
 }
 

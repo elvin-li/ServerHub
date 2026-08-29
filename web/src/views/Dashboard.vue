@@ -1510,7 +1510,7 @@ async function loadSensors(force = false, { light = false } = {}) {
       // "—" until a full collect. Keep the last full extras across light
       // ticks (low-mode 20s + 90s); Refresh / high mode still replace.
       const prev = sensors.value
-      const net = next.network && Object.keys(next.network).length ? next.network : prev.network
+      const net = Object.keys(asRecord(next.network)).length ? asRecord(next.network) : prev.network
       sensors.value = {
         ...prev,
         ...next,
