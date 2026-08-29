@@ -94,14 +94,14 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(resident)" :key="m.name">
+              <tr v-for="m in asArray(resident)" :key="finiteText(asRecord(m).name)">
                 <td class="mono">
-                  {{ finiteText(m.name) }}
-                  <div class="show-m sub">{{ finiteN(m.context_length) }} · {{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</div>
+                  {{ finiteText(asRecord(m).name) }}
+                  <div class="show-m sub">{{ finiteN(asRecord(m).context_length) }} · {{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</div>
                 </td>
-                <td>{{ fmtSize(m.size_vram || m.size) }}</td>
-                <td class="mono col-hide-m">{{ finiteN(m.context_length) }}</td>
-                <td class="col-hide-m">{{ m.forever ? t('ollama.resident_forever') : fmtDate(m.expires_at) }}</td>
+                <td>{{ fmtSize(asRecord(m).size_vram || asRecord(m).size) }}</td>
+                <td class="mono col-hide-m">{{ finiteN(asRecord(m).context_length) }}</td>
+                <td class="col-hide-m">{{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
                 </td>
@@ -139,20 +139,20 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(models)" :key="m.name">
+              <tr v-for="m in asArray(models)" :key="finiteText(asRecord(m).name)">
                 <td class="mono">
-                  {{ finiteText(m.name) }}
-                  <div class="show-m sub">{{ finiteText(m.family) }}{{ finiteText(m.parameter_size, '') ? ' ' + finiteText(m.parameter_size) : '' }} · {{ finiteText(m.quantization) }}</div>
-                  <div v-if="asArray(m.capabilities).length" class="show-m sub">{{ asArray(m.capabilities).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
+                  {{ finiteText(asRecord(m).name) }}
+                  <div class="show-m sub">{{ finiteText(asRecord(m).family) }}{{ finiteText(asRecord(m).parameter_size, '') ? ' ' + finiteText(asRecord(m).parameter_size) : '' }} · {{ finiteText(asRecord(m).quantization) }}</div>
+                  <div v-if="asArray(asRecord(m).capabilities).length" class="show-m sub">{{ asArray(asRecord(m).capabilities).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
                 </td>
-                <td>{{ fmtSize(m.size) }}</td>
-                <td class="col-hide-m">{{ finiteText(m.family) }} <span v-if="finiteText(m.parameter_size, '')" class="meta">{{ finiteText(m.parameter_size) }}</span></td>
-                <td class="mono col-hide-m">{{ finiteText(m.quantization) }}</td>
+                <td>{{ fmtSize(asRecord(m).size) }}</td>
+                <td class="col-hide-m">{{ finiteText(asRecord(m).family) }} <span v-if="finiteText(asRecord(m).parameter_size, '')" class="meta">{{ finiteText(asRecord(m).parameter_size) }}</span></td>
+                <td class="mono col-hide-m">{{ finiteText(asRecord(m).quantization) }}</td>
                 <td class="col-hide-m">
-                  <span v-for="c in asArray(m.capabilities)" :key="c" class="badge cap">{{ finiteText(c) }}</span>
-                  <span v-if="!asArray(m.capabilities).length">—</span>
+                  <span v-for="c in asArray(asRecord(m).capabilities)" :key="finiteText(c)" class="badge cap">{{ finiteText(c) }}</span>
+                  <span v-if="!asArray(asRecord(m).capabilities).length">—</span>
                 </td>
-                <td class="meta col-hide-m">{{ fmtDate(m.modified) }}</td>
+                <td class="meta col-hide-m">{{ fmtDate(asRecord(m).modified) }}</td>
                 <td class="ops">
                   <button class="tiny danger" @click="openDelete(m)">{{ t('ollama.act_delete') }}</button>
                 </td>
@@ -210,21 +210,21 @@
             v-for="(m, i) in asArray(chatMessages)"
             :key="i"
             class="chat-msg"
-            :class="m.role"
+            :class="asRecord(m).role"
           >
-            <div class="chat-role">{{ m.role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
-            <pre v-if="m.thinking && !m.content" class="chat-thinking">{{ finiteText(m.thinking) }}</pre>
-            <details v-else-if="m.thinking" class="chat-thinking-wrap">
+            <div class="chat-role">{{ asRecord(m).role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
+            <pre v-if="asRecord(m).thinking && !asRecord(m).content" class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
+            <details v-else-if="asRecord(m).thinking" class="chat-thinking-wrap">
               <summary>{{ t('ollama.chat_thinking') }}</summary>
-              <pre class="chat-thinking">{{ finiteText(m.thinking) }}</pre>
+              <pre class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
             </details>
-            <div v-if="m.content || m.pending" class="chat-body">{{ finiteText(m.content, '') || t('ollama.chat_sending') }}</div>
-            <div v-if="m.error" class="chat-error">{{ finiteText(m.error) }}</div>
+            <div v-if="asRecord(m).content || asRecord(m).pending" class="chat-body">{{ finiteText(asRecord(m).content, '') || t('ollama.chat_sending') }}</div>
+            <div v-if="asRecord(m).error" class="chat-error">{{ finiteText(asRecord(m).error) }}</div>
           </div>
         </div>
         <div class="toolbar" style="flex-wrap:wrap">
           <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
-            <option v-for="m in asArray(models)" :key="'chat-' + m.name" :value="m.name">{{ finiteText(m.name) }}</option>
+            <option v-for="m in asArray(models)" :key="'chat-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
           </select>
           <textarea
             v-model="chatInput"
@@ -253,7 +253,7 @@
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
           <select v-model="testModel" :aria-label="t('ollama.test_model_label')">
-            <option v-for="m in asArray(models)" :key="m.name" :value="m.name">{{ finiteText(m.name) }}</option>
+            <option v-for="m in asArray(models)" :key="'test-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
           </select>
           <input
             v-model="testPrompt"
@@ -344,20 +344,20 @@
           <button class="tiny" @click="closeDelete">{{ t('common.close') }}</button>
         </div>
         <p style="margin:0 0 10px">
-          {{ t('ollama.delete_body', { name: finiteText(deleteTarget.name), size: fmtSize(deleteTarget.size) }) }}
+          {{ t('ollama.delete_body', { name: finiteText(asRecord(deleteTarget).name), size: fmtSize(asRecord(deleteTarget).size) }) }}
         </p>
         <input
           v-model="deleteText"
           type="text"
           class="mono"
           style="width:100%;margin-bottom:10px"
-          :placeholder="finiteText(deleteTarget.name, '')"
+          :placeholder="finiteText(asRecord(deleteTarget).name, '')"
           :aria-label="t('ollama.delete_type_label')"
         />
         <div class="row">
           <button
             class="danger"
-            :disabled="deleteText.trim() !== deleteTarget.name || deleting"
+            :disabled="deleteText.trim() !== asRecord(deleteTarget).name || deleting"
             @click="doDelete"
           >{{ t('ollama.delete_confirm') }}</button>
           <button @click="closeDelete">{{ t('common.cancel') }}</button>
@@ -437,10 +437,10 @@ let actionTimer = null
 let pullTimer = null
 let pullGeneration = 0
 
-const models = computed(() => asArray(data.value?.models))
-const resident = computed(() => asArray(data.value?.resident))
+const models = computed(() => asArray(asRecord(data.value).models).map((row) => asRecord(row)))
+const resident = computed(() => asArray(asRecord(data.value).resident).map((row) => asRecord(row)))
 const duplicateLabels = computed(() => {
-  const c = asArray(data.value?.service?.candidates)
+  const c = asArray(asRecord(asRecord(data.value).service).candidates)
   return c.length > 1 ? c : []
 })
 
@@ -475,9 +475,10 @@ const chatSendDisabled = computed(() =>
   || !chatInput.value.trim())
 
 function defaultChatModel(j) {
-  const res = asArray(j?.resident)
+  const row = asRecord(j)
+  const res = asArray(row.resident).map((item) => asRecord(item))
   if (res[0]?.name) return res[0].name
-  const mods = asArray(j?.models)
+  const mods = asArray(row.models).map((item) => asRecord(item))
   return mods[0]?.name || ''
 }
 
@@ -587,12 +588,17 @@ async function refresh(force = false) {
   const generation = ++loadGeneration
   if (!loaded.value || force) loading.value = true
   try {
-    const j = await getOllamaStatus(force)
+    const j = asRecord(await getOllamaStatus(force))
     if (generation !== loadGeneration || !pageAlive) return false
-    data.value = j
+    data.value = {
+      ...j,
+      models: asArray(j.models).map((row) => asRecord(row)),
+      resident: asArray(j.resident).map((row) => asRecord(row)),
+      service: asRecord(j.service),
+    }
     loadError.value = ''
-    if (!testModel.value && asArray(j?.models).length) {
-      testModel.value = asArray(j.models)[0].name
+    if (!testModel.value && asArray(j.models).length) {
+      testModel.value = asRecord(asArray(j.models)[0]).name
     }
     if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.
@@ -646,13 +652,14 @@ async function act(action) {
 
 // ── resident model unload ────────────────────────────────────────────────────
 async function unload(m) {
-  if (!confirm(t('ollama.confirm_unload', { name: finiteText(m.name) }))) return
+  const row = asRecord(m)
+  if (!confirm(t('ollama.confirm_unload', { name: finiteText(row.name) }))) return
   const generation = loadGeneration
   unloading.value = true
   try {
-    await unloadOllamaModel(m.name)
+    await unloadOllamaModel(row.name)
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('ollama.unloaded', { name: finiteText(m.name) }))
+    toast('✅ ' + t('ollama.unloaded', { name: finiteText(row.name) }))
     void refresh(true)
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -664,7 +671,7 @@ async function unload(m) {
 
 // ── typed-confirm delete ─────────────────────────────────────────────────────
 function openDelete(m) {
-  deleteTarget.value = m
+  deleteTarget.value = asRecord(m)
   deleteText.value = ''
 }
 function closeDelete() {
@@ -672,8 +679,8 @@ function closeDelete() {
   deleteText.value = ''
 }
 async function doDelete() {
-  const target = deleteTarget.value
-  if (!target || deleteText.value.trim() !== target.name) return
+  const target = asRecord(deleteTarget.value)
+  if (!target.name || deleteText.value.trim() !== target.name) return
   const generation = loadGeneration
   deleting.value = true
   try {
