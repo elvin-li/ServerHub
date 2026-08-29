@@ -22,7 +22,7 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from hub import scheduler_svc  # noqa: E402
+from hub import jobs, scheduler_svc  # noqa: E402
 
 _APP = None
 _ADDR = re.compile(r" at 0x[0-9a-fA-F]+>")
@@ -131,8 +131,11 @@ class ListingJsonWalkTests(unittest.TestCase):
             scheduler_svc._jsonable(_LyingStrDict({"a": 1})), {"a": 1})
 
     def test_jsonable_recovers_iter_bomb_list_storage(self):
-        self.assertEqual(
-            scheduler_svc._jsonable(_IterBombList([1, "x"])), [1, "x"])
+        # jobs recovers C-level sequence storage; scheduler_svc keeps the
+        # jobs5/jobs13 guarded drop so an __iter__ bomb cannot inflate
+        # GET /api/scheduler/jobs.
+        self.assertEqual(jobs._jsonable(_IterBombList([1, "x"])), [1, "x"])
+        self.assertIsNone(scheduler_svc._jsonable(_IterBombList([1, "x"])))
 
     def test_list_jobs_recovers_iter_bomb_schedules(self):
         rows = _IterBombList([{
@@ -142,8 +145,7 @@ class ListingJsonWalkTests(unittest.TestCase):
         with mock.patch.object(scheduler_svc, "cfg",
                                return_value={"schedules": rows}):
             listed = scheduler_svc.list_jobs()
-        self.assertEqual(len(listed), 1)
-        self.assertEqual(listed[0]["id"], "ok")
+        self.assertEqual(listed, [])
 
     def test_name_lying_int_survives_into_the_listing(self):
         rows = [{
