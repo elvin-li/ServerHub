@@ -99,7 +99,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -295,7 +295,7 @@ function onSocketMessage(event) {
     return
   }
   try {
-    const message = JSON.parse(event.data)
+    const message = asRecord(JSON.parse(event.data))
     if (message.type === 'ready') {
       clearConnectTimer()
       connected.value = true

@@ -610,7 +610,7 @@ import {
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, withUnit } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -1003,7 +1003,7 @@ async function saveSettings() {
     return
   }
   const patch = {}
-  for (const [key, value] of Object.entries(cfgForm.value)) {
+  for (const [key, value] of Object.entries(asRecord(cfgForm.value))) {
     if (key === 'wstunnel_enabled') {
       patch[key] = Boolean(value)
       continue

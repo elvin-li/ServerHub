@@ -1022,7 +1022,7 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
         if (!trimmed) continue
         let chunk
         try {
-          chunk = JSON.parse(trimmed)
+          chunk = asRecord(JSON.parse(trimmed))
         } catch {
           continue
         }
