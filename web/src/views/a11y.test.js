@@ -502,7 +502,7 @@ describe('dashboard and storage surface leftovers', () => {
     const toggle = mainArray.match(/<button[^>]*v-if="asArray\(m\.smart\?\.attrs\)\.length"[\s\S]*?>/)
     expect(toggle, 'SMART attribute expander').toBeTruthy()
     expect(toggle[0]).toMatch(/:aria-label="t\('main_extra\.smart_attrs_toggle'/)
-    expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(m\.id\)"/)
+    expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(asRecord\(m\)\.id\)"/)
   })
 
   it('announces the MainArray SMART overview load failure inside its dialog', () => {
