@@ -86,6 +86,32 @@ class ServiceAlertDebounceTests(unittest.TestCase):
         self.assertEqual([a["event"] for a in emitted], ["problem"])
         self.assertEqual(emitted[0]["level"], "down")
 
+    def test_a_vanished_down_row_resolves(self):
+        """Hiding/unloading a crash-loop must close the journal, or Recent alerts stay red."""
+        emitted, state = _run(
+            {"homebrew.mxcl.cloudflared": "down", "immich_server": "ok"},
+            _svc("immich_server", "ok", "Up"),
+        )
+        self.assertEqual([a["event"] for a in emitted], ["resolved"])
+        self.assertEqual(emitted[0]["id"], "homebrew.mxcl.cloudflared")
+        self.assertNotIn("homebrew.mxcl.cloudflared", state)
+
+    def test_a_smart_warn_is_not_resolved_as_a_vanished_service(self):
+        emitted, state = _run(
+            {"smart:disk0": "warn", "immich_server": "ok"},
+            _svc("immich_server", "ok", "Up"),
+        )
+        self.assertEqual(emitted, [])
+        self.assertNotIn("smart:disk0", state)
+
+    def test_an_ok_row_vanishing_for_one_sweep_is_silent(self):
+        emitted, state = _run(
+            {"local.onedrive-share": "ok"},
+            {},
+        )
+        self.assertEqual(emitted, [])
+        self.assertNotIn("local.onedrive-share", state)
+
     def test_junk_service_rows_do_not_abort_the_sweep(self):
         emitted, state = _run(
             {"ok-svc": "ok"},

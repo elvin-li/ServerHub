@@ -23,12 +23,15 @@ from hub import apps_manage_svc
 from hub.launchd_cache import Listing
 
 
-def write_agent(agents: Path, label: str, program: str = "/usr/bin/true") -> Path:
+def write_agent(agents: Path, label: str, program: str = "/usr/bin/true", extra: dict | None = None) -> Path:
     path = agents / f"{label}.plist"
-    path.write_bytes(plistlib.dumps({
+    payload = {
         "Label": label,
         "ProgramArguments": [program],
-    }))
+    }
+    if extra:
+        payload.update(extra)
+    path.write_bytes(plistlib.dumps(payload))
     return path
 
 
@@ -125,6 +128,54 @@ class LaunchdRunStateTests(unittest.TestCase):
         row = self.rows()["com.example.gone"]
         self.assertEqual(row["state"], "down")
         self.assertEqual(row["status_text"], "Not loaded")
+
+
+class LaunchdScheduledAndHiddenTests(unittest.TestCase):
+    """StartInterval agents have no PID between ticks; hide must match Services."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.agents = Path(self.tmp.name) / "LaunchAgents"
+        self.agents.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+        write_agent(self.agents, "local.immich-keepalive", extra={"StartInterval": 120})
+        write_agent(self.agents, "local.cloudflare-ddns", extra={"StartCalendarInterval": {"Hour": 4}})
+        write_agent(self.agents, "local.cloudflared-zaoxue")
+        listing = Listing({
+            "local.immich-keepalive": ("-", "0"),
+            "local.cloudflare-ddns": ("-", "1"),
+            "local.cloudflared-zaoxue": ("-", "0"),
+        })
+
+        def override(label):
+            if label == "local.cloudflared-zaoxue":
+                return {"hide": True, "name": "Cloudflare Tunnel（早学）"}
+            return {}
+
+        for patched in (
+            patch("hub.paths.AGENTS_DIR", self.agents),
+            patch("hub.launchd_cache.listing", return_value=listing),
+            patch("hub.config.override", side_effect=override),
+        ):
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    def rows(self) -> dict[str, dict]:
+        return {i["source_id"]: i for i in apps_manage_svc._launchd_apps()}
+
+    def test_interval_job_is_ok_while_idle(self):
+        row = self.rows()["local.immich-keepalive"]
+        self.assertEqual(row["state"], "ok")
+        self.assertEqual(row["status_text"], "Loaded · scheduled task")
+
+    def test_calendar_job_last_exit_is_not_down(self):
+        row = self.rows()["local.cloudflare-ddns"]
+        self.assertEqual(row["state"], "ok")
+        self.assertIn("scheduled task", row["status_text"])
+        self.assertIn("last exit code 1", row["status_text"])
+
+    def test_hidden_agents_are_omitted(self):
+        self.assertNotIn("local.cloudflared-zaoxue", self.rows())
 
 
 class LaunchdActionTests(unittest.TestCase):

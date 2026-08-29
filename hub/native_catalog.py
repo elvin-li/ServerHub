@@ -826,6 +826,13 @@ def list_native_apps(force: bool = False) -> list[dict]:
         if app.get("service") and pkg and pkg in service_states:
             st = service_states[pkg]
             running = st in ("started", "running")
+        # Homebrew Redis is not a daemon this host runs.  `running is False`
+        # painted Apps "Redis (brew)" red next to Immich even though Valkey
+        # owns :6379.  None = installed, not a required service.
+        if app.get("id") == "native-redis" and running is not True:
+            running = None
+        if app.get("id") == "native-ollama" and running is not True and ollama_api_already_served():
+            running = True
         # LaunchAgent / process-based
         label = app.get("launchd_label")
         if running is None and label:
@@ -1488,8 +1495,16 @@ def _install_native(app: dict, app_id: str) -> dict:
             if app_id == "native-ollama" and ollama_api_already_served():
                 logs.append("skipped brew services start: :11434 is already served")
                 skip_brew_service = True
-            if app_id == "native-redis" and redis_port_already_served():
+            if app_id == "native-redis":
+                # Always skip: even with :6379 free, KeepAlive crash-loops on
+                # broken loadmodule paths and then fights Immich Valkey.
+                skip_brew_service = True
                 logs.append("skipped brew services start: :6379 is already served")
+            # Bare `brew services start cloudflared` has no token/config, so
+            # KeepAlive crash-loops on exit 1 and paints the Services page red.
+            # The real tunnel is local.cloudflared-tunnel (token file).
+            if app_id == "native-cloudflared":
+                logs.append("skipped brew services start: use local.cloudflared-tunnel")
                 skip_brew_service = True
             if not skip_brew_service:
                 r2 = _run([BREW, "services", "start", pkg], timeout=120)

@@ -91,8 +91,17 @@ def _brew_env() -> dict:
     return env
 
 
-# nginx is run only via local.onedrive-nginx (custom conf); hide idle brew formula
-_HIDE_BREW = {"nginx"}
+# Formulae replaced by a custom LaunchAgent / container on this host.
+# `brew services` still lists them as none/error, which paints the Tools page red.
+# nginx → local.system-nginx; cloudflared → local.cloudflared-tunnel;
+# redis → Immich Valkey on :6379 (Homebrew Redis KeepAlive crash-loops EADDRINUSE);
+# ollama → com.kiro.ollama on :11434.
+_HIDE_BREW = {"nginx", "cloudflared", "ollama"}
+# Starting these from the Tools API recopies a KeepAlive plist and the dummy
+# agent crash-loops.  redis is also dummy here but tests call
+# service_action("redis", ...) for vanished-brew leftovers, so redis is
+# pinned by local.pin-dummy-brew instead of this gate.
+_BLOCK_BREW_START = frozenset({"cloudflared", "nginx", "ollama"})
 
 
 def _brew_present() -> bool:
@@ -182,6 +191,14 @@ def service_action(name: str, action: str) -> dict:
     # service on the host instead of one.  The shared guard anchors the first
     # character to an alphanumeric.
     name = cli_args.require_positional(name, label="service name")
+    if name in _BLOCK_BREW_START and action in ("start", "restart"):
+        return {
+            "ok": False,
+            "message": (
+                f"{name} is replaced by a custom LaunchAgent on this host; "
+                f"do not brew services {action} {name}"
+            ),
+        }
     if not _brew_present():
         raise api_error("brew.not_found")
     try:

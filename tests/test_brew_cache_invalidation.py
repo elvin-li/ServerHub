@@ -418,6 +418,18 @@ class BrewListTypingTests(unittest.TestCase):
         self.assertEqual(by_id["syncthing"]["status"], "true")
         self.assertNotIn("nginx", by_id)
 
+    def test_dummy_cloudflared_start_is_refused(self):
+        from hub import brew_svc
+
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch.object(brew_svc, "run_capped") as run,
+        ):
+            result = brew_svc.service_action("cloudflared", "start")
+        run.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertIn("custom LaunchAgent", result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
