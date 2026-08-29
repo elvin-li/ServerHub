@@ -90,13 +90,13 @@
         <p class="hint-line">{{ t('services.adopt_hint') }}</p>
         <div v-if="sig" class="hint-line">
           {{ t('services.identified_as', {
-            name: finiteText(sig.name),
-            category: finiteText(sig.category),
+            name: finiteText(asRecord(sig).name),
+            category: finiteText(asRecord(sig).category),
           }) }}
-          <span v-if="sig.confidence !== 'high'">({{ t('services.identified_guess') }})</span>
+          <span v-if="asRecord(sig).confidence !== 'high'">({{ t('services.identified_guess') }})</span>
         </div>
-        <div v-if="adoptForm.control_via === 'brew'" class="hint-line">
-          {{ t('services.adopt_control_brew', { formula: finiteText(adoptForm.formula) }) }}
+        <div v-if="asRecord(adoptForm).control_via === 'brew'" class="hint-line">
+          {{ t('services.adopt_control_brew', { formula: finiteText(asRecord(adoptForm).formula) }) }}
         </div>
         <div v-else class="hint-line">{{ t('services.adopt_control_none') }}</div>
         <div class="form-grid adopt-form">
@@ -124,7 +124,7 @@
           {{ t('services.adopt_remember') }}
         </label>
         <p class="hint-line">{{ t('services.adopt_remember_hint') }}</p>
-        <div class="mono sub-id" style="margin-top:4px">id: {{ finiteText(adoptForm.id) }}</div>
+        <div class="mono sub-id" style="margin-top:4px">id: {{ finiteText(asRecord(adoptForm).id) }}</div>
         <div class="drawer-actions" style="margin-top:8px">
           <button type="button" class="primary" :disabled="busy" @click="submitAdopt">{{ t('services.adopt') }}</button>
         </div>

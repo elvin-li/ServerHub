@@ -242,10 +242,10 @@ async function send(action, preset = '') {
     }
     pending.pending = false
     pending.content = finiteText(displayText(out, query), '') || t('assistant.empty_reply')
-    pending.panels = asArray(out.panels).map((p) => asRecord(p))
-    if (out.used_llm && out.model) {
-      pending.meta = t('assistant.via_model', { model: finiteText(out.model) })
-    } else if (out.kind === 'brief' || out.kind === 'answer') {
+    pending.panels = asArray(asRecord(out).panels).map((p) => asRecord(p))
+    if (asRecord(out).used_llm && asRecord(out).model) {
+      pending.meta = t('assistant.via_model', { model: finiteText(asRecord(out).model) })
+    } else if (asRecord(out).kind === 'brief' || asRecord(out).kind === 'answer') {
       pending.meta = t('assistant.via_template')
     }
   } catch (err) {
