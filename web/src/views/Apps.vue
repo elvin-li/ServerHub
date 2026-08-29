@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, asArray, asRecord } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -971,33 +971,41 @@ const jobMap = computed(() => {
   return m
 })
 
+function fieldText(value) {
+  const text = finiteText(value, '')
+  return typeof text === 'string' ? text : ''
+}
+
 const filteredManaged = computed(() => {
-  let list = asArray(managed.value.items)
-  if (mkind.value !== 'all') list = list.filter(x => x.kind === mkind.value)
-  const s = mq.value.trim().toLowerCase()
+  let list = asArray(asRecord(managed.value).items)
+  if (mkind.value !== 'all') list = list.filter(x => asRecord(x).kind === mkind.value)
+  const rawQ = mq.value
+  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
   if (s) {
-    list = list.filter(x =>
-      (x.name || '').toLowerCase().includes(s)
-      || (x.id || '').toLowerCase().includes(s)
-      || (x.path || '').toLowerCase().includes(s)
-      || (x.package || '').toLowerCase().includes(s)
-      || (x.ports_summary || '').toLowerCase().includes(s)
-    )
+    list = list.filter(x => {
+      const rec = asRecord(x)
+      return fieldText(rec.name).toLowerCase().includes(s)
+        || fieldText(rec.id).toLowerCase().includes(s)
+        || fieldText(rec.path).toLowerCase().includes(s)
+        || fieldText(rec.package).toLowerCase().includes(s)
+        || fieldText(rec.ports_summary).toLowerCase().includes(s)
+    })
   }
   return list
 })
 
 const autostartGroups = computed(() => {
-  const g = asArray(autostart.value.groups)
+  const bag = asRecord(autostart.value)
+  const g = asArray(bag.groups)
   if (g.length) return g
-  const set = new Set(asArray(autostart.value.items).map(i => i.group || t('common.other')))
+  const set = new Set(asArray(bag.items).map(i => asRecord(i).group || t('common.other')))
   return [...set]
 })
 
 const autostartByGroup = computed(() => {
   const m = {}
-  for (const it of asArray(autostart.value.items)) {
-    const g = it.group || t('common.other')
+  for (const it of asArray(asRecord(autostart.value).items)) {
+    const g = asRecord(it).group || t('common.other')
     ;(m[g] || (m[g] = [])).push(it)
   }
   return m
@@ -1052,19 +1060,20 @@ function canAct(it, act) {
 
 function isScreenSharing(it) {
   if (!it) return false
-  const id = `${it.id || ''} ${it.source_id || ''}`
-  const name = (it.name || '').toLowerCase()
+  const rec = asRecord(it)
+  const id = `${fieldText(rec.id)} ${fieldText(rec.source_id)}`
+  const name = fieldText(rec.name).toLowerCase()
   return id.includes('screen-sharing')
     || name.includes('屏幕共享') // cjk-input: matches the service name macOS reports in a zh locale
     || name.includes('screen sharing')
-    || (it.url || '').startsWith('vnc://')
-    || (it.url_hint || '').startsWith('vnc://')
-    || it.open_protocol === 'vnc'
+    || fieldText(rec.url).startsWith('vnc://')
+    || fieldText(rec.url_hint).startsWith('vnc://')
+    || rec.open_protocol === 'vnc'
 }
 
 function browseHost() {
   return finiteText(window.location.hostname, '')
-    || finiteText(managed.value?.host_ip, '')
+    || finiteText(asRecord(managed.value).host_ip, '')
     || 'localhost'
 }
 
@@ -1075,19 +1084,20 @@ function openUrl(it) {
   if (isScreenSharing(it)) {
     return `vnc://${browseHost()}`
   }
-  const rawUrl = it.url || it.url_hint || ''
+  const rec = asRecord(it)
+  const rawUrl = fieldText(rec.url) || fieldText(rec.url_hint)
   if (rawUrl) {
     const host = browseHost()
     return rawUrl.replaceAll('{{HOST}}', host).replaceAll('{{HOST_IP}}', host)
   }
-  const ps = it.ports_summary || ''
+  const ps = fieldText(rec.ports_summary)
   const m = ps.match(/(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]):(\d+)->/) || ps.match(/^(\d{2,5})$/)
   if (m) {
     return `http://${browseHost()}:${m[1]}`
   }
   // native ports list like "8125"
-  if (it.ports_summary && /^\d{2,5}/.test(it.ports_summary.trim())) {
-    const port = it.ports_summary.trim().split(/[,\s]/)[0]
+  if (ps && /^\d{2,5}/.test(ps.trim())) {
+    const port = ps.trim().split(/[,\s]/)[0]
     if (!['1883', '5432', '6379', '3306', '5900', '9100'].includes(port)) {
       return `http://${browseHost()}:${port}`
     }
@@ -1107,9 +1117,9 @@ function catalogOpenUrl(tpl) {
   const ut = finiteText(tpl.url_template, '')
   if (!ut) {
     // ports-only fallback for web-ish services
-    const ports = asArray(tpl.ports)
+    const ports = asArray(asRecord(tpl).ports)
     for (const p of ports) {
-      const ps = String(p).split('/')[0]
+      const ps = fieldText(p).split('/')[0]
       if (/^\d+$/.test(ps) && !['1883', '5432', '6379', '3306', '5900', '9100', '22000', '53'].includes(ps)) {
         const host = finiteText(window.location.hostname, '') || 'localhost'
         return `http://${host}:${ps}`
@@ -1196,7 +1206,7 @@ function goManage(tpl) {
     const id = tpl.kind === 'native'
       ? `native:${tpl.id}`
       : `docker:${tpl.id}`
-    const hit = asArray(managed.value.items).find(x => x.id === id || x.source_id === tpl.id)
+    const hit = asArray(asRecord(managed.value).items).find(x => asRecord(x).id === id || asRecord(x).source_id === tpl.id)
     if (hit) openDetail(hit)
   }, 400)
 }
@@ -1207,9 +1217,13 @@ async function loadManaged(force = false) {
   const generation = ++managedGeneration
   loading.value = true
   try {
-    const next = await getManagedApps(force)
+    const payload = asRecord(await getManagedApps(force))
     if (generation !== managedGeneration) return
-    managed.value = next
+    managed.value = {
+      ...payload,
+      items: asArray(payload.items),
+      counts: payload.counts == null ? null : asRecord(payload.counts),
+    }
     managedError.value = ''
   } catch (e) {
     if (generation !== managedGeneration) return false
@@ -1230,12 +1244,13 @@ async function loadManaged(force = false) {
 }
 
 function softText(j, fallbackKey = 'common.fail') {
-  if (j?.code) {
-    const key = `err.${j.code}`
-    const translated = t(key, j.params || {})
+  const rec = asRecord(j)
+  if (rec.code) {
+    const key = `err.${rec.code}`
+    const translated = t(key, asRecord(rec.params))
     if (translated !== key) return translated
   }
-  return finiteText(j?.message, '') || t(fallbackKey)
+  return finiteText(rec.message, '') || t(fallbackKey)
 }
 
 let appsDataGeneration = 0
@@ -1249,9 +1264,14 @@ async function loadAutostart(force = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
-    const next = await getAutostartApps(force)
+    const payload = asRecord(await getAutostartApps(force))
     if (generation !== appsDataGeneration) return
-    autostart.value = next
+    autostart.value = {
+      ...payload,
+      items: asArray(payload.items),
+      groups: asArray(payload.groups),
+      counts: payload.counts == null ? null : asRecord(payload.counts),
+    }
     autostartError.value = ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
@@ -1286,7 +1306,7 @@ async function setAutostartItem(it, enabled) {
 
 async function setDockerPolicy(it, policy) {
   if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(it.name, '') || finiteText(it.id), policy: finiteText(policy) }))) return
-  const name = (it.id || '').replace(/^docker-ctr:/, '').replace(/^docker:/, '')
+  const name = fieldText(it.id).replace(/^docker-ctr:/, '').replace(/^docker:/, '')
   const generation = appsDataGeneration
   busy.value = true
   try {
@@ -1358,7 +1378,7 @@ async function openDetail(it) {
   const generation = ++detailGeneration
   busy.value = true
   try {
-    const d = await getManagedAppDetail(it.id)
+    const d = asRecord(await getManagedAppDetail(it.id))
     if (generation !== detailGeneration) return
     // merge list-level autostart flags
     d.autostart = it.autostart
@@ -1401,9 +1421,9 @@ async function cfRefresh() {
   const generation = appsDataGeneration
   cfBusy.value = true
   try {
-    const status = await getCloudflareStatus()
+    const status = asRecord(await getCloudflareStatus())
     if (!stillOnApps(generation)) return
-    cfStatus.value = status
+    cfStatus.value = { ...status, tunnels: asArray(status.tunnels) }
     if (status.active_tunnel && !cfSelectedTunnel.value) {
       cfSelectedTunnel.value = status.active_tunnel
     }
@@ -1627,7 +1647,7 @@ async function loadCredential(app, generation = detailGeneration) {
     notes: '',
   }
   try {
-    const result = await getAppCredential(app.id)
+    const result = asRecord(await getAppCredential(app.id))
     if (generation !== detailGeneration) return
     credential.value = result
     credentialForm.value = {
@@ -1730,9 +1750,12 @@ async function openManagedLogs(it) {
   logTitle.value = (finiteText(it.name, '') || finiteText(it.id)) + ' · logs'
   logText.value = t('common.loading')
   try {
-    const result = await getManagedAppLogs(it.id, 150)
+    const result = asRecord(await getManagedAppLogs(it.id, 150))
     if (generation !== managedLogGeneration) return
-    logText.value = finiteText(result.log, '') || finiteText(result.message)
+    const logBody = typeof result.log === 'string' || typeof result.log === 'number'
+      ? finiteText(result.log, '')
+      : jsonText(result.log, '')
+    logText.value = logBody || finiteText(result.message)
   } catch (e) {
     if (generation !== managedLogGeneration) return
     logText.value = finiteText(e.message, '')
@@ -1789,29 +1812,34 @@ async function doManagedUninstall(it) {
 
 const quickCats = computed(() => {
   const prefer = ['all', 'native', 'docker', 'featured', 'network', 'remote', 'media', 'files', 'ops', 'monitor']
-  const map = Object.fromEntries(asArray(categories.value).map(c => [c.id, c]))
+  const map = Object.fromEntries(asArray(categories.value).map((c) => {
+    const rec = asRecord(c)
+    return [rec.id, rec]
+  }))
   return prefer.map(id => map[id] || { id, label: id }).filter(Boolean)
 })
 
 const filtered = computed(() => {
   let list = asArray(catalog.value)
-  if (cat.value === 'featured') list = list.filter(x => x.featured)
-  else if (cat.value === 'native') list = list.filter(x => x.kind === 'native')
-  else if (cat.value === 'docker') list = list.filter(x => (x.kind || 'docker') === 'docker')
-  else if (cat.value && cat.value !== 'all') list = list.filter(x => x.category === cat.value)
-  if (onlyFeatured.value) list = list.filter(x => x.featured)
-  if (hideInstalled.value) list = list.filter(x => !x.installed)
-  const s = q.value.trim().toLowerCase()
+  if (cat.value === 'featured') list = list.filter(x => asRecord(x).featured)
+  else if (cat.value === 'native') list = list.filter(x => asRecord(x).kind === 'native')
+  else if (cat.value === 'docker') list = list.filter(x => (asRecord(x).kind || 'docker') === 'docker')
+  else if (cat.value && cat.value !== 'all') list = list.filter(x => asRecord(x).category === cat.value)
+  if (onlyFeatured.value) list = list.filter(x => asRecord(x).featured)
+  if (hideInstalled.value) list = list.filter(x => !asRecord(x).installed)
+  const rawQ = q.value
+  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
   if (s) {
-    list = list.filter(x =>
-      (x.name || '').toLowerCase().includes(s)
-      || (x.desc || '').toLowerCase().includes(s)
-      || (x.id || '').toLowerCase().includes(s)
-      || (x.package || '').toLowerCase().includes(s)
-      || asArray(x.tags).some(tg => String(tg).toLowerCase().includes(s))
-      || (x.category || '').toLowerCase().includes(s)
-      || (x.kind || '').toLowerCase().includes(s)
-    )
+    list = list.filter(x => {
+      const rec = asRecord(x)
+      return fieldText(rec.name).toLowerCase().includes(s)
+        || fieldText(rec.desc).toLowerCase().includes(s)
+        || fieldText(rec.id).toLowerCase().includes(s)
+        || fieldText(rec.package).toLowerCase().includes(s)
+        || asArray(rec.tags).some(tg => fieldText(tg).toLowerCase().includes(s))
+        || fieldText(rec.category).toLowerCase().includes(s)
+        || fieldText(rec.kind).toLowerCase().includes(s)
+    })
   }
   return list
 })
@@ -1851,7 +1879,7 @@ async function refresh(manual = false) {
   const generation = appsDataGeneration
   loading.value = true
   try {
-    const d = await getStacks()
+    const d = asRecord(await getStacks())
     if (generation !== appsDataGeneration) return
     stacks.value = asArray(d.stacks)
     jobs.value = asArray(d.jobs)
@@ -1869,11 +1897,12 @@ async function refresh(manual = false) {
 async function loadCatalog() {
   const generation = appsDataGeneration
   try {
-    const d = await getCatalog()
+    const d = asRecord(await getCatalog())
     if (generation !== appsDataGeneration) return
     catalog.value = asArray(d.templates)
     overview.value = d
-    if (d.categories?.length) categories.value = asArray(d.categories)
+    const cats = asArray(d.categories)
+    if (cats.length) categories.value = cats
     catalogError.value = ''
   } catch (e) {
     if (generation !== appsDataGeneration) return
@@ -1890,7 +1919,10 @@ function openInstall(tpl) {
   installUrl.value = ''
   installCreds.value = ''
   const vars = {}
-  for (const v of asArray(tpl.vars)) vars[v.name] = v.default || ''
+  for (const v of asArray(asRecord(tpl).vars)) {
+    const rec = asRecord(v)
+    if (rec.name) vars[rec.name] = rec.default || ''
+  }
   installVars.value = vars
 }
 
@@ -1908,7 +1940,7 @@ function summaryLine(r) {
 async function loadRemote() {
   const generation = appsDataGeneration
   try {
-    const next = await getCatalogRemote()
+    const next = asRecord(await getCatalogRemote())
     if (generation !== appsDataGeneration) return
     remoteInfo.value = next
     remoteError.value = ''
@@ -1955,7 +1987,7 @@ async function checkRemoteUpdates() {
   }
   remoteBusy.value = true
   try {
-    const result = await checkCatalogRemoteUpdates()
+    const result = asRecord(await checkCatalogRemoteUpdates())
     if (!stillOnApps(generation)) return
     remoteResult.value = result
     toast('✅ ' + summaryLine(result))
@@ -2009,7 +2041,7 @@ async function doInstall() {
   installUrl.value = ''
   installCreds.value = ''
   try {
-    const r = await installCatalog(installTpl.value.id, installVars.value)
+    const r = asRecord(await installCatalog(installTpl.value.id, installVars.value))
     if (!stillOnApps(generation)) return
     installLog.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n→ ${finiteText(r.path)}` : '')
     if (finiteText(r.notes, '')) installLog.value += `\n\n${finiteText(r.notes)}`
@@ -2110,7 +2142,7 @@ function openJob(jobId, title) {
       return
     }
     try {
-      const j = await getStackJob(curJob.value)
+      const j = asRecord(await getStackJob(curJob.value))
       if (generation !== jobPollGeneration) return
       logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : '')
       if (!j.running) {

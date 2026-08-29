@@ -160,6 +160,38 @@ describe('Apps managed inventory filter', () => {
     expect(count.text()).toBe('1 / 1')
     wrapper.unmount()
   })
+
+  it('does not throw when managed items is a leftover mapping', async () => {
+    api.getManagedApps.mockResolvedValue({ items: { 0: MANAGED_ITEM }, counts: [1] })
+    const wrapper = mountApps()
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('apps.managed_empty')
+    wrapper.vm.mq = 'redis'
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('apps.managed_empty')
+    wrapper.unmount()
+  })
+
+  it('does not throw when the managed payload is leftover JSON null', async () => {
+    api.getManagedApps.mockResolvedValue(null)
+    const wrapper = mountApps()
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('apps.managed_empty')
+    wrapper.unmount()
+  })
+
+  it('does not throw when a managed name is leftover JSON number during search', async () => {
+    api.getManagedApps.mockResolvedValue({
+      items: [{ ...MANAGED_ITEM, name: 6379, id: 12, ports_summary: 6379 }],
+      counts: null,
+    })
+    const wrapper = mountApps()
+    await flushPromises()
+    wrapper.vm.mq = 'redis'
+    await flushPromises()
+    expect(wrapper.find('tbody').text()).toContain('common.no_match')
+    wrapper.unmount()
+  })
 })
 
 describe('Apps catalog filter', () => {

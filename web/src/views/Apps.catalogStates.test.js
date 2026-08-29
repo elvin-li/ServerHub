@@ -186,4 +186,31 @@ describe('failed refresh over stale rows', () => {
     expect(wrapper.findAll('.app-card').length).toBe(0)
     wrapper.unmount()
   })
+
+  it('does not throw when the catalog payload is leftover JSON null', async () => {
+    api.getCatalog.mockResolvedValue(null)
+    const wrapper = mountApps()
+    await flushPromises()
+    await openCatalog(wrapper)
+    expect(wrapper.findAll('.app-card').length).toBe(0)
+    expect(wrapper.find('.placeholder').text()).toContain('apps.empty')
+    wrapper.unmount()
+  })
+
+  it('does not throw when a template name is leftover JSON number during search', async () => {
+    api.getCatalog.mockResolvedValue({
+      templates: [{ ...TEMPLATE, name: 8080, tags: { 0: 'media' } }],
+      categories: [],
+      counts: [],
+      total: 1,
+      installed: 0,
+    })
+    const wrapper = mountApps()
+    await flushPromises()
+    await openCatalog(wrapper)
+    await wrapper.find('input.search').setValue('jelly')
+    await flushPromises()
+    expect(wrapper.find('.placeholder').exists()).toBe(true)
+    wrapper.unmount()
+  })
 })
