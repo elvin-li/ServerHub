@@ -18,7 +18,7 @@
         <label v-if="target === 'container'" class="tsel">
           <span>{{ t('terminal.container') }}</span>
           <select v-if="asArray(containers).length" v-model="container" :disabled="connected">
-            <option v-for="c in asArray(containers)" :key="c.id" :value="c.id">{{ finiteText(c.label, '') || finiteText(c.id) }}</option>
+            <option v-for="c in asArray(containers)" :key="finiteText(asRecord(c).id)" :value="asRecord(c).id">{{ finiteText(asRecord(c).label, '') || finiteText(asRecord(c).id) }}</option>
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is
@@ -143,14 +143,14 @@ const canOpen = computed(() => {
 })
 const targetLabel = computed(() => {
   if (target.value === 'host') return t('terminal.target_host')
-  const item = containers.value.find(c => c.id === container.value)
-  return finiteText(item?.label, '') || finiteText(container.value, '') || t('terminal.target_container')
+  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => c.id === container.value))
+  return finiteText(item.label, '') || finiteText(container.value, '') || t('terminal.target_container')
 })
 
 watch(container, (id) => {
   if (!pageAlive) return
-  const item = containers.value.find(c => c.id === id)
-  if (item?.shell) shell.value = item.shell
+  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => c.id === id))
+  if (item.shell) shell.value = item.shell
 })
 
 async function load() {
@@ -167,15 +167,16 @@ async function load() {
   try {
     const response = await getContainers(false)
     if (!pageAlive) return
-    containers.value = asArray(response.containers)
-      .filter(c => c.state === 'ok' || (c.status || '').startsWith('Up'))
-      .map(c => ({
+    containers.value = asArray(asRecord(response).containers)
+      .map((c) => asRecord(c))
+      .filter((c) => c.state === 'ok' || finiteText(c.status, '').startsWith('Up'))
+      .map((c) => asRecord({
         id: c.raw_name || c.id || c.name,
         label: c.name || c.raw_name,
         shell: c.shell || '/bin/sh',
       }))
-      .filter(c => c.id)
-    if (!container.value && asArray(containers.value).length) container.value = asArray(containers.value)[0].id
+      .filter((c) => asRecord(c).id)
+    if (!container.value && asArray(containers.value).length) container.value = asRecord(asArray(containers.value)[0]).id
     containerListError.value = ''
   } catch (error) {
     // Container discovery is optional -- the template falls back to a free-text
