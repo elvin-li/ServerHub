@@ -930,7 +930,7 @@ describe('logs and tools surface leftovers', () => {
     // were on screen a failed re-load (level/range change, Refresh) rendered
     // no banner at all — its only trace was a four-second toast. The
     // behavioural half lives in Tools.announcements.test.js.
-    expect(tools).toMatch(/<LoadFailure v-if="tabError\.syslog"[\s\S]{0,600}v-if="\(syslog\.lines\|\|\[\]\)\.length"/)
+    expect(tools).toMatch(/<LoadFailure v-if="tabError\.syslog"[\s\S]{0,600}v-if="asArray\(syslog\.lines\)\.length"/)
     expect(tools).not.toMatch(/<LoadFailure v-else-if="tabError\.syslog"/)
     // The syslog and ports loaders are wired straight to toolbar controls that
     // stay clickable above the banner, so a direct retry that worked must also
@@ -3157,7 +3157,7 @@ describe('leftover Infinity interpolations', () => {
     expect(tools).not.toMatch(/\{\{\s*diagMsg\s*\}\}/)
     expect(tools).toMatch(/finiteText\(diagMsg\)/)
     expect(tools).not.toMatch(/finiteText\(\(updates\.macos\?\.lines\|\|\[\]\)\.join\('\\n'\)/)
-    expect(tools).toMatch(/\(updates\.macos\?\.lines\|\|\[\]\)\.map\(n => finiteText\(n, ''\)\)/)
+    expect(tools).toMatch(/asArray\(updates\.macos\?\.lines\)\.map\(n => finiteText\(n, ''\)\)/)
     expect(tools).not.toMatch(/\{\{\s*dnsOut\s*\}\}/)
     expect(tools).toMatch(/finiteText\(dnsOut\)/)
     expect(tools).not.toMatch(/what: labels\[what\] \|\| what/)
