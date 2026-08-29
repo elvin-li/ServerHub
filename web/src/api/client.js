@@ -1075,4 +1075,10 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
 export const getAssistantCatalog = (locale = 'zh-CN') =>
   json(`/api/assistant/catalog?locale=${encodeURIComponent(locale)}`)
 export const askAssistant = (query, { locale = 'zh-CN', action = 'auto', history = [], path = '', signal } = {}) =>
-  json('/api/assistant/ask', { ...jsonBody('POST', { query, locale, action, history, path }), signal }, OLLAMA_TEST_TIMEOUT)
+  json('/api/assistant/ask', { ...jsonBody('POST', {
+    query,
+    locale,
+    action,
+    history: asArray(history).map((turn) => asRecord(turn)),
+    path,
+  }), signal }, OLLAMA_TEST_TIMEOUT)

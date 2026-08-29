@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { asArray, finiteN, finiteText } from './lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -871,8 +871,11 @@ const cmdResults = computed(() => {
   }
   if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
-    .filter((p) => !seen.has(p.path))
-    .map((p) => ({ type: 'nav', to: p.path, title: p.title, labelKey: '' }))
+    .filter((p) => !seen.has(asRecord(p).path))
+    .map((p) => {
+      const row = asRecord(p)
+      return { type: 'nav', to: row.path, title: row.title, labelKey: '' }
+    })
   return [...fromNav, ...fromCatalog].slice(0, 8)
 })
 const cmdFlat = computed(() => {
@@ -900,8 +903,9 @@ function openAssistant(seed = '', action = '') {
 }
 function onAssistEvent(event) {
   if (!authState.canManage) return
-  const action = event.detail?.action || ''
-  openAssistant(event.detail?.query || '', action)
+  const detail = asRecord(event.detail)
+  const action = finiteText(detail.action, '')
+  openAssistant(finiteText(detail.query, ''), action)
 }
 function loadAssistCatalog() {
   if (!authState.canManage) {
@@ -912,7 +916,7 @@ function loadAssistCatalog() {
   getAssistantCatalog(locale.value)
     .then((body) => {
       if (!stillOnShell(generation) || !authState.canManage) return
-      assistCatalog.value = asArray(body.panels)
+      assistCatalog.value = asArray(asRecord(body).panels)
     })
     .catch(() => {
       if (!stillOnShell(generation)) return

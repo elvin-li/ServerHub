@@ -1327,12 +1327,12 @@ def _run_llm(user_text: str, locale: str, snapshot: dict, history: list[dict] | 
         if not model:
             return {}
         messages = [{"role": "system", "content": _system_prompt(snapshot, locale)}]
-        raw_hist = history if _isa(history, list) else []
+        raw_hist = _list_rows(history)
         for raw in raw_hist[-MAX_HISTORY:]:
-            if not isinstance(raw, dict):
+            if not _isa(raw, dict):
                 continue
-            role = str(raw.get("role") or "")
-            content = str(raw.get("content") or "").strip()
+            role = _utf8_text(_dget(raw, "role"))
+            content = _utf8_text(_dget(raw, "content")).strip()
             if role in {"user", "assistant"} and content:
                 messages.append({"role": role, "content": content[:MAX_QUERY_CHARS]})
         messages.append({"role": "user", "content": user_text})
@@ -1389,6 +1389,7 @@ def ask(
 ) -> dict:
     """One assistant turn.  Find and page-catalog never call the model."""
     loc = normalize_locale(locale)
+    history = _list_rows(history)
     text = str(query or "").strip()
     if len(text) > MAX_QUERY_CHARS:
         raise api_error("ollama.prompt_too_long", max=MAX_QUERY_CHARS)

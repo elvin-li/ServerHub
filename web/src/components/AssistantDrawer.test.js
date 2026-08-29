@@ -223,6 +223,50 @@ describe('AssistantDrawer', () => {
     wrapper.unmount()
   })
 
+  it('fail-closes a leftover mapping reply without throwing', async () => {
+    askAssistant.mockResolvedValue({
+      0: 'ghost',
+      kind: ['find'],
+      panels: { 0: { path: '/ghost', title: 'Ghost' } },
+      text: { echo: 'nope' },
+    })
+    const wrapper = mountDrawer()
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.assist-panels').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Ghost')
+    wrapper.unmount()
+  })
+
+  it('null panel rows and a leftover mapping history log do not throw', async () => {
+    askAssistant.mockResolvedValue({
+      ok: true,
+      kind: 'find',
+      text: 'found',
+      panels: [null, 'x', { path: '/logs', title: '日志' }],
+      used_llm: false,
+    })
+    const wrapper = mountDrawer()
+    wrapper.vm.turns = { 0: { role: 'user', content: 'stale' } }
+    await wrapper.get('#assist-input').setValue('日志')
+    await wrapper.get('form.assist-form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('日志')
+    expect(askAssistant).toHaveBeenCalledWith('日志', expect.objectContaining({
+      history: [],
+    }))
+    wrapper.unmount()
+  })
+
+  it('a leftover array ask body is treated as an empty reply, not a throw', async () => {
+    askAssistant.mockResolvedValue(['brief'])
+    const wrapper = mountDrawer()
+    await wrapper.get('[data-test="assistant-brief"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('assistant.empty_reply')
+    wrapper.unmount()
+  })
+
   it('stops an in-flight ask', async () => {
     askAssistant.mockImplementation((_query, opts) => new Promise((_resolve, reject) => {
       opts.signal.addEventListener('abort', () => {

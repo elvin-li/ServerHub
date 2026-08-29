@@ -46,19 +46,19 @@
       </div>
       <div ref="logEl" class="assist-log" :aria-live="asArray(turns).length ? 'polite' : undefined">
         <p v-if="!asArray(turns).length" class="assist-empty">{{ t('assistant.empty') }}</p>
-        <article v-for="(turn, i) in asArray(turns)" :key="i" class="assist-turn" :class="turn.role">
-          <div class="assist-who">{{ turn.role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
-          <pre class="assist-text">{{ finiteText(turn.content) }}</pre>
-          <div v-if="asArray(turn.panels).length" class="assist-panels">
+        <article v-for="(turn, i) in asArray(turns)" :key="i" class="assist-turn" :class="asRecord(turn).role">
+          <div class="assist-who">{{ asRecord(turn).role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
+          <pre class="assist-text">{{ finiteText(asRecord(turn).content) }}</pre>
+          <div v-if="asArray(asRecord(turn).panels).length" class="assist-panels">
             <button
-              v-for="p in asArray(turn.panels)"
-              :key="p.path"
+              v-for="p in asArray(asRecord(turn).panels)"
+              :key="finiteText(asRecord(p).path, '')"
               class="tiny"
               type="button"
-              @click="go(p.path)"
-            >{{ finiteText(p.title) }} <span class="mono">{{ finiteText(p.path) }}</span></button>
+              @click="go(asRecord(p).path)"
+            >{{ finiteText(asRecord(p).title) }} <span class="mono">{{ finiteText(asRecord(p).path) }}</span></button>
           </div>
-          <div v-if="turn.meta" class="assist-meta">{{ finiteText(turn.meta) }}</div>
+          <div v-if="asRecord(turn).meta" class="assist-meta">{{ finiteText(asRecord(turn).meta) }}</div>
         </article>
       </div>
       <form class="assist-form" @submit.prevent="send('auto')">
@@ -126,35 +126,37 @@ watch(() => props.open, async (isOpen) => {
     await send(action)
     return
   }
-  if (props.seed.trim()) {
-    draft.value = props.seed.trim()
+  if (finiteText(props.seed, '').trim()) {
+    draft.value = finiteText(props.seed, '').trim()
     emit('consumed-seed')
     await send('auto')
   }
 })
 
 function formatBrief(snap) {
-  const c = asRecord(snap?.counts)
+  const brief = asRecord(snap)
+  const c = asRecord(brief.counts)
   const lines = [
     t('assistant.brief_overview', {
-      load: finiteN(snap.load),
-      cpu: finiteN(snap.cpu_load_pct),
-      mem: finiteN(snap.mem_used_pct),
-      disk: finiteN(snap.disk_root_pct),
-      diskAmt: finiteText(snap.disk_root),
-      up: finiteText(snap.uptime),
+      load: finiteN(brief.load),
+      cpu: finiteN(brief.cpu_load_pct),
+      mem: finiteN(brief.mem_used_pct),
+      disk: finiteN(brief.disk_root_pct),
+      diskAmt: finiteText(brief.disk_root),
+      up: finiteText(brief.uptime),
     }),
     t('assistant.brief_services', {
       ok: finiteN(c.ok, 0),
       warn: finiteN(c.warn, 0),
       down: finiteN(c.down, 0),
-      engine: snap.engine_up ? t('common.on') : t('common.off'),
+      engine: brief.engine_up ? t('common.on') : t('common.off'),
     }),
   ]
-  const problems = asArray(snap.problems)
+  const problems = asArray(brief.problems)
   if (problems.length) {
     lines.push(t('assistant.brief_problems'))
-    for (const p of problems.slice(0, 6)) {
+    for (const raw of problems.slice(0, 6)) {
+      const p = asRecord(raw)
       lines.push(`- ${finiteText(p.name)} · ${finiteText(p.state)} · ${finiteText(p.detail)}`)
     }
   } else {
@@ -164,15 +166,16 @@ function formatBrief(snap) {
 }
 
 function displayText(out, query) {
-  if (out.kind === 'find') {
+  const reply = asRecord(out)
+  if (reply.kind === 'find') {
     if (!query) return t('assistant.find_browse')
-    return asArray(out.panels).length
+    return asArray(reply.panels).length
       ? t('assistant.find_result')
       : t('assistant.find_none', { q: finiteText(query, '') })
   }
-  if (out.kind === 'page') return finiteText(out.text, '')
-  if (!out.used_llm && out.snapshot) return formatBrief(out.snapshot)
-  return finiteText(out.text, '')
+  if (reply.kind === 'page') return finiteText(reply.text, '')
+  if (!reply.used_llm && reply.snapshot) return formatBrief(reply.snapshot)
+  return finiteText(reply.text, '')
 }
 
 function go(path) {
@@ -181,11 +184,12 @@ function go(path) {
 }
 
 function historyPayload() {
-  return turns.value
+  return asArray(turns.value)
+    .map((row) => asRecord(row))
     .filter((row) => row.role === 'user' || row.role === 'assistant')
     .filter((row) => row.content && !row.pending)
     .slice(-6)
-    .map((row) => ({ role: row.role, content: row.content }))
+    .map((row) => ({ role: row.role, content: finiteText(row.content, '') }))
 }
 
 async function send(action, preset = '') {
@@ -194,6 +198,7 @@ async function send(action, preset = '') {
   sendGeneration += 1
   const generation = sendGeneration
   let userTurn = null
+  turns.value = asArray(turns.value)
   if (query) {
     userTurn = { role: 'user', content: query }
     turns.value.push(userTurn)
@@ -224,20 +229,20 @@ async function send(action, preset = '') {
   }
   logEl.value?.scrollTo?.(0, logEl.value.scrollHeight)
   try {
-    const out = await askAssistant(query, {
+    const out = asRecord(await askAssistant(query, {
       locale: locale.value,
       action,
-      history: historyPayload().slice(0, -1),
+      history: asArray(historyPayload()).slice(0, -1),
       path: route.path || '/',
       signal: abortCtrl.signal,
-    })
+    }))
     if (generation !== sendGeneration || !props.open) {
       dropStale()
       return
     }
     pending.pending = false
     pending.content = finiteText(displayText(out, query), '') || t('assistant.empty_reply')
-    pending.panels = asArray(out.panels)
+    pending.panels = asArray(out.panels).map((p) => asRecord(p))
     if (out.used_llm && out.model) {
       pending.meta = t('assistant.via_model', { model: finiteText(out.model) })
     } else if (out.kind === 'brief' || out.kind === 'answer') {
