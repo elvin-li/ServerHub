@@ -3531,7 +3531,7 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/<pre v-if="jobLog"[\s\S]*aria-live="polite"/)
     expect(containers).toMatch(/finiteText\(stats\[c\.id\]\?\.cpu\)/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.cpu \|\| '—'/)
-    expect(containers).toMatch(/finiteText\(c\.network\)/)
+    expect(containers).toMatch(/finiteText\(asRecord\(c\)\.network\)/)
     expect(containers).toMatch(/v-for="\(im,i\) in asArray\(images\)"/)
     expect(containers).toMatch(/v-for="v in asArray\(volumes\)"/)
     expect(containers).toMatch(/v-for="n in asArray\(networks\)"/)
