@@ -32,6 +32,17 @@ describe('matchCatalog', () => {
   it('does not throw when panels is a leftover mapping', () => {
     expect(matchCatalog({ 0: panels[0] }, 'docker')).toEqual([])
   })
+
+  it('does not throw on null catalog rows or leftover JSON Infinity titles', () => {
+    const hostile = [
+      null,
+      'x',
+      { id: 'logs', path: '/logs', title: Infinity, aliases: null },
+      { id: 'containers', path: '/containers', title: 'Containers', aliases: ['docker'] },
+    ]
+    expect(matchCatalog(hostile, 'docker')[0].id).toBe('containers')
+    expect(matchCatalog(hostile, 'logs')[0].id).toBe('logs')
+  })
 })
 
 describe('openAssistant', () => {

@@ -1870,7 +1870,7 @@ describe('operations polling and submission guards', () => {
     expect(sigs).toMatch(/async function removeRow\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(grules).toMatch(/async function save\(\)[\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
     expect(grules).toMatch(/async function removeRow\([\s\S]*if \(generation !== loadGeneration \|\| !pageAlive\) return/)
-    expect(assist).toMatch(/const out = await askAssistant\([\s\S]*if \(generation !== sendGeneration \|\| !props\.open\) \{/)
+    expect(assist).toMatch(/const out = asRecord\(await askAssistant\([\s\S]*if \(generation !== sendGeneration \|\| !props\.open\) \{/)
   })
 
   it('discards service log copies that finish after leave', () => {
@@ -3595,7 +3595,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ad).toMatch(/finiteText\(p\.name\)/)
     expect(ad).not.toMatch(/q: query \|\| ''/)
     expect(ad).toMatch(/q: finiteText\(query, ''\)/)
-    expect(ad).toMatch(/finiteText\(out\.text, ''\)/)
+    expect(ad).toMatch(/finiteText\(reply\.text, ''\)/)
     expect(ad).not.toMatch(/: \(err\.message \|\| String\(err\)\)/)
     expect(ad).toMatch(/finiteText\(err\.message \|\| String\(err\)\)/)
     expect(ad).toMatch(/emit\('go', finiteText\(path, ''\) \|\| '\/'\)/)

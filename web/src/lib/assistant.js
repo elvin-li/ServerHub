@@ -1,11 +1,11 @@
-import { asArray } from './finite'
+import { asArray, asRecord, finiteText } from './finite'
 
 /** Shell event: open the AI drawer from any page (Dashboard, etc.). */
 export const ASSISTANT_EVENT = 'serverhub:assistant'
 
 /** Open the drawer and optionally seed a brief / page / find turn. */
 export function openAssistant(detail = {}) {
-  window.dispatchEvent(new CustomEvent(ASSISTANT_EVENT, { detail }))
+  window.dispatchEvent(new CustomEvent(ASSISTANT_EVENT, { detail: asRecord(detail) }))
 }
 
 /**
@@ -13,15 +13,16 @@ export function openAssistant(detail = {}) {
  * Used by Cmd+K so "logs" / "docker" jump without opening the drawer.
  */
 export function matchCatalog(panels, query, limit = 6) {
-  const needle = String(query || '').trim().toLowerCase()
+  const needle = finiteText(query, '').trim().toLowerCase()
   if (!needle || !asArray(panels).length) return []
   const scored = []
   for (const panel of asArray(panels)) {
-    const title = String(panel.title || '').toLowerCase()
-    const path = String(panel.path || '').toLowerCase()
-    const aliases = asArray(panel.aliases).map((alias) => String(alias).toLowerCase())
+    const row = asRecord(panel)
+    const title = finiteText(row.title, '').toLowerCase()
+    const path = finiteText(row.path, '').toLowerCase()
+    const aliases = asArray(row.aliases).map((alias) => finiteText(alias, '').toLowerCase())
     let score = 0
-    if (title === needle || panel.id === needle || path === needle || path === `/${needle}`) {
+    if (title === needle || finiteText(row.id, '') === needle || path === needle || path === `/${needle}`) {
       score = 100
     } else if (aliases.includes(needle)) {
       score = 90
@@ -32,7 +33,7 @@ export function matchCatalog(panels, query, limit = 6) {
     } else if (aliases.some((alias) => alias.length >= 2 && (needle.includes(alias) || alias.includes(needle)))) {
       score = 60
     }
-    if (score) scored.push({ ...panel, score })
+    if (score) scored.push({ ...row, score })
   }
   scored.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)))
   const seen = new Set()
