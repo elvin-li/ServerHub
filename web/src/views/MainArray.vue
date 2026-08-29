@@ -120,11 +120,11 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(unassigned)" :key="d.id">
+          <tr v-for="d in asArray(unassigned)" :key="finiteText(asRecord(d).id)">
             <td><span class="led" :class="powerLed(d)"></span></td>
-            <td class="mono">{{ finiteText(d.device) }}</td>
+            <td class="mono">{{ finiteText(asRecord(d).device) }}</td>
             <td>
-              <strong>{{ finiteText(d.name) }}</strong>
+              <strong>{{ finiteText(asRecord(d).name) }}</strong>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
               <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
                 <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
@@ -173,19 +173,19 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(powerDisks)" :key="d.id">
+          <tr v-for="d in asArray(powerDisks)" :key="finiteText(asRecord(d).id)">
             <td>
               <span
                 class="led"
                 :class="powerLed(d)"
-                :title="finiteText(d.power_state)"
+                :title="finiteText(asRecord(d).power_state)"
               ></span>
             </td>
-            <td class="mono">{{ finiteText(d.device) }}</td>
+            <td class="mono">{{ finiteText(asRecord(d).device) }}</td>
             <td>
-              <strong>{{ finiteText(d.name) }}</strong>
-              <div class="sub" style="font-size:11px">{{ finiteText(d.hint) }}</div>
-              <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(d.protocol) }}{{ sizeGb(d.size_gb) ? ' · ' + sizeGb(d.size_gb) : '' }}</div>
+              <strong>{{ finiteText(asRecord(d).name) }}</strong>
+              <div class="sub" style="font-size:11px">{{ finiteText(asRecord(d).hint) }}</div>
+              <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(asRecord(d).protocol) }}{{ sizeGb(asRecord(d).size_gb) ? ' · ' + sizeGb(asRecord(d).size_gb) : '' }}</div>
               <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
                 <div v-for="v in asArray(asRecord(d).volumes)" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
               </div>
@@ -193,8 +193,8 @@
             <td class="col-hide-m">
               <span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span>
             </td>
-            <td class="col-hide-m">{{ finiteText(d.protocol) }}</td>
-            <td class="col-hide-m">{{ finiteText(sizeGb(d.size_gb)) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(d).protocol) }}</td>
+            <td class="col-hide-m">{{ finiteText(sizeGb(asRecord(d).size_gb)) }}</td>
             <td>
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
@@ -292,34 +292,34 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(data?.disks)" :key="d.id">
+          <tr v-for="d in asArray(asRecord(data).disks)" :key="finiteText(asRecord(d).id)">
             <!-- Was `d.smart ? 'on' : (d.error ? 'err' : 'off')`, which lit green for
                  a drive reporting FAILED (it has a smart dict) and red for a healthy
                  external disk macOS cannot read (it has an error) -- both backwards.
                  The LED now follows the same grade as the notice above. -->
             <td><span class="led" :class="smartLed(d)" :title="smartGrade(d)"></span></td>
-            <td class="mono">{{ finiteText(d.device, '') || finiteText(d.id) }}</td>
+            <td class="mono">{{ finiteText(asRecord(d).device, '') || finiteText(asRecord(d).id) }}</td>
             <td>
-              <strong>{{ finiteText(d.name, '') || finiteText(d.id) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(d.smart?.model, '') || finiteText(d.smart?.serial, '') }}</div>
-              <div class="show-m sub">{{ finiteText(d.protocol) }}{{ d.ssd ? ' · SSD' : '' }}{{ finiteText(d.size, '') ? ' · ' + finiteText(d.size) : '' }}</div>
-              <div v-if="d.smart?.wear || d.smart?.written || d.smart?.power_on" class="show-m sub">
-                {{ [d.smart?.wear, d.smart?.written, d.smart?.power_on].map(v => finiteText(v, '')).filter(Boolean).join(' · ') }}
+              <strong>{{ finiteText(asRecord(d).name, '') || finiteText(asRecord(d).id) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(asRecord(d).smart).model, '') || finiteText(asRecord(asRecord(d).smart).serial, '') }}</div>
+              <div class="show-m sub">{{ finiteText(asRecord(d).protocol) }}{{ asRecord(d).ssd ? ' · SSD' : '' }}{{ finiteText(asRecord(d).size, '') ? ' · ' + finiteText(asRecord(d).size) : '' }}</div>
+              <div v-if="asRecord(asRecord(d).smart).wear || asRecord(asRecord(d).smart).written || asRecord(asRecord(d).smart).power_on" class="show-m sub">
+                {{ [asRecord(asRecord(d).smart).wear, asRecord(asRecord(d).smart).written, asRecord(asRecord(d).smart).power_on].map(v => finiteText(v, '')).filter(Boolean).join(' · ') }}
               </div>
             </td>
-            <td class="col-hide-m">{{ finiteText(d.protocol) }}{{ d.ssd ? ' · SSD' : '' }}</td>
-            <td>{{ finiteText(d.smart?.temp) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(d).protocol) }}{{ asRecord(d).ssd ? ' · SSD' : '' }}</td>
+            <td>{{ finiteText(asRecord(asRecord(d).smart).temp) }}</td>
             <td>
               <span class="badge" :class="smartBadge(d)">
-                {{ finiteText(d.smart?.health, '') || (d.error ? 'N/A' : '—') }}
+                {{ finiteText(asRecord(asRecord(d).smart).health, '') || (asRecord(d).error ? 'N/A' : '—') }}
               </span>
             </td>
-            <td class="col-hide-m">{{ finiteText(d.smart?.wear) }}</td>
-            <td class="col-hide-m">{{ finiteText(d.smart?.written) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(d.smart?.power_on) }}</td>
-            <td class="col-hide-m">{{ finiteText(d.size) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).wear) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).written) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).power_on) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(d).size) }}</td>
           </tr>
-          <tr v-if="!asArray(data?.disks).length && !loadError">
+          <tr v-if="!asArray(asRecord(data).disks).length && !loadError">
             <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
         </tbody>
@@ -569,9 +569,9 @@
                     <button
                       v-if="asArray(m.smart?.attrs).length"
                       class="tiny"
-                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(m.id) })"
-                      :aria-expanded="smartExpanded.has(m.id)"
-                      @click="toggleSmartDetail(m.id)"
+                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(asRecord(m).id) })"
+                      :aria-expanded="smartExpanded.has(asRecord(m).id)"
+                      @click="toggleSmartDetail(asRecord(m).id)"
                     >
                       {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ asArray(m.smart.attrs).length }}
                     </button>
