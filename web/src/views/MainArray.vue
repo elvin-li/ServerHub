@@ -127,14 +127,14 @@
               <strong>{{ finiteText(asRecord(d).name) }}</strong>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
               <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+                <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m"><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
             <td class="col-hide-m"><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
             <td class="mono col-hide-m" style="font-size:11px">
               <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
-              <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
             </td>
             <td class="ops">
               <button v-if="asArray(d.actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
@@ -187,7 +187,7 @@
               <div class="sub" style="font-size:11px">{{ finiteText(asRecord(d).hint) }}</div>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(asRecord(d).protocol) }}{{ sizeGb(asRecord(d).size_gb) ? ' · ' + sizeGb(asRecord(d).size_gb) : '' }}</div>
               <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(asRecord(d).volumes)" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
+                <div v-for="v in asArray(asRecord(d).volumes)" :key="'m-'+finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m">
@@ -199,7 +199,7 @@
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
               <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">—</span>
             </td>
             <td class="ops">
@@ -249,18 +249,18 @@
       <h3 style="margin:0 0 6px">
         <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: asArray(smartNotice.down).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.down)" :key="d.id" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(d.label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.down)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
       </div>
     </div>
     <div v-if="asArray(smartNotice.warn).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
       <h3 style="margin:0 0 6px">
         <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: asArray(smartNotice.warn).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.warn)" :key="d.id" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(d.label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.warn)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_watch_hint') }}</p>
     </div>
@@ -268,9 +268,9 @@
       <h3 style="margin:0 0 6px;color:var(--sub)">
         <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: asArray(smartNotice.unknown).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.unknown)" :key="d.id" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(d.label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(d.reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.unknown)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_unknown_hint') }}</p>
     </div>
@@ -637,16 +637,16 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(h, i) in asArray(smartData.history).slice(0, 15)" :key="i">
-                    <td class="mono" style="font-size:10px">{{ fmtTs(h.ts) }}</td>
+                  <tr v-for="(h, i) in asArray(asRecord(smartData).history).slice(0, 15)" :key="i">
+                    <td class="mono" style="font-size:10px">{{ fmtTs(asRecord(h).ts) }}</td>
                     <td class="mono" style="font-size:10px">
-                      {{ finiteText(h.device) }}
-                      <div v-if="h.kind" class="show-m sub">{{ finiteText(h.kind) }}</div>
+                      {{ finiteText(asRecord(h).device) }}
+                      <div v-if="asRecord(h).kind" class="show-m sub">{{ finiteText(asRecord(h).kind) }}</div>
                     </td>
-                    <td class="col-hide-m" style="font-size:10px">{{ finiteText(h.kind) }}</td>
+                    <td class="col-hide-m" style="font-size:10px">{{ finiteText(asRecord(h).kind) }}</td>
                     <td>
-                      <span class="badge" :class="h.ok ? 'ok' : 'warn'" style="font-size:10px">
-                        {{ h.ok ? t('common.ok') : (finiteText(h.error, '') || finiteText(h.message, '') || t('common.error')) }}
+                      <span class="badge" :class="asRecord(h).ok ? 'ok' : 'warn'" style="font-size:10px">
+                        {{ asRecord(h).ok ? t('common.ok') : (finiteText(asRecord(h).error, '') || finiteText(asRecord(h).message, '') || t('common.error')) }}
                       </span>
                     </td>
                   </tr>
