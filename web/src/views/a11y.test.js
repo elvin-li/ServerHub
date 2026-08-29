@@ -3715,7 +3715,7 @@ describe('leftover Infinity interpolations', () => {
     expect(compose).not.toMatch(/\{\{\s*jobLog\s*\}\}/)
     expect(compose).toMatch(/finiteText\(jobLog\)/)
     expect(compose).not.toMatch(/id: j\.id \}\)/)
-    expect(compose).toMatch(/id: finiteText\(j\.id\)/)
+    expect(compose).toMatch(/id: finiteText\(asRecord\(j\)\.id\)/)
     expect(compose).not.toMatch(/r\.message \|\| t\('compose\.started'\)/)
     expect(compose).toMatch(/finiteText\(r\.message, ''\) \|\| t\('compose\.started'\)/)
     expect(compose).not.toMatch(/jobLog\.value = j\.log \|\| ''/)
@@ -4008,7 +4008,7 @@ describe('Users and Account leftover a11y', () => {
     // numbers silently for a screen reader (Tools ports pattern).
     const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
     expect(users).toMatch(
-      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(data\.count\) \}\} \{\{ t\('users\.total'\) \}\}/,
+      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(asRecord\(data\)\.count\) \}\} \{\{ t\('users\.total'\) \}\}/,
     )
   })
 
@@ -4016,7 +4016,7 @@ describe('Users and Account leftover a11y', () => {
     // The LED repeats the Role badge's Admin/Standard text in colour only
     // (same as the Gateway and VMs LEDs).
     const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
-    expect(users).toMatch(/class="led" :class="u\.admin \? 'on' : 'off'" aria-hidden="true"/)
+    expect(users).toMatch(/class="led" :class="asRecord\(u\)\.admin \? 'on' : 'off'" aria-hidden="true"/)
   })
 
   it('hides the Account enrollment QR and voices the password rule', () => {
