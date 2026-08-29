@@ -307,7 +307,7 @@ import {
   getPhotosHubLogs,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonText, withUnit } from '../lib/finite'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 
@@ -384,7 +384,7 @@ const externalIssue = computed(() => {
 })
 const formDirty = computed(() => {
   if (!cfg.value) return false
-  return JSON.stringify(form.value) !== JSON.stringify(formFromConfig(cfg.value))
+  return jsonText(form.value, '') !== jsonText(formFromConfig(cfg.value), '')
 })
 const peopleLabel = computed(() => {
   const p = asRecord(data.value?.people)

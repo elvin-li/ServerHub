@@ -120,6 +120,7 @@ describe('formatters', () => {
     expect(portOf({ detail: 'no port here' })).toBe('—')
     expect(portOf({ port: Number.POSITIVE_INFINITY })).toBe('—')
     expect(portOf({ ports: [Number.POSITIVE_INFINITY] })).toBe('—')
+    expect(portOf({ ports: { 0: { port: 53 } } })).toBe('—')
   })
 
   it('maps states onto LED and chip classes', () => {

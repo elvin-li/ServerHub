@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, finiteN, finiteText, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -853,7 +853,7 @@ async function runAutoBind() {
   try {
     const j = await runAliasAutoBind()
     if (!stillOnNetwork(generation)) return
-    autoBindLog.value = JSON.stringify(j.actions || j, null, 2)
+    autoBindLog.value = jsonText(j.actions || j, finiteText(j.message, '') || t('network.failed'))
     toast(j.ok ? `✅ ${finiteText(j.message, '') || t('network.aligned')}` : `❌ ${finiteText(j.message, '') || t('network.failed')}`)
     await refresh(true)
   } catch (e) {

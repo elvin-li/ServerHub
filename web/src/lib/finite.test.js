@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, withUnit } from './finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonText, withUnit } from './finite'
 
 describe('asRecord leftover mappings', () => {
   it('keeps real objects and fail-closes lists', () => {
@@ -94,5 +94,14 @@ describe('leftover number clamps', () => {
     expect(
       finiteText(Number.POSITIVE_INFINITY, '') || 'localhost',
     ).toBe('localhost')
+  })
+})
+
+describe('jsonText leftover circular mappings', () => {
+  it('fail-closes circular leftover objects', () => {
+    const cycle = {}
+    cycle.self = cycle
+    expect(jsonText(cycle)).toBe('—')
+    expect(jsonText({ a: 1 })).toBe('{"a":1}')
   })
 })

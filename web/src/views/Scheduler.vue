@@ -252,7 +252,7 @@ import {
   updateSchedulerJob,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText, fmtTs, withUnit } from '../lib/finite'
+import { asArray, finiteN, finiteText, fmtTs, jsonText, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -470,7 +470,7 @@ function formatInterval(sec) {
 }
 function formatCal(c) {
   if (!c) return '—'
-  if (typeof c === 'object') return JSON.stringify(c)
+  if (typeof c === 'object') return jsonText(c)
   return finiteText(c)
 }
 

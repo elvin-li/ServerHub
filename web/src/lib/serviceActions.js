@@ -11,7 +11,7 @@
  * without binding this module to a component lifecycle.
  */
 
-import { asArray, finiteText } from './finite'
+import { asArray, finiteText, jsonText } from './finite'
 
 /** Verbs that mutate service state (as opposed to open/logs/detail). */
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
@@ -83,12 +83,13 @@ export function portOf(s) {
     if (n != null && Number.isFinite(n) && !nums.includes(n)) nums.push(n)
   }
   if (s?.port != null) push(s.port)
-  if (Array.isArray(s?.ports)) {
-    for (const p of s.ports) push(p)
-    if (!nums.length && s.ports.length) {
-      const first = s.ports[0]
+  const ports = asArray(s?.ports)
+  if (ports.length) {
+    for (const p of ports) push(p)
+    if (!nums.length) {
+      const first = ports[0]
       if (typeof first === 'number' && !Number.isFinite(first)) return '—'
-      if (typeof first === 'object') return JSON.stringify(first)
+      if (typeof first === 'object') return jsonText(first)
       return String(finiteText(first))
     }
   }

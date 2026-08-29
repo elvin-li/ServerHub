@@ -49,7 +49,15 @@ export function barPct(value) {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0
 }
 
-/** Epoch-seconds leftover stamps used to become "Invalid Date" or "Infinity". */
+/** Leftover circular/bigint mappings used to throw out of JSON.stringify. */
+export function jsonText(value, fallback = '—') {
+  try {
+    const text = JSON.stringify(value)
+    return text == null ? fallback : text
+  } catch {
+    return fallback
+  }
+}
 export function fmtTs(value, fallback = '—') {
   const n = finiteN(value, null)
   if (n == null || n <= 0) return fallback

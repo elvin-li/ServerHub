@@ -445,7 +445,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -850,7 +850,7 @@ async function runExec() {
   try {
     const j = await execContainer(execC.value.id, execCmd.value)
     if (!stillOnList(generation)) return
-    execOut.value = finiteText(j.output, '') || finiteText(j.message, '') || JSON.stringify(j)
+    execOut.value = finiteText(j.output, '') || finiteText(j.message, '') || jsonText(j, '')
   } catch (e) {
     if (!stillOnList(generation)) return
     execOut.value = finiteText(e.message, '')
