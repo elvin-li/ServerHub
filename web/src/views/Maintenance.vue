@@ -57,7 +57,7 @@
               <!-- A configured-empty page deserves a pointer to where tasks are
                    defined, not a bare "None": the list only ever fills from the
                    maintenance: section of services.yaml (see the example file). -->
-              <template v-else-if="!tasks.length">
+              <template v-else-if="!asArray(tasks).length">
                 {{ t('maintenance.empty_hint') }}
                 <span class="mono">services.yaml → maintenance:</span>
               </template>
@@ -91,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -114,7 +114,7 @@ let pollTimer = null
 let pollGeneration = 0
 let listTimer = null
 
-const anyRunning = computed(() => asArray(tasks.value).some(row => row.running))
+const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
 const filtered = computed(() => {
   const list = asArray(tasks.value)
   const qq = q.value.trim().toLowerCase()
@@ -122,11 +122,14 @@ const filtered = computed(() => {
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
   // on it — typing one character in the filter box blanked the whole page.
-  return list.filter(row =>
-    String(row.name ?? '').toLowerCase().includes(qq)
-    || String(row.id ?? '').toLowerCase().includes(qq)
-    || String(row.desc ?? '').toLowerCase().includes(qq)
-  )
+  // asRecord: a leftover list cell that is not a mapping (null / string)
+  // used to throw on ``row.name`` and blank the whole page.
+  return list.filter(row => {
+    const rec = asRecord(row)
+    return String(rec.name ?? '').toLowerCase().includes(qq)
+      || String(rec.id ?? '').toLowerCase().includes(qq)
+      || String(rec.desc ?? '').toLowerCase().includes(qq)
+  })
 })
 
 let listGeneration = 0
@@ -136,7 +139,14 @@ async function refresh() {
   try {
     const list = await getMaintenance()
     if (generation !== listGeneration || !pageAlive) return false
-    tasks.value = asArray(list).length ? asArray(list) : asArray(list?.tasks)
+    // asArray first: a leftover mapping (or ``{tasks: …}`` envelope) used
+    // to throw on ``.length`` / ``.filter`` / ``v-for``.  asRecord on the
+    // envelope, then asArray of ``.tasks``, fail-closes a hostile nested
+    // list.  Each row is asRecord so a leftover null cell cannot throw
+    // later.  Do not wrap a Set as asArray — this payload is never a Set.
+    const rows = asArray(list)
+    const fromEnvelope = asArray(asRecord(list).tasks)
+    tasks.value = (rows.length ? rows : fromEnvelope).map((row) => asRecord(row))
     loadError.value = ''
     return true
   } catch (e) {
@@ -149,6 +159,7 @@ async function refresh() {
 }
 
 async function run(task) {
+  const rec = asRecord(task)
   if (anyRunning.value) return
   // Always confirm. Every maintenance entry is an arbitrary shell command that
   // runs against the host (brew upgrade, HA update, container rebuild), so the
@@ -156,18 +167,18 @@ async function run(task) {
   // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
   // absent from the documented example task, so the destructive entries shipped
   // unguarded.
-  if (!confirm(t('maintenance.confirm_run', { name: finiteText(task.name) }))) return
+  if (!confirm(t('maintenance.confirm_run', { name: finiteText(rec.name) }))) return
   const generation = listGeneration
-  task.running = true
+  rec.running = true
   try {
-    await runMaintenance(task.id)
+    await runMaintenance(rec.id)
     if (generation !== listGeneration || !pageAlive) return
-    toast('🚀 ' + t('maintenance.started', { name: finiteText(task.name) }))
-    openLog(task)
+    toast('🚀 ' + t('maintenance.started', { name: finiteText(rec.name) }))
+    openLog(rec)
     await refresh()
   } catch (e) {
     if (generation !== listGeneration || !pageAlive) return
-    task.running = false
+    rec.running = false
     toast('❌ ' + finiteText(e.message || e))
   }
 }
@@ -182,7 +193,7 @@ async function pollLog(generation) {
   const id = curId.value
   if (!id || generation !== pollGeneration || !pageAlive) return
   try {
-    const j = await getMaintenanceLog(id)
+    const j = asRecord(await getMaintenanceLog(id))
     if (generation !== pollGeneration || curId.value !== id || !pageAlive) return
     logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(j.rc) })))
     if (!j.running) {
@@ -203,8 +214,9 @@ async function pollLog(generation) {
 
 function openLog(task) {
   stopLogPolling()
-  curId.value = task.id
-  logTitle.value = finiteText(task.name)
+  const rec = asRecord(task)
+  curId.value = rec.id
+  logTitle.value = finiteText(rec.name)
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
   const generation = pollGeneration
