@@ -518,7 +518,7 @@
                panel-focus read never covers a failure — same as the Scheduler
                run-history and Shares ACL errors. -->
           <div v-if="smartError && !smartData" role="alert" style="color:var(--down-text)">{{ finiteText(smartError) }}</div>
-          <div v-else-if="!smartMerged.length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
+          <div v-else-if="!asArray(smartMerged).length" style="color:var(--sub)">{{ t('main_extra.smart_no_devices') }}</div>
           <div v-else class="table-wrap" style="max-height:400px;overflow:auto">
             <table class="dense fit-m">
               <thead>
@@ -930,7 +930,7 @@ function smartBadge(d) {
 //: lines for one disk would bury the other disks.
 const smartNotice = computed(() => {
   const out = { down: [], warn: [], unknown: [] }
-  for (const d of smartMerged.value) {
+  for (const d of asArray(smartMerged.value)) {
     const label = [finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id, ''), finiteText(d.device, '')].filter(Boolean).join(' ')
     const grade = smartGrade(d)
     if (grade === 'unknown') {

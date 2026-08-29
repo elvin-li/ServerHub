@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText, jsonDump, jsonText } from '../lib/finite'
+import { asArray, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -791,7 +791,7 @@ function asServiceList(raw) {
 function cloneServiceOrder(raw) {
   if (!Array.isArray(raw)) return []
   try {
-    const cloned = JSON.parse(jsonDump(raw) || 'null')
+    const cloned = jsonLoad(jsonDump(raw) || 'null')
     return Array.isArray(cloned) ? cloned : []
   } catch {
     return []

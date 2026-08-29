@@ -176,7 +176,7 @@
          backup listing, on the page where "not listed" reads as "gone". -->
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded && !loadError" :cols="4" :rows="5" />
-    <div v-else-if="!loadError || backups.length" class="table-wrap backups-artefacts">
+    <div v-else-if="!loadError || asArray(backups).length" class="table-wrap backups-artefacts">
       <table class="dense fit-m">
         <thead>
           <tr>

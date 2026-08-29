@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, jsonDump } from '../lib/finite.js'
+import { asArray, asRecord, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -1020,12 +1020,9 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed) continue
-        let chunk
-        try {
-          chunk = asRecord(JSON.parse(trimmed))
-        } catch {
-          continue
-        }
+        const parsed = jsonLoad(trimmed)
+        if (parsed == null || typeof parsed !== 'object') continue
+        const chunk = asRecord(parsed)
         if (chunk.error) {
           const err = new Error(String(chunk.error))
           err.status = 502

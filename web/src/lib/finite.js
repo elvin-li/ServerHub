@@ -63,6 +63,15 @@ export function jsonText(value, fallback = '—', space) {
   const text = jsonDump(value, space)
   return text === '' ? fallback : text
 }
+
+/** Leftover invalid JSON used to throw out of JSON.parse. */
+export function jsonLoad(text, fallback = null) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return fallback
+  }
+}
 export function fmtTs(value, fallback = '—') {
   const n = finiteN(value, null)
   if (n == null || n <= 0) return fallback
