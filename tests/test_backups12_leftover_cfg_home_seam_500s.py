@@ -465,7 +465,7 @@ class ConflictPolicyPinTests(unittest.TestCase):
         self.assertEqual(good["port"], 5433)
 
     def test_product_version_stays(self):
-        self.assertEqual(__version__, "3.9.4")
+        self.assertEqual(__version__, "3.9.5")
 
 
 if __name__ == "__main__":

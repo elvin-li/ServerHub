@@ -1,4 +1,4 @@
-# ServerHub v3.9.4
+# ServerHub v3.9.5
 
 A home-server management panel for macOS — modelled on **Unraid**'s information architecture, with ideas borrowed from **Dockge / Portainer / Glances / Glance / Heimdall / CasaOS / Homebrew**.
 

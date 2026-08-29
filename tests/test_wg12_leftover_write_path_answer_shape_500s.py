@@ -778,7 +778,7 @@ class ConflictPinTests(_MountedRouteTests):
     def test_product_version_stays_pinned(self):
         from hub import __version__
 
-        self.assertEqual(__version__, "3.9.4")
+        self.assertEqual(__version__, "3.9.5")
 
 
 if __name__ == "__main__":

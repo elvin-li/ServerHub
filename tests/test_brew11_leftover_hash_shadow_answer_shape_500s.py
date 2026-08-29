@@ -939,7 +939,7 @@ class BrewConflictPolicyPins(unittest.TestCase):
     def test_version_is_unchanged(self):
         from hub import __version__
 
-        self.assertEqual(__version__, "3.9.4")
+        self.assertEqual(__version__, "3.9.5")
 
 
 if __name__ == "__main__":
