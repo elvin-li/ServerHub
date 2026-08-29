@@ -267,7 +267,7 @@ async function create() {
   try {
     const j = asRecord(await createCompose(newId.value.trim(), newName.value || newId.value, newContent.value))
     if (generation !== stacksGeneration || !pageAlive) return
-    toast('✅ ' + t('compose.created', { id: finiteText(j.id) }))
+    toast('✅ ' + t('compose.created', { id: finiteText(asRecord(j).id) }))
     showCreate.value = false
     await loadStacks(true)
     if (!pageAlive) return
