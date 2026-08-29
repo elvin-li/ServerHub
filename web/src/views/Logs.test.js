@@ -138,6 +138,7 @@ describe('Logs leave-guards', () => {
     wrapper.unmount()
   })
 
+  it('does not interpolate leftover Infinity sizes', async () => {
     api.getLogSources.mockResolvedValue({
       sources: [{ id: 'panel', name: 'Panel', exists: true, size: Number.POSITIVE_INFINITY }],
     })
@@ -149,6 +150,7 @@ describe('Logs leave-guards', () => {
     })
     const { wrapper } = await mountPage()
     expect(wrapper.text()).not.toContain('Infinity')
+    wrapper.unmount()
   })
 
   it('does not toast a tail that fails after leave', async () => {
