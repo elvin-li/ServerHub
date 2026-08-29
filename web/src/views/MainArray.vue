@@ -722,8 +722,8 @@ function scheduleRefresh(delay) {
 
 const powerDisks = computed(() => asArray(data.value?.power_disks))
 const arrayDevices = computed(() => {
-  const devices = data.value?.array?.devices
-  if (Array.isArray(devices)) return devices
+  const devices = asArray(data.value?.array?.devices)
+  if (devices.length) return devices
   return asArray(data.value?.volumes).filter(v =>
     v.kind === 'system' || v.kind === 'external'
   )

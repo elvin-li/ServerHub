@@ -28,6 +28,10 @@ describe('matchCatalog', () => {
     expect(matchCatalog(hostile, 'syslog')).toEqual([])
     expect(matchCatalog(hostile, 'logs')[0].id).toBe('logs')
   })
+
+  it('does not throw when panels is a leftover mapping', () => {
+    expect(matchCatalog({ 0: panels[0] }, 'docker')).toEqual([])
+  })
 })
 
 describe('openAssistant', () => {

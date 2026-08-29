@@ -1490,8 +1490,8 @@ async function runDiagnostics() {
       other: result.other,
       vms: result.vms,
       metrics_latest: result.metrics_latest,
-      health_summary: Array.isArray(result.health?.checks)
-        ? result.health.checks.slice(0, 8)
+      health_summary: asArray(result.health?.checks).length
+        ? asArray(result.health.checks).slice(0, 8)
         : result.health,
     }, '', 2)
     toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + finiteText(diagMsg.value))
@@ -2200,7 +2200,7 @@ async function loadUps() {
         trigger_remaining_min: sd.trigger_remaining_min ?? '',
         require_both: sd.require_both === true,
         stacksMode: Array.isArray(sd.stacks) ? 'custom' : 'all',
-        stop_scripts: Array.isArray(sd.stop_scripts) ? [...sd.stop_scripts] : [],
+        stop_scripts: [...asArray(sd.stop_scripts)],
       },
     }
   } catch (e) {

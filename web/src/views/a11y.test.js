@@ -3033,6 +3033,7 @@ describe('leftover Infinity interpolations', () => {
     expect(array).toMatch(/finiteText\(f\)/)
     expect(array).not.toMatch(/reasons: d\.error/)
     expect(array).toMatch(/reasons: finiteText\(d\.error\)/)
+    expect(array).toMatch(/const devices = asArray\(data\.value\?\.array\?\.devices\)/)
   })
 
   it('Pool leftover capacities go through fmtGb/withUnit', () => {
@@ -3104,6 +3105,7 @@ describe('leftover Infinity interpolations', () => {
     expect(wg).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(wg).not.toMatch(/readiness\?\.wan_interface \|\| 'en0'/)
     expect(wg).toMatch(/finiteText\(readiness\?\.wan_interface, ''\) \|\| 'en0'/)
+    expect(wg).toMatch(/v-for="r in asArray\(pingResult\.results\)"/)
   })
 
   it('VMs leftover ids go through finiteText', () => {
@@ -3193,6 +3195,8 @@ describe('leftover Infinity interpolations', () => {
     expect(files).toMatch(/finiteText\(it\.mode, ''\) \? ' · ' \+ finiteText\(it\.mode\)/)
     expect(files).toMatch(/v-for="it in asArray\(listing\.items\)"/)
     expect(files).toMatch(/v-for="r in asArray\(roots\)"/)
+    expect(files).toMatch(/items: asArray\(j\.items\)/)
+    expect(files).toMatch(/crumbs: asArray\(j\.crumbs\)/)
   })
 
   it('Modules leftover names go through finiteText', () => {
@@ -3250,6 +3254,7 @@ describe('leftover Infinity interpolations', () => {
     expect(users).toMatch(/finiteText\(accountsError\)/)
     expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(users).toMatch(/v-for="opt in asArray\(serviceOptions\)"/)
   })
 
   it('Gateway leftover pids go through finiteN', () => {
@@ -3379,6 +3384,9 @@ describe('leftover Infinity interpolations', () => {
     expect(scheduler).toMatch(/v-for="job in asArray\(jobs\)"/)
     expect(scheduler).toMatch(/v-for="s in asArray\(systemJobs\)"/)
     expect(scheduler).toMatch(/v-for="\(run, i\) in asArray\(runs\)"/)
+    expect(scheduler).toMatch(/jobs\.value = asArray\(d\?\.jobs\)/)
+    expect(scheduler).toMatch(/systemJobs\.value = asArray\(d\?\.system\)/)
+    expect(scheduler).toMatch(/runs\.value = asArray\(d\?\.runs\)/)
   })
 
   it('Backups leftover ports/files/mtime go through finite helpers', () => {
@@ -3488,6 +3496,9 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/finiteText\(stats\[c\.id\]\?\.cpu\)/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.cpu \|\| '—'/)
     expect(containers).toMatch(/finiteText\(c\.network\)/)
+    expect(containers).toMatch(/v-for="\(im,i\) in asArray\(images\)"/)
+    expect(containers).toMatch(/v-for="v in asArray\(volumes\)"/)
+    expect(containers).toMatch(/v-for="n in asArray\(networks\)"/)
   })
 
   it('ScheduleJobForm leftover preview counts go through finiteN', () => {

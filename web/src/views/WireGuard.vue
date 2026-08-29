@@ -434,7 +434,7 @@
         <div class="table-wrap">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="r in pingResult.results" :key="r.pubkey">
+            <tr v-for="r in asArray(pingResult.results)" :key="r.pubkey">
               <!-- Spell the per-row outcome, not just the LED colour: unlike
                    the peers table there is no textual badge here, so a screen
                    reader heard name and IP with nothing saying whether the

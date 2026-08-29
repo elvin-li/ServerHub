@@ -42,7 +42,7 @@
                region a keyboard cannot reach cannot be scrolled by one
                (WCAG 2.1.1). Same treatment as the Tools log boxes. -->
           <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
-            <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
+            <label v-for="opt in asArray(serviceOptions)" :key="opt.id" class="resource-option">
               <input type="checkbox" :value="opt.id" v-model="createForm.resources" />
               <span>{{ finiteText(opt.name) }}</span>
               <code class="mono">{{ finiteText(opt.id) }}</code>
@@ -54,7 +54,7 @@
             <!-- type=button: this retry sits inside the create <form>, and a
                  bare <button> would submit it instead of refetching. -->
             <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
-            <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+            <span v-else-if="serviceOptionsLoaded && !asArray(serviceOptions).length" class="hint">{{ t('accounts.no_services') }}</span>
           </div>
         </div>
         <div class="btns" style="margin-top:10px">
@@ -127,14 +127,14 @@
                     <!-- tabindex=0: same 220px scroll cap as the create form's
                          copy, so the same keyboard reachability fix. -->
                     <div class="resource-picker" tabindex="0" role="region" :aria-label="t('accounts.resources')">
-                      <label v-for="opt in serviceOptions" :key="opt.id" class="resource-option">
+                      <label v-for="opt in asArray(serviceOptions)" :key="opt.id" class="resource-option">
                         <input type="checkbox" :value="opt.id" v-model="editResources" />
                         <span>{{ finiteText(opt.name) }}</span>
                         <code class="mono">{{ finiteText(opt.id) }}</code>
                       </label>
                       <span v-if="serviceOptionsError" class="hint bad" role="alert">{{ finiteText(serviceOptionsError) }}</span>
                       <button v-if="serviceOptionsError" class="tiny" type="button" @click="loadServiceOptions">{{ t('common.retry') }}</button>
-                      <span v-else-if="serviceOptionsLoaded && !serviceOptions.length" class="hint">{{ t('accounts.no_services') }}</span>
+                      <span v-else-if="serviceOptionsLoaded && !asArray(serviceOptions).length" class="hint">{{ t('accounts.no_services') }}</span>
                     </div>
                     <div class="btns" style="margin-top:8px">
                       <button class="primary" :disabled="accountsBusy" @click="saveResources(acct)">

@@ -253,8 +253,8 @@ async function loadList() {
     if (request !== listRequest || !activated.value) return
     listing.value = {
       ...j,
-      items: Array.isArray(j.items) ? j.items : [],
-      crumbs: Array.isArray(j.crumbs) ? j.crumbs : [],
+      items: asArray(j.items),
+      crumbs: asArray(j.crumbs),
     }
     currentPath.value = j.path
   } catch (e) {

@@ -294,8 +294,8 @@ async function loadJobs() {
   try {
     const d = await getSchedulerJobs()
     if (pollStopped) return
-    jobs.value = Array.isArray(d?.jobs) ? d.jobs : []
-    systemJobs.value = Array.isArray(d?.system) ? d.system : []
+    jobs.value = asArray(d?.jobs)
+    systemJobs.value = asArray(d?.system)
     jobsError.value = ''
     pollFailures = 0
   } catch (e) {
@@ -425,7 +425,7 @@ async function openRuns(job) {
   try {
     const d = await getSchedulerJobRuns(job.id, 30)
     if (pollStopped) return
-    runs.value = Array.isArray(d?.runs) ? d.runs : []
+    runs.value = asArray(d?.runs)
   } catch (e) {
     if (pollStopped) return
     runsError.value = finiteText(e.message || String(e), '')

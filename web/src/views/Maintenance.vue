@@ -136,7 +136,7 @@ async function refresh() {
   try {
     const list = await getMaintenance()
     if (generation !== listGeneration || !pageAlive) return false
-    tasks.value = Array.isArray(list) ? list : asArray(list?.tasks)
+    tasks.value = asArray(list).length ? asArray(list) : asArray(list?.tasks)
     loadError.value = ''
     return true
   } catch (e) {

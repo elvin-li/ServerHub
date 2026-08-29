@@ -210,7 +210,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th class="col-hide-m">ID</th><th>{{ t('docker.size') }}</th><th class="col-hide-m">{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(im,i) in images" :key="i">
+            <tr v-for="(im,i) in asArray(images)" :key="i">
               <td class="mono">
                 {{ finiteText(im.Repository) }}
                 <div class="show-m sub">{{ String(finiteText(im.ID, '')).replace('sha256:','').slice(0,12) }} · {{ finiteText(im.CreatedSince, '') || finiteText(im.CreatedAt) }}</div>
@@ -242,7 +242,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('docker.driver') }}</th><th>{{ t('docker.mountpoint') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="v in volumes" :key="v.Name">
+            <tr v-for="v in asArray(volumes)" :key="v.Name">
               <td class="mono">
                 {{ finiteText(v.Name) }}
                 <div class="show-m sub">{{ finiteText(v.Driver) }}</div>
@@ -272,7 +272,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th class="col-hide-m">Scope</th><th class="col-hide-m">ID</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="n in networks" :key="n.Id">
+            <tr v-for="n in asArray(networks)" :key="n.Id">
               <td>
                 {{ finiteText(n.Name) }}
                 <div class="show-m sub mono">{{ finiteText(n.Scope) }} · {{ finiteText(n.Id) }}</div>

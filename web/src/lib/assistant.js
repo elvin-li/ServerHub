@@ -14,9 +14,9 @@ export function openAssistant(detail = {}) {
  */
 export function matchCatalog(panels, query, limit = 6) {
   const needle = String(query || '').trim().toLowerCase()
-  if (!needle || !Array.isArray(panels)) return []
+  if (!needle || !asArray(panels).length) return []
   const scored = []
-  for (const panel of panels) {
+  for (const panel of asArray(panels)) {
     const title = String(panel.title || '').toLowerCase()
     const path = String(panel.path || '').toLowerCase()
     const aliases = asArray(panel.aliases).map((alias) => String(alias).toLowerCase())
