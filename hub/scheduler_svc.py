@@ -328,10 +328,10 @@ def _decode_bytes(value) -> str:
     used to ride out of _jsonable's bytes arm and 500 GET /api/scheduler/jobs.
     """
     decoded = _decode_or_none(value)
-    if decoded is not None:
-        return decoded
-    text = _str_text(value)
-    return text if text is not None else ""
+    # scheduler_svc keeps the guarded drop for non-bytes storage: a str
+    # that claims bytes (or any total liar) degrades to ``""`` instead of
+    # recovering through ``_str_text`` (jobs recovers; jobs13 pins this).
+    return decoded if decoded is not None else ""
 
 
 #: CPython's angle-repr shape (``<X object at 0x7f...>``) — a raw heap
@@ -428,11 +428,12 @@ def _jsonable(value, depth: int = 0):
     A >4300-digit ``timeout``/param int still passed through untouched:
     CPython's int->str digit limit then ValueError'd ``json.dumps`` itself.
 
-    jobs15 listing (the jobs14 union): recover honest storage behind a lying
-    ``__class__``, snapshot ``dict.items`` so a nested cell cannot
-    RuntimeError the live walk, belt default-repr heap addresses on keys
-    and coercion, and iterate sequences through unbound bases so an
-    ``__iter__`` bomb cannot vaporise walkable C-level rows.
+    jobs14 listing: recover honest storage behind a lying ``__class__``,
+    snapshot ``dict.items`` so a nested cell cannot RuntimeError the live
+    walk, and belt default-repr heap addresses on keys and coercion.
+    Sequence rank keeps the jobs5/jobs13 guarded drop: a leftover
+    subclass ``__iter__`` bomb becomes ``None`` (hub.jobs recovers the
+    C-level storage; scheduler listing must stay empty, not recovered).
     """
     if depth > 32:
         return None
@@ -515,15 +516,17 @@ def _jsonable(value, depth: int = 0):
         if not _real(value, (list, tuple, set, frozenset)):
             return None
     if _isinst(value, (list, tuple, set, frozenset)):
-        for base in (list, tuple, set, frozenset):
-            try:
-                items = list(base.__iter__(value))
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-            return [_jsonable(v, depth + 1) for v in items]
-        return None
+        # Bound ``list(value)`` so a leftover subclass ``__iter__`` bomb
+        # drops to None (jobs5/jobs13).  Unbound ``base.__iter__`` would
+        # recover C-level rows; that is the jobs module contract, not this
+        # listing walk.
+        try:
+            items = list(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+        return [_jsonable(v, depth + 1) for v in items]
     try:
         iso = getattr(value, "isoformat", None)
     except _CONTROL_FLOW:
@@ -788,19 +791,14 @@ def list_jobs() -> list[dict]:
     else:
         raw = None
     if _isinst(raw, list) or _real(raw, (list, tuple)):
-        # Unbound bases, real layout first-come (the jobs14 listing rule):
-        # bound ``list(raw)`` dispatched a subclass ``__iter__`` bomb and
-        # vaporised walkable C-level rows to the empty listing.
-        rows = None
-        for base in (list, tuple):
-            try:
-                rows = list(base.__iter__(raw))
-            except _CONTROL_FLOW:
-                raise
-            except BaseException:
-                continue
-            break
-        if rows is None:
+        # Bound ``list(raw)`` so a leftover subclass ``__iter__`` bomb
+        # degrades to the empty listing (jobs5).  Unbound ``list.__iter__``
+        # would recover C-level rows; scheduler listing keeps the drop.
+        try:
+            rows = list(raw)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
             rows = []
     else:
         rows = []
