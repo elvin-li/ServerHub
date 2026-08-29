@@ -2948,7 +2948,7 @@ describe('leftover Infinity interpolations', () => {
     expect(shares).toMatch(/asArray\(entry\.perms\)\.map\(p => finiteText\(p/)
     expect(shares).toMatch(/finiteText\(entry\.kind\)/)
     expect(shares).toMatch(/finiteText\(entry\.effect\)/)
-    expect(shares).toMatch(/n: finiteN\(acl\.entries\.length\)/)
+    expect(shares).toMatch(/n: finiteN\(asArray\(acl\.entries\)\.length\)/)
     expect(shares).not.toMatch(/:href="data\.host\.smb_url"/)
     expect(shares).toMatch(/:href="finiteText\(data\.host\.smb_url, ''\)"/)
     expect(shares).not.toMatch(/:href="share\.url"/)
