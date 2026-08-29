@@ -33,7 +33,7 @@
     </div>
 
     <div v-else class="vm-grid">
-      <div v-for="v in vms" :key="v.id" class="vm-card" :class="{ stopped: v.state === 'stopped' }">
+      <div v-for="v in asArray(vms)" :key="v.id" class="vm-card" :class="{ stopped: v.state === 'stopped' }">
         <div class="vm-head">
           <span class="led" :class="led(v.state)" aria-hidden="true"></span>
           <div class="vm-titles">
@@ -89,7 +89,7 @@
         <div class="field-grid">
           <label for="vm-create-distro">{{ t('vms.distro') }}</label>
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
-            <option v-for="d in (data?.orb_distros || distros)" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
+            <option v-for="d in (asArray(data?.orb_distros).length ? asArray(data.orb_distros) : asArray(distros))" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
           </select>
           <!-- No aria-label here: it overrode the for/id labels with the
                placeholder, so "Version" was announced as its example value. -->

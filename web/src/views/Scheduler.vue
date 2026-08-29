@@ -45,7 +45,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="job in jobs" :key="job.id">
+            <tr v-for="job in asArray(jobs)" :key="job.id">
               <td>
                 <strong>{{ finiteText(job.name) }}</strong>
                 <div class="show-m sub">{{ t(`sched.type_${job.type}`) }} · {{ finiteText(job.cron) }}</div>
@@ -90,13 +90,13 @@
       </div>
 
       <!-- bridged system-managed schedules (read-only) -->
-      <div v-if="systemJobs.length" class="tile" style="margin-top:12px">
+      <div v-if="asArray(systemJobs).length" class="tile" style="margin-top:12px">
         <h2 style="margin-top:0">{{ t('sched.managed_title') }}</h2>
         <p class="meta" style="font-size:11px;color:var(--sub)">{{ t('sched.managed_smart_hint') }}</p>
         <div class="table-wrap" style="margin-top:6px">
         <table class="dense fit-m">
           <tbody>
-            <tr v-for="s in systemJobs" :key="s.id">
+            <tr v-for="s in asArray(systemJobs)" :key="s.id">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong> <span class="badge">{{ t('sched.readonly') }}</span>
                 <div class="show-m sub">{{ s.enabled ? finiteText(s.interval) : t('sched.disabled') }}{{ s.enabled ? ' · ' + fmt(s.next_run) : '' }}</div>
@@ -226,7 +226,7 @@
              focus, so the panel-focus read never covers it — same as the
              PhotosHub empty pending state. -->
         <div v-else-if="!runs.length" class="meta" role="status">{{ t('sched.runs_empty') }}</div>
-        <div v-for="(run, i) in runs" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
+        <div v-for="(run, i) in asArray(runs)" :key="i" style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px">
           <div style="font-size:12px;margin-bottom:4px">
             <span class="badge" :class="run.status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${run.status}`) }}</span>
             <span class="mono" style="margin-left:8px">{{ fmt(run.ts) }}</span>

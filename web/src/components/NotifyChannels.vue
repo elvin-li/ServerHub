@@ -7,7 +7,7 @@
          replacing them: a failed refresh must not blank a list the operator
          was just reading (same rule as the bookmarks card). -->
     <div v-if="loadError" class="sub" style="color:var(--down-text)" role="alert">{{ finiteText(loadError) }}</div>
-    <div class="table-wrap" v-if="channels.length">
+    <div class="table-wrap" v-if="asArray(channels).length">
     <table class="dense fit-m">
       <thead>
         <tr>
@@ -19,7 +19,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in channels" :key="c.id">
+        <tr v-for="c in asArray(channels)" :key="c.id">
           <td>
             <strong>{{ finiteText(c.name) }}</strong>
             <div class="mono sub-line">{{ finiteText(c.id) }}</div>

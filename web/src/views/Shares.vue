@@ -86,7 +86,7 @@
           </button>
         </div>
 
-        <div v-if="!data.smb?.length" class="card empty-state">
+        <div v-if="!asArray(data.smb).length" class="card empty-state">
           <FolderOpen :size="26" />
           <div>
             <strong>{{ t('shares.smb_empty') }}</strong>
@@ -94,7 +94,7 @@
           </div>
         </div>
         <div v-else class="card share-list">
-          <article v-for="share in data.smb" :key="share.record_name" class="share-row">
+          <article v-for="share in asArray(data.smb)" :key="share.record_name" class="share-row">
             <div class="folder-icon"><Folder :size="18" /></div>
             <div class="share-copy">
               <strong>{{ finiteText(share.smb_name, '') || finiteText(share.name) }}</strong>
@@ -194,7 +194,7 @@
         </div>
       </section>
 
-      <section v-if="data.file_services?.length" aria-labelledby="file-services-title">
+      <section v-if="asArray(data.file_services).length" aria-labelledby="file-services-title">
         <div class="section-bar">
           <div>
             <h2 id="file-services-title" class="section-title">{{ t('shares.file_services') }}</h2>
@@ -202,7 +202,7 @@
           </div>
         </div>
         <div class="card file-service-list">
-          <article v-for="service in data.file_services" :key="service.id" class="file-service-row">
+          <article v-for="service in asArray(data.file_services)" :key="service.id" class="file-service-row">
             <div class="service-icon service-file"><Globe2 :size="17" /></div>
             <strong>{{ finiteText(service.name) }}</strong>
             <span class="badge" :class="service.state === 'ok' ? 'ok' : 'stopped'">

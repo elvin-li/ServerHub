@@ -2896,6 +2896,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).toMatch(/asArray\(m\.capabilities\)\.map\(c => finiteText\(c, ''\)\)/)
     expect(ollama).not.toMatch(/class="badge cap">\{\{ c \}\}<\/span>/)
     expect(ollama).toMatch(/finiteText\(c\)/)
+    expect(ollama).toMatch(/v-for="c in asArray\(m\.capabilities\)"/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
@@ -2952,6 +2953,8 @@ describe('leftover Infinity interpolations', () => {
     expect(shares).toMatch(/finiteText\(aclError\)/)
     expect(shares).not.toMatch(/aclError\.value = error\.message/)
     expect(shares).toMatch(/aclError\.value = finiteText\(error\.message, ''\)/)
+    expect(shares).toMatch(/v-for="share in asArray\(data\.smb\)"/)
+    expect(shares).toMatch(/v-for="service in asArray\(data\.file_services\)"/)
   })
 
   it('MainArray leftover capacities go through fmtGb/withUnit', () => {
@@ -3120,6 +3123,9 @@ describe('leftover Infinity interpolations', () => {
     expect(vms).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(vms).not.toMatch(/window\.location\.hostname \|\| data\.value\?\.host_ip/)
     expect(vms).toMatch(/finiteText\(window\.location\.hostname, ''\) \|\| finiteText\(data\.value\?\.host_ip, ''\)/)
+    expect(vms).not.toMatch(/data\?\.orb_distros \|\| distros/)
+    expect(vms).toMatch(/asArray\(data\?\.orb_distros\)/)
+    expect(vms).toMatch(/v-for="v in asArray\(vms\)"/)
   })
 
   it('Tools leftover disk/pid interpolations go through finite helpers', () => {
@@ -3182,6 +3188,8 @@ describe('leftover Infinity interpolations', () => {
     expect(files).toMatch(/finiteText\(error\)/)
     expect(files).not.toMatch(/it\.mode \? ' · ' \+ it\.mode/)
     expect(files).toMatch(/finiteText\(it\.mode, ''\) \? ' · ' \+ finiteText\(it\.mode\)/)
+    expect(files).toMatch(/v-for="it in asArray\(listing\.items\)"/)
+    expect(files).toMatch(/v-for="r in asArray\(roots\)"/)
   })
 
   it('Modules leftover names go through finiteText', () => {
@@ -3365,6 +3373,9 @@ describe('leftover Infinity interpolations', () => {
     expect(scheduler).toMatch(/finiteText\(job\.cron\)/)
     expect(scheduler).not.toMatch(/\{\{\s*run\.tail\s*\}\}/)
     expect(scheduler).toMatch(/finiteText\(run\.tail\)/)
+    expect(scheduler).toMatch(/v-for="job in asArray\(jobs\)"/)
+    expect(scheduler).toMatch(/v-for="s in asArray\(systemJobs\)"/)
+    expect(scheduler).toMatch(/v-for="\(run, i\) in asArray\(runs\)"/)
   })
 
   it('Backups leftover ports/files/mtime go through finite helpers', () => {
@@ -3398,6 +3409,7 @@ describe('leftover Infinity interpolations', () => {
     expect(backups).toMatch(/finiteText\(job\.cron\)/)
     expect(backups).not.toMatch(/preview\.samples" :key="i">\{\{ line \}\}<\/div>/)
     expect(backups).toMatch(/finiteText\(line\)/)
+    expect(backups).toMatch(/v-for="\(line, i\) in asArray\(preview\.samples\)"/)
   })
 
   it('App leftover service counts go through finiteN', () => {
@@ -3532,6 +3544,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(ch).not.toMatch(/toast\('❌ ' \+ err\.message\)/)
     expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(err\.message\)\)/)
+    expect(ch).toMatch(/v-for="c in asArray\(channels\)"/)
   })
 
   it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {

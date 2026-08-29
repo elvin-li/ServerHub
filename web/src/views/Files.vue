@@ -20,7 +20,7 @@
     <template v-else>
       <div class="toolbar files-toolbar">
         <select v-model="rootId" class="cat-select" @change="onRootChange" :aria-label="t('files.root')">
-          <option v-for="r in roots" :key="r.id" :value="r.id">{{ finiteText(r.name) }}</option>
+          <option v-for="r in asArray(roots)" :key="r.id" :value="r.id">{{ finiteText(r.name) }}</option>
         </select>
         <button type="button" @click="loadList" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
@@ -84,7 +84,7 @@
               <td colspan="5"><strong>..</strong> <span class="sub">{{ t('files.parent') }}</span></td>
             </tr>
             <tr
-              v-for="it in listing.items"
+              v-for="it in asArray(listing.items)"
               :key="it.path"
               :class="{ selected: selected.includes(it.path), dir: it.is_dir }"
               @dblclick="openItem(it)"
