@@ -30,21 +30,21 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in asArray(filtered)" :key="task.id">
+          <tr v-for="task in asArray(filtered)" :key="finiteText(asRecord(task).id)">
             <td>
-              <strong>{{ finiteText(task.name) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(task.id) }}</div>
-              <div v-if="finiteText(task.desc, '')" class="show-m sub">{{ finiteText(task.desc) }}</div>
+              <strong>{{ finiteText(asRecord(task).name) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(task).id) }}</div>
+              <div v-if="finiteText(asRecord(task).desc, '')" class="show-m sub">{{ finiteText(asRecord(task).desc) }}</div>
             </td>
-            <td class="col-hide-m" style="max-width:360px">{{ finiteText(task.desc) }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ finiteText(asRecord(task).desc) }}</td>
             <td>
-              <span v-if="task.running" class="badge warn">{{ t('maintenance.running') }}</span>
-              <span v-else-if="task.rc === 0" class="badge ok">✅ {{ finiteText(task.finished) }}</span>
-              <span v-else-if="task.rc != null" class="badge down">❌ {{ finiteN(task.rc) }}</span>
+              <span v-if="asRecord(task).running" class="badge warn">{{ t('maintenance.running') }}</span>
+              <span v-else-if="asRecord(task).rc === 0" class="badge ok">✅ {{ finiteText(asRecord(task).finished) }}</span>
+              <span v-else-if="asRecord(task).rc != null" class="badge down">❌ {{ finiteN(asRecord(task).rc) }}</span>
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="task.running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="asRecord(task).running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
