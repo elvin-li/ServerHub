@@ -51,8 +51,8 @@
           <div class="host-icon"><Server :size="22" /></div>
           <div class="host-copy">
             <span id="sharing-host-title" class="section-title">{{ t('shares.this_mac') }}</span>
-            <strong>{{ finiteText(data.host?.name, '') || t('shares.unknown') }}</strong>
-            <code>{{ finiteText(data.host?.address) }}</code>
+            <strong>{{ finiteText(asRecord(asRecord(data).host).name, '') || t('shares.unknown') }}</strong>
+            <code>{{ finiteText(asRecord(asRecord(data).host).address) }}</code>
           </div>
         </div>
         <div class="host-stats" :aria-label="t('shares.overview_summary')">
@@ -66,10 +66,10 @@
           </div>
         </div>
         <div class="host-links btns">
-          <a v-if="data.host?.smb_url" class="btn primary" :href="finiteText(data.host.smb_url, '')">
+          <a v-if="asRecord(asRecord(data).host).smb_url" class="btn primary" :href="finiteText(asRecord(asRecord(data).host).smb_url, '')">
             <FolderOpen :size="15" />{{ t('shares.connect_files') }}
           </a>
-          <a v-if="data.host?.vnc_url" class="btn" :href="finiteText(data.host.vnc_url, '')">
+          <a v-if="asRecord(asRecord(data).host).vnc_url" class="btn" :href="finiteText(asRecord(asRecord(data).host).vnc_url, '')">
             <Monitor :size="15" />{{ t('shares.connect_screen') }}
           </a>
         </div>
@@ -86,7 +86,7 @@
           </button>
         </div>
 
-        <div v-if="!asArray(data.smb).length" class="card empty-state">
+        <div v-if="!asArray(asRecord(data).smb).length" class="card empty-state">
           <FolderOpen :size="26" />
           <div>
             <strong>{{ t('shares.smb_empty') }}</strong>
@@ -94,30 +94,30 @@
           </div>
         </div>
         <div v-else class="card share-list">
-          <article v-for="share in asArray(data.smb)" :key="share.record_name" class="share-row">
+          <article v-for="share in asArray(asRecord(data).smb)" :key="finiteText(asRecord(share).record_name)" class="share-row">
             <div class="folder-icon"><Folder :size="18" /></div>
             <div class="share-copy">
-              <strong>{{ finiteText(share.smb_name, '') || finiteText(share.name) }}</strong>
-              <code class="path">{{ finiteText(share.path) }}</code>
-              <a v-if="share.url" :href="finiteText(share.url, '')">{{ finiteText(share.url) }}</a>
+              <strong>{{ finiteText(asRecord(share).smb_name, '') || finiteText(asRecord(share).name) }}</strong>
+              <code class="path">{{ finiteText(asRecord(share).path) }}</code>
+              <a v-if="asRecord(share).url" :href="finiteText(asRecord(share).url, '')">{{ finiteText(asRecord(share).url) }}</a>
             </div>
             <div class="share-badges">
-              <span v-if="share.guest" class="badge warn"><Users :size="12" />{{ t('shares.guest') }}</span>
+              <span v-if="asRecord(share).guest" class="badge warn"><Users :size="12" />{{ t('shares.guest') }}</span>
               <span v-else class="badge ok"><LockKeyhole :size="12" />{{ t('shares.secure') }}</span>
-              <span v-if="share.readonly" class="badge">{{ t('shares.readonly') }}</span>
-              <span v-if="share.encrypted" class="badge accent">{{ t('shares.encrypted') }}</span>
-              <span v-if="share.time_machine" class="badge accent tm-badge">
+              <span v-if="asRecord(share).readonly" class="badge">{{ t('shares.readonly') }}</span>
+              <span v-if="asRecord(share).encrypted" class="badge accent">{{ t('shares.encrypted') }}</span>
+              <span v-if="asRecord(share).time_machine" class="badge accent tm-badge">
                 <History :size="12" />
-                {{ finiteN(share.tm_quota_gb, null) != null
-                  ? t('shares.tm_quota_badge', { gb: finiteN(share.tm_quota_gb) })
+                {{ finiteN(asRecord(share).tm_quota_gb, null) != null
+                  ? t('shares.tm_quota_badge', { gb: finiteN(asRecord(share).tm_quota_gb) })
                   : t('shares.time_machine_badge') }}
               </span>
             </div>
             <div class="share-actions btns">
-              <button class="tiny" :aria-label="t('shares.edit_named', { name: finiteText(share.smb_name, '') || finiteText(share.name) })" :disabled="busy" @click="openEdit(share)">
+              <button class="tiny" :aria-label="t('shares.edit_named', { name: finiteText(asRecord(share).smb_name, '') || finiteText(asRecord(share).name) })" :disabled="busy" @click="openEdit(share)">
                 <Pencil :size="15" />{{ t('shares.edit_action') }}
               </button>
-              <button class="tiny danger-button" :aria-label="t('shares.remove_named', { name: finiteText(share.smb_name, '') || finiteText(share.name) })" :disabled="busy" @click="removeShare(share)">
+              <button class="tiny danger-button" :aria-label="t('shares.remove_named', { name: finiteText(asRecord(share).smb_name, '') || finiteText(asRecord(share).name) })" :disabled="busy" @click="removeShare(share)">
                 <Trash2 :size="15" />{{ t('shares.remove_action') }}
               </button>
             </div>
@@ -147,21 +147,21 @@
             </div>
           </div>
           <div class="service-list">
-            <article v-for="service in asArray(coreServices)" :key="service.id" class="service-row">
-              <div class="service-icon" :class="`service-${service.id}`">
-                <component :is="serviceIcon(service.id)" :size="17" />
+            <article v-for="service in asArray(coreServices)" :key="finiteText(asRecord(service).id)" class="service-row">
+              <div class="service-icon" :class="`service-${asRecord(service).id}`">
+                <component :is="serviceIcon(asRecord(service).id)" :size="17" />
               </div>
               <div class="service-copy">
-                <strong>{{ t(`shares.service_${service.id}`) }}</strong>
-                <span>{{ t(`shares.service_${service.id}_hint`) }}</span>
+                <strong>{{ t(`shares.service_${asRecord(service).id}`) }}</strong>
+                <span>{{ t(`shares.service_${asRecord(service).id}_hint`) }}</span>
               </div>
               <div class="service-action">
-                <span class="badge" :class="stateClass(service.enabled)">{{ stateText(service.enabled) }}</span>
+                <span class="badge" :class="stateClass(asRecord(service).enabled)">{{ stateText(asRecord(service).enabled) }}</span>
                 <MacSwitch
-                  v-if="typeof service.enabled === 'boolean'"
-                  :checked="service.enabled"
+                  v-if="typeof asRecord(service).enabled === 'boolean'"
+                  :checked="asRecord(service).enabled"
                   :disabled="busy"
-                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${finiteText(service.id, '')}`) })"
+                  :aria-label="t('shares.toggle_service', { name: t(`shares.service_${finiteText(asRecord(service).id, '')}`) })"
                   @change="toggleService(service)"
                 />
               </div>
@@ -179,13 +179,13 @@
             <span class="badge accent">{{ t('shares.managed_by_macos') }}</span>
           </div>
           <div class="managed-grid">
-            <article v-for="service in asArray(managedServices)" :key="service.id" class="managed-service">
-              <div class="service-icon" :class="`service-${service.id}`">
-                <component :is="serviceIcon(service.id)" :size="17" />
+            <article v-for="service in asArray(managedServices)" :key="finiteText(asRecord(service).id)" class="managed-service">
+              <div class="service-icon" :class="`service-${asRecord(service).id}`">
+                <component :is="serviceIcon(asRecord(service).id)" :size="17" />
               </div>
               <div>
-                <strong>{{ t(`shares.service_${service.id}`) }}</strong>
-                <span>{{ t(`shares.service_${service.id}_hint`) }}</span>
+                <strong>{{ t(`shares.service_${asRecord(service).id}`) }}</strong>
+                <span>{{ t(`shares.service_${asRecord(service).id}_hint`) }}</span>
               </div>
             </article>
           </div>
@@ -194,7 +194,7 @@
         </div>
       </section>
 
-      <section v-if="asArray(data.file_services).length" aria-labelledby="file-services-title">
+      <section v-if="asArray(asRecord(data).file_services).length" aria-labelledby="file-services-title">
         <div class="section-bar">
           <div>
             <h2 id="file-services-title" class="section-title">{{ t('shares.file_services') }}</h2>
@@ -202,13 +202,13 @@
           </div>
         </div>
         <div class="card file-service-list">
-          <article v-for="service in asArray(data.file_services)" :key="service.id" class="file-service-row">
+          <article v-for="service in asArray(asRecord(data).file_services)" :key="finiteText(asRecord(service).id)" class="file-service-row">
             <div class="service-icon service-file"><Globe2 :size="17" /></div>
-            <strong>{{ finiteText(service.name) }}</strong>
-            <span class="badge" :class="service.state === 'ok' ? 'ok' : 'stopped'">
-              {{ service.state === 'ok' ? t('common.running') : t('common.off') }}
+            <strong>{{ finiteText(asRecord(service).name) }}</strong>
+            <span class="badge" :class="asRecord(service).state === 'ok' ? 'ok' : 'stopped'">
+              {{ asRecord(service).state === 'ok' ? t('common.running') : t('common.off') }}
             </span>
-            <a v-if="service.url" class="btn tiny" :href="finiteText(service.url, '')" target="_blank" rel="noopener">
+            <a v-if="asRecord(service).url" class="btn tiny" :href="finiteText(asRecord(service).url, '')" target="_blank" rel="noopener">
               {{ t('common.open') }}<ExternalLink :size="13" />
             </a>
           </article>
@@ -286,29 +286,29 @@
                  focus, so without it the failure text appears silently. -->
             <div v-else-if="aclError" class="acl-error" role="alert">{{ finiteText(aclError) }}</div>
             <template v-else-if="acl">
-              <div v-for="user in asArray(acl.users)" :key="user.username" class="acl-user-row">
+              <div v-for="user in asArray(asRecord(acl).users)" :key="finiteText(asRecord(user).username)" class="acl-user-row">
                 <span class="acl-user">
-                  <strong>{{ finiteText(user.username) }}</strong>
-                  <small v-if="finiteText(user.real_name, '')">{{ finiteText(user.real_name) }}</small>
-                  <small v-if="user.username === acl.owner" class="acl-owner-tag">{{ t('shares.acl_owner') }}</small>
+                  <strong>{{ finiteText(asRecord(user).username) }}</strong>
+                  <small v-if="finiteText(asRecord(user).real_name, '')">{{ finiteText(asRecord(user).real_name) }}</small>
+                  <small v-if="asRecord(user).username === asRecord(acl).owner" class="acl-owner-tag">{{ t('shares.acl_owner') }}</small>
                 </span>
                 <select
-                  :value="aclLevelOf(user.username)"
-                  :disabled="aclBusy || user.username === acl.owner"
-                  :aria-label="t('shares.acl_level_for', { name: finiteText(user.username) })"
-                  @change="applyAcl(user.username, $event.target.value)"
+                  :value="aclLevelOf(asRecord(user).username)"
+                  :disabled="aclBusy || asRecord(user).username === asRecord(acl).owner"
+                  :aria-label="t('shares.acl_level_for', { name: finiteText(asRecord(user).username) })"
+                  @change="applyAcl(asRecord(user).username, $event.target.value)"
                 >
                   <option value="none">{{ t('shares.acl_none') }}</option>
                   <option value="read">{{ t('shares.acl_read') }}</option>
                   <option value="readwrite">{{ t('shares.acl_readwrite') }}</option>
                 </select>
               </div>
-              <details class="acl-entries" v-if="asArray(acl.entries).length">
-                <summary>{{ t('shares.acl_current', { n: finiteN(asArray(acl.entries).length) }) }}</summary>
-                <code v-for="entry in asArray(acl.entries)" :key="entry.index" class="acl-entry mono">
-                  {{ finiteN(entry.index) }}: {{ finiteText(entry.kind) }}:{{ finiteText(entry.name) }}
-                  {{ entry.inherited ? 'inherited ' : '' }}{{ finiteText(entry.effect) }}
-                  {{ asArray(entry.perms).map(p => finiteText(p, '')).filter(Boolean).join(',') }}
+              <details class="acl-entries" v-if="asArray(asRecord(acl).entries).length">
+                <summary>{{ t('shares.acl_current', { n: finiteN(asArray(asRecord(acl).entries).length) }) }}</summary>
+                <code v-for="entry in asArray(asRecord(acl).entries)" :key="finiteN(asRecord(entry).index)" class="acl-entry mono">
+                  {{ finiteN(asRecord(entry).index) }}: {{ finiteText(asRecord(entry).kind) }}:{{ finiteText(asRecord(entry).name) }}
+                  {{ asRecord(entry).inherited ? 'inherited ' : '' }}{{ finiteText(asRecord(entry).effect) }}
+                  {{ asArray(asRecord(entry).perms).map(p => finiteText(p, '')).filter(Boolean).join(',') }}
                 </code>
               </details>
               <p class="acl-hint">{{ t('shares.acl_guest_note') }}</p>
@@ -371,13 +371,13 @@ const iconMap = {
   bluetooth_sharing: Bluetooth,
 }
 const serviceIcon = (id) => iconMap[id] || Archive
-const systemServices = computed(() => asArray(data.value?.system_services))
-const coreServices = computed(() => asArray(systemServices.value).filter((service) => service.controllable))
-const managedServices = computed(() => asArray(systemServices.value).filter((service) => !service.controllable))
-const shareCount = computed(() => asArray(data.value?.smb).length)
-const tmStatus = computed(() => asRecord(data.value?.time_machine))
-const hostName = computed(() => finiteText(data.value?.host?.name, '') || t('shares.unknown'))
-const activeCoreCount = computed(() => asArray(coreServices.value).filter((service) => service.enabled === true).length)
+const systemServices = computed(() => asArray(asRecord(data.value).system_services).map((row) => asRecord(row)))
+const coreServices = computed(() => asArray(systemServices.value).filter((service) => asRecord(service).controllable))
+const managedServices = computed(() => asArray(systemServices.value).filter((service) => !asRecord(service).controllable))
+const shareCount = computed(() => asArray(asRecord(data.value).smb).length)
+const tmStatus = computed(() => asRecord(asRecord(data.value).time_machine))
+const hostName = computed(() => finiteText(asRecord(asRecord(data.value).host).name, '') || t('shares.unknown'))
+const activeCoreCount = computed(() => asArray(coreServices.value).filter((service) => asRecord(service).enabled === true).length)
 const stateClass = (enabled) => enabled === true ? 'ok' : enabled === false ? 'stopped' : 'warn'
 const stateText = (enabled) => enabled === true
   ? t('common.on')
@@ -394,15 +394,22 @@ async function refresh() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getShares()
+    const next = asRecord(await getShares())
     if (generation !== loadGeneration || !pageAlive) return
-    data.value = next
+    data.value = {
+      ...next,
+      host: asRecord(next.host),
+      smb: asArray(next.smb).map((row) => asRecord(row)),
+      system_services: asArray(next.system_services).map((row) => asRecord(row)),
+      file_services: asArray(next.file_services).map((row) => asRecord(row)),
+      time_machine: asRecord(next.time_machine),
+    }
     loadError.value = ''
   } catch (error) {
     // "Sharing is unavailable" was asserted for any failure, which conflates a
     // host that has file sharing switched off with a request that never landed.
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = error.message || String(error)
+    loadError.value = finiteText(error.message || String(error), '')
     toast(`❌ ${finiteText(error.message)}`)
   } finally {
     if (generation === loadGeneration) {
@@ -419,19 +426,20 @@ function openCreate() {
 }
 
 function openEdit(share) {
-  editing.value = share
+  const row = asRecord(share)
+  editing.value = row
   form.value = {
-    path: finiteText(share.path, ''),
-    name: finiteText(share.record_name, '') || finiteText(share.name, ''),
-    smb_name: finiteText(share.smb_name, ''),
-    guest: Boolean(share.guest),
-    readonly: Boolean(share.readonly),
-    encrypted: Boolean(share.encrypted),
-    time_machine: Boolean(share.time_machine),
-    tm_quota_gb: share.tm_quota_gb ? String(share.tm_quota_gb) : '',
+    path: finiteText(row.path, ''),
+    name: finiteText(row.record_name, '') || finiteText(row.name, ''),
+    smb_name: finiteText(row.smb_name, ''),
+    guest: Boolean(row.guest),
+    readonly: Boolean(row.readonly),
+    encrypted: Boolean(row.encrypted),
+    time_machine: Boolean(row.time_machine),
+    tm_quota_gb: row.tm_quota_gb ? String(row.tm_quota_gb) : '',
   }
   sheetOpen.value = true
-  void loadAcl(share.path)
+  void loadAcl(row.path)
 }
 
 // ── per-user access (filesystem ACL of the shared directory) ────────────────
@@ -448,9 +456,13 @@ async function loadAcl(path) {
   if (!path) return
   aclLoading.value = true
   try {
-    const next = await getShareAcl(path)
+    const next = asRecord(await getShareAcl(path))
     if (generation !== aclGeneration || !pageAlive) return
-    acl.value = next
+    acl.value = {
+      ...next,
+      users: asArray(next.users).map((row) => asRecord(row)),
+      entries: asArray(next.entries).map((row) => asRecord(row)),
+    }
   } catch (error) {
     if (generation !== aclGeneration || !pageAlive) return
     // Read failure degrades to guidance instead of hiding the whole sheet.
@@ -462,7 +474,7 @@ async function loadAcl(path) {
 
 /** Level currently granted to *username* by a direct (non-inherited) entry. */
 function aclLevelOf(username) {
-  const entries = asArray(acl.value?.entries)
+  const entries = asArray(asRecord(acl.value).entries).map((row) => asRecord(row))
   const direct = entries.filter(
     (entry) => entry.kind === 'user' && entry.name === username && !entry.inherited,
   )
@@ -545,12 +557,13 @@ async function saveShare() {
 }
 
 async function removeShare(share) {
-  if (busy.value || !confirm(t('shares.confirm_remove', { name: finiteText(share.smb_name, '') || finiteText(share.name) }))) return
+  const row = asRecord(share)
+  if (busy.value || !confirm(t('shares.confirm_remove', { name: finiteText(row.smb_name, '') || finiteText(row.name) }))) return
   const generation = loadGeneration
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
-    await removeShareRequest(share.record_name)
+    await removeShareRequest(row.record_name)
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('shares.removed')}`)
   } catch (error) {
@@ -566,20 +579,21 @@ async function removeShare(share) {
 }
 
 async function toggleService(service) {
-  if (busy.value || typeof service.enabled !== 'boolean') return
-  const target = !service.enabled
-  if (target && !confirm(t('shares.confirm_enable_service', { name: t(`shares.service_${finiteText(service.id, '')}`) }))) return
+  const row = asRecord(service)
+  if (busy.value || typeof row.enabled !== 'boolean') return
+  const target = !row.enabled
+  if (target && !confirm(t('shares.confirm_enable_service', { name: t(`shares.service_${finiteText(row.id, '')}`) }))) return
   if (!target) {
-    const disableKey = service.id === 'screen_sharing'
+    const disableKey = row.id === 'screen_sharing'
       ? 'shares.confirm_disable_screen'
       : 'shares.confirm_disable_service'
-    if (!confirm(t(disableKey, { name: t(`shares.service_${finiteText(service.id, '')}`) }))) return
+    if (!confirm(t(disableKey, { name: t(`shares.service_${finiteText(row.id, '')}`) }))) return
   }
   const generation = loadGeneration
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
-    await setSystemSharing(service.id, target)
+    await setSystemSharing(row.id, target)
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('shares.service_updated')}`)
   } catch (error) {
