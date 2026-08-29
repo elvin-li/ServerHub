@@ -144,7 +144,7 @@ const canOpen = computed(() => {
 const targetLabel = computed(() => {
   if (target.value === 'host') return t('terminal.target_host')
   const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => c.id === container.value))
-  return finiteText(item.label, '') || finiteText(container.value, '') || t('terminal.target_container')
+  return finiteText(asRecord(item).label, '') || finiteText(container.value, '') || t('terminal.target_container')
 })
 
 watch(container, (id) => {

@@ -585,7 +585,7 @@
                     </template>
                   </td>
                 </tr>
-                <tr v-if="smartExpanded.has(m.id) && asArray(m.smart?.attrs).length">
+                <tr v-if="smartExpanded.has(asRecord(m).id) && asArray(asRecord(asRecord(m).smart).attrs).length">
                   <td :colspan="9" style="padding:0;background:var(--table-alt)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
                       <table class="dense fit-m" style="width:100%">
@@ -593,27 +593,27 @@
                           <tr>
                             <th style="font-size:10px;width:40px">ID</th>
                             <th style="font-size:10px">{{ t('common.name') }}</th>
-                            <th style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(m.smart.attrs)[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
-                            <th style="font-size:10px">{{ asArray(m.smart.attrs)[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
+                            <th style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th style="font-size:10px">{{ asArray(asRecord(asRecord(m).smart).attrs)[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          <tr v-for="a in asArray(m.smart.attrs)" :key="a.id">
-                            <td class="mono" style="font-size:10px">{{ finiteN(a.id) }}</td>
+                          <tr v-for="a in asArray(asRecord(asRecord(m).smart).attrs)" :key="finiteN(asRecord(a).id)">
+                            <td class="mono" style="font-size:10px">{{ finiteN(asRecord(a).id) }}</td>
                             <td style="font-size:11px">
-                              {{ finiteText(a.name) }}
-                              <div v-if="a.type" class="show-m sub">{{ finiteText(a.type) }}{{ finiteText(a.worst, '') ? ' · W' + finiteText(a.worst) : '' }}{{ finiteText(a.thresh, '') ? ' · T' + finiteText(a.thresh) : '' }}</div>
+                              {{ finiteText(asRecord(a).name) }}
+                              <div v-if="asRecord(a).type" class="show-m sub">{{ finiteText(asRecord(a).type) }}{{ finiteText(asRecord(a).worst, '') ? ' · W' + finiteText(asRecord(a).worst) : '' }}{{ finiteText(asRecord(a).thresh, '') ? ' · T' + finiteText(asRecord(a).thresh) : '' }}</div>
                             </td>
-                            <td v-if="a.raw !== undefined" class="mono" style="font-size:10px">{{ finiteText(a.value) }}</td>
-                            <td class="mono col-hide-m" v-if="a.worst !== undefined" style="font-size:10px">{{ finiteText(a.worst) }}</td>
-                            <td class="mono col-hide-m" v-if="a.thresh !== undefined" style="font-size:10px">{{ finiteText(a.thresh) }}</td>
-                            <td class="col-hide-m" v-if="a.type !== undefined" style="font-size:10px">
-                              <span class="badge" :class="a.type === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ finiteText(a.type) }}</span>
+                            <td v-if="asRecord(a).raw !== undefined" class="mono" style="font-size:10px">{{ finiteText(asRecord(a).value) }}</td>
+                            <td class="mono col-hide-m" v-if="asRecord(a).worst !== undefined" style="font-size:10px">{{ finiteText(asRecord(a).worst) }}</td>
+                            <td class="mono col-hide-m" v-if="asRecord(a).thresh !== undefined" style="font-size:10px">{{ finiteText(asRecord(a).thresh) }}</td>
+                            <td class="col-hide-m" v-if="asRecord(a).type !== undefined" style="font-size:10px">
+                              <span class="badge" :class="asRecord(a).type === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ finiteText(asRecord(a).type) }}</span>
                             </td>
-                            <td class="mono" style="font-size:10px">{{ a.raw !== undefined ? finiteText(a.raw) : finiteText(a.value) }}</td>
+                            <td class="mono" style="font-size:10px">{{ asRecord(a).raw !== undefined ? finiteText(asRecord(a).raw) : finiteText(asRecord(a).value) }}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1262,7 +1262,7 @@ async function openSmart() {
 }
 
 async function runSmartTest(dev, kind) {
-  if (!confirm(t('main_extra.confirm_smart', { kind, id: finiteText(dev.id) }))) return
+  if (!confirm(t('main_extra.confirm_smart', { kind, id: finiteText(asRecord(dev).id) }))) return
   const generation = loadSeq
   smartTestBusy.value = true
   try {

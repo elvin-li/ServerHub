@@ -2003,7 +2003,7 @@ async function checkRemoteUpdates() {
 }
 
 async function restoreBuiltin(item) {
-  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(item.id) }))) return
+  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(asRecord(item).id) }))) return
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
@@ -2109,8 +2109,8 @@ async function doUninstall(tpl) {
 }
 
 async function run(s, action) {
-  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(s.name) }))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(s.name) }))) return
+  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(asRecord(s).name) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(asRecord(s).name) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
