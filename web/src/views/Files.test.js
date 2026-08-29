@@ -168,3 +168,24 @@ describe('Files leave-guards', () => {
   })
 })
 
+describe('Files leftover leftover lists', () => {
+  it('does not throw when leftover roots and items are leftover mappings', async () => {
+    api.getFilesOverview.mockResolvedValue({
+      roots: { id: ROOT },
+      filebrowser: ['not', 'a', 'record'],
+    })
+    api.listFiles.mockResolvedValue({
+      path: ROOT.path,
+      root: ROOT.path,
+      root_id: ROOT.id,
+      count: 1,
+      items: { 0: FILE },
+      crumbs: { 0: { name: 'Home', path: ROOT.path } },
+    })
+    const wrapper = await mountFiles()
+    expect(wrapper.find('.err-bar').exists()).toBe(false)
+    expect(wrapper.find('td.empty-row').exists()).toBe(true)
+    wrapper.unmount()
+  })
+})
+

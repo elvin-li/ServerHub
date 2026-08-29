@@ -491,7 +491,7 @@ describe('dashboard and storage surface leftovers', () => {
     // The count is the answer to Refresh / navigation / delete and changed
     // silently for a screen reader — same treatment as the Modules count.
     const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
-    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\} \{\{ t\('files\.items'\) \}\}/)
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(asRecord\(listing\)\.count\) \}\} \{\{ t\('files\.items'\) \}\}/)
   })
 
   it('names the MainArray SMART attribute expander and carries its open state', () => {
@@ -908,7 +908,7 @@ describe('files surface leftovers', () => {
     // delete, and it changed silently for a screen reader — the same
     // role=status every sibling list page already carries on .meta-count.
     // The behavioural half lives in Files.test.js.
-    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(listing\.count\) \}\}/)
+    expect(files).toMatch(/class="meta-count" role="status" v-if="listing">\{\{ finiteN\(asRecord\(listing\)\.count\) \}\}/)
   })
 
   it('keeps the upload input reachable by keyboard', () => {
@@ -1643,7 +1643,7 @@ describe('operations polling and submission guards', () => {
     expect(files.match(/if \(!j\?\.ok\) throw new Error/g)).toHaveLength(2)
     expect(files).not.toMatch(/window\.open\(`\/api\/files\/download/)
     expect(files).toContain("a.rel = 'noopener'")
-    expect(files).toContain('a.download = it.name')
+    expect(files).toContain('a.download = finiteText(row.name, \'download\')')
     expect(terminal).toContain('terminal handshake timeout')
     expect(terminal).toMatch(/message\.type === 'ready'[\s\S]{0,100}clearConnectTimer\(\)/)
     expect(terminal).toMatch(/function closeTerminal\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
@@ -3186,20 +3186,20 @@ describe('leftover Infinity interpolations', () => {
     const files = readFileSync(resolve(SRC, 'views/Files.vue'), 'utf8')
     expect(files).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(files).not.toMatch(/\{\{\s*listing\.count\s*\}\}/)
-    expect(files).toMatch(/finiteN\(listing\.count\)/)
+    expect(files).toMatch(/finiteN\(asRecord\(listing\)\.count\)/)
     expect(files).toMatch(/function fmtTime\([\s\S]*fmtTs/)
     expect(files).not.toMatch(/listing\.root_id \|\| 'root'/)
-    expect(files).toMatch(/finiteText\(listing\.root_id/)
+    expect(files).toMatch(/finiteText\(asRecord\(listing\)\.root_id/)
     expect(files).not.toMatch(/\{\{\s*it\.name\s*\}\}/)
-    expect(files).toMatch(/finiteText\(it\.name\)/)
+    expect(files).toMatch(/finiteText\(asRecord\(it\)\.name\)/)
     expect(files).not.toMatch(/class="err-bar">\{\{ error \}\}<\/div>/)
     expect(files).toMatch(/finiteText\(error\)/)
     expect(files).not.toMatch(/it\.mode \? ' · ' \+ it\.mode/)
-    expect(files).toMatch(/finiteText\(it\.mode, ''\) \? ' · ' \+ finiteText\(it\.mode\)/)
-    expect(files).toMatch(/v-for="it in asArray\(listing\.items\)"/)
+    expect(files).toMatch(/finiteText\(asRecord\(it\)\.mode, ''\) \? ' · ' \+ finiteText\(asRecord\(it\)\.mode\)/)
+    expect(files).toMatch(/v-for="it in asArray\(asRecord\(listing\)\.items\)"/)
     expect(files).toMatch(/v-for="r in asArray\(roots\)"/)
-    expect(files).toMatch(/items: asArray\(j\.items\)/)
-    expect(files).toMatch(/crumbs: asArray\(j\.crumbs\)/)
+    expect(files).toMatch(/items: asArray\(j\.items\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(files).toMatch(/crumbs: asArray\(j\.crumbs\)\.map\(\(row\) => asRecord\(row\)\)/)
   })
 
   it('Modules leftover names go through finiteText', () => {

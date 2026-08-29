@@ -20,7 +20,7 @@
     <template v-else>
       <div class="toolbar files-toolbar">
         <select v-model="rootId" class="cat-select" @change="onRootChange" :aria-label="t('files.root')">
-          <option v-for="r in asArray(roots)" :key="r.id" :value="r.id">{{ finiteText(r.name) }}</option>
+          <option v-for="r in asArray(roots)" :key="finiteText(asRecord(r).id)" :value="asRecord(r).id">{{ finiteText(asRecord(r).name) }}</option>
         </select>
         <button type="button" @click="loadList" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
@@ -33,16 +33,16 @@
                drawn on the visible button below. -->
           <input type="file" multiple class="sr-only" @change="onUpload" />
         </label>
-        <button type="button" class="danger" :disabled="busy || !selected.length" @click="doDeleteSelected">
+        <button type="button" class="danger" :disabled="busy || !asArray(selected).length" @click="doDeleteSelected">
           {{ t('files.delete') }}
         </button>
         <!-- role=status: navigation, uploads and deletes change this count and
              it changed silently for a screen reader (Modules / Services). -->
-        <span class="meta-count" role="status" v-if="listing">{{ finiteN(listing.count) }} {{ t('files.items') }}</span>
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(asRecord(listing).count) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
-          v-if="fb.running"
+          v-if="asRecord(fb).running"
           type="button"
           class="danger"
           :disabled="busy"
@@ -55,11 +55,11 @@
       <!-- App.vue already owns two labelled navigation landmarks; a third one
            with no name is announced as an anonymous "navigation". -->
       <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
-        <button type="button" class="crumb" @click="goPath(listing.root)">{{ finiteText(listing.root_id, 'root') }}</button>
-        <template v-for="(c, i) in asArray(listing.crumbs)" :key="c.path">
+        <button type="button" class="crumb" @click="goPath(asRecord(listing).root)">{{ finiteText(asRecord(listing).root_id, 'root') }}</button>
+        <template v-for="(c, i) in asArray(asRecord(listing).crumbs)" :key="finiteText(asRecord(c).path)">
           <span class="sep">/</span>
-          <button type="button" class="crumb" :class="{ current: i === asArray(listing.crumbs).length - 1 }" @click="goPath(c.path)">
-            {{ finiteText(c.name, '/') }}
+          <button type="button" class="crumb" :class="{ current: i === asArray(asRecord(listing).crumbs).length - 1 }" @click="goPath(asRecord(c).path)">
+            {{ finiteText(asRecord(c).name, '/') }}
           </button>
         </template>
       </nav>
@@ -84,27 +84,27 @@
               <td colspan="5"><strong>..</strong> <span class="sub">{{ t('files.parent') }}</span></td>
             </tr>
             <tr
-              v-for="it in asArray(listing.items)"
-              :key="it.path"
-              :class="{ selected: selected.includes(it.path), dir: it.is_dir }"
+              v-for="it in asArray(asRecord(listing).items)"
+              :key="finiteText(asRecord(it).path)"
+              :class="{ selected: asArray(selected).includes(asRecord(it).path), dir: asRecord(it).is_dir }"
               @dblclick="openItem(it)"
             >
               <td class="col-check" @click.stop>
-                <input type="checkbox" :checked="selected.includes(it.path)" @change="toggleSel(it.path)" :aria-label="t('files.select_item', { name: finiteText(it.name) })" />
+                <input type="checkbox" :checked="asArray(selected).includes(asRecord(it).path)" @change="toggleSel(asRecord(it).path)" :aria-label="t('files.select_item', { name: finiteText(asRecord(it).name) })" />
               </td>
               <td class="name-cell" @click="openItem(it)" tabindex="0" role="button" @keydown.enter.prevent="openItem(it)" @keydown.space.prevent="openItem(it)">
                 <span class="name-inner">
-                  <span class="ico" aria-hidden="true">{{ it.is_dir ? '📁' : (it.is_link ? '🔗' : '📄') }}</span>
-                  <span class="name-text">{{ finiteText(it.name) }}</span>
+                  <span class="ico" aria-hidden="true">{{ asRecord(it).is_dir ? '📁' : (asRecord(it).is_link ? '🔗' : '📄') }}</span>
+                  <span class="name-text">{{ finiteText(asRecord(it).name) }}</span>
                 </span>
-                <div class="show-m sub">{{ fmtTime(it.mtime) }}{{ finiteText(it.mode, '') ? ' · ' + finiteText(it.mode) : '' }}</div>
+                <div class="show-m sub">{{ fmtTime(asRecord(it).mtime) }}{{ finiteText(asRecord(it).mode, '') ? ' · ' + finiteText(asRecord(it).mode) : '' }}</div>
               </td>
-              <td class="mono size-cell">{{ it.is_dir ? '—' : fmtSize(it.size) }}</td>
-              <td class="mono sub time-cell col-hide-m">{{ fmtTime(it.mtime) }}</td>
-              <td class="mono sub mode-cell col-hide-m">{{ finiteText(it.mode) }}</td>
+              <td class="mono size-cell">{{ asRecord(it).is_dir ? '—' : fmtSize(asRecord(it).size) }}</td>
+              <td class="mono sub time-cell col-hide-m">{{ fmtTime(asRecord(it).mtime) }}</td>
+              <td class="mono sub mode-cell col-hide-m">{{ finiteText(asRecord(it).mode) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
-                  <button v-if="it.is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
+                  <button v-if="asRecord(it).is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
                   <!-- Bound to busy like the toolbar buttons: without it a second
                        click during an in-flight delete issued a second request for
                        the same path and then reported its failure. -->
@@ -116,7 +116,7 @@
             <!-- A failed reload keeps the previous listing on screen; the row
                  must not claim the folder is empty when the read that would
                  prove it just failed (the banner above carries the reason). -->
-            <tr v-if="!asArray(listing.items).length">
+            <tr v-if="!asArray(asRecord(listing).items).length">
               <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
@@ -166,14 +166,15 @@ let listRequest = 0
 let pageAlive = true
 
 const allSelected = computed(() => {
-  const items = asArray(listing.value?.items)
-  return items.length > 0 && items.every(i => selected.value.includes(i.path))
+  const items = asArray(asRecord(listing.value).items)
+  return items.length > 0 && items.every(i => asArray(selected.value).includes(asRecord(i).path))
 })
 
 const parentPath = computed(() => {
+  const row = asRecord(listing.value)
   if (!listing.value) return null
-  const p = listing.value.path
-  const root = listing.value.root
+  const p = finiteText(row.path, '')
+  const root = finiteText(row.root, '')
   if (p === root) return null
   const parts = p.replace(/\/$/, '').split('/')
   parts.pop()
@@ -224,18 +225,19 @@ function deactivate() {
 async function loadOverview() {
   const request = ++listRequest
   try {
-    const j = await getFilesOverview()
+    const j = asRecord(await getFilesOverview())
     if (request !== listRequest) return false
-    roots.value = asArray(j.roots)
+    roots.value = asArray(j.roots).map((row) => asRecord(row))
     fb.value = asRecord(j.filebrowser)
     if (!rootId.value && asArray(roots.value).length) {
-      rootId.value = asArray(roots.value)[0].id
-      currentPath.value = asArray(roots.value)[0].path
+      const first = asRecord(asArray(roots.value)[0])
+      rootId.value = first.id
+      currentPath.value = first.path
     }
     return true
   } catch (e) {
     if (request !== listRequest) return false
-    error.value = e.message || String(e)
+    error.value = finiteText(e.message || String(e), '')
     return false
   }
 }
@@ -249,25 +251,25 @@ async function loadList() {
   error.value = ''
   selected.value = []
   try {
-    const j = await listFiles(path, root)
+    const j = asRecord(await listFiles(path, root))
     if (request !== listRequest || !activated.value) return
     listing.value = {
       ...j,
-      items: asArray(j.items),
-      crumbs: asArray(j.crumbs),
+      items: asArray(j.items).map((row) => asRecord(row)),
+      crumbs: asArray(j.crumbs).map((row) => asRecord(row)),
     }
     currentPath.value = j.path
   } catch (e) {
     if (request !== listRequest || !activated.value) return
-    error.value = typeof e.message === 'string' ? e.message : String(e)
+    error.value = finiteText(e.message || String(e), '')
   } finally {
     if (request === listRequest) loading.value = false
   }
 }
 
 function onRootChange() {
-  const r = roots.value.find(x => x.id === rootId.value)
-  currentPath.value = r?.path || ''
+  const r = asRecord(asArray(roots.value).find(x => asRecord(x).id === rootId.value))
+  currentPath.value = r.path || ''
   loadList()
 }
 
@@ -277,8 +279,9 @@ function goPath(path) {
 }
 
 function openItem(it) {
-  if (it.is_dir) {
-    currentPath.value = it.path
+  const row = asRecord(it)
+  if (row.is_dir) {
+    currentPath.value = row.path
     loadList()
   } else {
     download(it)
@@ -286,16 +289,16 @@ function openItem(it) {
 }
 
 function toggleSel(path) {
-  if (selected.value.includes(path)) {
+  if (asArray(selected.value).includes(path)) {
     selected.value = asArray(selected.value).filter(p => p !== path)
   } else {
-    selected.value = [...selected.value, path]
+    selected.value = [...asArray(selected.value), path]
   }
 }
 
 function toggleAll(e) {
   if (e.target.checked) {
-    selected.value = asArray(listing.value?.items).map(i => i.path)
+    selected.value = asArray(asRecord(listing.value).items).map(i => asRecord(i).path)
   } else {
     selected.value = []
   }
@@ -323,12 +326,13 @@ async function doMkdir() {
 
 async function doRename(it) {
   if (busy.value) return
-  const name = prompt(t('files.rename_ph'), it.name)
-  if (!name || name === it.name) return
+  const row = asRecord(it)
+  const name = prompt(t('files.rename_ph'), row.name)
+  if (!name || name === row.name) return
   const request = listRequest
   busy.value = true
   try {
-    await renameFile(it.path, name, rootId.value)
+    await renameFile(row.path, name, rootId.value)
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -344,12 +348,13 @@ async function doRename(it) {
 
 async function doDeleteOne(it) {
   if (busy.value) return
-  const key = it.is_dir ? 'files.confirm_delete_dir' : 'files.confirm_delete'
-  if (!confirm(t(key, { name: finiteText(it.name) }))) return
+  const row = asRecord(it)
+  const key = row.is_dir ? 'files.confirm_delete_dir' : 'files.confirm_delete'
+  if (!confirm(t(key, { name: finiteText(row.name) }))) return
   const request = listRequest
   busy.value = true
   try {
-    await deleteFile(it.path, rootId.value)
+    await deleteFile(row.path, rootId.value)
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -365,8 +370,8 @@ async function doDeleteOne(it) {
 
 async function doDeleteSelected() {
   if (!asArray(selected.value).length) return
-  const items = asArray(listing.value?.items)
-  const hasDir = asArray(selected.value).some((path) => items.find((it) => it.path === path)?.is_dir)
+  const items = asArray(asRecord(listing.value).items)
+  const hasDir = asArray(selected.value).some((path) => asRecord(items.find((it) => asRecord(it).path === path)).is_dir)
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
   if (!confirm(t(key, { n: asArray(selected.value).length }))) return
   const paths = [...asArray(selected.value)]
@@ -397,7 +402,8 @@ async function doDeleteSelected() {
 }
 
 function download(it) {
-  const q = new URLSearchParams({ path: it.path })
+  const row = asRecord(it)
+  const q = new URLSearchParams({ path: finiteText(row.path, '') })
   if (rootId.value) q.set('root_id', rootId.value)
   // An <a> with rel=noopener, not window.open: the download endpoint can
   // 302 through a content-type the browser will render, and a tab opened
@@ -406,7 +412,7 @@ function download(it) {
   a.href = `/api/files/download?${q}`
   a.target = '_blank'
   a.rel = 'noopener'
-  a.download = it.name || 'download'
+  a.download = finiteText(row.name, 'download')
   document.body.appendChild(a)
   a.click()
   a.remove()
