@@ -2582,7 +2582,7 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).not.toMatch(/action: labels\[action\] \|\| action/)
     expect(containers).toMatch(/action: finiteText\(labels\[action\], ''\) \|\| finiteText\(action\)/)
     expect(containers).not.toMatch(/\{ action, n: selected\.value\.length \}/)
-    expect(containers).toMatch(/action: finiteText\(action\), n: finiteN\(selected\.value\.length, 0\)/)
+    expect(containers).toMatch(/action: finiteText\(action\), n: finiteN\(asArray\(selected\.value\)\.length, 0\)/)
     expect(containers).not.toMatch(/image: ref \}\)/)
     expect(containers).toMatch(/image: finiteText\(ref\)/)
     expect(containers).not.toMatch(/\{\{\s*c\.project\s*\}\}/)
