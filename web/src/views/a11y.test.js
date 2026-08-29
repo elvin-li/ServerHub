@@ -459,7 +459,7 @@ describe('dashboard and storage surface leftovers', () => {
     // to an empty .alert-list that said nothing at all — silent load
     // presented as empty, the same gap the ports/volumes rows already close.
     const dashboard = readFileSync(resolve(SRC, 'views/Dashboard.vue'), 'utf8')
-    expect(dashboard).toMatch(/<div v-if="!status" class="sub">\{\{ loadError \? t\('common\.load_failed'\) : t\('common\.loading'\) \}\}<\/div>\s*<div v-else-if="!attention\.length" class="sub ok-msg">\{\{ t\('dashboard\.all_ok'\) \}\}<\/div>/)
+    expect(dashboard).toMatch(/<div v-if="!status" class="sub">\{\{ loadError \? t\('common\.load_failed'\) : t\('common\.loading'\) \}\}<\/div>\s*<div v-else-if="!asArray\(attention\)\.length" class="sub ok-msg">\{\{ t\('dashboard\.all_ok'\) \}\}<\/div>/)
     expect(dashboard).not.toMatch(/v-if="status && !attention\.length"/)
   })
 
@@ -473,7 +473,7 @@ describe('dashboard and storage surface leftovers', () => {
     const counts = dashboard.match(/\{\{ t\('dashboard\.services_count'/g) || []
     expect(counts.length, 'both services_count copies are present').toBe(2)
     expect(dashboard).toMatch(/<span role="status">\{\{ t\('dashboard\.services_count'/)
-    expect(dashboard).toMatch(/<span role="status">\s*<span class="badge" :class="attention\.length \? 'down' : 'ok'">\{\{ attention\.length \}\}<\/span>/)
+    expect(dashboard).toMatch(/<span role="status">\s*<span class="badge" :class="asArray\(attention\)\.length \? 'down' : 'ok'">\{\{ asArray\(attention\)\.length \}\}<\/span>/)
     expect(dashboard, 'no services_count copy ships without a live region').not.toMatch(/<span>\{\{ t\('dashboard\.services_count'/)
   })
 
