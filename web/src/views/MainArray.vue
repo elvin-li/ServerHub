@@ -538,7 +538,7 @@
                 <template v-for="m in asArray(smartMerged)" :key="m.id">
                 <tr>
                   <td class="mono">
-                    <strong>{{ finiteText(m.id) }}</strong>
+                    <strong>{{ finiteText(asRecord(m).id) }}</strong>
                     <div v-if="m.error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(m.error) }}</div>
                   </td>
                   <td>
