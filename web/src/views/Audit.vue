@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -94,29 +94,57 @@ let loadGeneration = 0
 // Newest first on screen: an operator opening this page is looking at what just
 // happened, not at the start of the file. The API returns oldest-first because
 // that is the natural order of an append-only log.
-const rows = computed(() => asArray(entries.value).slice().reverse())
+const rows = computed(() => {
+  try {
+    return asArray(entries.value).slice().reverse()
+  } catch {
+    return []
+  }
+})
 
 // Text filter over every rendered column — the same convention as the
 // Maintenance task filter.  200 rows of mixed sign-ins need "which of these
 // touched user X / came from client Y" to be one keystroke, not a scan.
 const q = ref('')
+
+function fieldText(value) {
+  if (value != null && typeof value === 'object') return jsonText(value, '')
+  try {
+    return String(finiteText(value, ''))
+  } catch {
+    return ''
+  }
+}
+
 const filteredRows = computed(() => {
-  const list = asArray(rows.value)
-  const needle = q.value.trim().toLowerCase()
-  if (!needle) return list
-  return list.filter((e) => (
-    `${e.event || ''} ${e.username || ''} ${e.client || ''} ${e.outcome || ''} ${detail(e)}`
-      .toLowerCase()
-      .includes(needle)
-  ))
+  try {
+    const list = asArray(rows.value)
+    const needle = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
+    if (!needle) return list
+    return list.filter((e) => {
+      try {
+        const row = asRecord(e)
+        const hay = `${fieldText(row.event)} ${fieldText(row.username)} ${fieldText(row.client)} ${fieldText(row.outcome)} ${detail(e)}`
+        return hay.toLowerCase().includes(needle)
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return []
+  }
 })
 
 function fmt(ts) {
   if (ts == null || ts === '') return ''
-  const d = new Date(ts)
-  // Invalid leftover values (Infinity, NaN, junk strings) used to be returned
-  // verbatim, so the time column printed the word "Infinity".
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  try {
+    const d = new Date(ts)
+    // Invalid leftover values (Infinity, NaN, junk strings) used to be returned
+    // verbatim, so the time column printed the word "Infinity".
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  } catch {
+    return ''
+  }
 }
 
 function badgeClass(outcome) {
@@ -130,10 +158,14 @@ function badgeClass(outcome) {
 // filter here.
 const KNOWN = new Set(['ts', 'event', 'username', 'client', 'outcome'])
 function detail(e) {
-  return Object.entries(asRecord(e))
-    .filter(([k]) => !KNOWN.has(k))
-    .map(([k, v]) => `${finiteText(k)}=${finiteText(v)}`)
-    .join(' · ')
+  try {
+    return Object.entries(asRecord(e))
+      .filter(([k]) => !KNOWN.has(k))
+      .map(([k, v]) => `${finiteText(k)}=${finiteText(v)}`)
+      .join(' · ')
+  } catch {
+    return ''
+  }
 }
 
 async function refresh(manual = false) {
@@ -143,19 +175,27 @@ async function refresh(manual = false) {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const d = await getAuthAudit(200)
+    const d = asRecord(await getAuthAudit(200))
     if (generation !== loadGeneration || !pageAlive) return
-    entries.value = asArray(d.entries)
+    try {
+      entries.value = asArray(d.entries).slice()
+    } catch {
+      entries.value = []
+    }
     const retained = Number(d.retained_lines)
     maxRetained.value = Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    try {
+      loadError.value = finiteText(e && e.message, '') || 'error'
+    } catch {
+      loadError.value = 'error'
+    }
     // Background ticks stay silent: LoadFailure already marks the failure, and
     // a toast per interval while the panel is down is pure noise.  Returning
     // false is lib/poll's opt-in sentinel for backoff.
-    if (manual) toast('❌ ' + finiteText(e.message))
+    if (manual) toast('❌ ' + finiteText(e && e.message))
     return false
   } finally {
     if (generation === loadGeneration && pageAlive) {

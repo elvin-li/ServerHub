@@ -38,6 +38,47 @@ router = APIRouter(tags=["audit"])
 #: small enough that the response stays renderable.
 MAX_LIMIT = 500
 
+#: Real control flow must keep propagating; every other BaseException-shaped
+#: leftover from recent()/redact() used to 500 this read-only listing.
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+
+def _page_rows(limit: int) -> list:
+    """Fail-close leftover lists/mappings from the trail reader.
+
+    ``recent()`` is supposed to return a list of dicts, but this route is
+    the last encoder before Starlette: a leftover mapping (``.map``/list-comp
+    then walks keys), a hostile list subclass, or a redact() bomb on one
+    row used to 500 the whole page.  Non-mapping rows are dropped; the
+    honest siblings stay.  ``_jsonable`` after redact keeps Infinity / lone
+    surrogates off the wire even when a row skipped shaping.
+    """
+    try:
+        raw = audit.recent(limit)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    if not audit._isa(raw, (list, tuple)):
+        return []
+    try:
+        seq = list(raw)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return []
+    out = []
+    for row in seq:
+        try:
+            shaped = audit._jsonable(audit.redact(row))
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        if audit._isa(shaped, dict):
+            out.append(shaped)
+    return out
+
 
 @router.get("/api/audit/auth")
 def auth_audit(limit: int = Query(100, ge=1, le=MAX_LIMIT)):
@@ -48,7 +89,7 @@ def auth_audit(limit: int = Query(100, ge=1, le=MAX_LIMIT)):
     """
     # Re-redact on read.  See the module docstring: record() is not the only
     # writer to this file, so the reader must not assume the bytes are clean.
-    entries = [audit.redact(e) for e in audit.recent(limit)]
+    entries = _page_rows(limit)
     return {
         "entries": entries,
         "count": len(entries),
