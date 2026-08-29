@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-VERSION="3.9.3"
+VERSION="3.9.4"
 ARCH="arm64"
 PYTHON_VERSION="3.12.13"
 PYTHON_RELEASE="20260728"
@@ -254,7 +254,7 @@ fi
 
 INSTALL_TEXT="$WORK/INSTALL.txt"
 cat > "$INSTALL_TEXT" <<'TXT'
-ServerHub 3.9.3 Apple Silicon 测试版 / Test Build
+ServerHub 3.9.4 Apple Silicon 测试版 / Test Build
 
 要求 / Requirements: Apple Silicon Mac, macOS 13 or newer.
 安装 / Install: 将 ServerHub.app 拖入 Applications，然后启动。
