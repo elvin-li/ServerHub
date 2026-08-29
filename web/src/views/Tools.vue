@@ -52,7 +52,7 @@
             <div class="k">CPU</div><div class="mono" style="font-size:11px">{{ finiteText(diag.cpu) }}</div>
             <div class="k">{{ t('tools.cores') }}</div><div>{{ finiteN(diag.ncpu) }}</div>
             <div class="k">{{ t('tools.memory') }}</div><div>{{ fmtGb(diag.mem_gb) }}</div>
-            <div class="k">{{ t('tools.load') }}</div><div class="mono">{{ (diag.load||[]).map(n => finiteN(n)).join(' / ') }}</div>
+            <div class="k">{{ t('tools.load') }}</div><div class="mono">{{ asArray(diag.load).map(n => finiteN(n)).join(' / ') }}</div>
             <div class="k">{{ t('tools.uptime') }}</div><div class="mono">{{ finiteText(diag.uptime_human) }}</div>
             <div class="k">{{ t('tools.root_disk') }}</div>
             <div class="mono">{{ withUnit(diag.root_disk_pct, '%') }} · {{ t('common.free') }} {{ fmtGb(diag.root_disk_free_gb) }}</div>
@@ -124,13 +124,13 @@
              keyboard cannot reach cannot be scrolled by one (WCAG 2.1.1). Same
              treatment as the Logs viewer. -->
         <div
-          v-if="(syslog.lines||[]).length"
+          v-if="asArray(syslog.lines).length"
           class="log-box mono"
           tabindex="0"
           role="region"
           :aria-label="t('tools.tab_syslog')"
         >
-          <div v-for="(ln,i) in syslog.lines" :key="i">{{ finiteText(ln) }}</div>
+          <div v-for="(ln,i) in asArray(syslog.lines)" :key="i">{{ finiteText(ln) }}</div>
         </div>
         <div v-else-if="!tabError.syslog" class="placeholder">{{ finiteText(syslog.message, '') || t('tools.no_data') }}</div>
       </template>
@@ -191,7 +191,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(l,i) in (df.lines||[])" :key="i">
+            <tr v-for="(l,i) in asArray(df.lines)" :key="i">
               <td>
                 {{ finiteText(l.type) }}
                 <div class="show-m sub">{{ t('tools.col_active') }} {{ finiteText(l.active) }}</div>
@@ -201,7 +201,7 @@
               <td>{{ finiteText(l.size) }}</td>
               <td>{{ finiteText(l.reclaimable) }}</td>
             </tr>
-            <tr v-if="!(df.lines||[]).length && !tabError.docker">
+            <tr v-if="!asArray(df.lines).length && !tabError.docker">
               <td colspan="5" class="empty-row">{{ df.engine_up === false ? t('tools.engine_off') : t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -308,7 +308,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="a in (agents.agents||[])" :key="a.label">
+            <tr v-for="a in asArray(agents.agents)" :key="a.label">
               <td class="mono" style="font-size:11px">
                 {{ finiteText(a.label) }}
                 <div class="show-m sub">{{ a.run_at_load ? 'RunAtLoad' : '' }}{{ a.keep_alive ? (a.run_at_load ? ' · ' : '') + 'KeepAlive' : '' }}</div>
@@ -319,7 +319,7 @@
               <td class="mono">{{ finiteN(a.interval_sec, null) ? withUnit(a.interval_sec, 's') : (a.calendar ? 'cal' : '—') }}</td>
               <td class="mono col-hide-m" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(a.program)">{{ finiteText(a.program) }}</td>
             </tr>
-            <tr v-if="!(agents.agents||[]).length">
+            <tr v-if="!asArray(agents.agents).length">
               <td colspan="5" class="empty-row">{{ t('tools.no_agents') }}</td>
             </tr>
           </tbody>
@@ -339,13 +339,13 @@
           <pre class="mono hw-pre" tabindex="0" role="region" :aria-label="finiteText(key)">{{ finiteText(sec.text) }}</pre>
         </div>
       </div>
-      <div class="card" style="margin-top:12px" v-if="(hw?.disks||[]).length">
+      <div class="card" style="margin-top:12px" v-if="asArray(hw?.disks).length">
         <h2 class="section-title" style="margin-top:0">{{ t('tools.disks') }}</h2>
         <div class="table-wrap">
         <table class="dense fit-m">
           <thead><tr><th>ID</th><th>{{ t('common.name') }}</th><th>{{ t('common.size') }}</th><th class="col-hide-m">SSD</th><th>{{ t('common.status') }}</th></tr></thead>
           <tbody>
-            <tr v-for="d in hw.disks" :key="d.id">
+            <tr v-for="d in asArray(hw.disks)" :key="d.id">
               <td class="mono">{{ finiteText(d.id) }}</td>
               <td>
                 {{ finiteText(d.name) }}
@@ -429,8 +429,8 @@
           <p class="hint" style="margin-top:0">
             {{ t('tools.outdated_n', { n: finiteN(updates.brew?.count, 0) }) }}
           </p>
-          <ul class="mono update-list" v-if="(updates.brew?.outdated||[]).length">
-            <li v-for="(ln,i) in updates.brew.outdated" :key="i">{{ finiteText(ln) }}</li>
+          <ul class="mono update-list" v-if="asArray(updates.brew?.outdated).length">
+            <li v-for="(ln,i) in asArray(updates.brew.outdated)" :key="i">{{ finiteText(ln) }}</li>
           </ul>
           <div v-else class="sub">{{ t('tools.up_to_date') }}</div>
           <div class="btns" style="margin-top:10px" v-if="finiteN(updates.brew?.count, 0) > 0">
@@ -440,7 +440,7 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">macOS</h2>
           <div class="mono" style="font-size:12px;white-space:pre-wrap;max-height:280px;overflow:auto">
-            {{ (updates.macos?.lines||[]).map(n => finiteText(n, '')).filter(Boolean).join('\n') || finiteText(updates.macos?.raw) }}
+            {{ asArray(updates.macos?.lines).map(n => finiteText(n, '')).filter(Boolean).join('\n') || finiteText(updates.macos?.raw) }}
           </div>
           <p class="hint">{{ t('tools.macos_install_hint') }}</p>
         </div>
@@ -497,7 +497,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(p,i) in (ports.ports||[])" :key="i">
+            <tr v-for="(p,i) in asArray(ports.ports)" :key="i">
               <td class="mono">
                 {{ finiteText(p.command) }}
                 <div class="show-m sub">{{ finiteText(p.user) }} · {{ finiteN(p.pid) }}</div>
@@ -506,7 +506,7 @@
               <td class="col-hide-m">{{ finiteText(p.user) }}</td>
               <td class="mono">{{ finiteText(p.name) }}</td>
             </tr>
-            <tr v-if="!(ports.ports||[]).length">
+            <tr v-if="!asArray(ports.ports).length">
               <td colspan="4" class="empty-row">{{ t('tools.no_data') }}</td>
             </tr>
           </tbody>
@@ -545,7 +545,7 @@
           </ul>
           <div class="btns" style="margin-top:12px;flex-wrap:wrap">
             <router-link
-              v-for="l in (about.links||[])"
+              v-for="l in asArray(about.links)"
               :key="l.href"
               class="btn"
               :to="l.href"

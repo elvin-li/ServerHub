@@ -693,11 +693,11 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.vm_list') }}</h2>
         <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
-        <div class="table-wrap" v-else-if="(sysBundle.vms?.items||[]).length">
+        <div class="table-wrap" v-else-if="asArray(sysBundle.vms?.items).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th>Backend</th></tr></thead>
           <tbody>
-            <tr v-for="v in sysBundle.vms.items" :key="v.id">
+            <tr v-for="v in asArray(sysBundle.vms.items)" :key="v.id">
               <td>{{ finiteText(v.name) }}</td>
               <td><span class="badge">{{ finiteText(v.state) }}</span></td>
               <td class="mono">{{ finiteText(v.backend) }}</td>
@@ -852,11 +852,11 @@
         <h2 class="section-title" style="margin-top:0">{{ t('settings.disk_power') }}</h2>
         <div v-if="sysBundleError && !sysBundle" class="sub" style="color:var(--down-text)">{{ finiteText(sysBundleError) }}</div>
         <div v-else-if="!sysBundle" class="sub">{{ t('common.loading') }}</div>
-        <div class="table-wrap" v-else-if="(sysBundle.disk?.power_disks||[]).length">
+        <div class="table-wrap" v-else-if="asArray(sysBundle.disk?.power_disks).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('settings.disk') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
-            <tr v-for="d in sysBundle.disk.power_disks" :key="d.id">
+            <tr v-for="d in asArray(sysBundle.disk.power_disks)" :key="d.id">
               <td>{{ finiteText(d.name) }}</td>
               <td><span class="badge">{{ finiteText(d.power_state) }}</span></td>
               <td class="mono">{{ sizeGb(d.size_gb) }}</td>
@@ -891,7 +891,7 @@
           <div v-else style="color:var(--down-text)">—</div>
           <label>{{ t('settings.managed_ips') }}</label>
           <div>
-            <span v-for="ip in (sysBundle.alias_auto.config?.ips||[])" :key="ip" class="badge ok" style="margin-right:4px">{{ finiteText(ip) }}</span>
+            <span v-for="ip in asArray(sysBundle.alias_auto.config?.ips)" :key="ip" class="badge ok" style="margin-right:4px">{{ finiteText(ip) }}</span>
           </div>
         </div>
         <div class="btns" style="margin-top:12px">
@@ -949,11 +949,11 @@
           <label>{{ t('settings.timer_count') }}</label>
           <div>{{ finiteN(sysBundle.scheduler.count, 0) }}</div>
         </div>
-        <div class="table-wrap" style="margin-top:10px" v-if="(sysBundle?.scheduler?.timers||[]).length">
+        <div class="table-wrap" style="margin-top:10px" v-if="asArray(sysBundle?.scheduler?.timers).length">
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>Interval</th></tr></thead>
           <tbody>
-            <tr v-for="(tm, i) in sysBundle.scheduler.timers.slice(0, 15)" :key="i">
+            <tr v-for="(tm, i) in asArray(sysBundle.scheduler.timers).slice(0, 15)" :key="i">
               <td class="mono" style="font-size:11px">{{ finiteText(tm.label) }}</td>
               <td class="mono">{{ finiteN(tm.interval, null) != null ? withUnit(tm.interval, 's') : (tm.calendar ? 'cal' : '—') }}</td>
             </tr>

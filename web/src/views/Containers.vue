@@ -148,11 +148,11 @@
                 <td v-if="advanced" class="mono col-hide-m">{{ finiteText(c.ip) }}</td>
                 <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(c.ports)">{{ finiteText(c.ports) }}</td>
                 <td class="mono col-hide-m" style="max-width:140px" :title="mountTitle(c)">
-                  <template v-if="(c.mounts||[]).length">
-                    <div v-for="(m,i) in c.mounts.slice(0,2)" :key="i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  <template v-if="asArray(c.mounts).length">
+                    <div v-for="(m,i) in asArray(c.mounts).slice(0,2)" :key="i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                       {{ shortPath(m.src) }} → {{ finiteText(m.dst) }}
                     </div>
-                    <span v-if="c.mounts.length>2" style="color:var(--sub)">+{{ c.mounts.length-2 }}</span>
+                    <span v-if="asArray(c.mounts).length>2" style="color:var(--sub)">+{{ asArray(c.mounts).length-2 }}</span>
                   </template>
                   <template v-else>—</template>
                 </td>
@@ -421,15 +421,15 @@
         <div class="kv">
           <div class="k">{{ t('docker.image') }}</div><div class="mono">{{ finiteText(inspectData.Image) }}</div>
           <div class="k">{{ t('common.status') }}</div><div>{{ finiteText(inspectData.State?.Status) }} · {{ finiteText(inspectData.State?.Health) }}</div>
-          <div class="k">{{ t('docker.network') }}</div><div>{{ (inspectData.Networks||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+          <div class="k">{{ t('docker.network') }}</div><div>{{ asArray(inspectData.Networks).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
           <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ finiteText(inspectData.RestartPolicy?.Name) }}</div>
         </div>
         <h2 class="section-title">{{ t('docker.mounts') }}</h2>
-        <div v-for="(m,i) in inspectData.Mounts||[]" :key="i" class="mono" style="margin-bottom:3px">
+        <div v-for="(m,i) in asArray(inspectData.Mounts)" :key="i" class="mono" style="margin-bottom:3px">
           {{ finiteText(m.Source) }} → {{ finiteText(m.Destination) }}
         </div>
         <h2 class="section-title">{{ t('docker.env_masked') }}</h2>
-        <pre class="log" style="max-height:180px">{{ (inspectData.Env||[]).map(e => finiteText(e, '')).filter(Boolean).join('\n') }}</pre>
+        <pre class="log" style="max-height:180px">{{ asArray(inspectData.Env).map(e => finiteText(e, '')).filter(Boolean).join('\n') }}</pre>
       </div>
     </div>
   </div>

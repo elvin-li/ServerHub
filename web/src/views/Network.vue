@@ -204,9 +204,9 @@
           <div style="margin-top:6px">
             {{ t('network.managed_aliases') }}
             <span v-for="(ip, i) in asArray(data.alias_auto.config?.ips)" :key="ip" class="badge" style="margin-right:4px"
-              :class="(data.alias_auto.ips||[]).find(x=>x.ip===ip)?.on_preferred ? 'ok' : 'warn'"
+              :class="asArray(data.alias_auto.ips).find(x=>x.ip===ip)?.on_preferred ? 'ok' : 'warn'"
             >{{ finiteText(ip) }}</span>
-            <span v-if="!(data.alias_auto.config?.ips||[]).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
+            <span v-if="!asArray(data.alias_auto.config?.ips).length" style="color:var(--sub)">{{ t('network.not_configured') }}</span>
           </div>
           <div class="field-grid" style="margin-top:10px">
             <label>{{ t('network.alias_list') }}</label>
@@ -226,10 +226,10 @@
           <tbody>
             <template v-for="iface in asArray(data?.interface_addresses)" :key="iface.device">
               <tr v-for="(a, ai) in asArray(iface.addresses)" :key="iface.device + a.ip + ai">
-                <td class="mono" v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
+                <td class="mono" v-if="ai===0" :rowspan="Math.max(1, asArray(iface.addresses).length)">
                   <strong>{{ finiteText(iface.device) }}</strong>
                 </td>
-                <td v-if="ai===0" :rowspan="Math.max(1, (iface.addresses||[]).length)">
+                <td v-if="ai===0" :rowspan="Math.max(1, asArray(iface.addresses).length)">
                   <!-- The LED is the whole status column here (the interfaces tab
                        pairs its LED with a textual badge); colour alone says
                        nothing to a screen reader, so spell the state. -->
@@ -259,7 +259,7 @@
                   >{{ t('network.edit_primary') }}</button>
                 </td>
               </tr>
-              <tr v-if="!(iface.addresses||[]).length" :key="iface.device+'-empty'">
+              <tr v-if="!asArray(iface.addresses).length" :key="iface.device+'-empty'">
                 <td class="mono"><strong>{{ finiteText(iface.device) }}</strong></td>
                 <td>
                   <span class="led" :class="iface.up ? 'on' : 'off'" aria-hidden="true"></span>
@@ -269,7 +269,7 @@
                 <td></td>
               </tr>
             </template>
-            <tr v-if="!(data?.interface_addresses||[]).length && !loadError">
+            <tr v-if="!asArray(data?.interface_addresses).length && !loadError">
               <td colspan="6" class="empty-row">{{ t('network.no_bindings') }}</td>
             </tr>
           </tbody>
@@ -323,7 +323,7 @@
               <td><span class="badge" :class="i.up ? 'ok' : ''">{{ finiteText(i.status, '') || (i.up ? 'up' : 'down') }}</span></td>
               <td class="mono">
                 <div v-for="(a,idx) in asArray(i.ipv4)" :key="idx">{{ finiteText(a.ip) }}</div>
-                <span v-if="!(i.ipv4||[]).length">—</span>
+                <span v-if="!asArray(i.ipv4).length">—</span>
               </td>
               <td class="mono col-hide-m">
                 <div v-for="(a,idx) in asArray(i.ipv4)" :key="'m'+idx">{{ finiteText(a.netmask) }}</div>
@@ -332,7 +332,7 @@
               <td class="mono col-hide-m">{{ finiteText(i.mac) }}</td>
               <td class="mono col-hide-m">{{ finiteN(i.mtu) }}</td>
             </tr>
-            <tr v-if="!(data?.interfaces||[]).length && !loadError">
+            <tr v-if="!asArray(data?.interfaces).length && !loadError">
               <td colspan="8" class="empty-row">{{ t('network.no_interfaces') }}</td>
             </tr>
           </tbody>
@@ -396,7 +396,7 @@
         <div><strong>{{ finiteText(lookupResult.host) }}</strong>
           <span class="badge" :class="lookupResult.ok?'ok':'down'">{{ lookupResult.ok ? t('common.ok') : t('common.fail') }}</span>
         </div>
-        <div class="mono" style="margin-top:8px" v-for="(a,i) in lookupResult.answers||[]" :key="i">{{ finiteText(a) }}</div>
+        <div class="mono" style="margin-top:8px" v-for="(a,i) in asArray(lookupResult.answers)" :key="i">{{ finiteText(a) }}</div>
         <pre v-if="!lookupResult.answers?.length && lookupResult.message" class="msg-box" style="margin-top:8px" role="status" aria-live="polite">{{ finiteText(lookupResult.message) }}</pre>
       </div>
       <h2 class="section-title">{{ t('network.dns_per_svc') }}</h2>
@@ -407,10 +407,10 @@
             <tr v-for="s in asServiceList(data?.services)" :key="s.name">
               <td>
                 <strong>{{ finiteText(s.name) }}</strong>
-                <div v-if="(s.search_domains||[]).length" class="show-m sub mono">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div v-if="asArray(s.search_domains).length" class="show-m sub mono">{{ asArray(s.search_domains).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
               </td>
               <td class="mono">{{ asArray(s.dns).map(n => finiteText(n, '')).filter(Boolean).join(', ') || t('network.system_default') }}</td>
-              <td class="mono col-hide-m">{{ (s.search_domains||[]).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono col-hide-m">{{ asArray(s.search_domains).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td><button class="tiny" @click="openDns(s)">{{ t('network.edit') }}</button></td>
             </tr>
             <tr v-if="!asServiceList(data?.services).length && !loadError">
@@ -467,7 +467,7 @@
               <td class="mono col-hide-m">{{ finiteText(r.flags) }}</td>
               <td>{{ finiteText(r.netif) }}</td>
             </tr>
-            <tr v-if="!(data?.routes||[]).length && !loadError">
+            <tr v-if="!asArray(data?.routes).length && !loadError">
               <td colspan="4" class="empty-row">{{ t('network.no_routes') }}</td>
             </tr>
           </tbody>
@@ -535,10 +535,10 @@
                 <td class="mono">{{ finiteText(n.subnet) }}</td>
                 <td class="mono col-hide-m">{{ finiteText(n.gateway) }}</td>
                 <td class="col-hide-m" style="font-size:11px">
-                  <div v-for="c in (n.containers||[]).slice(0,6)" :key="c.id">
+                  <div v-for="c in asArray(n.containers).slice(0,6)" :key="c.id">
                     {{ finiteText(c.name, '') || finiteText(c.id) }} <span class="mono" style="color:var(--sub)">{{ finiteText(c.ipv4, '') }}</span>
                   </div>
-                  <span v-if="!(n.containers||[]).length" style="color:var(--sub)">—</span>
+                  <span v-if="!asArray(n.containers).length" style="color:var(--sub)">—</span>
                 </td>
                 <td class="ops">
                   <button class="tiny" :disabled="busy || n.builtin" @click="openConnect(n)">{{ t('network.connect') }}</button>

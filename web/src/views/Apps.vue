@@ -563,44 +563,44 @@
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.data_paths||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.data_paths).length">
           <h3>{{ t('apps.sec_data') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(p,i) in detail.data_paths" :key="i">{{ finiteText(p) }}</li>
+            <li v-for="(p,i) in asArray(detail.data_paths)" :key="i">{{ finiteText(p) }}</li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.databases||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.databases).length">
           <h3>{{ t('apps.sec_db') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(d,i) in detail.databases" :key="i">{{ finiteText(d.type) }} · {{ finiteText(d.path) }} <span v-if="d.mount">→ {{ finiteText(d.mount) }}</span></li>
+            <li v-for="(d,i) in asArray(detail.databases)" :key="i">{{ finiteText(d.type) }} · {{ finiteText(d.path) }} <span v-if="d.mount">→ {{ finiteText(d.mount) }}</span></li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.ports||[]).length || (detail.listening||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.ports).length || asArray(detail.listening).length">
           <h3>{{ t('apps.sec_ports') }}</h3>
-          <table class="mini-table" v-if="(detail.ports||[]).length">
+          <table class="mini-table" v-if="asArray(detail.ports).length">
             <thead><tr><th>{{ t('apps.col_ports') }}</th><th>target</th><th>ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(p,i) in detail.ports" :key="i">
+              <tr v-for="(p,i) in asArray(detail.ports)" :key="i">
                 <td class="mono">{{ finiteText(p.published) }}</td>
                 <td class="mono">{{ finiteText(p.target) }}</td>
                 <td class="mono">{{ finiteText(p.container, '') }}</td>
               </tr>
             </tbody>
           </table>
-          <div v-if="(detail.listening||[]).length" class="sub-line" style="margin-top:8px">
+          <div v-if="asArray(detail.listening).length" class="sub-line" style="margin-top:8px">
             {{ t('apps.listening') }}:
-            <span v-for="(l,i) in detail.listening" :key="i" class="mono"> {{ finiteText(l.name) }} </span>
+            <span v-for="(l,i) in asArray(detail.listening)" :key="i" class="mono"> {{ finiteText(l.name) }} </span>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.networks||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.networks).length">
           <h3>{{ t('apps.sec_network') }}</h3>
           <table class="mini-table">
             <thead><tr><th>network</th><th>IP</th><th>gw / ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(n,i) in detail.networks" :key="i">
+              <tr v-for="(n,i) in asArray(detail.networks)" :key="i">
                 <td class="mono">{{ finiteText(n.network) }}</td>
                 <td class="mono">{{ finiteText(n.ip) }}</td>
                 <td class="mono">{{ finiteText(n.gateway, '') || finiteText(n.container, '') }}</td>
@@ -609,12 +609,12 @@
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.mounts||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.mounts).length">
           <h3>{{ t('apps.sec_mounts') }}</h3>
           <table class="mini-table">
             <thead><tr><th>src</th><th>dst</th><th>type</th></tr></thead>
             <tbody>
-              <tr v-for="(m,i) in detail.mounts" :key="i">
+              <tr v-for="(m,i) in asArray(detail.mounts)" :key="i">
                 <td class="mono path-cell" :title="finiteText(m.source)">{{ finiteText(m.source) }}</td>
                 <td class="mono">{{ finiteText(m.destination) }}</td>
                 <td>{{ finiteText(m.type) }}</td>
@@ -623,12 +623,12 @@
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.containers||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.containers).length">
           <h3>{{ t('apps.sec_containers') }}</h3>
           <table class="mini-table">
             <thead><tr><th>name</th><th>image</th><th>state</th><th>ports</th></tr></thead>
             <tbody>
-              <tr v-for="(c,i) in detail.containers" :key="i">
+              <tr v-for="(c,i) in asArray(detail.containers)" :key="i">
                 <td class="mono">{{ finiteText(c.name) }}</td>
                 <td class="mono path-cell">{{ finiteText(c.image) }}</td>
                 <td>{{ finiteText(c.state) }}</td>
@@ -638,12 +638,12 @@
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.ips||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.ips).length">
           <h3>VM IP</h3>
           <div class="mono">{{ asArray(detail.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
         </section>
 
-        <section class="drawer-sec" v-if="(detail.env_sample||[]).length">
+        <section class="drawer-sec" v-if="asArray(detail.env_sample).length">
           <h3>Env</h3>
           <pre class="env-pre">{{ asArray(detail.env_sample).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
         </section>

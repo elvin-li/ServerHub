@@ -137,9 +137,9 @@
               <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
             </td>
             <td class="ops">
-              <button v-if="(d.actions||[]).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
-              <button v-if="(d.actions||[]).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
-              <button v-if="(d.actions||[]).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(d.actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
+              <button v-if="asArray(d.actions).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
+              <button v-if="asArray(d.actions).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
           <tr v-if="!unassigned.length && !loadError && !pendingFull">
@@ -204,24 +204,24 @@
             </td>
             <td class="ops">
               <button
-                v-if="(d.actions||[]).includes('sleep')"
+                v-if="asArray(d.actions).includes('sleep')"
                 class="tiny"
                 :disabled="busy || d.system"
                 @click="power(d, 'sleep')"
               >{{ t('main.sleep') }}</button>
               <button
-                v-if="(d.actions||[]).includes('wake')"
+                v-if="asArray(d.actions).includes('wake')"
                 class="tiny primary"
                 :disabled="busy"
                 @click="power(d, 'wake')"
               >{{ t('main.wake') }}</button>
               <button
-                v-if="(d.actions||[]).includes('eject')"
+                v-if="asArray(d.actions).includes('eject')"
                 class="tiny danger"
                 :disabled="busy || d.system"
                 @click="power(d, 'eject')"
               >{{ t('main.eject') }}</button>
-              <span v-if="!(d.actions||[]).length" class="sub">—</span>
+              <span v-if="!asArray(d.actions).length" class="sub">—</span>
             </td>
           </tr>
           <tr v-if="!powerDisks.length && !loadError && !pendingFull">
@@ -416,15 +416,15 @@
               <span v-else style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
             </td>
             <td class="ops">
-              <button v-if="(v.actions||[]).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
-              <button v-if="(v.actions||[]).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
-              <button v-if="(v.actions||[]).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
-              <button v-if="(v.actions||[]).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
-              <button v-if="(v.actions||[]).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
-              <button v-if="(v.actions||[]).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
-              <button v-if="(v.actions||[]).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
-              <button v-if="(v.actions||[]).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
-              <span v-if="!(v.actions||[]).length" class="sub">{{ t('main_extra.locked') }}</span>
+              <button v-if="asArray(v.actions).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
+              <button v-if="asArray(v.actions).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
+              <button v-if="asArray(v.actions).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
+              <button v-if="asArray(v.actions).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
+              <button v-if="asArray(v.actions).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(v.actions).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
+              <button v-if="asArray(v.actions).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
+              <button v-if="asArray(v.actions).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
+              <span v-if="!asArray(v.actions).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
           <!-- "No volumes" is a diagnosis; hiding system volumes is a filter.
@@ -575,9 +575,9 @@
                     >
                       {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ m.smart.attrs.length }}
                     </button>
-                    <template v-if="m.caps?.supported?.length">
+                    <template v-if="asArray(m.caps?.supported).length">
                       <button
-                        v-for="k in m.caps.supported.filter(x => x !== 'offline')" :key="k"
+                        v-for="k in asArray(m.caps.supported).filter(x => x !== 'offline')" :key="k"
                         class="tiny primary"
                         :disabled="busy || smartTestBusy"
                         @click="runSmartTest(m, k)"
