@@ -534,14 +534,14 @@
                 <option value="custom">{{ t('settings.ups_shutdown_stacks_custom') }}</option>
               </select>
               <div v-if="upsForm.shutdown.stacksMode === 'custom'" style="margin-top:6px">
-                <div v-for="(row, i) in asArray(upsStackRows)" :key="row.id" class="ups-pick-row">
+                <div v-for="(row, i) in asArray(upsStackRows)" :key="finiteText(asRecord(row).id)" class="ups-pick-row">
                   <!-- Named after the visible display name, not the raw stack
                        id: a screen reader hearing "stack:immich" cannot match
                        it to the "Immich" the row shows. -->
-                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(row.name, '') || finiteText(row.id)" />
+                  <input type="checkbox" v-model="row.selected" :aria-label="finiteText(asRecord(row).name, '') || finiteText(asRecord(row).id)" />
                   <span class="mono">
-                    {{ finiteText(row.name) }}
-                    <span class="sub" v-if="row.missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
+                    {{ finiteText(asRecord(row).name) }}
+                    <span class="sub" v-if="asRecord(row).missing">· {{ t('settings.ups_shutdown_stack_missing') }}</span>
                   </span>
                   <button class="btn" :disabled="i === 0" :aria-label="t('settings.ups_move_up')"
                           @click="moveStackRow(i, -1)">↑</button>
@@ -553,11 +553,11 @@
             </div>
             <label v-if="asArray(upsScriptChoices).length">{{ t('settings.ups_shutdown_scripts') }}</label>
             <div v-if="asArray(upsScriptChoices).length">
-              <div v-for="s in asArray(upsScriptChoices)" :key="s.id" class="ups-pick-row">
+              <div v-for="s in asArray(upsScriptChoices)" :key="finiteText(asRecord(s).id)" class="ups-pick-row">
                 <!-- Same rule as the stack rows: the checkbox must carry the
                      name the row displays, not the machine id. -->
-                <input type="checkbox" :value="s.id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(s.name, '') || finiteText(s.id)" />
-                <span class="mono">{{ finiteText(s.name) }}</span>
+                <input type="checkbox" :value="asRecord(s).id" v-model="upsForm.shutdown.stop_scripts" :aria-label="finiteText(asRecord(s).name, '') || finiteText(asRecord(s).id)" />
+                <span class="mono">{{ finiteText(asRecord(s).name) }}</span>
               </div>
             </div>
           </div>
@@ -575,28 +575,28 @@
                  the Scheduler run-history and PhotosHub empty states. The
                  step rows below stay browsable rather than read in one go. -->
             <p class="hint" role="status" style="margin:0 0 6px">
-              <template v-if="upsDrill.would_trigger_now">
-                {{ t('settings.ups_would_trigger', { reason: upsDrill.reason }) }}
+              <template v-if="asRecord(upsDrill).would_trigger_now">
+                {{ t('settings.ups_would_trigger', { reason: finiteText(asRecord(upsDrill).reason) }) }}
               </template>
               <template v-else>{{ t('settings.ups_would_not_trigger') }}</template>
             </p>
-            <div v-for="s in asArray(upsDrill.steps)" :key="s.kind + ':' + s.id"
+            <div v-for="s in asArray(asRecord(upsDrill).steps)" :key="asRecord(s).kind + ':' + asRecord(s).id"
                  style="display:flex;align-items:center;gap:8px;padding:2px 0">
-              <span class="badge" :class="s.running ? 'warn' : ''">
-                {{ s.running ? t('settings.ups_step_stop') : t('settings.ups_step_skip') }}
+              <span class="badge" :class="asRecord(s).running ? 'warn' : ''">
+                {{ asRecord(s).running ? t('settings.ups_step_stop') : t('settings.ups_step_skip') }}
               </span>
-              <span class="mono">{{ finiteText(s.name, '') || finiteText(s.id) }}</span>
-              <span class="sub">{{ s.kind === 'stack' ? 'compose' : 'service' }}</span>
+              <span class="mono">{{ finiteText(asRecord(s).name, '') || finiteText(asRecord(s).id) }}</span>
+              <span class="sub">{{ asRecord(s).kind === 'stack' ? 'compose' : 'service' }}</span>
             </div>
           </div>
 
           <p class="hint" v-if="upsLast" style="margin-top:10px" data-test="last-run">
-            {{ t('settings.ups_last_trigger', { time: fmtUpsTs(upsLast.engaged_at), reason: finiteText(upsLast.reason) }) }}
-            <template v-if="upsLast.restored_at">
-              · {{ t('settings.ups_last_restored', { time: fmtUpsTs(upsLast.restored_at), n: asArray(upsLast.restarted).length }) }}
+            {{ t('settings.ups_last_trigger', { time: fmtUpsTs(asRecord(upsLast).engaged_at), reason: finiteText(asRecord(upsLast).reason) }) }}
+            <template v-if="asRecord(upsLast).restored_at">
+              · {{ t('settings.ups_last_restored', { time: fmtUpsTs(asRecord(upsLast).restored_at), n: asArray(asRecord(upsLast).restarted).length }) }}
             </template>
-            <template v-if="asArray(upsLast.failed).length">
-              · {{ t('settings.ups_last_failed', { ids: asArray(upsLast.failed).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
+            <template v-if="asArray(asRecord(upsLast).failed).length">
+              · {{ t('settings.ups_last_failed', { ids: asArray(asRecord(upsLast).failed).map(n => finiteText(n, '')).filter(Boolean).join(', ') }) }}
             </template>
           </p>
 
@@ -697,10 +697,10 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.status') }}</th><th>Backend</th></tr></thead>
           <tbody>
-            <tr v-for="v in asArray(sysBundle.vms.items)" :key="v.id">
-              <td>{{ finiteText(v.name) }}</td>
-              <td><span class="badge">{{ finiteText(v.state) }}</span></td>
-              <td class="mono">{{ finiteText(v.backend) }}</td>
+            <tr v-for="v in asArray(asRecord(asRecord(sysBundle).vms).items)" :key="finiteText(asRecord(v).id)">
+              <td>{{ finiteText(asRecord(v).name) }}</td>
+              <td><span class="badge">{{ finiteText(asRecord(v).state) }}</span></td>
+              <td class="mono">{{ finiteText(asRecord(v).backend) }}</td>
             </tr>
           </tbody>
         </table>
@@ -856,10 +856,10 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('settings.disk') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.size') }}</th></tr></thead>
           <tbody>
-            <tr v-for="d in asArray(sysBundle.disk.power_disks)" :key="d.id">
-              <td>{{ finiteText(d.name) }}</td>
-              <td><span class="badge">{{ finiteText(d.power_state) }}</span></td>
-              <td class="mono">{{ sizeGb(d.size_gb) }}</td>
+            <tr v-for="d in asArray(asRecord(asRecord(sysBundle).disk).power_disks)" :key="finiteText(asRecord(d).id)">
+              <td>{{ finiteText(asRecord(d).name) }}</td>
+              <td><span class="badge">{{ finiteText(asRecord(d).power_state) }}</span></td>
+              <td class="mono">{{ sizeGb(asRecord(d).size_gb) }}</td>
             </tr>
           </tbody>
         </table>
@@ -953,9 +953,9 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>Interval</th></tr></thead>
           <tbody>
-            <tr v-for="(tm, i) in asArray(sysBundle.scheduler.timers).slice(0, 15)" :key="i">
-              <td class="mono" style="font-size:11px">{{ finiteText(tm.label) }}</td>
-              <td class="mono">{{ finiteN(tm.interval, null) != null ? withUnit(tm.interval, 's') : (tm.calendar ? 'cal' : '—') }}</td>
+            <tr v-for="(tm, i) in asArray(asRecord(asRecord(sysBundle).scheduler).timers).slice(0, 15)" :key="i">
+              <td class="mono" style="font-size:11px">{{ finiteText(asRecord(tm).label) }}</td>
+              <td class="mono">{{ finiteN(asRecord(tm).interval, null) != null ? withUnit(asRecord(tm).interval, 's') : (asRecord(tm).calendar ? 'cal' : '—') }}</td>
             </tr>
           </tbody>
         </table>
@@ -1292,8 +1292,11 @@ const drillBusy = ref(false)
 const haltLevel = ref(null)
 
 const upsPhase = computed(() => upsInfo.value?.shutdown_state?.phase || 'idle')
-const upsLast = computed(() => upsInfo.value?.shutdown_state?.last || null)
-const upsScriptChoices = computed(() => asArray(upsPlan.value?.catalog?.scripts))
+const upsLast = computed(() => {
+  const last = asRecord(asRecord(upsInfo.value).shutdown_state).last
+  return last == null ? null : asRecord(last)
+})
+const upsScriptChoices = computed(() => asArray(asRecord(asRecord(upsPlan.value).catalog).scripts).map((s) => asRecord(s)))
 
 function fmtUpsTs(ts) {
   return fmtTs(ts)
@@ -1308,19 +1311,19 @@ function moveStackRow(i, delta) {
 }
 
 function buildStackRows() {
-  const catalog = asArray(upsPlan.value?.catalog?.stacks)
-  const saved = upsInfo.value?.settings?.shutdown?.stacks
+  const catalog = asArray(asRecord(asRecord(upsPlan.value).catalog).stacks).map((s) => asRecord(s))
+  const saved = asRecord(asRecord(asRecord(upsInfo.value).settings).shutdown).stacks
   const custom = Array.isArray(saved)
   const rows = []
   if (custom) {
     for (const id of asArray(saved)) {
       const hit = catalog.find((s) => s.id === id)
-      rows.push({ id, name: finiteText(hit?.name, '') || id, selected: true, missing: !hit })
+      rows.push(asRecord({ id, name: finiteText(hit?.name, '') || id, selected: true, missing: !hit }))
     }
   }
   for (const s of catalog) {
-    if (!rows.some((r) => r.id === s.id)) {
-      rows.push({ id: s.id, name: finiteText(s.name, '') || s.id, selected: !custom, missing: false })
+    if (!rows.some((r) => asRecord(r).id === s.id)) {
+      rows.push(asRecord({ id: s.id, name: finiteText(s.name, '') || s.id, selected: !custom, missing: false }))
     }
   }
   upsStackRows.value = rows
@@ -2213,9 +2216,16 @@ async function loadUps() {
   // Catalog for the stack/script pickers; enumeration is a docker round-trip,
   // so a failure degrades to "no pickers" rather than blocking the card.
   try {
-    const plan = await getUpsShutdownPlan()
+    const plan = asRecord(await getUpsShutdownPlan())
     if (generation !== loadGeneration || !pageAlive) return
-    upsPlan.value = plan
+    upsPlan.value = {
+      ...plan,
+      catalog: {
+        ...asRecord(plan.catalog),
+        stacks: asArray(asRecord(plan.catalog).stacks).map((s) => asRecord(s)),
+        scripts: asArray(asRecord(plan.catalog).scripts).map((s) => asRecord(s)),
+      },
+    }
   } catch {
     if (generation !== loadGeneration || !pageAlive) return
     upsPlan.value = null
@@ -2238,7 +2248,7 @@ async function saveUps() {
     require_both: f.shutdown.require_both,
     stacks: f.shutdown.stacksMode === 'all'
       ? 'all'
-      : asArray(upsStackRows.value).filter((r) => r.selected).map((r) => r.id),
+      : asArray(upsStackRows.value).map((r) => asRecord(r)).filter((r) => r.selected).map((r) => r.id),
     stop_scripts: [...f.shutdown.stop_scripts],
   }
   // Same rule the server enforces (ups.policy_no_condition), said upfront.
@@ -2270,7 +2280,10 @@ async function runDrill() {
   try {
     const next = await runUpsShutdownDrill()
     if (!pageAlive) return
-    upsDrill.value = next
+    upsDrill.value = {
+      ...asRecord(next),
+      steps: asArray(asRecord(next).steps).map((s) => asRecord(s)),
+    }
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
