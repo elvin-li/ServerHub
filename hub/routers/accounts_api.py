@@ -56,7 +56,9 @@ class AccountPasswordBody(BaseModel):
 
 
 def _text(value) -> str:
-    """Panel JSON text.  Union of auth._cfg_text (ADDR belt, unbound str)."""
+    """Panel JSON text.  None stays empty; else auth._cfg_text (ADDR belt)."""
+    if value is None:
+        return ""
     try:
         return auth._cfg_text(value)
     except _CONTROL_FLOW:

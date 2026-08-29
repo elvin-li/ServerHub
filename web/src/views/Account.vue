@@ -46,11 +46,11 @@
           <div class="form-grid">
             <label>{{ t('common.status') }}</label>
             <div class="twofa-status">
-              <span class="badge" :class="asRecord(twofa).enabled ? 'ok' : 'warn'">
-                {{ asRecord(twofa).enabled ? t('common.on') : t('common.off') }}
+              <span class="badge" :class="twofa.enabled ? 'ok' : 'warn'">
+                {{ twofa.enabled ? t('common.on') : t('common.off') }}
               </span>
-              <span v-if="asRecord(twofa).enabled" class="hint">
-                {{ t('twofa.recovery_remaining', { n: finiteN(asRecord(twofa).recovery_remaining) }) }}
+              <span v-if="twofa.enabled" class="hint">
+                {{ t('twofa.recovery_remaining', { n: finiteN(twofa.recovery_remaining) }) }}
               </span>
             </div>
           </div>
@@ -69,7 +69,7 @@
             </div>
           </div>
 
-          <template v-if="!asRecord(twofa).enabled">
+          <template v-if="!twofa.enabled">
             <div v-if="!enrollment" class="btns" style="margin-top:10px">
               <button class="primary" :disabled="busy" @click="startEnroll">{{ t('twofa.enable') }}</button>
             </div>
@@ -79,10 +79,10 @@
                    "Manual entry secret" below, so for a screen reader it is a
                    duplicate with no name, announced as an anonymous graphic
                    (same as the WireGuard peer QR). -->
-              <div class="twofa-qr" aria-hidden="true" v-html="asRecord(enrollment).qrSvg"></div>
+              <div class="twofa-qr" aria-hidden="true" v-html="enrollment.qrSvg"></div>
               <div class="form-grid" style="margin-top:8px">
                 <label>{{ t('twofa.manual_secret') }}</label>
-                <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(asRecord(enrollment).manual_entry) }}</code>
+                <code class="mono" style="user-select:all;word-break:break-all">{{ finiteText(enrollment.manual_entry) }}</code>
                 <label>{{ t('twofa.code_label') }}</label>
                 <input v-model.trim="pairingCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" :aria-label="t('twofa.code_label')" />
               </div>

@@ -118,6 +118,8 @@ describe('account self-service', () => {
     expect(wrapper.text()).toContain('common.off')
     wrapper.unmount()
   })
+
+  it('walks the 2FA enrollment to the recovery codes', async () => {
     api.enrollTotp.mockResolvedValue({
       secret: 'S3CRET', otpauth_uri: 'otpauth://totp/x', manual_entry: 'S3CR ET',
     })

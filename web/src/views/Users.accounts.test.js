@@ -302,6 +302,8 @@ describe('panel accounts section', () => {
     expect(wrapper.text()).toContain('accounts.no_resources')
     wrapper.unmount()
   })
+
+  it('does not throw when accounts leftover is a mapping', async () => {
     applyAuthStatus({ authenticated: true, username: 'admin', role: 'admin', can_manage: true })
     api.listPanelAccounts.mockResolvedValue({
       accounts: { 0: { username: 'kid', role: 'member', resources: { 0: 'jellyfin' }, twofa_enabled: false } },
