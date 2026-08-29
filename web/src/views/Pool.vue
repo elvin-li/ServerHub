@@ -111,29 +111,29 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in asArray(selectedMembers)" :key="m.mount">
+          <tr v-for="m in asArray(selectedMembers)" :key="finiteText(asRecord(m).mount)">
             <td class="mono">
-              <strong>{{ finiteText(m.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(m.disk_id) }} · {{ finiteText(m.filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(m.used_gb) }} / {{ fmtGb(m.avail_gb) }}</div>
+              <strong>{{ finiteText(asRecord(m).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(m).disk_id) }} · {{ finiteText(asRecord(m).filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(asRecord(m).used_gb) }} / {{ fmtGb(asRecord(m).avail_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(m.disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(m.filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(m.avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(m).disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(m).filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).total_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).used_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(m).avail_gb) }}</td>
             <td style="min-width:100px">
-              {{ withUnit(m.pct, '%') }}
-              <div class="pct-bar" :class="barClass(m.pct)" style="margin-top:3px">
-                <i :style="{ width: barPct(m.pct) + '%' }"></i>
+              {{ withUnit(asRecord(m).pct, '%') }}
+              <div class="pct-bar" :class="barClass(asRecord(m).pct)" style="margin-top:3px">
+                <i :style="{ width: barPct(asRecord(m).pct) + '%' }"></i>
               </div>
             </td>
             <td class="ops">
               <button
                 class="tiny"
                 :disabled="busy"
-                :aria-label="t('pool.remove_aria', { mount: finiteText(m.mount) })"
-                @click="removeMember(m.mount)"
+                :aria-label="t('pool.remove_aria', { mount: finiteText(asRecord(m).mount) })"
+                @click="removeMember(asRecord(m).mount)"
               >{{ t('pool.remove') }}</button>
             </td>
           </tr>
@@ -160,22 +160,22 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in asArray(availableCandidates)" :key="c.mount">
+          <tr v-for="c in asArray(availableCandidates)" :key="finiteText(asRecord(c).mount)">
             <td class="mono">
-              <strong>{{ finiteText(c.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(c.disk_id) }} · {{ finiteText(c.filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(c.total_gb) }}</div>
+              <strong>{{ finiteText(asRecord(c).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(c).disk_id) }} · {{ finiteText(asRecord(c).filesystem) }}</div>
+              <div class="show-m sub">{{ fmtGb(asRecord(c).total_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(c.disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(c.filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(c.total_gb) }}</td>
-            <td>{{ fmtGb(c.avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(c).disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(c).filesystem) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(c).total_gb) }}</td>
+            <td>{{ fmtGb(asRecord(c).avail_gb) }}</td>
             <td class="ops">
               <button
                 class="tiny primary"
                 :disabled="busy"
-                :aria-label="t('pool.add_aria', { mount: finiteText(c.mount) })"
-                @click="addMember(c.mount)"
+                :aria-label="t('pool.add_aria', { mount: finiteText(asRecord(c).mount) })"
+                @click="addMember(asRecord(c).mount)"
               >{{ t('pool.add') }}</button>
             </td>
           </tr>
@@ -208,14 +208,14 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in asArray(shownFaults)" :key="r.mount">
+          <tr v-for="r in asArray(shownFaults)" :key="finiteText(asRecord(r).mount)">
             <td class="mono">
-              <strong>{{ finiteText(r.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(r.disk_id) }}</div>
+              <strong>{{ finiteText(asRecord(r).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(r).disk_id) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(r.disk_id) }}</td>
-            <td style="color:var(--warn-text)">{{ fmtGb(r.at_risk_gb) }}</td>
-            <td style="color:var(--ok-text)">{{ fmtGb(r.survives_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(r).disk_id) }}</td>
+            <td style="color:var(--warn-text)">{{ fmtGb(asRecord(r).at_risk_gb) }}</td>
+            <td style="color:var(--ok-text)">{{ fmtGb(asRecord(r).survives_gb) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
@@ -313,24 +313,24 @@ const policies = computed(() => view.value?.policies || ['most-free', 'least-use
 
 /** Every poolable volume the backend reported, members and unassigned alike. */
 const allCandidates = computed(() => [
-  ...asArray(view.value?.members),
-  ...asArray(view.value?.unassigned),
+  ...asArray(view.value?.members).map((row) => asRecord(row)),
+  ...asArray(view.value?.unassigned).map((row) => asRecord(row)),
 ])
 
 const selectedMembers = computed(() => {
-  const by = new Map(asArray(allCandidates.value).map((c) => [c.mount, c]))
-  return asArray(selected.value).map((m) => by.get(m)).filter(Boolean)
+  const by = new Map(asArray(allCandidates.value).map((c) => [asRecord(c).mount, asRecord(c)]))
+  return asArray(selected.value).map((m) => by.get(m)).filter(Boolean).map((row) => asRecord(row))
 })
 
 const availableCandidates = computed(() => {
   const chosen = new Set(asArray(selected.value))
-  return asArray(allCandidates.value).filter((c) => !chosen.has(c.mount))
+  return asArray(allCandidates.value).map((c) => asRecord(c)).filter((c) => !chosen.has(c.mount))
 })
 
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
 const shownSummary = computed(() => asRecord(preview.value?.summary || view.value?.summary))
 const shownTarget = computed(() => preview.value?.next_write_target ?? view.value?.next_write_target)
-const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model))
+const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model).map((row) => asRecord(row)))
 
 function barClass(pct) {
   if (pct >= 90) return 'danger'
