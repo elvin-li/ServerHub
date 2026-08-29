@@ -553,7 +553,7 @@ describe('dashboard and storage surface leftovers', () => {
     const backups = readFileSync(resolve(SRC, 'views/Backups.vue'), 'utf8')
     expect(backups).toMatch(/<p v-if="hiddenCount" class="meta"[^>]*role="status">/)
     expect(backups).toMatch(/<SkeletonLoader v-if="!loaded && !loadError"/)
-    expect(backups).toMatch(/v-else-if="!loadError \|\| backups\.length" class="table-wrap backups-artefacts"/)
+    expect(backups).toMatch(/v-else-if="!loadError \|\| asArray\(backups\)\.length" class="table-wrap backups-artefacts"/)
   })
 
   it('does not shadow the VMs create-dialog labels with placeholder aria-labels', () => {
