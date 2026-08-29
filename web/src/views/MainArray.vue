@@ -71,30 +71,30 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(arrayDevices)" :key="d.mount">
+          <tr v-for="d in asArray(arrayDevices)" :key="finiteText(asRecord(d).mount)">
             <td><span class="led on"></span></td>
             <td class="col-hide-m">
-              <span class="badge" :class="d.kind === 'system' ? 'accent' : 'ok'">
-                {{ d.kind === 'system' ? 'Cache/System' : 'Data' }}
+              <span class="badge" :class="asRecord(d).kind === 'system' ? 'accent' : 'ok'">
+                {{ asRecord(d).kind === 'system' ? 'Cache/System' : 'Data' }}
               </span>
             </td>
             <td class="mono">
-              <strong>{{ finiteText(d.mount) }}</strong>
-              <div class="sub" style="font-size:10px" v-if="finiteText(d.disk_id, '')">
-                {{ finiteText(d.disk_id) }}
-                <span v-if="d.shared_pool" class="badge warn" style="margin-left:4px">{{ t('main_extra.shared_pool') }}</span>
+              <strong>{{ finiteText(asRecord(d).mount) }}</strong>
+              <div class="sub" style="font-size:10px" v-if="finiteText(asRecord(d).disk_id, '')">
+                {{ finiteText(asRecord(d).disk_id) }}
+                <span v-if="asRecord(d).shared_pool" class="badge warn" style="margin-left:4px">{{ t('main_extra.shared_pool') }}</span>
               </div>
-              <div class="show-m sub">{{ finiteText(d.kind) }} · {{ finiteText(d.filesystem) }} · {{ fmtGb(d.used_gb) }} / {{ fmtGb(d.avail_gb) }}</div>
+              <div class="show-m sub">{{ finiteText(asRecord(d).kind) }} · {{ finiteText(asRecord(d).filesystem) }} · {{ fmtGb(asRecord(d).used_gb) }} / {{ fmtGb(asRecord(d).avail_gb) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(d.kind) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(d.filesystem) }}</td>
-            <td>{{ fmtGb(d.total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(d.used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(d.avail_gb) }}</td>
+            <td class="col-hide-m">{{ finiteText(asRecord(d).kind) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(d).filesystem) }}</td>
+            <td>{{ fmtGb(asRecord(d).total_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(d).used_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(d).avail_gb) }}</td>
             <td style="min-width:100px">
-              {{ withUnit(d.pct, '%') }}
-              <div class="pct-bar" :class="d.pct>=90?'danger':d.pct>=75?'warn':''" style="margin-top:3px">
-                <i :style="{ width: barPct(d.pct) + '%' }"></i>
+              {{ withUnit(asRecord(d).pct, '%') }}
+              <div class="pct-bar" :class="asRecord(d).pct>=90?'danger':asRecord(d).pct>=75?'warn':''" style="margin-top:3px">
+                <i :style="{ width: barPct(asRecord(d).pct) + '%' }"></i>
               </div>
             </td>
           </tr>
@@ -126,15 +126,15 @@
             <td>
               <strong>{{ finiteText(d.name) }}</strong>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
-              <div v-if="asArray(d.volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
+                <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m"><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
             <td class="col-hide-m"><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <span v-if="!asArray(d.volumes).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
-              <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
+              <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
             </td>
             <td class="ops">
               <button v-if="asArray(d.actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
@@ -186,8 +186,8 @@
               <strong>{{ finiteText(d.name) }}</strong>
               <div class="sub" style="font-size:11px">{{ finiteText(d.hint) }}</div>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(d.protocol) }}{{ sizeGb(d.size_gb) ? ' · ' + sizeGb(d.size_gb) : '' }}</div>
-              <div v-if="asArray(d.volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(d.volumes)" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
+              <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
+                <div v-for="v in asArray(asRecord(d).volumes)" :key="'m-'+v.mount">{{ finiteText(v.mount) }}</div>
               </div>
             </td>
             <td class="col-hide-m">
@@ -199,8 +199,8 @@
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <div v-for="v in asArray(d.volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
-              <span v-if="!asArray(d.volumes).length" style="color:var(--sub)">—</span>
+              <div v-for="v in asArray(asRecord(d).volumes)" :key="v.mount">{{ finiteText(v.mount) }}</div>
+              <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">—</span>
             </td>
             <td class="ops">
               <button
@@ -342,29 +342,29 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in asArray(data?.volumes)" :key="v.mount">
+          <tr v-for="v in asArray(asRecord(data).volumes)" :key="finiteText(asRecord(v).mount)">
             <td class="mono">
-              <strong>{{ finiteText(v.mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(v.kind) }} · {{ finiteText(v.filesystem) }}{{ finiteText(v.disk_id, '') ? ' · ' + finiteText(v.disk_id) : '' }}</div>
-              <div class="show-m sub">{{ fmtGb(v.used_gb) }} / {{ fmtGb(v.avail_gb) }}</div>
+              <strong>{{ finiteText(asRecord(v).mount) }}</strong>
+              <div class="show-m sub">{{ finiteText(asRecord(v).kind) }} · {{ finiteText(asRecord(v).filesystem) }}{{ finiteText(asRecord(v).disk_id, '') ? ' · ' + finiteText(asRecord(v).disk_id) : '' }}</div>
+              <div class="show-m sub">{{ fmtGb(asRecord(v).used_gb) }} / {{ fmtGb(asRecord(v).avail_gb) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(v.disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(v.filesystem) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(v).disk_id) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(v).filesystem) }}</td>
             <td class="col-hide-m">
-              <span class="badge accent">{{ finiteText(v.kind) }}</span>
-              <span v-if="v.disk_id && sharedDiskIds.has(v.disk_id)" class="badge warn">{{ t('main_extra.shared') }}</span>
+              <span class="badge accent">{{ finiteText(asRecord(v).kind) }}</span>
+              <span v-if="asRecord(v).disk_id && sharedDiskIds.has(asRecord(v).disk_id)" class="badge warn">{{ t('main_extra.shared') }}</span>
             </td>
-            <td>{{ fmtGb(v.total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(v.used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(v.avail_gb) }}</td>
+            <td>{{ fmtGb(asRecord(v).total_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(v).used_gb) }}</td>
+            <td class="col-hide-m">{{ fmtGb(asRecord(v).avail_gb) }}</td>
             <td style="min-width:120px">
-              <strong :style="{ color: v.pct >= 90 ? 'var(--down-text)' : (v.pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(v.pct, '%') }}</strong>
-              <div class="pct-bar" :class="v.pct>=90?'danger':v.pct>=75?'warn':''" style="margin-top:3px">
-                <i :style="{ width: barPct(v.pct) + '%' }"></i>
+              <strong :style="{ color: asRecord(v).pct >= 90 ? 'var(--down-text)' : (asRecord(v).pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(asRecord(v).pct, '%') }}</strong>
+              <div class="pct-bar" :class="asRecord(v).pct>=90?'danger':asRecord(v).pct>=75?'warn':''" style="margin-top:3px">
+                <i :style="{ width: barPct(asRecord(v).pct) + '%' }"></i>
               </div>
             </td>
           </tr>
-          <tr v-if="!asArray(data?.volumes).length && !loadError">
+          <tr v-if="!asArray(asRecord(data).volumes).length && !loadError">
             <td colspan="8" class="empty-row">{{ t('main_extra.empty_volumes') }}</td>
           </tr>
         </tbody>
@@ -397,34 +397,34 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in asArray(managedVols)" :key="v.id">
+          <tr v-for="v in asArray(managedVols)" :key="finiteText(asRecord(v).id)">
             <td class="mono">
-              <strong>{{ finiteText(v.id) }}</strong>
-              <div class="sub" style="font-size:10px" v-if="v.is_whole">{{ t('main_extra.whole') }}</div>
-              <div class="sub" style="font-size:10px" v-else-if="v.whole_disk">∈ {{ finiteText(v.whole_disk) }}</div>
+              <strong>{{ finiteText(asRecord(v).id) }}</strong>
+              <div class="sub" style="font-size:10px" v-if="asRecord(v).is_whole">{{ t('main_extra.whole') }}</div>
+              <div class="sub" style="font-size:10px" v-else-if="asRecord(v).whole_disk">∈ {{ finiteText(asRecord(v).whole_disk) }}</div>
             </td>
             <td>
-              {{ finiteText(v.volume_name, '') || finiteText(v.name) }}
-              <span v-if="v.system" class="badge down">{{ t('main_extra.system') }}</span>
-              <div class="show-m sub">{{ finiteText(v.fs) }}{{ sizeGb(v.size_gb) ? ' · ' + sizeGb(v.size_gb) : '' }}</div>
-              <div v-if="v.mount" class="show-m sub mono">{{ finiteText(v.mount) }}</div>
+              {{ finiteText(asRecord(v).volume_name, '') || finiteText(asRecord(v).name) }}
+              <span v-if="asRecord(v).system" class="badge down">{{ t('main_extra.system') }}</span>
+              <div class="show-m sub">{{ finiteText(asRecord(v).fs) }}{{ sizeGb(asRecord(v).size_gb) ? ' · ' + sizeGb(asRecord(v).size_gb) : '' }}</div>
+              <div v-if="asRecord(v).mount" class="show-m sub mono">{{ finiteText(asRecord(v).mount) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(v.fs) }}</td>
-            <td class="col-hide-m">{{ finiteText(sizeGb(v.size_gb)) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(asRecord(v).fs) }}</td>
+            <td class="col-hide-m">{{ finiteText(sizeGb(asRecord(v).size_gb)) }}</td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <span v-if="v.mount">{{ finiteText(v.mount) }}</span>
+              <span v-if="asRecord(v).mount">{{ finiteText(asRecord(v).mount) }}</span>
               <span v-else style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
             </td>
             <td class="ops">
-              <button v-if="asArray(v.actions).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
-              <button v-if="asArray(v.actions).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
-              <button v-if="asArray(v.actions).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
-              <button v-if="asArray(v.actions).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
-              <button v-if="asArray(v.actions).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
-              <button v-if="asArray(v.actions).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
-              <button v-if="asArray(v.actions).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
-              <button v-if="asArray(v.actions).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
-              <span v-if="!asArray(v.actions).length" class="sub">{{ t('main_extra.locked') }}</span>
+              <button v-if="asArray(asRecord(v).actions).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
+              <button v-if="asArray(asRecord(v).actions).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
+              <span v-if="!asArray(asRecord(v).actions).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
           <!-- "No volumes" is a diagnosis; hiding system volumes is a filter.
@@ -432,7 +432,7 @@
                claimed the disk had no volumes at all — say the filter missed
                instead, like every other filtered table. -->
           <tr v-if="!asArray(managedVols).length && !loadError && !pendingFull">
-            <td colspan="6" class="empty-row">{{ asArray(data?.managed?.volumes).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ asArray(asRecord(asRecord(data).managed).volumes).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -665,7 +665,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getStorage, getThresholds, manageStorageDevice, setDiskPower, getSmartOverview, startSmartTest } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
-import { asArray, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -720,38 +720,42 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const powerDisks = computed(() => asArray(data.value?.power_disks))
+const powerDisks = computed(() => asArray(asRecord(data.value).power_disks).map((d) => asRecord(d)))
 const arrayDevices = computed(() => {
-  const devices = asArray(data.value?.array?.devices)
+  const devices = asArray(asRecord(asRecord(data.value).array).devices).map((d) => asRecord(d))
   if (devices.length) return devices
-  return asArray(data.value?.volumes).filter(v =>
+  return asArray(asRecord(data.value).volumes).map((v) => asRecord(v)).filter((v) =>
     v.kind === 'system' || v.kind === 'external'
   )
 })
 const sharedDiskIds = computed(() => {
   const s = new Set()
-  for (const g of asArray(data.value?.array?.capacity_groups)) {
+  for (const g of asArray(asRecord(asRecord(data.value).array).capacity_groups).map((row) => asRecord(row))) {
     if (g.mode === 'shared_pool' && g.disk_id) s.add(g.disk_id)
   }
   return s
 })
 const managedVols = computed(() => {
-  const list = asArray(data.value?.managed?.volumes)
+  const list = asArray(asRecord(asRecord(data.value).managed).volumes).map((v) => asRecord(v))
   if (showSystemVols.value) return list
-  return list.filter(v => !v.system)
+  return list.filter((v) => !v.system)
 })
-const fsTypes = computed(() => data.value?.managed?.fs_types || ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS'])
+const fsTypes = computed(() => {
+  const types = asArray(asRecord(asRecord(data.value).managed).fs_types)
+  return types.length ? types : ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS']
+})
 const canFormat = computed(() => {
-  if (!formatTarget.value) return false
-  const expect = (formatTarget.value.volume_name || formatTarget.value.id || '').trim()
+  const target = asRecord(formatTarget.value)
+  if (!target.id && !target.volume_name) return false
+  const expect = (finiteText(target.volume_name, '') || finiteText(target.id, '')).trim()
   const got = formatConfirm.value.trim()
-  return got && (got === expect || got === formatTarget.value.id)
+  return got && (got === expect || got === target.id)
 })
 // Unassigned: non-system disks that are offline, spun down, or have no volumes
 const unassigned = computed(() => {
-  return asArray(powerDisks.value).filter(d => {
+  return asArray(powerDisks.value).map((d) => asRecord(d)).filter((d) => {
     if (d.system) return false
-    const vols = asArray(d.volumes)
+    const vols = asArray(asRecord(d).volumes)
     if (!vols.length) return true
     if (d.power_state === 'spun_down' || d.power_state === 'offline' || d.power_state === 'idle') return true
     return false
@@ -760,29 +764,29 @@ const unassigned = computed(() => {
 
 // Merge self-test capabilities (/api/smart) with SMART attributes (/api/storage disks)
 const smartMerged = computed(() => {
-  const testDevices = asArray(smartData.value?.devices)
-  const storageDisks = asArray(data.value?.disks)
+  const testDevices = asArray(asRecord(smartData.value).devices).map((d) => asRecord(d))
+  const storageDisks = asArray(asRecord(data.value).disks).map((d) => asRecord(d))
   const storageMap = new Map()
   for (const d of storageDisks) storageMap.set(d.id, d)
-  const merged = testDevices.map(td => {
-    const sd = storageMap.get(td.id)
-    return {
+  const merged = testDevices.map((td) => {
+    const sd = asRecord(storageMap.get(td.id))
+    return asRecord({
       id: td.id, device: td.device,
-      smart: sd?.smart || null, error: sd?.error || null,
-      protocol: sd?.protocol, ssd: sd?.ssd, size: sd?.size,
+      smart: sd.smart || null, error: sd.error || null,
+      protocol: sd.protocol, ssd: sd.ssd, size: sd.size,
       caps: td.capabilities, lastResult: td.last_result,
       logCount: td.log_count, failures: td.failures, progress: td.progress,
-    }
+    })
   })
-  const testIds = new Set(testDevices.map(d => d.id))
+  const testIds = new Set(testDevices.map((d) => d.id))
   for (const sd of storageDisks) {
     if (!testIds.has(sd.id)) {
-      merged.push({
+      merged.push(asRecord({
         id: sd.id, device: sd.device,
         smart: sd.smart || null, error: sd.error || null,
         protocol: sd.protocol, ssd: sd.ssd, size: sd.size,
         caps: null, lastResult: '', logCount: 0, failures: 0, progress: null,
-      })
+      }))
     }
   }
   return merged
@@ -970,17 +974,46 @@ function sizeGb(value) {
   const n = Number(value)
   return Number.isFinite(n) ? `${n} GB` : ''
 }
+function wrapStorage(next) {
+  const row = asRecord(next)
+  const arr = asRecord(row.array)
+  const managed = asRecord(row.managed)
+  return {
+    ...row,
+    power_disks: asArray(row.power_disks).map((d) => {
+      const disk = asRecord(d)
+      return { ...disk, volumes: asArray(disk.volumes).map((v) => asRecord(v)) }
+    }),
+    volumes: asArray(row.volumes).map((v) => asRecord(v)),
+    disks: asArray(row.disks).map((d) => {
+      const disk = asRecord(d)
+      return { ...disk, smart: asRecord(disk.smart), volumes: asArray(disk.volumes).map((v) => asRecord(v)) }
+    }),
+    array: {
+      ...arr,
+      devices: asArray(arr.devices).map((d) => asRecord(d)),
+      capacity_groups: asArray(arr.capacity_groups).map((g) => asRecord(g)),
+    },
+    managed: {
+      ...managed,
+      volumes: asArray(managed.volumes).map((v) => asRecord(v)),
+      fs_types: asArray(managed.fs_types).length ? asArray(managed.fs_types) : ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS'],
+    },
+  }
+}
 function kindLabel(d) {
-  if (d.system) return t('main_extra.kind_system')
-  if (d.kind === 'removable') return t('main_extra.kind_removable')
-  if (d.rotational || d.kind === 'hdd' || d.kind === 'external_hdd') return t('main_extra.kind_hdd')
-  if (d.ssd) return 'SSD'
-  return finiteText(d.kind, '') || t('main_extra.kind_disk')
+  const row = asRecord(d)
+  if (row.system) return t('main_extra.kind_system')
+  if (row.kind === 'removable') return t('main_extra.kind_removable')
+  if (row.rotational || row.kind === 'hdd' || row.kind === 'external_hdd') return t('main_extra.kind_hdd')
+  if (row.ssd) return 'SSD'
+  return finiteText(row.kind, '') || t('main_extra.kind_disk')
 }
 function kindBadge(d) {
-  if (d.system) return 'down'
-  if (d.rotational || d.kind === 'hdd' || d.kind === 'external_hdd') return 'warn'
-  if (d.ssd) return 'ok'
+  const row = asRecord(d)
+  if (row.system) return 'down'
+  if (row.rotational || row.kind === 'hdd' || row.kind === 'external_hdd') return 'warn'
+  if (row.ssd) return 'ok'
   return 'accent'
 }
 
@@ -990,7 +1023,7 @@ async function refresh(manual = false) {
   try {
     const next = await getStorage()
     if (mySeq !== loadSeq || !pageAlive) return
-    data.value = next
+    data.value = wrapStorage(next)
     loadError.value = ''
   } catch (e) {
     if (mySeq !== loadSeq || !pageAlive) return
@@ -1017,7 +1050,7 @@ async function loadInitial() {
   try {
     const next = await getStorage(true)
     if (mySeq !== loadSeq || !pageAlive) return
-    data.value = next
+    data.value = wrapStorage(next)
     loadError.value = ''
   } catch (e) {
     if (mySeq !== loadSeq || !pageAlive) return
@@ -1033,7 +1066,7 @@ async function loadInitial() {
   try {
     const full = await getStorage()
     if (mySeq === loadSeq && pageAlive) {
-      data.value = full
+      data.value = wrapStorage(full)
       loadError.value = ''
     }
   } catch (e) {
@@ -1068,21 +1101,22 @@ async function loadSmartThresholds() {
 }
 
 async function power(d, action) {
+  const row = asRecord(d)
   const labels = { sleep: t('main_extra.act_sleep'), wake: t('main_extra.act_wake'), eject: t('main_extra.act_eject') }
   const tip = {
-    sleep: t('main_extra.confirm_sleep', { id: finiteText(d.id) }),
-    wake: t('main_extra.confirm_wake', { id: finiteText(d.id) }),
-    eject: t('main_extra.confirm_eject', { id: finiteText(d.id) }),
+    sleep: t('main_extra.confirm_sleep', { id: finiteText(row.id) }),
+    wake: t('main_extra.confirm_wake', { id: finiteText(row.id) }),
+    eject: t('main_extra.confirm_eject', { id: finiteText(row.id) }),
   }
   if (!confirm(tip[action] || labels[action])) return
   const generation = loadSeq
   busy.value = true
   lastMsg.value = t('main_extra.running')
   try {
-    const j = await setDiskPower(d.id, action)
+    const j = asRecord(await setDiskPower(row.id, action))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
-    toast(j.ok ? `✅ ${labels[action]} ${finiteText(d.id)}` : `❌ ${finiteText(j.message)}`)
+    toast(j.ok ? `✅ ${labels[action]} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1000)
   } catch (e) {
     if (generation !== loadSeq || !pageAlive) return
@@ -1095,22 +1129,23 @@ async function power(d, action) {
 }
 
 async function manage(v, action) {
+  const row = asRecord(v)
   const tips = {
-    mount: `${t('main_extra.mount')} ${finiteText(v.id)}?`,
-    unmount: `${t('main_extra.unmount')} ${finiteText(v.id)} (${finiteText(v.mount, '') || t('main_extra.not_mounted')})?`,
-    mountDisk: `${t('main_extra.mount_disk')} ${finiteText(v.id)}?`,
-    unmountDisk: `${t('main_extra.unmount_disk')} ${finiteText(v.id)}?`,
-    eject: `${t('main.eject')} ${finiteText(v.id)}?`,
+    mount: `${t('main_extra.mount')} ${finiteText(row.id)}?`,
+    unmount: `${t('main_extra.unmount')} ${finiteText(row.id)} (${finiteText(row.mount, '') || t('main_extra.not_mounted')})?`,
+    mountDisk: `${t('main_extra.mount_disk')} ${finiteText(row.id)}?`,
+    unmountDisk: `${t('main_extra.unmount_disk')} ${finiteText(row.id)}?`,
+    eject: `${t('main.eject')} ${finiteText(row.id)}?`,
   }
   if (!confirm(tips[action] || action)) return
   const generation = loadSeq
   busy.value = true
   lastMsg.value = t('main_extra.running')
   try {
-    const j = await manageStorageDevice(v.id, { action })
+    const j = asRecord(await manageStorageDevice(row.id, { action }))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
-    toast(j.ok ? `✅ ${action} ${finiteText(v.id)}` : `❌ ${finiteText(j.message)}`)
+    toast(j.ok ? `✅ ${action} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(800)
   } catch (e) {
     if (generation !== loadSeq || !pageAlive) return
@@ -1122,8 +1157,9 @@ async function manage(v, action) {
 }
 
 function openRename(v) {
-  renameTarget.value = v
-  renameName.value = v.volume_name || v.name || ''
+  const row = asRecord(v)
+  renameTarget.value = row
+  renameName.value = finiteText(row.volume_name, '') || finiteText(row.name, '')
 }
 async function doRename() {
   if (!renameTarget.value || !renameName.value.trim()) return
