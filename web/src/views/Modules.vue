@@ -17,14 +17,14 @@
     <div v-for="(list, cat) in asRecord(byCat)" :key="cat" style="margin-bottom:14px">
       <h2 class="section-title">{{ catLabel(cat) }}</h2>
       <div class="grid">
-        <div v-for="m in asArray(list)" :key="m.id" class="tile">
+        <div v-for="m in asArray(list)" :key="finiteText(asRecord(m).id)" class="tile">
           <div class="row">
-            <span class="name">{{ finiteText(m.name) }}</span>
-            <span class="badge ok" v-if="m.enabled">{{ t('modules.enabled') }}</span>
+            <span class="name">{{ finiteText(asRecord(m).name) }}</span>
+            <span class="badge ok" v-if="asRecord(m).enabled">{{ t('modules.enabled') }}</span>
           </div>
-          <div class="detail" style="white-space:normal;min-height:36px">{{ finiteText(m.description) }}</div>
+          <div class="detail" style="white-space:normal;min-height:36px">{{ finiteText(asRecord(m).description) }}</div>
           <div class="sub" style="margin-bottom:6px">
-            <span v-for="r in asArray(m.ui_routes)" :key="r" style="margin-right:6px">
+            <span v-for="r in asArray(asRecord(m).ui_routes)" :key="finiteText(r)" style="margin-right:6px">
               <router-link v-if="typeof r === 'string' && r.startsWith('/')" :to="finiteText(r)" class="btn tiny">{{ finiteText(r) }}</router-link>
             </span>
           </div>
@@ -55,10 +55,18 @@ const loading = ref(false)
 const loadError = ref('')
 const moduleCount = computed(() =>
   Object.values(asRecord(byCat.value)).reduce(
-    (total, list) => total + (Array.isArray(list) ? list.length : 0),
+    (total, list) => total + asArray(list).length,
     0,
   ),
 )
+
+function asCategoryMap(raw) {
+  const out = {}
+  for (const [cat, list] of Object.entries(asRecord(raw))) {
+    out[cat] = asArray(list).map((row) => asRecord(row))
+  }
+  return out
+}
 let pageAlive = true
 let loadGeneration = 0
 // Category labels come from the backend as stable ids; the visible label is
@@ -75,9 +83,9 @@ async function load() {
   try {
     // Shared client, not a raw fetch: it checks r.ok, so an expired session
     // fires AUTH_LOST_EVENT instead of writing the 401 body into `byCat`.
-    const j = await getModules()
+    const j = asRecord(await getModules())
     if (generation !== loadGeneration || !pageAlive) return
-    byCat.value = asRecord(j.by_category)
+    byCat.value = asCategoryMap(j.by_category)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

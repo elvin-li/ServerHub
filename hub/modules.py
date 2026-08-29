@@ -316,16 +316,33 @@ def _utf8_text(value) -> str:
         # sail past the ``except Exception`` here and 500 GET /api/modules
         # at value, nested and mapping-key rank.
         return ""
+    # CPython usually TypeError's a non-str ``__str__``, but a leftover
+    # that answers another str *subclass* (or a lying claim that slips
+    # a non-str through) used to reach the unbound encode with the wrong
+    # layout and 500 GET /api/modules outside any try — the util._exc_text
+    # belt.  Drop just this field.
+    if not _isinst(text, str):
+        return ""
     # Unbound base encode: ``str()`` of a subclass whose ``__str__`` answers
     # *self* skips CPython's exact-str copy, so a leftover bound ``encode``
     # bomb rode this line to a 500 — at value, nested and mapping-key rank,
     # through the dataclass arm, and as a ``by_category`` group key.
-    text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    try:
+        text = str.encode(text, "utf-8", "replace").decode("utf-8")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
     # Belt for what the slot probe cannot see: a function / bound-method
     # leftover (C-level ``__repr__`` override) and a value whose *rendering*
     # embeds a default repr still answered an address.  Only this coercion
     # arm is scrubbed — real str/bytes storage above is data and stays.
-    return "" if _ADDR_REPR_RE.search(text) else text
+    try:
+        return "" if _ADDR_REPR_RE.search(text) else text
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return ""
 
 
 def _key_text(k) -> str | None:
@@ -377,13 +394,20 @@ def _key_text(k) -> str | None:
         # A raising ``__str__`` key keeps dropping its entry (RecursionError
         # included) — the modules4 shape.
         return None
+    if not _isinst(text, str):
+        return None
     try:
         text = str.encode(text, "utf-8", "replace").decode("utf-8")
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return None
-    return None if _ADDR_REPR_RE.search(text) else text
+    try:
+        return None if _ADDR_REPR_RE.search(text) else text
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
 
 
 def _jsonable(value, depth: int = 0):
@@ -499,7 +523,18 @@ def _jsonable(value, depth: int = 0):
             items = None
         if items is not None:
             out = {}
-            for k, v in items:
+            for pair in items:
+                # Unbound ``dict.items`` yields 2-tuples off real dict
+                # storage, but a leftover snapshot that is not a pair
+                # (the ups/shares torn-row shape) used to ValueError the
+                # two-target unpack *outside* every try — a raw 500.
+                # Drop just that entry; siblings still render.
+                try:
+                    k, v = pair
+                except _CONTROL_FLOW:
+                    raise
+                except BaseException:
+                    continue
                 key = _key_text(k)
                 if key is None:
                     # A key that cannot render (raising ``__str__``, a
@@ -546,7 +581,15 @@ def _jsonable(value, depth: int = 0):
                     raise
                 except BaseException:
                     continue
-                return [_jsonable(v, depth + 1) for v in items]
+                out = []
+                for v in items:
+                    try:
+                        out.append(_jsonable(v, depth + 1))
+                    except _CONTROL_FLOW:
+                        raise
+                    except BaseException:
+                        out.append(None)
+                return out
         return None
     try:
         iso = getattr(value, "isoformat", None)
@@ -624,15 +667,36 @@ def _module_row(m) -> dict | None:
     if row is None:
         return None
     row = _jsonable(row)
-    if not isinstance(row, dict):
+    if not _isinst(row, dict):
         return None
-    cat = row.get("category")
-    if not isinstance(cat, str):
+    try:
+        cat = dict.get(row, "category")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        cat = None
+    if not _isinst(cat, str):
         # A list leftover (``category: [ops]``) is unhashable and 500'd
         # ``modules_by_category`` via setdefault.
-        row["category"] = "other"
-    if not isinstance(row.get("enabled"), bool):
-        row["enabled"] = True
+        try:
+            dict.__setitem__(row, "category", "other")
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    try:
+        enabled = dict.get(row, "enabled")
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        enabled = None
+    if type(enabled) is not bool:
+        try:
+            dict.__setitem__(row, "enabled", True)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
     return row
 
 
@@ -678,7 +742,12 @@ def _registry_entries() -> list:
 def list_modules() -> list[dict]:
     out = []
     for m in _registry_entries():
-        row = _module_row(m)
+        try:
+            row = _module_row(m)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
         if row is not None:
             out.append(row)
     return out
@@ -687,11 +756,23 @@ def list_modules() -> list[dict]:
 def modules_by_category() -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for row in list_modules():
-        cat = row.get("category")
-        if not isinstance(cat, str):
+        try:
+            cat = dict.get(row, "category") if _isinst(row, dict) else None
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            cat = None
+        if not _isinst(cat, str):
             cat = "other"
         try:
             out.setdefault(cat, []).append(row)
-        except TypeError:
-            out.setdefault("other", []).append(row)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            try:
+                out.setdefault("other", []).append(row)
+            except _CONTROL_FLOW:
+                raise
+            except BaseException:
+                continue
     return out

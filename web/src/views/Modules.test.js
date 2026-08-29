@@ -150,3 +150,55 @@ describe('Modules failure states', () => {
     expect(toast).not.toHaveBeenCalled()
   })
 })
+
+describe('Modules leftover leftover lists', () => {
+  it('fail-closes a list leftover by_category without throwing', async () => {
+    api.getModules.mockResolvedValue({ modules: [], by_category: ['system'] })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('fail-closes mapping leftovers in a category list without throwing', async () => {
+    api.getModules.mockResolvedValue({
+      modules: 'nope',
+      by_category: {
+        system: { 0: { id: 'ghost', name: 'Ghost' } },
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(0)
+    expect(wrapper.get('.toolbar [role="status"]').text()).toBe('modules.count_n 0')
+    wrapper.unmount()
+  })
+
+  it('null and primitive rows do not throw out of the tile v-for', async () => {
+    api.getModules.mockResolvedValue({
+      modules: [],
+      by_category: {
+        system: [
+          null,
+          'x',
+          { id: 'dashboard', name: 'Dashboard', description: 'Tiles', ui_routes: { 0: '/' } },
+        ],
+      },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.tile').length).toBe(3)
+    expect(wrapper.get('.toolbar [role="status"]').text()).toBe('modules.count_n 3')
+    expect(wrapper.text()).toContain('Dashboard')
+    wrapper.unmount()
+  })
+
+  it('a whole-payload list leftover renders empty instead of throwing', async () => {
+    api.getModules.mockResolvedValue(['system'])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.placeholder').text()).toBe('common.none')
+    wrapper.unmount()
+  })
+})
