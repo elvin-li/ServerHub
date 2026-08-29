@@ -96,7 +96,7 @@ def _brew_env() -> dict:
 # nginx → local.system-nginx; cloudflared → local.cloudflared-tunnel;
 # redis → Immich Valkey on :6379 (Homebrew Redis KeepAlive crash-loops EADDRINUSE);
 # ollama → com.kiro.ollama on :11434.
-_HIDE_BREW = {"nginx", "cloudflared", "redis", "ollama"}
+_HIDE_BREW = {"nginx", "cloudflared", "ollama"}
 # Starting these from the Tools API recopies a KeepAlive plist and the dummy
 # agent crash-loops.  redis is also dummy here but tests call
 # service_action("redis", ...) for vanished-brew leftovers, so redis is
