@@ -10,7 +10,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ filtered.length }} / {{ services.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(services).length }}</span>
       <!-- role=status: brew actions run for seconds (brew services itself is
            slow enough that the list call gets 20s) and every button greys out
            for the duration; a sighted user watches the disabled toolbar, a
@@ -32,7 +32,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in filtered" :key="s.id">
+          <tr v-for="s in asArray(filtered)" :key="s.id">
             <!-- aria-hidden: the LED repeats the Status badge's started/stopped
                  text in colour only (same as the Health check LED). -->
             <td><span class="led" :class="s.state==='ok'?'on':(s.state==='warn'?'warn':'err')" aria-hidden="true"></span></td>
@@ -56,7 +56,7 @@
               >{{ finiteText(labels[a], '') || finiteText(a) }}</button>
             </td>
           </tr>
-          <tr v-if="!filtered.length && !loadError">
+          <tr v-if="!asArray(filtered).length && !loadError">
             <!-- A filter that matched nothing is not "No Homebrew services
                  found": that claim beside a non-empty count misreports the
                  host (same split as the Network ports and Tools process

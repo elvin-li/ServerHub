@@ -21,7 +21,7 @@
         <!-- role=status: the count is the only feedback the search box, category
              select and toggles give, and it changed silently for a screen
              reader. Same pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ catalog.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(catalog).length }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in categories" :key="c.id" :value="c.id">
             {{ catLabel(c.id) }}{{ countLabel(c.id) }}
@@ -59,12 +59,12 @@
            a screen reader (the same treatment the filter count carries). -->
       <LoadFailure v-if="catalogError" :detail="catalogError" :retry="loadCatalog" :busy="busy" />
       <div v-else-if="!catalogLoaded" class="placeholder" role="status">{{ t('common.loading') }}</div>
-      <div v-else-if="!filtered.length" class="placeholder" role="status">
-        {{ catalog.length ? t('common.no_match') : t('apps.empty') }}
+      <div v-else-if="!asArray(filtered).length" class="placeholder" role="status">
+        {{ asArray(catalog).length ? t('common.no_match') : t('apps.empty') }}
       </div>
       <div class="app-grid">
         <article
-          v-for="tpl in filtered"
+          v-for="tpl in asArray(filtered)"
           :key="tpl.id"
           class="app-card"
           :class="{
@@ -160,7 +160,7 @@
         <!-- role=status: the count is the only feedback the search box and kind
              select give, and it changed silently for a screen reader. Same
              pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ filteredManaged.length }} / {{ asArray(managed.items).length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filteredManaged).length }} / {{ asArray(managed.items).length }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
@@ -213,7 +213,7 @@
                  It also duplicated the tab stop the "Detail" button in the actions
                  cell already provides, which is the keyboard path to the same
                  openDetail(it). -->
-            <tr v-for="it in filteredManaged" :key="it.id" @click="openDetail(it)">
+            <tr v-for="it in asArray(filteredManaged)" :key="it.id" @click="openDetail(it)">
               <td>
                 <strong>{{ finiteText(it.name) }}</strong>
                 <div class="sub-line" v-if="it.status_text">{{ finiteText(it.status_text) }}</div>
@@ -281,7 +281,7 @@
             </tr>
             <!-- Same split: a kind/search filter that matches nothing must not
                  claim the host has no managed apps. -->
-            <tr v-if="!filteredManaged.length && !managedError">
+            <tr v-if="!asArray(filteredManaged).length && !managedError">
               <td colspan="7" class="empty-row">{{ asArray(managed.items).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
             </tr>
           </tbody>

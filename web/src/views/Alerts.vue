@@ -12,13 +12,13 @@
     </div>
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="busy" />
     <SkeletonLoader v-if="!loaded" :cols="5" :rows="6" />
-    <div v-else-if="!alerts.length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
+    <div v-else-if="!asArray(alerts).length && !loadError" class="placeholder">{{ t('alerts.empty') }}</div>
     <!-- Rows are the gate, not "else": with nothing fetched and the read failed,
          the else-branch rendered the level tabs and a table whose only row said
          "no alerts match this filter" — a filter excuse for an API failure. The
          banner above is the whole story; stale rows still render when a re-poll
          fails, which is the LoadFailure contract. -->
-    <template v-else-if="alerts.length">
+    <template v-else-if="asArray(alerts).length">
     <!-- Same level tabs the Health page uses: with 100 mixed rows, finding the
          one that is red should not require scanning past every resolved ok. -->
     <div class="tabs">
@@ -30,7 +30,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ filtered.length }} / {{ alerts.length }}
+        {{ asArray(filtered).length }} / {{ asArray(alerts).length }}
       </span>
     </div>
     <div class="table-wrap">
@@ -62,7 +62,7 @@
             <td class="col-hide-m">{{ finiteText(a.event) }}</td>
             <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(a.message) }}</td>
           </tr>
-          <tr v-if="!filtered.length">
+          <tr v-if="!asArray(filtered).length">
             <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
           </tr>
         </tbody>

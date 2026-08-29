@@ -155,7 +155,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in filteredProc" :key="p.pid + p.command">
+            <tr v-for="p in asArray(filteredProc)" :key="p.pid + p.command">
               <td class="mono">{{ finiteN(p.pid) }}</td>
               <td class="col-hide-m">{{ finiteText(p.user) }}</td>
               <td class="mono">{{ fmtPct(p.cpu) }}</td>

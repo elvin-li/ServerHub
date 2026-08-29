@@ -50,7 +50,7 @@
         <label class="chk"><input type="checkbox" v-model="dense" /> {{ t('services.dense') }}</label>
         <!-- role=status: the count is the only feedback the filter box and
              state chips give, and it changed silently for a screen reader. -->
-        <span class="meta-count" role="status">{{ filtered.length }} / {{ flat.length }}</span>
+        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(flat).length }}</span>
       </span>
       <span class="meta svc-summary" v-if="status">
         {{ t('services.summary', {
@@ -114,7 +114,7 @@
           </thead>
           <tbody>
             <tr
-              v-for="s in filtered"
+              v-for="s in asArray(filtered)"
               :key="s.id"
               :class="{ selected: selected.has(s.id), bad: s.state === 'down' || s.state === 'warn' }"
               @click="openDetail(s)" tabindex="0" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)"
@@ -148,7 +148,7 @@
                 <ServiceActions :service="s" :busy="busy" variant="table" @act="onAction(s, $event)" @logs="openLogs(s)" @more="openDetail(s)" />
               </td>
             </tr>
-            <tr v-if="!filtered.length && !loadError">
+            <tr v-if="!asArray(filtered).length && !loadError">
               <!-- A filter that misses and a host with nothing discovered are
                    different answers (Tools/Network/Containers pattern). -->
               <td :colspan="canManage ? 8 : 7" class="empty-row">{{ flat.length ? t('common.no_match') : t('services.empty') }}</td>
@@ -170,14 +170,14 @@
 
     <!-- Card grid by group -->
     <template v-else>
-      <template v-for="g in filteredGroups" :key="g.group">
-        <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ g.services.length }}</span></h2>
+      <template v-for="g in asArray(filteredGroups)" :key="g.group">
+        <h2 class="section-title">{{ displayGroup(g.group) }} <span class="meta-count">{{ asArray(g.services).length }}</span></h2>
         <div class="grid svc-grid">
           <!-- The button role sits on the name, not the <article>: the card also
                holds the ServiceActions buttons and a control may not contain
                other controls (ARIA nested-interactive) — same split as the
                Compose stack list. @click stays on the card for mouse users. -->
-          <article v-for="s in g.services" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
+          <article v-for="s in asArray(g.services)" :key="s.id" class="card svc-card" :class="s.state" @click="openDetail(s)">
             <div class="row">
               <span class="led" :class="ledOf(s.state)" aria-hidden="true"></span>
               <span class="sr-only">{{ ledText(s.state) }}</span>
@@ -192,7 +192,7 @@
           </article>
         </div>
       </template>
-      <div v-if="!filtered.length && !loadError" class="placeholder">{{ flat.length ? t('common.no_match') : t('services.empty') }}</div>
+      <div v-if="!asArray(filtered).length && !loadError" class="placeholder">{{ asArray(flat).length ? t('common.no_match') : t('services.empty') }}</div>
     </template>
 
     <!-- Detail drawer -->

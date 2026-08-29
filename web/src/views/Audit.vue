@@ -37,7 +37,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in filteredRows" :key="i">
+            <tr v-for="(e, i) in asArray(filteredRows)" :key="i">
               <td class="mono col-hide-m">{{ fmt(e.ts) }}</td>
               <td class="mono">
                 {{ finiteText(e.event) }}

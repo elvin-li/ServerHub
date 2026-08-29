@@ -10,7 +10,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ filtered.length }} / {{ tasks.length }}</span>
+      <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(tasks).length }}</span>
     </div>
     <!-- The standard failed-load banner every sibling list page uses. The old
          inline placeholder only rendered once the table had rows, so a failed
@@ -30,7 +30,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in filtered" :key="task.id">
+          <tr v-for="task in asArray(filtered)" :key="task.id">
             <td>
               <strong>{{ finiteText(task.name) }}</strong>
               <div class="mono" style="color:var(--sub)">{{ finiteText(task.id) }}</div>
@@ -51,7 +51,7 @@
           <!-- Gated on !loadError like Brew/Audit/Scheduler: the LoadFailure
                banner is the whole story for a failed read, and an empty claim
                under it would be false. -->
-          <tr v-if="!filtered.length && !loadError">
+          <tr v-if="!asArray(filtered).length && !loadError">
             <td colspan="4" class="empty-row">
               <template v-if="!loaded">{{ t('common.loading') }}</template>
               <!-- A configured-empty page deserves a pointer to where tasks are

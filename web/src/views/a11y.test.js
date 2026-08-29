@@ -405,7 +405,7 @@ describe('services and scheduler surface leftovers', () => {
     // role=alert. The behavioural half lives in loadStates.test.js.
     const maintenance = readFileSync(resolve(SRC, 'views/Maintenance.vue'), 'utf8')
     expect(maintenance).toMatch(/<LoadFailure v-if="loadError"[^>]*:retry="refresh"/)
-    expect(maintenance).toMatch(/v-if="!filtered\.length && !loadError"/)
+    expect(maintenance).toMatch(/v-if="!asArray\(filtered\)\.length && !loadError"/)
   })
 
   it('announces the Maintenance job log — and its finish line — as a live region', () => {
@@ -1338,7 +1338,7 @@ describe('selected state', () => {
     // chips give; without a live region it changed silently.
     const services = readFileSync(resolve(SRC, 'views/Services.vue'), 'utf8')
     expect(services).toMatch(
-      /<span class="meta-count" role="status">\{\{ filtered\.length \}\}/,
+      /<span class="meta-count" role="status">\{\{ asArray\(filtered\)\.length \}\}/,
     )
   })
 
@@ -2704,6 +2704,8 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).toMatch(/logText\.value = finiteText\(j\.log, ''\)/)
     expect(apps).not.toMatch(/if \(tpl\.url_hint\) return tpl\.url_hint/)
     expect(apps).toMatch(/finiteText\(tpl\.url_hint, ''\) \|\| finiteText\(tpl\.url, ''\)/)
+    expect(apps).toMatch(/v-for="tpl in asArray\(filtered\)"/)
+    expect(apps).toMatch(/v-for="it in asArray\(filteredManaged\)"/)
   })
 
   it('Apps cloudflared login URL is announced when it appears', () => {
@@ -3177,6 +3179,7 @@ describe('leftover Infinity interpolations', () => {
     expect(tools).toMatch(/function formatCal\([\s\S]*jsonText/)
     expect(tools).not.toMatch(/JSON\.stringify\(c\)/)
     expect(tools).toMatch(/processes\.value = asArray\(j\.processes\)/)
+    expect(tools).toMatch(/v-for="p in asArray\(filteredProc\)"/)
   })
 
   it('Files leftover listing counts and mtimes reject Infinity', () => {
@@ -3228,6 +3231,7 @@ describe('leftover Infinity interpolations', () => {
     expect(health).toMatch(/finiteText\(c\.name\)/)
     expect(health).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(health).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
+    expect(health).toMatch(/v-for="c in asArray\(filtered\)"/)
   })
 
   it('Users leftover counts and uids go through finiteN', () => {
@@ -3298,6 +3302,7 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).toMatch(/finiteText\(logText\)/)
     expect(maintenance).toMatch(/logText\.value = finiteText\(j\.log, ''\)/)
     expect(maintenance).toMatch(/logTitle\.value = finiteText\(task\.name\)/)
+    expect(maintenance).toMatch(/v-for="task in asArray\(filtered\)"/)
   })
 
   it('Account leftover recovery counts go through finiteN', () => {
@@ -3457,6 +3462,7 @@ describe('leftover Infinity interpolations', () => {
     expect(audit).toMatch(/n: finiteN\(entries\.length\)/)
     expect(audit).toMatch(/max: finiteN\(maxRetained\)/)
     expect(audit).toMatch(/asArray\(entries\.value\)\.slice\(\)\.reverse\(\)/)
+    expect(audit).toMatch(/v-for="\(e, i\) in asArray\(filteredRows\)"/)
   })
 
   it('Dashboard leftover service totals go through finiteN', () => {
@@ -3488,6 +3494,9 @@ describe('leftover Infinity interpolations', () => {
     expect(services).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
     expect(services).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(services).toMatch(/v-for="l in asArray\(status\.links\)"/)
+    expect(services).toMatch(/v-for="s in asArray\(filtered\)"/)
+    expect(services).toMatch(/v-for="g in asArray\(filteredGroups\)"/)
+    expect(services).toMatch(/v-for="s in asArray\(g\.services\)"/)
   })
 
   it('Containers job log live region is gated on jobLog', () => {
@@ -3691,6 +3700,7 @@ describe('leftover Infinity interpolations', () => {
     expect(brew).toMatch(/finiteText\(s\.status\)/)
     expect(brew).not.toMatch(/\{\{\s*labels\[a\] \|\| a\s*\}\}/)
     expect(brew).toMatch(/finiteText\(labels\[a\], ''\) \|\| finiteText\(a\)/)
+    expect(brew).toMatch(/v-for="s in asArray\(filtered\)"/)
   })
 
   it('Logs leftover names go through finiteText', () => {

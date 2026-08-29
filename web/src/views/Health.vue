@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ filtered.length }} / {{ asArray(data?.checks).length }}
+        {{ asArray(filtered).length }} / {{ asArray(data?.checks).length }}
       </span>
     </div>
 
@@ -74,7 +74,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filtered" :key="c.id">
+          <tr v-for="c in asArray(filtered)" :key="c.id">
             <!-- aria-hidden: the LED repeats the Level badge's Pass/Warn/Error
                  text in colour only (same as the Users admin LED). -->
             <td><span class="led" :class="led(c)" aria-hidden="true"></span></td>
@@ -89,7 +89,7 @@
             <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(c.detail)) }}</td>
             <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ c.fix ? finiteText(errText(c.fix)) : (c.ok ? '—' : '') }}</td>
           </tr>
-          <tr v-if="!filtered.length && !loadError">
+          <tr v-if="!asArray(filtered).length && !loadError">
             <!-- A level tab that misses and a scan that produced no checks
                  are different answers: "no matching items" on an empty scan
                  hid that there is nothing to filter (Logs/Services split). -->
