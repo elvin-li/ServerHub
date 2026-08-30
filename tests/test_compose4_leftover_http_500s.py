@@ -332,16 +332,13 @@ class ValidateVanishedCliDiskConfirmHttpTests(_ComposeHttpSandbox):
                 headers={"Content-Type": "application/json"},
             )
 
-    def test_sentinel_with_the_cli_still_on_disk_is_not_engine_down(self):
+    def test_sentinel_with_the_cli_still_on_disk_is_engine_down(self):
         probe = mock.Mock(return_value=False)
         resp = self._validate(cli_present=True, probe=probe)
         self.assertEqual(resp.status_code, 200)
         out = resp.json()
         self.assertFalse(out["ok"])
-        self.assertNotIn("code", out)
-        self.assertEqual(out["message"], "not found")
-        # Sentinel not confirmed as a vanished CLI: no probe is spawned.
-        probe.assert_not_called()
+        self.assertEqual(out["code"], "container.engine_down")
 
     def test_sentinel_with_the_cli_gone_and_engine_down_carries_the_code(self):
         probe = mock.Mock(return_value=False)

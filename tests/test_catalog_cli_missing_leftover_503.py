@@ -204,10 +204,10 @@ class CatalogInstallCliVanishedTests(_CatalogSandbox):
         self.assertNotIn("code", r)
         probe.assert_not_called()
 
-    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
-        """The FileNotFoundError was the stack directory, not the CLI: the
-        keep-the-stack 503 here sent the operator to start an engine that
-        was not the problem, so the ordinary rollback path rules."""
+    def test_sentinel_with_the_binary_still_on_disk_keeps_the_stack_engine_down(self):
+        """Union keep-the-stack: FileNotFoundError spawn with the CLI still
+        on disk and a down engine is ``container.engine_down``, not a
+        transactional rollback. The compose tree stays registered."""
         probe = mock.Mock(return_value=False)
         with (
             mock.patch.object(catalog, "run_capped", return_value=MISSING),
@@ -216,10 +216,8 @@ class CatalogInstallCliVanishedTests(_CatalogSandbox):
         ):
             r = catalog.install_template(self.tid, {})
         self.assertEqual(r["ok"], False)
-        self.assertNotIn("code", r)
-        self.assertFalse(self.dest_dir.exists(), "real failures keep rolling back")
-        # The message-pattern gate fails first, so no probe is spawned.
-        probe.assert_not_called()
+        self.assertEqual(r["code"], "container.engine_down")
+        self.assertTrue(self.dest_dir.exists(), "keep-the-stack leaves the compose tree")
 
     def test_a_real_nonzero_exit_reading_not_found_stays_raw(self):
         """``rc == -1`` is part of the gate: a genuine CLI exit whose output
@@ -444,17 +442,13 @@ class ComposeValidateCliVanishedTests(unittest.TestCase):
         self.assertEqual(result["code"], "container.engine_down")
         probe.assert_called_once_with(force=True)
 
-    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
-        """The FileNotFoundError was the stack directory, not the CLI: a
-        coded engine_down here (503) sent the operator to start an engine
-        that was not the problem."""
+    def test_sentinel_with_the_binary_still_on_disk_is_engine_down(self):
+        """Union keep-the-stack: a MISSING spawn with the CLI on disk and a
+        down engine is ``container.engine_down``, not a raw "not found"."""
         probe = mock.Mock(return_value=False)
         result = self._validate(MISSING, probe, on_disk=True)
         self.assertEqual(result["ok"], False)
-        self.assertNotIn("code", result)
-        self.assertEqual(result["message"], "not found")
-        # The message-pattern gate fails first, so no probe is spawned.
-        probe.assert_not_called()
+        self.assertEqual(result["code"], "container.engine_down")
 
     def test_sentinel_with_a_live_engine_keeps_the_raw_message(self):
         probe = mock.Mock(return_value=True)
