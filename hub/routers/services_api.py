@@ -13,11 +13,21 @@ from hub.errors import api_error
 from hub.status import invalidate_status, member_service_summary
 
 
+def _isinst(value, types) -> bool:
+    """isinstance that a leftover raising ``__class__`` cannot 500 through."""
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used
     to 500 POST /api/services/bulk-action under Starlette's UTF-8 encode.
     """
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         value = value.decode("utf-8", "replace")
     elif value is None:
         return ""
@@ -154,7 +164,7 @@ def services_save_group_rules(request: Request, body: dict[str, Any] | None = No
     """Upsert one rule, or replace the list when ``rules`` is present."""
     if _member_username(request):
         raise api_error("auth.admin_required")
-    result = services_manage_svc.save_group_rules(body if isinstance(body, dict) else {})
+    result = services_manage_svc.save_group_rules(body if _isinst(body, dict) else {})
     _audit_config(request, "group_rules_saved")
     return result
 
@@ -314,13 +324,13 @@ def services_bulk(body: BulkActionBody, request: Request = None):
                 "message": _as_text(msg)[:300],
             })
         except HTTPException as e:
-            detail = e.detail if isinstance(e.detail, dict) else {}
-            msg = detail.get("message") if isinstance(detail, dict) else e.detail
+            detail = e.detail if _isinst(e.detail, dict) else {}
+            msg = detail.get("message") if _isinst(detail, dict) else e.detail
             results.append({
                 "id": _as_text(sid),
                 "ok": False,
                 "message": _as_text(msg)[:300],
-                "code": detail.get("code") if isinstance(detail, dict) else None,
+                "code": detail.get("code") if _isinst(detail, dict) else None,
             })
         except _CONTROL_FLOW:
             raise
