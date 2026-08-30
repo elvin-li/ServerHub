@@ -19,10 +19,25 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 
 def _quote(value) -> str:
     """Percent-encode a conf field. Leftover ``\\ud800`` used to 500 format=sr."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         text = value.decode("utf-8", "replace")
     else:
         text = "" if value is None else str(value)

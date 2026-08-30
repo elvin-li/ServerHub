@@ -346,7 +346,7 @@ def _truthy(value) -> bool:
 def _mapping_get(mapping, key, default=None):
     """Unbound ``dict.get`` behind the liar-proof shape gate, or *default*.
 
-    The read side of every ``dict.get(x, k) if isinstance(x, dict)`` seam:
+    The read side of every ``dict.get(x, k) if _isa(x, dict)`` seam:
     ``_isa`` absorbs a raising-``__class__`` property, and the ``try``
     absorbs a *lying*-``__class__`` impostor (the brew10/json9 shape —
     ``isinstance`` answers dict, the real object is a plain object) that
@@ -600,7 +600,7 @@ def settings() -> dict:
             # subclass's ``__eq__``, and the bytes launder called its bound
             # ``.decode`` — either bomb was a raw 500 out of every settings read.
             expected = DEFAULTS[key]
-            if isinstance(expected, bool):
+            if type(expected) is bool:
                 # Identity, not _isa: bool cannot be subclassed, so a real
                 # stored flag is only ever the two singletons (False is a
                 # real value for wstunnel_enabled; keep it).  The old
@@ -612,7 +612,7 @@ def settings() -> dict:
                 if value is True or value is False:
                     merged[key] = value
                 continue
-            if isinstance(expected, str):
+            if _isa(expected, str):
                 if _isa(value, (str, bytes, bytearray)):
                     # _as_text launders surrogates, bytes, and subclass
                     # encode/decode bombs into an exact str; blanks keep the
@@ -650,7 +650,7 @@ def settings() -> dict:
             number = DEFAULTS[key]
         merged[key] = number
     for key, value in merged.items():
-        if isinstance(value, str):
+        if _isa(value, str):
             merged[key] = _as_text(value)
     return merged
 
@@ -740,7 +740,7 @@ def save_settings(patch: dict) -> dict:
             if not re.match(r"^[a-z][a-z0-9]{0,14}$", str(value)):
                 raise WireGuardError("wg.bad_interface", interface=str(value)[:20])
         elif key == "wstunnel_enabled":
-            if isinstance(value, str):
+            if _isa(value, str):
                 value = value.strip().lower() in ("1", "true", "yes", "on")
             else:
                 value = bool(value)
@@ -937,7 +937,7 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
     ``capture_output=True`` used to keep the whole pipe in RAM; ``wg pubkey``
     is tiny, but a wedged child on the peer-create request still could not.
     """
-    payload = data.encode("utf-8") if isinstance(data, str) else (data or b"")
+    payload = data.encode("utf-8") if _isa(data, str) else (data or b"")
     try:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:
@@ -954,9 +954,9 @@ def _run_with_input(argv: list[str], data: str, *, timeout: int = 8) -> str:
                 # Leftover ``\\ud800`` argv UnicodeEncodeError is ValueError, not OSError.
                 return ""
             captured = getattr(proc, "stdout", None)
-            if isinstance(captured, (bytes, bytearray)):
+            if _isa(captured, (bytes, bytearray)):
                 text = bytes(captured).decode("utf-8", "replace")
-            elif isinstance(captured, str):
+            elif _isa(captured, str):
                 text = captured
             else:
                 # Live path: stdout is the TemporaryFile.  str(file) used to
@@ -1277,9 +1277,9 @@ def _load_registry() -> dict:
         )
     except (OSError, ValueError, RecursionError):
         return {"peers": {}}
-    if not isinstance(data, dict) or not isinstance(data.get("peers"), dict):
+    if not _isa(data, dict) or not _isa(data.get("peers"), dict):
         return {"peers": {}}
-    peers = {k: v for k, v in data["peers"].items() if isinstance(v, dict)}
+    peers = {k: v for k, v in data["peers"].items() if _isa(v, dict)}
     out = dict(data)
     out["peers"] = peers
     return out
@@ -1289,17 +1289,17 @@ def _save_registry(data: dict) -> None:
     def _clean(value, depth: int = 0):
         if depth > 16:
             return None
-        if isinstance(value, float) and (
+        if _isa(value, float) and (
             value != value or value in (float("inf"), float("-inf"))
         ):
             return None
-        if isinstance(value, str):
+        if _isa(value, str):
             return _as_text(value)
-        if isinstance(value, dict):
+        if _isa(value, dict):
             return {_as_text(k): _clean(v, depth + 1) for k, v in value.items()}
-        if isinstance(value, list):
+        if _isa(value, list):
             return [_clean(v, depth + 1) for v in value]
-        if isinstance(value, int) and not isinstance(value, bool):
+        if type(value) is int:
             # str() probe, not an isinstance-str gate: json.dumps renders ints
             # through int->str, which CPython caps at 4300 digits.  One
             # leftover over-cap int used to fail the dump below and silently
@@ -3061,11 +3061,11 @@ def _ping_deadline(timeout_ms) -> int:
     bombs raise whatever they like.
     """
     try:
-        if isinstance(timeout_ms, bool):
+        if type(timeout_ms) is bool:
             return 800
-        if isinstance(timeout_ms, int):
+        if _isa(timeout_ms, int):
             timeout_ms = int.__index__(timeout_ms)
-        elif isinstance(timeout_ms, float):
+        elif _isa(timeout_ms, float):
             timeout_ms = float.__float__(timeout_ms)
         return max(200, min(int(timeout_ms or 800), 5000))
     except _CONTROL_FLOW:

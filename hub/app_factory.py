@@ -41,6 +41,19 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 _REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 #: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
 _INLINE_SCRIPT_RE = re.compile(
     r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
@@ -228,7 +241,7 @@ async def lifespan(app: FastAPI):
     def _interval(raw, default=90):
         if type(raw) is bool or raw is None:
             return default
-        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        if _isinst(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         try:
             n = int(raw)

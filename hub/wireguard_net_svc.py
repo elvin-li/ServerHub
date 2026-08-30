@@ -78,6 +78,19 @@ PF_MARKER = "# ServerHub WireGuard NAT"
 _STAGE_DIR = DATA_DIR
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
@@ -420,12 +433,12 @@ def _daemon_defects(text: str) -> list[str]:
         if "KeepAlive" in text and "sleep" not in text:
             return ["respawn_loop"]
         return ["unreadable"]
-    if not isinstance(payload, dict):
+    if not _isinst(payload, dict):
         return ["unreadable"]
 
     argv = payload.get("ProgramArguments")
     command = " ".join(
-        _as_text(a) for a in (argv if isinstance(argv, list) else [])
+        _as_text(a) for a in (argv if _isinst(argv, list) else [])
     )
     keep_alive = bool(payload.get("KeepAlive"))
     defects: list[str] = []
@@ -456,14 +469,14 @@ def _defects_of(daemon: dict) -> list[str]:
     that flag when the key is missing keeps both shapes meaningful, instead of
     silently reading a hand-built dict as defect-free.
     """
-    if not isinstance(daemon, dict):
+    if not _isinst(daemon, dict):
         return []
     defects = daemon.get("defects")
     if defects is None:
         return ["respawn_loop"] if daemon.get("respawn_loop") else []
-    if isinstance(defects, str):
+    if _isinst(defects, str):
         return [defects] if defects else []
-    if not isinstance(defects, (list, tuple)):
+    if not _isinst(defects, (list, tuple)):
         return []
     return [str(d) for d in defects]
 
@@ -749,7 +762,7 @@ def _daemon_detail(daemon: dict) -> str:
     It does bring the tunnel up at boot, so this is not a failure -- but reporting
     only the path gave the operator no way to tell the two apart.
     """
-    if not isinstance(daemon, dict):
+    if not _isinst(daemon, dict):
         return ""
     path = daemon.get("plist_path") or ""
     if not daemon.get("installed"):
@@ -776,16 +789,16 @@ def _daemon_detail(daemon: dict) -> str:
 
 def _addr_list(value) -> list[str]:
     """Addresses for a readiness sentence; leftover non-lists used to TypeError."""
-    if isinstance(value, str):
+    if _isinst(value, str):
         return [value] if value else []
-    if not isinstance(value, (list, tuple)):
+    if not _isinst(value, (list, tuple)):
         return []
     return [_as_text(item) for item in value if item is not None and _as_text(item)]
 
 
 def _resolution_detail(resolution: dict) -> str:
     """Name the addresses that cannot work, not merely that something cannot."""
-    if not isinstance(resolution, dict):
+    if not _isinst(resolution, dict):
         return ""
     reason = resolution.get("reason") or ""
     endpoint = _as_text(resolution.get("endpoint"))
@@ -813,7 +826,7 @@ def _nat_detail(nat: dict, egress: str) -> str:
     absent, present but not referenced, or referenced in a file pf could no longer
     load -- three different repairs behind one label.
     """
-    if not isinstance(nat, dict):
+    if not _isinst(nat, dict):
         return ""
     path = nat.get("anchor_path") or str(PF_ANCHOR_PATH)
     if not nat.get("anchor_exists"):
@@ -874,13 +887,13 @@ def readiness() -> dict:
     state = wireguard_svc.status()
     nat = nat_installed()
     daemon = daemon_state()
-    if not isinstance(daemon, dict):
+    if not _isinst(daemon, dict):
         daemon = {}
-    if not isinstance(nat, dict):
+    if not _isinst(nat, dict):
         nat = {}
-    if not isinstance(state, dict):
+    if not _isinst(state, dict):
         state = {}
-    if not isinstance(runtime, dict):
+    if not _isinst(runtime, dict):
         runtime = {}
     pf_on = pf_enabled()
 

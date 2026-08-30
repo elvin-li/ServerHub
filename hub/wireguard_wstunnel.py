@@ -257,10 +257,10 @@ def read_plist(path: Path | None = None) -> dict[str, str]:
         # tuple fully covered, so GET /api/wireguard, /api/wireguard/settings
         # and /api/wireguard/readiness used to 500 on a half-written plist.
         return {"listen": "", "restrict_to": ""}
-    if not isinstance(data, dict):
+    if not _isa(data, dict):
         return {"listen": "", "restrict_to": ""}
     argv = data.get("ProgramArguments") or []
-    if not isinstance(argv, list):
+    if not _isa(argv, list):
         return {"listen": "", "restrict_to": ""}
     # _as_text, not str(): plistlib parses <integer>0x…</integer> through
     # int(x, 16), which CPython's 4300-digit cap does not bound, so a leftover
@@ -599,11 +599,11 @@ def _int_or_zero(value) -> int:
     ValueError'd GET /api/wireguard one layer later.
     """
     try:
-        if isinstance(value, bool):
+        if type(value) is bool:
             return int(value)
-        if isinstance(value, int):
+        if _isa(value, int):
             number = int.__index__(value)
-        elif isinstance(value, float):
+        elif _isa(value, float):
             probe = float.__float__(value)
             if probe != probe or probe in (float("inf"), float("-inf")):
                 return 0
