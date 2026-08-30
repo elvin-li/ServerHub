@@ -304,20 +304,24 @@ const total = ref(0)
 const hiddenCount = computed(() => Math.max(0, total.value - asArray(backups.value).length))
 const postgresTargets = ref([])
 const immich = ref({ available: false, last: null, layers: null })
-const layers = computed(() => immich.value.layers || null)
+const layers = computed(() => {
+  const raw = asRecord(immich.value).layers
+  return raw != null && typeof raw === 'object' && !Array.isArray(raw) ? asRecord(raw) : null
+})
 const generatedSummary = computed(() => {
-  const dirs = asArray(layers.value?.generated?.dirs)
-  if (!dirs.length) return finiteText(layers.value?.generated?.path)
-  return dirs.map((d) => `${finiteText(d.name)}${d.present ? '' : '?'}`).join(' · ')
+  const dirs = asArray(asRecord(layers.value).generated?.dirs)
+  if (!dirs.length) return finiteText(asRecord(asRecord(layers.value).generated).path)
+  return dirs.map((d) => `${finiteText(asRecord(d).name)}${asRecord(d).present ? '' : '?'}`).join(' · ')
 })
 const originalsHeadline = computed(() => {
-  const layer = layers.value?.originals
-  if (!layer) return '—'
+  const raw = asRecord(layers.value).originals
+  if (raw == null) return '—'
+  const layer = asRecord(raw)
   if (layer.pct != null) return t('backups.layer_originals_pct', { n: finiteN(layer.pct) })
   return layerPresent(layer)
 })
 const pgLabel = computed(() => {
-  const names = asArray(postgresTargets.value).map((t) => t.id).filter(Boolean)
+  const names = asArray(postgresTargets.value).map((t) => finiteText(asRecord(t).id, '')).filter(Boolean)
   if (names.length === 1) return t('backups.pg_named', { name: finiteText(names[0]) })
   if (names.length > 1) return t('backups.pg')
   return t('backups.pg')
@@ -355,8 +359,8 @@ function sizeMb(value) {
 }
 
 function layerPresent(layer) {
-  if (!layer) return '—'
-  return layer.present ? t('backups.layer_present') : t('backups.layer_missing')
+  if (layer == null) return '—'
+  return asRecord(layer).present ? t('backups.layer_present') : t('backups.layer_missing')
 }
 
 async function copyRestore(text) {
@@ -435,7 +439,7 @@ function jobsPollDelay() {
 }
 function scheduleJobsPoll() {
   if (!pageAlive || jobsPollTimer) return
-  if (!asArray(jobs.value).some((j) => j.running)) return
+  if (!asArray(jobs.value).some((j) => asRecord(j).running)) return
   jobsPollTimer = setTimeout(() => {
     jobsPollTimer = null
     if (!pageAlive) return
@@ -463,8 +467,8 @@ async function saveJob(body) {
   busy.value = true
   try {
     const existing = asRecord(asRecord(jobEditor.value).job)
-    if (existing.id) {
-      const r = asRecord(await updateSchedulerJob(existing.id, body))
+    if (finiteText(existing.id, '')) {
+      const r = asRecord(await updateSchedulerJob(finiteText(existing.id, ''), body))
     } else {
       const r = asRecord(await createSchedulerJob(body))
     }
@@ -487,7 +491,7 @@ async function runJob(job) {
     : 'backups.confirm_rsync_run'
   if (!confirm(t(confirmKey, { name: finiteText(row.name, '') || finiteText(row.id) }))) return
   try {
-    const r = asRecord(await runSchedulerJobNow(row.id))
+    const r = asRecord(await runSchedulerJobNow(finiteText(row.id, '')))
     if (!pageAlive) return
     toast('✅ ' + t('sched.started', { name: finiteText(row.name) }))
     await loadJobs()
@@ -501,7 +505,7 @@ async function removeJob(job) {
   const row = asRecord(job)
   if (!confirm(t('sched.confirm_delete', { name: finiteText(row.name) }))) return
   try {
-    const r = asRecord(await deleteSchedulerJob(row.id))
+    const r = asRecord(await deleteSchedulerJob(finiteText(row.id, '')))
     if (!pageAlive) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()

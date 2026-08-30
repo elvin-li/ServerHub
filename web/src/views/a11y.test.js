@@ -3520,6 +3520,8 @@ describe('leftover Infinity interpolations', () => {
     expect(backups).toMatch(/v-for="\(line, i\) in asArray\(asRecord\(preview\)\.samples\)"/)
     expect(backups).toMatch(/v-for="b in asArray\(backups\)"/)
     expect(backups).toMatch(/jobs\.value = asArray\(d\.jobs\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(backups).toMatch(/asRecord\(d\)\.name/)
+    expect(backups).toMatch(/asRecord\(j\)\.running/)
   })
 
   it('App leftover service counts go through finiteN', () => {
