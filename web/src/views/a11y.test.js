@@ -3664,7 +3664,7 @@ describe('leftover Infinity interpolations', () => {
     const sigs = readFileSync(resolve(SRC, 'components/ServiceSignatures.vue'), 'utf8')
     expect(sigs).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(sigs).toMatch(/function fmtPorts\([\s\S]*finiteText/)
-    expect(sigs).toMatch(/finiteN\(asRecord\(data\)\.builtin_count, 0\)/)
+    expect(sigs).toMatch(/finiteN\(data\.builtin_count, 0\)/)
     expect(sigs).not.toMatch(/data\.builtin_count \|\| 0/)
     expect(sigs).not.toMatch(/\{\{\s*row\.name\s*\}\}/)
     expect(sigs).toMatch(/finiteText\(asRecord\(row\)\.name\)/)
@@ -3679,7 +3679,7 @@ describe('leftover Infinity interpolations', () => {
     expect(sigs).not.toMatch(/\(row\.procs \|\| \[\]\)\.join\(', '\)/)
     expect(sigs).toMatch(/asArray\(rec\.procs\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
     expect(sigs).toMatch(/asArray\(rec\.ports\)\.map\(\(n\) => finiteText\(n, ''\)\)/)
-    expect(sigs).toMatch(/rows\.value = asArray\(data\?\.signatures\)\.map\(\(r\) => asRecord\(r\)\)/)
+    expect(sigs).toMatch(/rows\.value = asArray\(data\.signatures\)\.map\(\(r\) => asRecord\(r\)\)/)
   })
 
   it('GroupRules leftover ids and matcher lists go through finite helpers', () => {
@@ -3694,7 +3694,7 @@ describe('leftover Infinity interpolations', () => {
     expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(e\.message \|\| e\)\)/)
     expect(grules).toMatch(/toast\('❌ ' \+ finiteText\(err\.message \|\| err\)\)/)
     expect(grules).toMatch(/function fmtList\([\s\S]*asArray/)
-    expect(grules).toMatch(/rows\.value = asArray\(data\?\.rules\)\.map\(\(r\) => asRecord\(r\)\)/)
+    expect(grules).toMatch(/rows\.value = asArray\(data\.rules\)\.map\(\(r\) => asRecord\(r\)\)/)
   })
 
   it('string identifier interpolations go through finiteText', () => {

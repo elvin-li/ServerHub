@@ -168,7 +168,7 @@ async function test() {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const r = await testNotify()
+    const r = asRecord(await testNotify())
     if (generation !== loadGeneration || !pageAlive) return
     toast(r.ok ? '✅ ' + t('common.sent') : '❌ ' + finiteText(r.message, ''))
   } catch (e) {

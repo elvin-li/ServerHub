@@ -242,7 +242,7 @@ async function doPreview() {
   previewError.value = ''
   preview.value = null
   try {
-    const next = await rsyncPreview(rsyncParams())
+    const next = asRecord(await rsyncPreview(rsyncParams()))
     if (generation !== previewGeneration || !pageAlive) return
     preview.value = {
       ...asRecord(next),

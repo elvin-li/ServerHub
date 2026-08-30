@@ -1032,7 +1032,7 @@ async function refresh(manual = false) {
   const mySeq = ++loadSeq
   loading.value = true
   try {
-    const next = await getStorage()
+    const next = asRecord(await getStorage())
     if (mySeq !== loadSeq || !pageAlive) return
     data.value = wrapStorage(next)
     loadError.value = ''
@@ -1059,7 +1059,7 @@ async function loadInitial() {
   const mySeq = ++loadSeq
   loading.value = true
   try {
-    const next = await getStorage(true)
+    const next = asRecord(await getStorage(true))
     if (mySeq !== loadSeq || !pageAlive) return
     data.value = wrapStorage(next)
     loadError.value = ''
@@ -1075,7 +1075,7 @@ async function loadInitial() {
   }
   pendingFull.value = true
   try {
-    const full = await getStorage()
+    const full = asRecord(await getStorage())
     if (mySeq === loadSeq && pageAlive) {
       data.value = wrapStorage(full)
       loadError.value = ''

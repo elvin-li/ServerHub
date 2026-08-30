@@ -864,7 +864,7 @@ async function openInspect(c) {
   const generation = listGeneration
   busy.value = true
   try {
-    const next = await inspectContainer(c.id)
+    const next = asRecord(await inspectContainer(c.id))
     if (generation !== listGeneration) return
     inspectData.value = next
   } catch (e) {
@@ -947,7 +947,7 @@ async function doPrune(kind) {
   const generation = listGeneration
   busy.value = true
   try {
-    const r = await prune(kind)
+    const r = asRecord(await prune(kind))
     if (!stillOnList(generation)) return
     toast(r.ok ? '✅ ' + t('docker.done') : '❌ ' + finiteText(r.message))
     refresh()

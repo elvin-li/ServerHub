@@ -121,10 +121,10 @@ function parseList(raw) {
 async function load() {
   const generation = ++loadGeneration
   try {
-    const data = await getGroupRules()
+    const data = asRecord(await getGroupRules())
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = asArray(data?.rules).map((r) => asRecord(r))
-    source.value = data?.source === 'yaml' ? 'yaml' : 'seed'
+    rows.value = asArray(data.rules).map((r) => asRecord(r))
+    source.value = data.source === 'yaml' ? 'yaml' : 'seed'
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

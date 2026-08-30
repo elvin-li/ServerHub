@@ -193,10 +193,10 @@ function secretsFor(ty) {
 async function load() {
   const generation = ++loadGeneration
   try {
-    const r = await getNotifyChannels()
+    const r = asRecord(await getNotifyChannels())
     if (generation !== loadGeneration || !pageAlive) return
-    channels.value = asArray(asRecord(r).channels).map((c) => asRecord(c))
-    types.value = asRecord(asRecord(r).types)
+    channels.value = asArray(r.channels).map((c) => asRecord(c))
+    types.value = asRecord(r.types)
     typeIds.value = Object.keys(types.value)
     loadError.value = ''
   } catch (e) {

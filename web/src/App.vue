@@ -630,7 +630,7 @@ async function refresh() {
   // hammering a host that is not answering.
   const generation = loadGeneration
   try {
-    const next = await getStatus()
+    const next = asRecord(await getStatus())
     if (!stillOnShell(generation)) return
     status.value = next
   } catch { return false }

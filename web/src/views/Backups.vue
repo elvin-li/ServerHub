@@ -515,7 +515,7 @@ async function openPreview(job) {
   previewError.value = ''
   previewBusy.value = true
   try {
-    const next = await rsyncPreview(asRecord(row.params))
+    const next = asRecord(await rsyncPreview(asRecord(row.params)))
     if (!pageAlive) return
     preview.value = asRecord(next)
   } catch (e) {

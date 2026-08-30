@@ -123,10 +123,10 @@ function parseList(raw) {
 async function load() {
   const generation = ++loadGeneration
   try {
-    const data = await getServiceSignatures()
+    const data = asRecord(await getServiceSignatures())
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = asArray(data?.signatures).map((r) => asRecord(r))
-    builtinCount.value = finiteN(asRecord(data).builtin_count, 0)
+    rows.value = asArray(data.signatures).map((r) => asRecord(r))
+    builtinCount.value = finiteN(data.builtin_count, 0)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

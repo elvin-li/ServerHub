@@ -857,7 +857,7 @@ async function withBusy(fn, okKey) {
 const sync = () => withBusy(syncWireguard, 'wg.synced')
 const ping = () => withBusy(async () => {
   const generation = loadGeneration
-  const result = await pingWireguardPeers()
+  const result = asRecord(await pingWireguardPeers())
   if (generation !== loadGeneration || !pageAlive) return result
   pingResult.value = {
     ...asRecord(result),
