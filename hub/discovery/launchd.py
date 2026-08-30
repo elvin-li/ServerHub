@@ -50,6 +50,19 @@ _http_misses: dict[str, int] = {}
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 
 def _tls_alive(port) -> bool:
     """True when loopback:*port* completes a TLS handshake.
@@ -185,7 +198,7 @@ def _renderable_port(value):
     the digit-cap ValueError and killed the whole collector — every launchd
     row silently vanished from /api/status and the Services page.
     """
-    if isinstance(value, int) and not isinstance(value, bool):
+    if type(value) is int:
         try:
             str(value)
         except _CONTROL_FLOW:
@@ -259,7 +272,7 @@ def discover_launchd():
             raise
         except BaseException:
             pl = {}
-        if not isinstance(pl, dict):
+        if not _isinst(pl, dict):
             pl = {}
         stem = Path(path).stem
         # launchd registers the job under Label, which can differ from the
@@ -277,7 +290,7 @@ def discover_launchd():
             continue
         interval = bool(pl.get("StartInterval") or pl.get("StartCalendarInterval"))
         arguments = pl.get("ProgramArguments") or []
-        if not isinstance(arguments, list):
+        if not _isinst(arguments, list):
             arguments = []
         # Login helpers that delegate to LaunchServices are intentionally
         # one-shot: /usr/bin/open exits after handing the bundle to macOS. A

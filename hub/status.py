@@ -230,7 +230,7 @@ def _name_text(raw) -> str:
     """Order / resource / state text via a ``str()`` probe; ``""`` drops it.
 
     YAML numeric values (``groups_order: [2024, Media]``, a member
-    ``resources: [8080]``) load as int.  The ``isinstance(g, str)`` gate on
+    ``resources: [8080]``) load as int.  The ``_isa(g, str)`` gate on
     ``groups_order`` silently lost the numeric group's configured position,
     and the bare ``str()`` calls in ``filter_status_for_resources`` raised
     CPython's int->str digit-cap ValueError on an over-cap hex leftover —
@@ -644,7 +644,7 @@ def _build_status() -> dict:
     containers, engine_up = _container_pair(_future_result(f_d, ([], False)))
     vms = _rows(_future_result(f_v, []))
     system = _future_result(f_s, {})
-    system = system if isinstance(system, dict) else {}
+    system = system if _isa(system, dict) else {}
     scripts = _rows(_future_result(f_sc, []))
     try:
         apps = collect_apps(engine_up)
@@ -668,20 +668,20 @@ def _build_status() -> dict:
         known_ports = set()
         known_names = set()
         for s in services:
-            if not isinstance(s, dict):
+            if not _isa(s, dict):
                 continue
             sid, sname = s.get("id"), s.get("name")
-            if isinstance(sid, str):
+            if _isa(sid, str):
                 known_names.add(sid)
-            if isinstance(sname, str):
+            if _isa(sname, str):
                 known_names.add(sname)
             if s.get("port"):
                 _remember_port(known_ports, s["port"])
-            meta = s.get("meta") if isinstance(s.get("meta"), dict) else {}
-            for p in meta.get("detected_ports") if isinstance(meta.get("detected_ports"), list) else []:
+            meta = s.get("meta") if _isa(s.get("meta"), dict) else {}
+            for p in meta.get("detected_ports") if _isa(meta.get("detected_ports"), list) else []:
                 _remember_port(known_ports, p)
             detail = s.get("detail")
-            if isinstance(detail, str):
+            if _isa(detail, str):
                 for m in re.finditer(r":(\d{2,5})\b", detail):
                     known_ports.add(int(m.group(1)))
         # Collectors are isolated above; this scan sat outside that and
@@ -705,13 +705,13 @@ def _build_status() -> dict:
     # Defensive counts: always include core keys; unknown states get their own bucket.
     groups, counts = {}, {"ok": 0, "warn": 0, "down": 0, "stopped": 0, "unknown": 0}
     for s in services:
-        if not isinstance(s, dict):
+        if not _isa(s, dict):
             continue
         group = s.get("group")
-        group = group if isinstance(group, str) and group else "Other"
+        group = group if _isa(group, str) and group else "Other"
         groups.setdefault(group, []).append(s)
         st = s.get("state")
-        if not isinstance(st, str) or not st:
+        if not _isa(st, str) or not st:
             st = "unknown"
         if st not in counts:
             counts[st] = 0
@@ -719,7 +719,7 @@ def _build_status() -> dict:
     raw_order = _cfg_value("groups_order")
     # Names via the str() probe.  ``_as_config`` leaves this list unfiltered
     # (it is not a list of mappings); a nested dict used to TypeError on
-    # ``g in groups``, and the old ``isinstance(g, str)`` gate silently lost
+    # ``g in groups``, and the old ``_isa(g, str)`` gate silently lost
     # a numeric YAML group name's configured position.  _isa + unbound
     # iteration: a ``__class__``-property bomb (or a lying-``__class__``
     # list impostor) as the order value must not 500 the cold build.
@@ -742,7 +742,7 @@ def _build_status() -> dict:
     # 主动停止(stopped)不进告警列表；warn/down 才算需要关注
     problems = [
         s for s in services
-        if isinstance(s, dict) and s.get("state") not in ("ok", "stopped")
+        if _isa(s, dict) and s.get("state") not in ("ok", "stopped")
     ]
 
     adaptive_info = {}
@@ -750,10 +750,10 @@ def _build_status() -> dict:
         extra = _adaptive_info()
         adaptive_info = {
             "orphan_count": sum(
-                1 for s in services if isinstance(s, dict) and s.get("kind") == "auto"
+                1 for s in services if _isa(s, dict) and s.get("kind") == "auto"
             ),
             "auto_labeled": sum(
-                1 for s in services if isinstance(s, dict) and s.get("auto")
+                1 for s in services if _isa(s, dict) and s.get("auto")
             ),
             "compose_projects": extra["compose_projects"],
             "nginx_sites": extra["nginx_sites"],
@@ -766,7 +766,7 @@ def _build_status() -> dict:
         raise
     except BaseException:
         panel_update = {}
-    if not isinstance(panel_update, dict):
+    if not _isa(panel_update, dict):
         panel_update = {}
 
     return _jsonable({
@@ -793,7 +793,7 @@ _MEMBER_SERVICE_FIELDS = {
 
 def member_service_summary(service: dict) -> dict:
     """Copy only fields a family member needs to identify and open a service."""
-    if not isinstance(service, dict):
+    if not _isa(service, dict):
         return {"actions": []}
     summary = {
         key: value
@@ -803,8 +803,8 @@ def member_service_summary(service: dict) -> dict:
     raw_actions = service.get("actions")
     # ``set(actions)`` TypeError'd a nested mapping and 500'd member /api/status.
     actions = {
-        action for action in raw_actions if isinstance(action, str)
-    } if isinstance(raw_actions, list) else set()
+        action for action in raw_actions if _isa(action, str)
+    } if _isa(raw_actions, list) else set()
     summary["actions"] = [action for action in ("open", "detail") if action in actions]
     return summary
 
@@ -833,18 +833,18 @@ def filter_status_for_resources(status: dict, resources: list[str]) -> dict:
     groups: list[dict] = []
     services: list[dict] = []
     groups_raw = status.get("groups")
-    if not isinstance(groups_raw, list):
+    if not _isa(groups_raw, list):
         groups_raw = []
     for group in groups_raw:
-        if not isinstance(group, dict):
+        if not _isa(group, dict):
             continue
         raw_svcs = group.get("services")
-        if not isinstance(raw_svcs, list):
+        if not _isa(raw_svcs, list):
             raw_svcs = []
         visible = [
             member_service_summary(service)
             for service in raw_svcs
-            if isinstance(service, dict)
+            if _isa(service, dict)
             and _name_text(service.get("id") or "") in allowed
         ]
         if visible:
@@ -896,7 +896,7 @@ def cached_status() -> dict | None:
     if hit is None:
         return None
     cleaned = _jsonable(hit)
-    return cleaned if isinstance(cleaned, dict) else None
+    return cleaned if _isa(cleaned, dict) else None
 
 
 def full_status(force=False):
