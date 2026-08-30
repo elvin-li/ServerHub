@@ -21,10 +21,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in asArray(rows)" :key="finiteText(asRecord(row).id)">
+          <tr v-for="row in asArray(rows)" :key="finiteText(recGet(row, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(row).group) }}</strong>
-              <div class="mono sub-line">{{ finiteText(asRecord(row).id) }}</div>
+              <strong>{{ finiteText(recGet(row, 'group')) }}</strong>
+              <div class="mono sub-line">{{ finiteText(recGet(row, 'id')) }}</div>
               <div class="show-m sub">{{ matchSummary(row) }}</div>
             </td>
             <td class="col-hide-m mono">{{ matchSummary(row) }}</td>
@@ -74,7 +74,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { deleteGroupRule, getGroupRules, saveGroupRules } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteText, recGet } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -176,11 +176,11 @@ async function save() {
 }
 
 async function removeRow(row) {
-  if (!confirm(t('grules.confirm_delete', { id: finiteText(asRecord(row).id) }))) return
+  if (!confirm(t('grules.confirm_delete', { id: finiteText(recGet(row, 'id')) }))) return
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = asRecord(await deleteGroupRule(asRecord(row).id))
+    const r = asRecord(await deleteGroupRule(recGet(row, 'id')))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.removed')}`)
     await load()

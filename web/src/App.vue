@@ -61,20 +61,20 @@
           <div class="nav-drawer-title">{{ t('brand') }}</div>
           <router-link
             v-for="item in asArray(nav)"
-            :key="finiteText(asRecord(item).to)"
-            :to="asRecord(item).to"
+            :key="finiteText(recGet(item, 'to'))"
+            :to="recGet(item, 'to')"
             :class="{ active: isActive(item) }"
             :aria-current="navCurrent(item)"
             @click="menuOpen = false"
           >
-            <component :is="asRecord(item).icon" :size="15" />
-            <span>{{ t(asRecord(item).labelKey) }}</span>
+            <component :is="recGet(item, 'icon')" :size="15" />
+            <span>{{ t(recGet(item, 'labelKey')) }}</span>
           </router-link>
           <div class="top-controls">
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('appearance.language') }}</span>
               <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-                <option v-for="l in asArray(locales)" :key="finiteText(asRecord(l).id)" :value="asRecord(l).id">{{ finiteText(asRecord(l).native) }}</option>
+                <option v-for="l in asArray(locales)" :key="finiteText(recGet(l, 'id'))" :value="recGet(l, 'id')">{{ finiteText(recGet(l, 'native')) }}</option>
               </select>
             </label>
             <label class="nav-tool">
@@ -86,7 +86,7 @@
                 data-test="nav-theme"
               >
                 <option value="system">{{ t('theme.system') }}</option>
-                <option v-for="th in asArray(themes)" :key="finiteText(asRecord(th).id)" :value="asRecord(th).id">{{ t(asRecord(th).labelKey) }}</option>
+                <option v-for="th in asArray(themes)" :key="finiteText(recGet(th, 'id'))" :value="recGet(th, 'id')">{{ t(recGet(th, 'labelKey')) }}</option>
               </select>
             </label>
             <button class="logout-btn" type="button" @click="logout">{{ t('auth.logout') }}</button>
@@ -188,16 +188,16 @@
         <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
             v-for="(item, i) in asArray(cmdFlat)"
-            :key="finiteText(asRecord(item).to)"
+            :key="finiteText(recGet(item, 'to'))"
             :id="`cmd-opt-${i}`"
             role="option"
             :aria-selected="i === cmdIdx"
-            :class="{ active: i === cmdIdx, 'cmd-ai': asRecord(item).type === 'ai' }"
+            :class="{ active: i === cmdIdx, 'cmd-ai': recGet(item, 'type') === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ asRecord(item).type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(asRecord(item).query) }) : (finiteText(asRecord(item).title, '') || t(asRecord(item).labelKey)) }}</span>
-            <kbd>{{ asRecord(item).type === 'ai' ? t('assistant.short') : finiteText(asRecord(item).to) }}</kbd>
+            <span>{{ recGet(item, 'type') === 'ai' ? t('assistant.ask_cmd', { q: finiteText(recGet(item, 'query')) }) : (finiteText(recGet(item, 'title'), '') || t(recGet(item, 'labelKey'))) }}</span>
+            <kbd>{{ recGet(item, 'type') === 'ai' ? t('assistant.short') : finiteText(recGet(item, 'to')) }}</kbd>
           </li>
           <!-- role=presentation: a listbox may only own options, and "no
                matches" is a message about the list, not a choice in it. -->
@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText } from './lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -379,8 +379,8 @@ const toastIsError = computed(() => /^\s*(?:\u274c|\u26a0)/.test(toast.value))
 provide('toast', showToast)
 provide('t', t)
 
-const counts = computed(() => asRecord(asRecord(status.value).counts))
-const engineUp = computed(() => asRecord(status.value).engine_up)
+const counts = computed(() => asRecord(recGet(status.value, 'counts')))
+const engineUp = computed(() => recGet(status.value, 'engine_up'))
 const engineClass = computed(() => (engineUp.value ? 'ok' : 'down'))
 
 /**
@@ -496,10 +496,10 @@ const nav = computed(() => {
   if (photoHubOk.value) return groups
   return asArray(groups).map((item) => {
     const row = asRecord(item)
-    if (!asArray(row.children).some((c) => asRecord(c).to === '/photoshub')) return item
+    if (!asArray(row.children).some((c) => recGet(c, 'to') === '/photoshub')) return item
     return {
       ...row,
-      children: asArray(row.children).filter((c) => asRecord(c).to !== '/photoshub'),
+      children: asArray(row.children).filter((c) => recGet(c, 'to') !== '/photoshub'),
     }
   })
 })
@@ -649,7 +649,7 @@ function probePhotoHub() {
   getPhotosHubStatus()
     .then((j) => {
       if (!stillOnShell(generation)) return
-      photoHubOk.value = Boolean(asRecord(j).photoshub_ok)
+      photoHubOk.value = Boolean(recGet(j, 'photoshub_ok'))
     })
     .catch(() => { /* keep last answer: a 502 is not "not installed" */ })
 }
@@ -659,7 +659,7 @@ function probePhotoHub() {
 // `poll` made `poll != null` look like "already polling", so the badge stayed
 // frozen until a manual reload.
 function statusPollMs() {
-  return asRecord(status.value).resource_mode === 'high' ? 15000 : 30000
+  return recGet(status.value, 'resource_mode') === 'high' ? 15000 : 30000
 }
 
 function startPoll() {
@@ -681,7 +681,7 @@ watch(canAssist, (ok) => {
   else assistCatalog.value = []
 })
 watch(
-  () => asRecord(status.value).resource_mode,
+  () => recGet(status.value, 'resource_mode'),
   (mode, prev) => {
     if (!mode || mode === prev) return
     if (mode !== 'high' && prev !== 'high') return
@@ -872,7 +872,7 @@ const cmdResults = computed(() => {
   }
   if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
-    .filter((p) => !seen.has(asRecord(p).path))
+    .filter((p) => !seen.has(recGet(p, 'path')))
     .map((p) => {
       const row = asRecord(p)
       return { type: 'nav', to: row.path, title: row.title, labelKey: '' }
@@ -917,7 +917,7 @@ function loadAssistCatalog() {
   getAssistantCatalog(locale.value)
     .then((body) => {
       if (!stillOnShell(generation) || !authState.canManage) return
-      assistCatalog.value = asArray(asRecord(body).panels)
+      assistCatalog.value = asArray(recGet(body, 'panels'))
     })
     .catch(() => {
       if (!stillOnShell(generation)) return
