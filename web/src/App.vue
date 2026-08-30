@@ -658,7 +658,7 @@ function probePhotoHub() {
 // `poll` made `poll != null` look like "already polling", so the badge stayed
 // frozen until a manual reload.
 function statusPollMs() {
-  return status.value?.resource_mode === 'high' ? 15000 : 30000
+  return asRecord(status.value).resource_mode === 'high' ? 15000 : 30000
 }
 
 function startPoll() {
@@ -680,7 +680,7 @@ watch(canAssist, (ok) => {
   else assistCatalog.value = []
 })
 watch(
-  () => status.value?.resource_mode,
+  () => asRecord(status.value).resource_mode,
   (mode, prev) => {
     if (!mode || mode === prev) return
     if (mode !== 'high' && prev !== 'high') return

@@ -1,5 +1,5 @@
 import { computed, inject, ref } from 'vue'
-import { asArray, asRecord } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 
 const MESSAGES = {}
 const MESSAGE_LOADERS = {
@@ -68,10 +68,10 @@ async function loadMessages(id) {
     pending = loader()
       .then((module) => {
         const messages = module.default
-        if (!messages || typeof messages !== 'object') {
+        if (!messages || typeof messages !== 'object' || Array.isArray(messages)) {
           throw new TypeError(`Locale ${id} has no default message dictionary`)
         }
-        MESSAGES[id] = messages
+        MESSAGES[id] = asRecord(messages)
         return messages
       })
       .finally(() => MESSAGE_LOADS.delete(id))
@@ -85,8 +85,8 @@ function getByPath(obj, path) {
   const parts = path.split('.')
   let cur = obj
   for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = cur[p]
+    if (cur == null || typeof cur !== 'object' || Array.isArray(cur)) return undefined
+    cur = asRecord(cur)[p]
   }
   return cur
 }
@@ -94,9 +94,10 @@ function getByPath(obj, path) {
 function format(str, params) {
   if (!params || typeof str !== 'string') return str
   const rec = asRecord(params)
-  return str.replace(/\{(\w+)\}/g, (_, k) =>
-    rec[k] != null ? String(rec[k]) : `{${k}}`
-  )
+  return str.replace(/\{(\w+)\}/g, (_, k) => {
+    if (rec[k] == null) return `{${k}}`
+    return String(finiteText(rec[k], ''))
+  })
 }
 
 const locale = ref(detectLocale())
