@@ -448,7 +448,7 @@ def service_detail(sid: str) -> dict:
 
     elif kind in ("app", "app-engine"):
         # from services.yaml apps section
-        for a in cfg().get("apps") or []:
+        for a in cfg().get("apps") if _isinst(cfg().get("apps"), list) else []:
             if not _isinst(a, dict):
                 continue
             # _cfg_entry_id: a numeric YAML id renders as text on the page,
@@ -459,7 +459,7 @@ def service_detail(sid: str) -> dict:
                 break
 
     elif kind == "script":
-        for s in cfg().get("scripts") or []:
+        for s in cfg().get("scripts") if _isinst(cfg().get("scripts"), list) else []:
             if not _isinst(s, dict):
                 continue
             # Same _cfg_entry_id compare as the apps branch above.

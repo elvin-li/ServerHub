@@ -284,7 +284,7 @@ def _registry_id(raw) -> str:
 
 def registry():
     reg = {}
-    for a in cfg().get("apps") or []:
+    for a in cfg().get("apps") if _isinst(cfg().get("apps"), list) else []:
         if not _isinst(a, dict):
             continue
         sid = _registry_id(a.get("id"))
@@ -294,7 +294,7 @@ def registry():
             reg[sid] = ("app-engine", a)
         else:
             reg[sid] = ("app", a)
-    for s in cfg().get("scripts") or []:
+    for s in cfg().get("scripts") if _isinst(cfg().get("scripts"), list) else []:
         if not _isinst(s, dict):
             continue
         sid = _registry_id(s.get("id"))
