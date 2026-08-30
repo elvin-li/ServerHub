@@ -2937,6 +2937,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).toMatch(/const models = computed\(\(\) => asArray\(asRecord\(data\.value\)\.models\)\.map\(\(row\) => asRecord\(row\)\)\)/)
     expect(ollama).toMatch(/const resident = computed\(\(\) => asArray\(asRecord\(data\.value\)\.resident\)\.map\(\(row\) => asRecord\(row\)\)\)/)
     expect(ollama).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(ollama).toMatch(/recGet\(m, 'pending'\)/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
@@ -3181,6 +3182,8 @@ describe('leftover Infinity interpolations', () => {
     expect(vms).toMatch(/v-for="v in asArray\(vms\)"/)
     expect(vms).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(vms).toMatch(/msg\.value = finiteText\(e\.message\)/)
+    expect(vms).toMatch(/recGet\(row, 'actions'\)/)
+    expect(vms).toMatch(/recGet\(row, 'backend'\)/)
   })
 
   it('Tools leftover disk/pid interpolations go through finite helpers', () => {

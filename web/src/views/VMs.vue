@@ -163,7 +163,7 @@ import VncConsole from '../components/VncConsole.vue'
 import { createVm, getVms, vmAction } from '../api/client'
 import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -229,11 +229,11 @@ function stateBadge(state) {
 }
 function displayActions(v) {
   const row = asRecord(v)
-  return asArray(row.actions).filter(a => a !== 'shell' || row.backend === 'orb')
+  return asArray(recGet(row, 'actions')).filter((a) => a !== 'shell' || recGet(row, 'backend') === 'orb')
 }
 function hasWebConsole(v) {
   const row = asRecord(v)
-  return row.backend !== 'orb' && asRecord(row.console).available === true && Boolean(row.console_id)
+  return recGet(row, 'backend') !== 'orb' && recGet(asRecord(recGet(row, 'console')), 'available') === true && Boolean(recGet(row, 'console_id'))
 }
 
 /**

@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, asTrimmed, finiteN as finiteNum, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN as finiteNum, finiteText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -787,8 +787,8 @@ async function sendChat() {
   // The just-pushed user turn is not pending; include it. Drop empty assistant stubs.
   const payload = asArray(chatMessages.value)
     .map((m) => asRecord(m))
-    .filter((m) => !m.pending && (m.role === 'user' || (m.role === 'assistant' && m.content)))
-    .map((m) => ({ role: m.role, content: m.content }))
+    .filter((m) => !recGet(m, 'pending') && (recGet(m, 'role') === 'user' || (recGet(m, 'role') === 'assistant' && recGet(m, 'content'))))
+    .map((m) => ({ role: recGet(m, 'role'), content: recGet(m, 'content') }))
   void scrollChat()
   try {
     await chatOllamaModel(chatModel.value, payload, 128, {
