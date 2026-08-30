@@ -71,30 +71,30 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(arrayDevices)" :key="finiteText(asRecord(d).mount)">
+          <tr v-for="d in asArray(arrayDevices)" :key="finiteText(recGet(d, 'mount'))">
             <td><span class="led on"></span></td>
             <td class="col-hide-m">
-              <span class="badge" :class="asRecord(d).kind === 'system' ? 'accent' : 'ok'">
-                {{ asRecord(d).kind === 'system' ? 'Cache/System' : 'Data' }}
+              <span class="badge" :class="recGet(d, 'kind') === 'system' ? 'accent' : 'ok'">
+                {{ recGet(d, 'kind') === 'system' ? 'Cache/System' : 'Data' }}
               </span>
             </td>
             <td class="mono">
-              <strong>{{ finiteText(asRecord(d).mount) }}</strong>
-              <div class="sub" style="font-size:10px" v-if="finiteText(asRecord(d).disk_id, '')">
-                {{ finiteText(asRecord(d).disk_id) }}
-                <span v-if="asRecord(d).shared_pool" class="badge warn" style="margin-left:4px">{{ t('main_extra.shared_pool') }}</span>
+              <strong>{{ finiteText(recGet(d, 'mount')) }}</strong>
+              <div class="sub" style="font-size:10px" v-if="finiteText(recGet(d, 'disk_id'), '')">
+                {{ finiteText(recGet(d, 'disk_id')) }}
+                <span v-if="recGet(d, 'shared_pool')" class="badge warn" style="margin-left:4px">{{ t('main_extra.shared_pool') }}</span>
               </div>
-              <div class="show-m sub">{{ finiteText(asRecord(d).kind) }} · {{ finiteText(asRecord(d).filesystem) }} · {{ fmtGb(asRecord(d).used_gb) }} / {{ fmtGb(asRecord(d).avail_gb) }}</div>
+              <div class="show-m sub">{{ finiteText(recGet(d, 'kind')) }} · {{ finiteText(recGet(d, 'filesystem')) }} · {{ fmtGb(recGet(d, 'used_gb')) }} / {{ fmtGb(recGet(d, 'avail_gb')) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(d).kind) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(d).filesystem) }}</td>
-            <td>{{ fmtGb(asRecord(d).total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(d).used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(d).avail_gb) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(d, 'kind')) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(d, 'filesystem')) }}</td>
+            <td>{{ fmtGb(recGet(d, 'total_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(d, 'used_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(d, 'avail_gb')) }}</td>
             <td style="min-width:100px">
-              {{ withUnit(asRecord(d).pct, '%') }}
-              <div class="pct-bar" :class="asRecord(d).pct>=90?'danger':asRecord(d).pct>=75?'warn':''" style="margin-top:3px">
-                <i :style="{ width: barPct(asRecord(d).pct) + '%' }"></i>
+              {{ withUnit(recGet(d, 'pct'), '%') }}
+              <div class="pct-bar" :class="recGet(d, 'pct')>=90?'danger':recGet(d, 'pct')>=75?'warn':''" style="margin-top:3px">
+                <i :style="{ width: barPct(recGet(d, 'pct')) + '%' }"></i>
               </div>
             </td>
           </tr>
@@ -120,26 +120,26 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(unassigned)" :key="finiteText(asRecord(d).id)">
+          <tr v-for="d in asArray(unassigned)" :key="finiteText(recGet(d, 'id'))">
             <td><span class="led" :class="powerLed(d)"></span></td>
-            <td class="mono">{{ finiteText(asRecord(d).device) }}</td>
+            <td class="mono">{{ finiteText(recGet(d, 'device')) }}</td>
             <td>
-              <strong>{{ finiteText(asRecord(d).name) }}</strong>
+              <strong>{{ finiteText(recGet(d, 'name')) }}</strong>
               <div class="show-m sub">{{ kindLabel(d) }} · {{ powerLabel(d.power_state) }}</div>
-              <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
+              <div v-if="asArray(recGet(d, 'volumes')).length" class="show-m sub mono">
+                <div v-for="v in asArray(recGet(d, 'volumes'))" :key="finiteText(recGet(v, 'mount'))">{{ finiteText(recGet(v, 'mount')) }}</div>
               </div>
             </td>
             <td class="col-hide-m"><span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span></td>
             <td class="col-hide-m"><span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span></td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
-              <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
+              <span v-if="!asArray(recGet(d, 'volumes')).length" style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
+              <div v-for="v in asArray(recGet(d, 'volumes'))" :key="finiteText(recGet(v, 'mount'))">{{ finiteText(recGet(v, 'mount')) }}</div>
             </td>
             <td class="ops">
-              <button v-if="asArray(asRecord(d).actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
-              <button v-if="asArray(asRecord(d).actions).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
-              <button v-if="asArray(asRecord(d).actions).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(recGet(d, 'actions')).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
+              <button v-if="asArray(recGet(d, 'actions')).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
+              <button v-if="asArray(recGet(d, 'actions')).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
           <tr v-if="!asArray(unassigned).length && !loadError && !pendingFull">
@@ -173,55 +173,55 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(powerDisks)" :key="finiteText(asRecord(d).id)">
+          <tr v-for="d in asArray(powerDisks)" :key="finiteText(recGet(d, 'id'))">
             <td>
               <span
                 class="led"
                 :class="powerLed(d)"
-                :title="finiteText(asRecord(d).power_state)"
+                :title="finiteText(recGet(d, 'power_state'))"
               ></span>
             </td>
-            <td class="mono">{{ finiteText(asRecord(d).device) }}</td>
+            <td class="mono">{{ finiteText(recGet(d, 'device')) }}</td>
             <td>
-              <strong>{{ finiteText(asRecord(d).name) }}</strong>
-              <div class="sub" style="font-size:11px">{{ finiteText(asRecord(d).hint) }}</div>
-              <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(asRecord(d).protocol) }}{{ sizeGb(asRecord(d).size_gb) ? ' · ' + sizeGb(asRecord(d).size_gb) : '' }}</div>
-              <div v-if="asArray(asRecord(d).volumes).length" class="show-m sub mono">
-                <div v-for="v in asArray(asRecord(d).volumes)" :key="'m-'+finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
+              <strong>{{ finiteText(recGet(d, 'name')) }}</strong>
+              <div class="sub" style="font-size:11px">{{ finiteText(recGet(d, 'hint')) }}</div>
+              <div class="show-m sub">{{ kindLabel(d) }} · {{ finiteText(recGet(d, 'protocol')) }}{{ sizeGb(recGet(d, 'size_gb')) ? ' · ' + sizeGb(recGet(d, 'size_gb')) : '' }}</div>
+              <div v-if="asArray(recGet(d, 'volumes')).length" class="show-m sub mono">
+                <div v-for="v in asArray(recGet(d, 'volumes'))" :key="'m-'+finiteText(recGet(v, 'mount'))">{{ finiteText(recGet(v, 'mount')) }}</div>
               </div>
             </td>
             <td class="col-hide-m">
               <span class="badge" :class="kindBadge(d)">{{ kindLabel(d) }}</span>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(d).protocol) }}</td>
-            <td class="col-hide-m">{{ finiteText(sizeGb(asRecord(d).size_gb)) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(d, 'protocol')) }}</td>
+            <td class="col-hide-m">{{ finiteText(sizeGb(recGet(d, 'size_gb'))) }}</td>
             <td>
               <span class="badge" :class="powerBadge(d)">{{ powerLabel(d.power_state) }}</span>
             </td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
-              <span v-if="!asArray(asRecord(d).volumes).length" style="color:var(--sub)">—</span>
+              <div v-for="v in asArray(recGet(d, 'volumes'))" :key="finiteText(recGet(v, 'mount'))">{{ finiteText(recGet(v, 'mount')) }}</div>
+              <span v-if="!asArray(recGet(d, 'volumes')).length" style="color:var(--sub)">—</span>
             </td>
             <td class="ops">
               <button
-                v-if="asArray(asRecord(d).actions).includes('sleep')"
+                v-if="asArray(recGet(d, 'actions')).includes('sleep')"
                 class="tiny"
                 :disabled="busy || d.system"
                 @click="power(d, 'sleep')"
               >{{ t('main.sleep') }}</button>
               <button
-                v-if="asArray(asRecord(d).actions).includes('wake')"
+                v-if="asArray(recGet(d, 'actions')).includes('wake')"
                 class="tiny primary"
                 :disabled="busy"
                 @click="power(d, 'wake')"
               >{{ t('main.wake') }}</button>
               <button
-                v-if="asArray(asRecord(d).actions).includes('eject')"
+                v-if="asArray(recGet(d, 'actions')).includes('eject')"
                 class="tiny danger"
                 :disabled="busy || d.system"
                 @click="power(d, 'eject')"
               >{{ t('main.eject') }}</button>
-              <span v-if="!asArray(asRecord(d).actions).length" class="sub">—</span>
+              <span v-if="!asArray(recGet(d, 'actions')).length" class="sub">—</span>
             </td>
           </tr>
           <tr v-if="!asArray(powerDisks).length && !loadError && !pendingFull">
@@ -249,18 +249,18 @@
       <h3 style="margin:0 0 6px">
         <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: asArray(smartNotice.down).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.down)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.down)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
     </div>
     <div v-if="asArray(smartNotice.warn).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
       <h3 style="margin:0 0 6px">
         <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: asArray(smartNotice.warn).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.warn)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.warn)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_watch_hint') }}</p>
     </div>
@@ -268,9 +268,9 @@
       <h3 style="margin:0 0 6px;color:var(--sub)">
         <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: asArray(smartNotice.unknown).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.unknown)" :key="finiteText(asRecord(d).id)" style="font-size:12px;line-height:1.6">
-        <strong class="mono">{{ finiteText(asRecord(d).label) }}</strong>
-        <span style="color:var(--sub)"> · {{ finiteText(asRecord(d).reasons) }}</span>
+      <div v-for="d in asArray(smartNotice.unknown)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+        <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
+        <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_unknown_hint') }}</p>
     </div>
@@ -292,34 +292,34 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in asArray(asRecord(data).disks)" :key="finiteText(asRecord(d).id)">
+          <tr v-for="d in asArray(recGet(data, 'disks'))" :key="finiteText(recGet(d, 'id'))">
             <!-- Was `d.smart ? 'on' : (d.error ? 'err' : 'off')`, which lit green for
                  a drive reporting FAILED (it has a smart dict) and red for a healthy
                  external disk macOS cannot read (it has an error) -- both backwards.
                  The LED now follows the same grade as the notice above. -->
             <td><span class="led" :class="smartLed(d)" :title="smartGrade(d)"></span></td>
-            <td class="mono">{{ finiteText(asRecord(d).device, '') || finiteText(asRecord(d).id) }}</td>
+            <td class="mono">{{ finiteText(recGet(d, 'device'), '') || finiteText(recGet(d, 'id')) }}</td>
             <td>
-              <strong>{{ finiteText(asRecord(d).name, '') || finiteText(asRecord(d).id) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(asRecord(d).smart).model, '') || finiteText(asRecord(asRecord(d).smart).serial, '') }}</div>
-              <div class="show-m sub">{{ finiteText(asRecord(d).protocol) }}{{ asRecord(d).ssd ? ' · SSD' : '' }}{{ finiteText(asRecord(d).size, '') ? ' · ' + finiteText(asRecord(d).size) : '' }}</div>
-              <div v-if="asRecord(asRecord(d).smart).wear || asRecord(asRecord(d).smart).written || asRecord(asRecord(d).smart).power_on" class="show-m sub">
-                {{ [asRecord(asRecord(d).smart).wear, asRecord(asRecord(d).smart).written, asRecord(asRecord(d).smart).power_on].map(v => finiteText(v, '')).filter(Boolean).join(' · ') }}
+              <strong>{{ finiteText(recGet(d, 'name'), '') || finiteText(recGet(d, 'id')) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(recGet(recGet(d, 'smart'), 'model'), '') || finiteText(recGet(recGet(d, 'smart'), 'serial'), '') }}</div>
+              <div class="show-m sub">{{ finiteText(recGet(d, 'protocol')) }}{{ recGet(d, 'ssd') ? ' · SSD' : '' }}{{ finiteText(recGet(d, 'size'), '') ? ' · ' + finiteText(recGet(d, 'size')) : '' }}</div>
+              <div v-if="recGet(recGet(d, 'smart'), 'wear') || recGet(recGet(d, 'smart'), 'written') || recGet(recGet(d, 'smart'), 'power_on')" class="show-m sub">
+                {{ [recGet(recGet(d, 'smart'), 'wear'), recGet(recGet(d, 'smart'), 'written'), recGet(recGet(d, 'smart'), 'power_on')].map(v => finiteText(v, '')).filter(Boolean).join(' · ') }}
               </div>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(d).protocol) }}{{ asRecord(d).ssd ? ' · SSD' : '' }}</td>
-            <td>{{ finiteText(asRecord(asRecord(d).smart).temp) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(d, 'protocol')) }}{{ recGet(d, 'ssd') ? ' · SSD' : '' }}</td>
+            <td>{{ finiteText(recGet(recGet(d, 'smart'), 'temp')) }}</td>
             <td>
               <span class="badge" :class="smartBadge(d)">
-                {{ finiteText(asRecord(asRecord(d).smart).health, '') || (asRecord(d).error ? 'N/A' : '—') }}
+                {{ finiteText(recGet(recGet(d, 'smart'), 'health'), '') || (recGet(d, 'error') ? 'N/A' : '—') }}
               </span>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).wear) }}</td>
-            <td class="col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).written) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(asRecord(d).smart).power_on) }}</td>
-            <td class="col-hide-m">{{ finiteText(asRecord(d).size) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(recGet(d, 'smart'), 'wear')) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(recGet(d, 'smart'), 'written')) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(recGet(d, 'smart'), 'power_on')) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(d, 'size')) }}</td>
           </tr>
-          <tr v-if="!asArray(asRecord(data).disks).length && !loadError">
+          <tr v-if="!asArray(recGet(data, 'disks')).length && !loadError">
             <td colspan="10" class="empty-row">{{ t('main_extra.empty_disks') }}</td>
           </tr>
           <tr v-if="!(data?.disks || []).length && !loadError">
@@ -345,29 +345,29 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in asArray(asRecord(data).volumes)" :key="finiteText(asRecord(v).mount)">
+          <tr v-for="v in asArray(recGet(data, 'volumes'))" :key="finiteText(recGet(v, 'mount'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(v).mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(asRecord(v).kind) }} · {{ finiteText(asRecord(v).filesystem) }}{{ finiteText(asRecord(v).disk_id, '') ? ' · ' + finiteText(asRecord(v).disk_id) : '' }}</div>
-              <div class="show-m sub">{{ fmtGb(asRecord(v).used_gb) }} / {{ fmtGb(asRecord(v).avail_gb) }}</div>
+              <strong>{{ finiteText(recGet(v, 'mount')) }}</strong>
+              <div class="show-m sub">{{ finiteText(recGet(v, 'kind')) }} · {{ finiteText(recGet(v, 'filesystem')) }}{{ finiteText(recGet(v, 'disk_id'), '') ? ' · ' + finiteText(recGet(v, 'disk_id')) : '' }}</div>
+              <div class="show-m sub">{{ fmtGb(recGet(v, 'used_gb')) }} / {{ fmtGb(recGet(v, 'avail_gb')) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(v).disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(v).filesystem) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(v, 'disk_id')) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(v, 'filesystem')) }}</td>
             <td class="col-hide-m">
-              <span class="badge accent">{{ finiteText(asRecord(v).kind) }}</span>
-              <span v-if="asRecord(v).disk_id && sharedDiskIds.has(asRecord(v).disk_id)" class="badge warn">{{ t('main_extra.shared') }}</span>
+              <span class="badge accent">{{ finiteText(recGet(v, 'kind')) }}</span>
+              <span v-if="recGet(v, 'disk_id') && sharedDiskIds.has(recGet(v, 'disk_id'))" class="badge warn">{{ t('main_extra.shared') }}</span>
             </td>
-            <td>{{ fmtGb(asRecord(v).total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(v).used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(v).avail_gb) }}</td>
+            <td>{{ fmtGb(recGet(v, 'total_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(v, 'used_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(v, 'avail_gb')) }}</td>
             <td style="min-width:120px">
-              <strong :style="{ color: asRecord(v).pct >= 90 ? 'var(--down-text)' : (asRecord(v).pct >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(asRecord(v).pct, '%') }}</strong>
-              <div class="pct-bar" :class="asRecord(v).pct>=90?'danger':asRecord(v).pct>=75?'warn':''" style="margin-top:3px">
-                <i :style="{ width: barPct(asRecord(v).pct) + '%' }"></i>
+              <strong :style="{ color: recGet(v, 'pct') >= 90 ? 'var(--down-text)' : (recGet(v, 'pct') >= 75 ? 'var(--warn-text)' : 'inherit') }">{{ withUnit(recGet(v, 'pct'), '%') }}</strong>
+              <div class="pct-bar" :class="recGet(v, 'pct')>=90?'danger':recGet(v, 'pct')>=75?'warn':''" style="margin-top:3px">
+                <i :style="{ width: barPct(recGet(v, 'pct')) + '%' }"></i>
               </div>
             </td>
           </tr>
-          <tr v-if="!asArray(asRecord(data).volumes).length && !loadError">
+          <tr v-if="!asArray(recGet(data, 'volumes')).length && !loadError">
             <td colspan="8" class="empty-row">{{ t('main_extra.empty_volumes') }}</td>
           </tr>
         </tbody>
@@ -400,34 +400,34 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in asArray(managedVols)" :key="finiteText(asRecord(v).id)">
+          <tr v-for="v in asArray(managedVols)" :key="finiteText(recGet(v, 'id'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(v).id) }}</strong>
-              <div class="sub" style="font-size:10px" v-if="asRecord(v).is_whole">{{ t('main_extra.whole') }}</div>
-              <div class="sub" style="font-size:10px" v-else-if="asRecord(v).whole_disk">∈ {{ finiteText(asRecord(v).whole_disk) }}</div>
+              <strong>{{ finiteText(recGet(v, 'id')) }}</strong>
+              <div class="sub" style="font-size:10px" v-if="recGet(v, 'is_whole')">{{ t('main_extra.whole') }}</div>
+              <div class="sub" style="font-size:10px" v-else-if="recGet(v, 'whole_disk')">∈ {{ finiteText(recGet(v, 'whole_disk')) }}</div>
             </td>
             <td>
-              {{ finiteText(asRecord(v).volume_name, '') || finiteText(asRecord(v).name) }}
-              <span v-if="asRecord(v).system" class="badge down">{{ t('main_extra.system') }}</span>
-              <div class="show-m sub">{{ finiteText(asRecord(v).fs) }}{{ sizeGb(asRecord(v).size_gb) ? ' · ' + sizeGb(asRecord(v).size_gb) : '' }}</div>
-              <div v-if="asRecord(v).mount" class="show-m sub mono">{{ finiteText(asRecord(v).mount) }}</div>
+              {{ finiteText(recGet(v, 'volume_name'), '') || finiteText(recGet(v, 'name')) }}
+              <span v-if="recGet(v, 'system')" class="badge down">{{ t('main_extra.system') }}</span>
+              <div class="show-m sub">{{ finiteText(recGet(v, 'fs')) }}{{ sizeGb(recGet(v, 'size_gb')) ? ' · ' + sizeGb(recGet(v, 'size_gb')) : '' }}</div>
+              <div v-if="recGet(v, 'mount')" class="show-m sub mono">{{ finiteText(recGet(v, 'mount')) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(v).fs) }}</td>
-            <td class="col-hide-m">{{ finiteText(sizeGb(asRecord(v).size_gb)) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(v, 'fs')) }}</td>
+            <td class="col-hide-m">{{ finiteText(sizeGb(recGet(v, 'size_gb'))) }}</td>
             <td class="mono col-hide-m" style="font-size:11px">
-              <span v-if="asRecord(v).mount">{{ finiteText(asRecord(v).mount) }}</span>
+              <span v-if="recGet(v, 'mount')">{{ finiteText(recGet(v, 'mount')) }}</span>
               <span v-else style="color:var(--sub)">{{ t('main_extra.not_mounted') }}</span>
             </td>
             <td class="ops">
-              <button v-if="asArray(asRecord(v).actions).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
-              <button v-if="asArray(asRecord(v).actions).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
-              <span v-if="!asArray(asRecord(v).actions).length" class="sub">{{ t('main_extra.locked') }}</span>
+              <button v-if="asArray(recGet(v, 'actions')).includes('mount')" class="tiny primary" :disabled="busy" @click="manage(v, 'mount')">{{ t('main_extra.mount') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('unmount')" class="tiny" :disabled="busy" @click="manage(v, 'unmount')">{{ t('main_extra.unmount') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('mountDisk')" class="tiny primary" :disabled="busy" @click="manage(v, 'mountDisk')">{{ t('main_extra.mount_disk') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('unmountDisk')" class="tiny" :disabled="busy" @click="manage(v, 'unmountDisk')">{{ t('main_extra.unmount_disk') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('eject')" class="tiny" :disabled="busy" @click="manage(v, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('rename')" class="tiny" :disabled="busy" @click="openRename(v)">{{ t('main_extra.rename') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('eraseVolume')" class="tiny danger" :disabled="busy" @click="openFormat(v, false)">{{ t('main_extra.format') }}</button>
+              <button v-if="asArray(recGet(v, 'actions')).includes('eraseDisk')" class="tiny danger" :disabled="busy" @click="openFormat(v, true)">{{ t('main_extra.erase_disk') }}</button>
+              <span v-if="!asArray(recGet(v, 'actions')).length" class="sub">{{ t('main_extra.locked') }}</span>
             </td>
           </tr>
           <!-- "No volumes" is a diagnosis; hiding system volumes is a filter.
@@ -435,7 +435,7 @@
                claimed the disk had no volumes at all — say the filter missed
                instead, like every other filtered table. -->
           <tr v-if="!asArray(managedVols).length && !loadError && !pendingFull">
-            <td colspan="6" class="empty-row">{{ asArray(asRecord(asRecord(data).managed).volumes).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
+            <td colspan="6" class="empty-row">{{ asArray(recGet(recGet(data, 'managed'), 'volumes')).length ? t('common.no_match') : t('main_extra.no_vols') }}</td>
           </tr>
         </tbody>
       </table>
@@ -504,10 +504,10 @@
           <span v-if="finiteText(smartData?.ts, '')">{{ finiteText(smartData.ts) }}</span>
           <template v-if="smartData">
             <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok-text)' : 'var(--warn-text)' }">
-              {{ asRecord(smartData).passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
+              {{ recGet(smartData, 'passwordless_sudo') ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
             </span>
             <span :style="{ color: smartData.smartctl_installed ? 'var(--ok-text)' : 'var(--down-text)' }">
-              {{ asRecord(smartData).smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
+              {{ recGet(smartData, 'smartctl_installed') ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
             </span>
           </template>
           <span v-else-if="smartError" style="color:var(--down-text)">{{ finiteText(smartError) }}</span>
@@ -538,49 +538,49 @@
                 </tr>
               </thead>
               <tbody>
-                <template v-for="m in asArray(smartMerged)" :key="finiteText(asRecord(m).id)">
+                <template v-for="m in asArray(smartMerged)" :key="finiteText(recGet(m, 'id'))">
                 <tr>
                   <td class="mono">
-                    <strong>{{ finiteText(asRecord(m).id) }}</strong>
-                    <div v-if="asRecord(m).error" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(asRecord(m).error) }}</div>
+                    <strong>{{ finiteText(recGet(m, 'id')) }}</strong>
+                    <div v-if="recGet(m, 'error')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(recGet(m, 'error')) }}</div>
                   </td>
                   <td>
-                    <strong>{{ finiteText(asRecord(asRecord(m).smart).model, '') || finiteText(asRecord(asRecord(m).smart).serial) }}</strong>
-                    <div class="sub mono" style="font-size:10px">{{ finiteText(asRecord(m).size) }}</div>
-                    <div class="show-m sub">{{ finiteText(asRecord(m).protocol) }}{{ asRecord(m).ssd ? ' · SSD' : '' }}{{ finiteText(asRecord(asRecord(m).smart).wear, '') ? ' · ' + finiteText(asRecord(asRecord(m).smart).wear) : '' }}</div>
+                    <strong>{{ finiteText(recGet(recGet(m, 'smart'), 'model'), '') || finiteText(recGet(recGet(m, 'smart'), 'serial')) }}</strong>
+                    <div class="sub mono" style="font-size:10px">{{ finiteText(recGet(m, 'size')) }}</div>
+                    <div class="show-m sub">{{ finiteText(recGet(m, 'protocol')) }}{{ recGet(m, 'ssd') ? ' · SSD' : '' }}{{ finiteText(recGet(recGet(m, 'smart'), 'wear'), '') ? ' · ' + finiteText(recGet(recGet(m, 'smart'), 'wear')) : '' }}</div>
                   </td>
-                  <td class="col-hide-m" style="font-size:11px">{{ finiteText(asRecord(m).protocol) }}{{ asRecord(m).ssd ? ' · SSD' : '' }}</td>
-                  <td>{{ finiteText(asRecord(asRecord(m).smart).temp) }}</td>
+                  <td class="col-hide-m" style="font-size:11px">{{ finiteText(recGet(m, 'protocol')) }}{{ recGet(m, 'ssd') ? ' · SSD' : '' }}</td>
+                  <td>{{ finiteText(recGet(recGet(m, 'smart'), 'temp')) }}</td>
                   <td>
-                    <span class="badge" :class="asRecord(asRecord(m).smart).health === 'PASSED' ? 'ok' : (asRecord(asRecord(m).smart).health ? 'warn' : '')">
-                      {{ finiteText(asRecord(asRecord(m).smart).health) }}
+                    <span class="badge" :class="recGet(recGet(m, 'smart'), 'health') === 'PASSED' ? 'ok' : (recGet(recGet(m, 'smart'), 'health') ? 'warn' : '')">
+                      {{ finiteText(recGet(recGet(m, 'smart'), 'health')) }}
                     </span>
                   </td>
-                  <td class="col-hide-m">{{ finiteText(asRecord(asRecord(m).smart).wear) }}</td>
-                  <td class="mono col-hide-m">{{ finiteText(asRecord(asRecord(m).smart).power_on) }}</td>
+                  <td class="col-hide-m">{{ finiteText(recGet(recGet(m, 'smart'), 'wear')) }}</td>
+                  <td class="mono col-hide-m">{{ finiteText(recGet(recGet(m, 'smart'), 'power_on')) }}</td>
                   <td class="col-hide-m" style="font-size:11px">
-                    <span v-if="asArray(asRecord(asRecord(m).caps).supported).length">{{ asArray(asRecord(asRecord(m).caps).supported).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
+                    <span v-if="asArray(recGet(recGet(m, 'caps'), 'supported')).length">{{ asArray(recGet(recGet(m, 'caps'), 'supported')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</span>
                     <span v-else style="color:var(--sub)">{{ t('main_extra.smart_unsupported') }}</span>
-                    <div v-if="finiteText(asRecord(asRecord(m).caps).reason, '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(asRecord(asRecord(m).caps).reason) }}</div>
-                    <div v-if="asRecord(asRecord(m).progress).running" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(asRecord(asRecord(m).progress).percent_remaining, '?') }) }}</div>
-                    <div v-if="finiteText(asRecord(m).lastResult, '')" class="sub" style="font-size:10px">{{ finiteText(asRecord(m).lastResult) }} · {{ finiteN(asRecord(m).logCount, 0) }} {{ t('main_extra.smart_logs') }}</div>
+                    <div v-if="finiteText(recGet(recGet(m, 'caps'), 'reason'), '')" class="sub" style="font-size:10px;color:var(--warn-text)">{{ finiteText(recGet(recGet(m, 'caps'), 'reason')) }}</div>
+                    <div v-if="recGet(recGet(m, 'progress'), 'running')" class="sub" style="font-size:10px;color:var(--ok-text)">{{ t('main_extra.smart_running', { pct: finiteN(recGet(recGet(m, 'progress'), 'percent_remaining'), '?') }) }}</div>
+                    <div v-if="finiteText(recGet(m, 'lastResult'), '')" class="sub" style="font-size:10px">{{ finiteText(recGet(m, 'lastResult')) }} · {{ finiteN(recGet(m, 'logCount'), 0) }} {{ t('main_extra.smart_logs') }}</div>
                   </td>
                   <td class="ops">
                     <!-- The visible face is a glyph and a count, so the
                          accessible name was "▼ 12" — nothing says what
                          expands. aria-expanded carries the open state. -->
                     <button
-                      v-if="asArray(asRecord(asRecord(m).smart).attrs).length"
+                      v-if="asArray(recGet(recGet(m, 'smart'), 'attrs')).length"
                       class="tiny"
-                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(asRecord(m).id) })"
-                      :aria-expanded="smartExpanded.has(asRecord(m).id)"
-                      @click="toggleSmartDetail(asRecord(m).id)"
+                      :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(recGet(m, 'id')) })"
+                      :aria-expanded="smartExpanded.has(recGet(m, 'id'))"
+                      @click="toggleSmartDetail(recGet(m, 'id'))"
                     >
-                      {{ smartExpanded.has(asRecord(m).id) ? '▲' : '▼' }} {{ asArray(asRecord(asRecord(m).smart).attrs).length }}
+                      {{ smartExpanded.has(recGet(m, 'id')) ? '▲' : '▼' }} {{ asArray(recGet(recGet(m, 'smart'), 'attrs')).length }}
                     </button>
-                    <template v-if="asArray(asRecord(asRecord(m).caps).supported).length">
+                    <template v-if="asArray(recGet(recGet(m, 'caps'), 'supported')).length">
                       <button
-                        v-for="k in asArray(asRecord(asRecord(m).caps).supported).filter((x) => asTrimmed(x) !== 'offline')" :key="finiteText(k)"
+                        v-for="k in asArray(recGet(recGet(m, 'caps'), 'supported')).filter((x) => asTrimmed(x) !== 'offline')" :key="finiteText(k)"
                         class="tiny primary"
                         :disabled="busy || smartTestBusy"
                         @click="runSmartTest(m, k)"
@@ -588,7 +588,7 @@
                     </template>
                   </td>
                 </tr>
-                <tr v-if="smartExpanded.has(asRecord(m).id) && asArray(asRecord(asRecord(m).smart).attrs).length">
+                <tr v-if="smartExpanded.has(recGet(m, 'id')) && asArray(recGet(recGet(m, 'smart'), 'attrs')).length">
                   <td :colspan="9" style="padding:0;background:var(--table-alt)">
                     <div style="padding:6px 10px;max-height:300px;overflow:auto">
                       <table class="dense fit-m" style="width:100%">
@@ -596,27 +596,27 @@
                           <tr>
                             <th style="font-size:10px;width:40px">ID</th>
                             <th style="font-size:10px">{{ t('common.name') }}</th>
-                            <th style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).raw !== undefined">{{ t('main_extra.smart_value') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
-                            <th style="font-size:10px">{{ asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
+                            <th style="font-size:10px" v-if="recGet(asArray(recGet(recGet(m, 'smart'), 'attrs'))[0], 'raw') !== undefined">{{ t('main_extra.smart_value') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="recGet(asArray(recGet(recGet(m, 'smart'), 'attrs'))[0], 'worst') !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="recGet(asArray(recGet(recGet(m, 'smart'), 'attrs'))[0], 'thresh') !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="recGet(asArray(recGet(recGet(m, 'smart'), 'attrs'))[0], 'type') !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th style="font-size:10px">{{ recGet(asArray(recGet(recGet(m, 'smart'), 'attrs'))[0], 'raw') !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          <tr v-for="a in asArray(asRecord(asRecord(m).smart).attrs)" :key="finiteN(asRecord(a).id)">
-                            <td class="mono" style="font-size:10px">{{ finiteN(asRecord(a).id) }}</td>
+                          <tr v-for="a in asArray(recGet(recGet(m, 'smart'), 'attrs'))" :key="finiteN(recGet(a, 'id'))">
+                            <td class="mono" style="font-size:10px">{{ finiteN(recGet(a, 'id')) }}</td>
                             <td style="font-size:11px">
-                              {{ finiteText(asRecord(a).name) }}
-                              <div v-if="asRecord(a).type" class="show-m sub">{{ finiteText(asRecord(a).type) }}{{ finiteText(asRecord(a).worst, '') ? ' · W' + finiteText(asRecord(a).worst) : '' }}{{ finiteText(asRecord(a).thresh, '') ? ' · T' + finiteText(asRecord(a).thresh) : '' }}</div>
+                              {{ finiteText(recGet(a, 'name')) }}
+                              <div v-if="recGet(a, 'type')" class="show-m sub">{{ finiteText(recGet(a, 'type')) }}{{ finiteText(recGet(a, 'worst'), '') ? ' · W' + finiteText(recGet(a, 'worst')) : '' }}{{ finiteText(recGet(a, 'thresh'), '') ? ' · T' + finiteText(recGet(a, 'thresh')) : '' }}</div>
                             </td>
-                            <td v-if="asRecord(a).raw !== undefined" class="mono" style="font-size:10px">{{ finiteText(asRecord(a).value) }}</td>
-                            <td class="mono col-hide-m" v-if="asRecord(a).worst !== undefined" style="font-size:10px">{{ finiteText(asRecord(a).worst) }}</td>
-                            <td class="mono col-hide-m" v-if="asRecord(a).thresh !== undefined" style="font-size:10px">{{ finiteText(asRecord(a).thresh) }}</td>
-                            <td class="col-hide-m" v-if="asRecord(a).type !== undefined" style="font-size:10px">
-                              <span class="badge" :class="asRecord(a).type === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ finiteText(asRecord(a).type) }}</span>
+                            <td v-if="recGet(a, 'raw') !== undefined" class="mono" style="font-size:10px">{{ finiteText(recGet(a, 'value')) }}</td>
+                            <td class="mono col-hide-m" v-if="recGet(a, 'worst') !== undefined" style="font-size:10px">{{ finiteText(recGet(a, 'worst')) }}</td>
+                            <td class="mono col-hide-m" v-if="recGet(a, 'thresh') !== undefined" style="font-size:10px">{{ finiteText(recGet(a, 'thresh')) }}</td>
+                            <td class="col-hide-m" v-if="recGet(a, 'type') !== undefined" style="font-size:10px">
+                              <span class="badge" :class="recGet(a, 'type') === 'Pre-fail' ? 'warn' : ''" style="font-size:9px">{{ finiteText(recGet(a, 'type')) }}</span>
                             </td>
-                            <td class="mono" style="font-size:10px">{{ asRecord(a).raw !== undefined ? finiteText(asRecord(a).raw) : finiteText(asRecord(a).value) }}</td>
+                            <td class="mono" style="font-size:10px">{{ recGet(a, 'raw') !== undefined ? finiteText(recGet(a, 'raw')) : finiteText(recGet(a, 'value')) }}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -640,16 +640,16 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(h, i) in asArray(asRecord(smartData).history).slice(0, 15)" :key="finiteText(asRecord(h).ts) + ':' + finiteText(asRecord(h).device) + ':' + i">
-                    <td class="mono" style="font-size:10px">{{ fmtTs(asRecord(h).ts) }}</td>
+                  <tr v-for="(h, i) in asArray(recGet(smartData, 'history')).slice(0, 15)" :key="finiteText(recGet(h, 'ts')) + ':' + finiteText(recGet(h, 'device')) + ':' + i">
+                    <td class="mono" style="font-size:10px">{{ fmtTs(recGet(h, 'ts')) }}</td>
                     <td class="mono" style="font-size:10px">
-                      {{ finiteText(asRecord(h).device) }}
-                      <div v-if="asRecord(h).kind" class="show-m sub">{{ finiteText(asRecord(h).kind) }}</div>
+                      {{ finiteText(recGet(h, 'device')) }}
+                      <div v-if="recGet(h, 'kind')" class="show-m sub">{{ finiteText(recGet(h, 'kind')) }}</div>
                     </td>
-                    <td class="col-hide-m" style="font-size:10px">{{ finiteText(asRecord(h).kind) }}</td>
+                    <td class="col-hide-m" style="font-size:10px">{{ finiteText(recGet(h, 'kind')) }}</td>
                     <td>
-                      <span class="badge" :class="asRecord(h).ok ? 'ok' : 'warn'" style="font-size:10px">
-                        {{ asRecord(h).ok ? t('common.ok') : (finiteText(asRecord(h).error, '') || finiteText(asRecord(h).message, '') || t('common.error')) }}
+                      <span class="badge" :class="recGet(h, 'ok') ? 'ok' : 'warn'" style="font-size:10px">
+                        {{ recGet(h, 'ok') ? t('common.ok') : (finiteText(recGet(h, 'error'), '') || finiteText(recGet(h, 'message'), '') || t('common.error')) }}
                       </span>
                     </td>
                   </tr>
@@ -668,7 +668,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getStorage, getThresholds, manageStorageDevice, setDiskPower, getSmartOverview, startSmartTest } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
-import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, fmtTs, recGet, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -723,28 +723,28 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const powerDisks = computed(() => asArray(asRecord(data.value).power_disks).map((d) => asRecord(d)))
+const powerDisks = computed(() => asArray(recGet(data.value, 'power_disks')).map((d) => asRecord(d)))
 const arrayDevices = computed(() => {
-  const devices = asArray(asRecord(asRecord(data.value).array).devices).map((d) => asRecord(d))
+  const devices = asArray(recGet(recGet(data.value, 'array'), 'devices')).map((d) => asRecord(d))
   if (devices.length) return devices
-  return asArray(asRecord(data.value).volumes).map((v) => asRecord(v)).filter((v) =>
+  return asArray(recGet(data.value, 'volumes')).map((v) => asRecord(v)).filter((v) =>
     v.kind === 'system' || v.kind === 'external'
   )
 })
 const sharedDiskIds = computed(() => {
   const s = new Set()
-  for (const g of asArray(asRecord(asRecord(data.value).array).capacity_groups).map((row) => asRecord(row))) {
+  for (const g of asArray(recGet(recGet(data.value, 'array'), 'capacity_groups')).map((row) => asRecord(row))) {
     if (g.mode === 'shared_pool' && g.disk_id) s.add(g.disk_id)
   }
   return s
 })
 const managedVols = computed(() => {
-  const list = asArray(asRecord(asRecord(data.value).managed).volumes).map((v) => asRecord(v))
+  const list = asArray(recGet(recGet(data.value, 'managed'), 'volumes')).map((v) => asRecord(v))
   if (showSystemVols.value) return list
   return list.filter((v) => !v.system)
 })
 const fsTypes = computed(() => {
-  const types = asArray(asRecord(asRecord(data.value).managed).fs_types)
+  const types = asArray(recGet(recGet(data.value, 'managed'), 'fs_types'))
   return types.length ? types : ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS']
 })
 const canFormat = computed(() => {
@@ -758,7 +758,7 @@ const canFormat = computed(() => {
 const unassigned = computed(() => {
   return asArray(powerDisks.value).map((d) => asRecord(d)).filter((d) => {
     if (d.system) return false
-    const vols = asArray(asRecord(d).volumes)
+    const vols = asArray(recGet(d, 'volumes'))
     if (!vols.length) return true
     if (d.power_state === 'spun_down' || d.power_state === 'offline' || d.power_state === 'idle') return true
     return false
@@ -767,8 +767,8 @@ const unassigned = computed(() => {
 
 // Merge self-test capabilities (/api/smart) with SMART attributes (/api/storage disks)
 const smartMerged = computed(() => {
-  const testDevices = asArray(asRecord(smartData.value).devices).map((d) => asRecord(d))
-  const storageDisks = asArray(asRecord(data.value).disks).map((d) => asRecord(d))
+  const testDevices = asArray(recGet(smartData.value, 'devices')).map((d) => asRecord(d))
+  const storageDisks = asArray(recGet(data.value, 'disks')).map((d) => asRecord(d))
   const storageMap = new Map()
   for (const d of storageDisks) storageMap.set(d.id, d)
   const merged = testDevices.map((td) => {
@@ -841,7 +841,7 @@ function smartReasons(smart) {
   // thresholds.  Anything that is not PASSED/OK is fatal, "WARNING" included --
   // smartctl uses that word for a crossed vendor threshold, which is a different
   // thing from our own soft warn level below.
-  const health = asTrimmed(finiteText(asRecord(smart).health, ''))
+  const health = asTrimmed(finiteText(recGet(smart, 'health'), ''))
   if (health && !['PASSED', 'OK'].includes(health.toUpperCase().replace(/!+$/, ''))) {
     down.push(t('main_extra.smart_r_health', { v: finiteText(health) }))
   }
@@ -885,7 +885,7 @@ function smartReasons(smart) {
 
   // NVMe critical warning bitmap: any bit set is the controller reporting a fault
   // (spare exhausted, degraded reliability, read-only, over temperature).
-  const crit = asTrimmed(finiteText(asRecord(smart).critical_warning, ''))
+  const crit = asTrimmed(finiteText(recGet(smart, 'critical_warning'), ''))
   const critNum = smartNum(crit)
   if (critNum != null && critNum > 0) {
     down.push(t('main_extra.smart_r_critical_warning', { v: crit }))
@@ -1273,7 +1273,7 @@ async function openSmart() {
 }
 
 async function runSmartTest(dev, kind) {
-  if (!confirm(t('main_extra.confirm_smart', { kind, id: finiteText(asRecord(dev).id) }))) return
+  if (!confirm(t('main_extra.confirm_smart', { kind, id: finiteText(recGet(dev, 'id')) }))) return
   const generation = loadSeq
   smartTestBusy.value = true
   try {
