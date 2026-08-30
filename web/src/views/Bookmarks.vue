@@ -58,7 +58,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getBookmarks } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, recGet } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -74,9 +74,9 @@ let pageAlive = true
 let loadGeneration = 0
 
 function healthOf(b) {
-  const row = asRecord(b)
-  if (row.health) return row.health
-  return row.ok ? 'ok' : 'error'
+  const health = recGet(b, 'health')
+  if (health) return health
+  return recGet(b, 'ok') ? 'ok' : 'error'
 }
 function cardClass(b) {
   const h = healthOf(b)
@@ -103,7 +103,7 @@ function badgeText(b) {
   return t('dashboard.bm_down')
 }
 function backendHint(b) {
-  const bk = asRecord(asRecord(b).backend)
+  const bk = asRecord(recGet(b, 'backend'))
   if (!bk.id && !bk.name && !bk.kind && !bk.status && !bk.state) return ''
   const name = finiteText(bk.name, '') || finiteText(bk.id, '')
   const st = finiteText(bk.status, '') || finiteText(bk.state, '')

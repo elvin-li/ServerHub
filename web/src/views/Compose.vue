@@ -125,7 +125,7 @@ import {
   validateCompose,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -197,7 +197,7 @@ async function loadStacks(manual = false) {
 }
 
 async function select(s) {
-  selected.value = asRecord(s).id
+  selected.value = finiteText(recGet(s, 'id'), '')
   await reloadCompose()
 }
 
@@ -248,7 +248,7 @@ async function validate() {
   const generation = composeGeneration
   busy.value = true
   try {
-    const j = asRecord(await validateCompose(editor.value, asRecord(compose.value).path))
+    const j = asRecord(await validateCompose(editor.value, finiteText(recGet(compose.value, 'path'), '')))
     if (generation !== composeGeneration || !pageAlive) return
     msg.value = (j.ok ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('compose.valid_toast_ok') : '❌ ' + t('compose.valid_toast_fail'))
@@ -267,11 +267,11 @@ async function create() {
   try {
     const j = asRecord(await createCompose(asTrimmed(newId.value), asTrimmed(newName.value) || asTrimmed(newId.value), newContent.value))
     if (generation !== stacksGeneration || !pageAlive) return
-    toast('✅ ' + t('compose.created', { id: finiteText(asRecord(j).id) }))
+    toast('✅ ' + t('compose.created', { id: finiteText(recGet(j, 'id')) }))
     showCreate.value = false
     await loadStacks(true)
     if (!pageAlive) return
-    selected.value = j.id
+    selected.value = finiteText(recGet(j, 'id'), '')
     await reloadCompose()
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
@@ -282,10 +282,10 @@ async function create() {
 }
 
 async function run(s, action) {
-  const id = asRecord(s).id || selected.value
+  const id = finiteText(recGet(s, 'id'), '') || selected.value
   if (!id || busy.value) return
   if (action === 'down' && !confirm(t('compose.confirm_down'))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(asRecord(s).name, '') || finiteText(id) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(recGet(s, 'name'), '') || finiteText(id) }))) return
   const generation = stacksGeneration
   busy.value = true
   let holdBusy = false

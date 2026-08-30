@@ -2023,7 +2023,7 @@ describe('operations polling and submission guards', () => {
     expect(apps).toMatch(/async function checkRemoteUpdates\(\)[\s\S]*await loadRemote\(\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function toggleManagedAutostart\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
     expect(apps).toMatch(/async function doManagedAction\([\s\S]*await loadManaged\(true\)[\s\S]*if \(!stillOnApps\(generation\)\) return/)
-    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(true\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = j\.id/)
+    expect(compose).toMatch(/async function create\(\)[\s\S]*await loadStacks\(true\)[\s\S]*if \(!pageAlive\) return[\s\S]*selected\.value = finiteText\(recGet\(j, 'id'\), ''\)/)
     expect(photoshub).toMatch(/asRecord\(await getPhotosHubStatus\(\)\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value =/)
     expect(photoshub).toMatch(/asRecord\(next\.status_after \|\| \(await getPhotosHubStatus\(\)\)\)\s*\n\s*if \(generation !== loadGeneration \|\| !pageAlive\) return\s*\n\s*data\.value = after/)
     expect(wireguard).not.toMatch(/pingResult\.value = await pingWireguardPeers/)
@@ -3442,6 +3442,8 @@ describe('leftover Infinity interpolations', () => {
     expect(bookmarks).toMatch(/v-for="\(b, i\) in asArray\(asRecord\(data\)\.bookmarks\)"/)
     expect(bookmarks).toMatch(/asRecord\(await getBookmarks/)
     expect(bookmarks).toMatch(/const n = finiteN\(ms, null\)/)
+    expect(bookmarks).toMatch(/recGet\(b, 'health'\)/)
+    expect(bookmarks).toMatch(/recGet\(b, 'backend'\)/)
   })
 
   it('Alerts leftover timestamps go through fmtTs', () => {
@@ -3844,7 +3846,8 @@ describe('leftover Infinity interpolations', () => {
     expect(compose).not.toMatch(/\{\{\s*jobLog\s*\}\}/)
     expect(compose).toMatch(/finiteText\(jobLog\)/)
     expect(compose).not.toMatch(/id: j\.id \}\)/)
-    expect(compose).toMatch(/id: finiteText\(asRecord\(j\)\.id\)/)
+    expect(compose).toMatch(/id: finiteText\(recGet\(j, 'id'\)\)/)
+    expect(compose).toMatch(/recGet\(s, 'id'\)/)
     expect(compose).not.toMatch(/r\.message \|\| t\('compose\.started'\)/)
     expect(compose).toMatch(/finiteText\(r\.message, ''\) \|\| t\('compose\.started'\)/)
     expect(compose).not.toMatch(/jobLog\.value = j\.log \|\| ''/)
