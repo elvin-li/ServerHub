@@ -212,7 +212,7 @@
       </div>
       <div class="tile span-4">
         <h2>{{ t('users.normal') }}</h2>
-        <div class="v">{{ finiteDiff(data.count, data.admins) }}</div>
+        <div class="v">{{ finiteDiff(asRecord(data).count, asRecord(data).admins) }}</div>
       </div>
     </div>
 

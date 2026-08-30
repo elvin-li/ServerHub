@@ -26,9 +26,9 @@
       <div class="dash-grid">
         <div class="tile span-4">
           <h3>{{ t('backups.layer_db') }}</h3>
-          <div class="v" style="font-size:15px">{{ finiteText(layers.db?.last?.name, '') || t('photoshub.never') }}</div>
+          <div class="v" style="font-size:15px">{{ finiteText(asRecord(asRecord(asRecord(layers).db).last).name, '') || t('photoshub.never') }}</div>
           <div class="meta">
-            <template v-if="layers.db?.last">{{ sizeMb(layers.db.last.size_mb) }} · :{{ finiteN(layers.db.port) }}</template>
+            <template v-if="asRecord(asRecord(layers).db).last">{{ sizeMb(asRecord(asRecord(asRecord(layers).db).last).size_mb) }} · :{{ finiteN(asRecord(asRecord(layers).db).port) }}</template>
             <template v-else>{{ t('backups.layer_db_hint') }}</template>
           </div>
         </div>
@@ -40,13 +40,13 @@
         </div>
         <div class="tile span-4">
           <h3>{{ t('backups.layer_bridge') }}</h3>
-          <div class="v" style="font-size:15px">{{ layerPresent(layers.bridge) }}</div>
-          <div class="meta">{{ finiteText(layers.bridge?.last_success, '') || finiteText(layers.bridge?.path) }}</div>
-          <div v-if="finiteN(layers.bridge?.exported_files, null) != null" class="meta">{{ t('backups.layer_bridge_files', { n: finiteN(layers.bridge.exported_files) }) }}</div>
+          <div class="v" style="font-size:15px">{{ layerPresent(asRecord(layers).bridge) }}</div>
+          <div class="meta">{{ finiteText(asRecord(asRecord(layers).bridge).last_success, '') || finiteText(asRecord(asRecord(layers).bridge).path) }}</div>
+          <div v-if="finiteN(asRecord(asRecord(layers).bridge).exported_files, null) != null" class="meta">{{ t('backups.layer_bridge_files', { n: finiteN(asRecord(asRecord(layers).bridge).exported_files) }) }}</div>
         </div>
         <div class="tile span-4">
           <h3>{{ t('backups.layer_generated') }}</h3>
-          <div class="v" style="font-size:15px">{{ layerPresent(layers.generated) }}</div>
+          <div class="v" style="font-size:15px">{{ layerPresent(asRecord(layers).generated) }}</div>
           <div class="meta">{{ generatedSummary }}</div>
         </div>
         <div class="tile span-4">

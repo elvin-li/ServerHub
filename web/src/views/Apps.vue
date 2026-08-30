@@ -406,7 +406,7 @@
             <span v-else class="chip chip-muted">{{ t('apps.credential_not_saved') }}</span>
           </div>
           <p class="sub-line credential-hint">
-            {{ credential?.can_apply ? t('apps.credential_apply_hint') : t('apps.credential_store_hint') }}
+            {{ asRecord(credential).can_apply ? t('apps.credential_apply_hint') : t('apps.credential_store_hint') }}
           </p>
           <div class="credential-grid">
             <label>{{ t('settings.username') }}</label>
@@ -436,7 +436,7 @@
           </div>
           <div class="credential-actions">
             <button
-              v-if="credential?.can_apply"
+              v-if="asRecord(credential).can_apply"
               type="button"
               class="primary"
               :disabled="credentialBusy || !credentialLoaded"

@@ -176,7 +176,7 @@
         <div class="launcher-actions" role="group" :aria-label="t('settings.launcher_actions')">
           <button class="primary" :disabled="launcherBusy || launcherLoading || !launcher?.app_installed" @click="runLauncher('open')">{{ t('settings.launcher_open') }}</button>
           <button :disabled="launcherBusy || launcherLoading || !launcher?.app_installed" @click="runLauncher('login')">
-            {{ launcher?.login_enabled ? t('settings.launcher_disable_login') : t('settings.launcher_enable_login') }}
+            {{ asRecord(launcher).login_enabled ? t('settings.launcher_disable_login') : t('settings.launcher_enable_login') }}
           </button>
           <button :disabled="launcherBusy || launcherLoading || !launcher?.panel_registered" @click="runLauncher('restart')">{{ t('settings.launcher_restart') }}</button>
           <button :disabled="launcherBusy || launcherLoading || !launcher?.panel_running" @click="runLauncher('stop')">{{ t('settings.launcher_stop') }}</button>

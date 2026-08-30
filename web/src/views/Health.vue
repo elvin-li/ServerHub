@@ -62,7 +62,7 @@
          (the empty-row is loadError-suppressed), claiming a scan that never
          arrived.  Stale rows still stay on screen under the banner when a
          later rescan fails (the LoadFailure contract — Services pattern). -->
-    <div v-else-if="asArray(data?.checks).length || !loadError" class="table-wrap">
+    <div v-else-if="asArray(asRecord(data).checks).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -93,7 +93,7 @@
             <!-- A level tab that misses and a scan that produced no checks
                  are different answers: "no matching items" on an empty scan
                  hid that there is nothing to filter (Logs/Services split). -->
-            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(data?.checks).length ? t('common.no_match') : t('health.empty')) }}</td>
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(asRecord(data).checks).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>
