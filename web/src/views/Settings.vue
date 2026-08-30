@@ -1687,11 +1687,11 @@ async function runLauncher(action) {
   const generation = beginLauncherBusy()
   try {
     let result
-    if (action === 'open') result = await openLauncherApp()
-    else if (action === 'login') result = await setLauncherLogin(!launcher.value?.login_enabled)
-    else result = await controlPanelService(action)
+    if (action === 'open') result = asRecord(await openLauncherApp())
+    else if (action === 'login') result = asRecord(await setLauncherLogin(!asRecord(launcher.value).login_enabled))
+    else result = asRecord(await controlPanelService(action))
     if (!pageAlive) return
-    if (!result?.ok) throw new Error(softText(result))
+    if (!result.ok) throw new Error(softText(result))
     toast('✅ ' + (finiteText(result.message, '') || t('common.ok')))
     if (action === 'stop') {
       // The API intentionally disappears after accepting this command, so do
@@ -1737,52 +1737,59 @@ async function load() {
     // The host summary is only used for the hostname line; it does not feed the
     // settings form, so waiting for /api/settings before asking for it added a
     // whole round trip to every load of this page for no ordering reason.
-    const [s, hostInfo] = await Promise.all([
+    const [sRaw, hostInfo] = await Promise.all([
       getSettings(),
       getHost().catch(() => null),
     ])
     if (generation !== loadGeneration || !pageAlive) return
-    host.value = hostInfo
+    const s = asRecord(sRaw)
+    const auth = asRecord(s.auth)
+    const notify = asRecord(s.notify)
+    const thresholds = asRecord(s.thresholds)
+    const aliases = asRecord(s.ip_aliases)
+    const terminal = asRecord(s.terminal)
+    const ollama = asRecord(s.ollama)
+    host.value = hostInfo == null ? null : asRecord(hostInfo)
     form.value = {
       ...s,
       host_ip: s.host_ip_config || 'auto',
       auth: {
-        enabled: !!s.auth?.enabled,
-        allow_localhost: s.auth?.allow_localhost !== false,
-        username: s.auth?.username || 'admin',
-        has_password: s.auth?.has_password,
+        enabled: !!auth.enabled,
+        allow_localhost: auth.allow_localhost !== false,
+        username: finiteText(auth.username, '') || 'admin',
+        has_password: auth.has_password,
       },
       notify: {
-        enabled: !!s.notify?.enabled,
-        include_warn: !!s.notify?.include_warn,
-        notify_resolve: s.notify?.notify_resolve !== false,
-        ha_url: s.notify?.ha_url || 'http://localhost:8123',
-        ha_service: s.notify?.ha_service || 'notify.notify',
+        enabled: !!notify.enabled,
+        include_warn: !!notify.include_warn,
+        notify_resolve: notify.notify_resolve !== false,
+        ha_url: finiteText(notify.ha_url, '') || 'http://localhost:8123',
+        ha_service: finiteText(notify.ha_service, '') || 'notify.notify',
         ha_token: '',
         ha_webhook_url: '',
-        has_token: s.notify?.has_token,
-        has_webhook: s.notify?.has_webhook,
+        has_token: notify.has_token,
+        has_webhook: notify.has_webhook,
       },
       thresholds: {
-        enabled: s.thresholds?.enabled !== false,
-        cpu_pct: s.thresholds?.cpu_pct ?? 90,
-        mem_pct: s.thresholds?.mem_pct ?? 90,
-        disk_pct: s.thresholds?.disk_pct ?? 90,
-        cooldown_sec: s.thresholds?.cooldown_sec ?? 1800,
+        enabled: thresholds.enabled !== false,
+        cpu_pct: thresholds.cpu_pct ?? 90,
+        mem_pct: thresholds.mem_pct ?? 90,
+        disk_pct: thresholds.disk_pct ?? 90,
+        cooldown_sec: thresholds.cooldown_sec ?? 1800,
         // Defaults match _public_settings(); `!== false` so a server that omits the
         // key cannot read as "SMART alerts off".
-        smart_enabled: s.thresholds?.smart_enabled !== false,
-        smart_temp_c: s.thresholds?.smart_temp_c ?? 60,
-        smart_wear_pct: s.thresholds?.smart_wear_pct ?? 90,
-        smart_spare_pct: s.thresholds?.smart_spare_pct ?? 10,
+        smart_enabled: thresholds.smart_enabled !== false,
+        smart_temp_c: thresholds.smart_temp_c ?? 60,
+        smart_wear_pct: thresholds.smart_wear_pct ?? 90,
+        smart_spare_pct: thresholds.smart_spare_pct ?? 10,
       },
       adaptive: s.adaptive !== false,
       ip_aliases: {
-        auto_bind: s.ip_aliases?.auto_bind !== false,
-        prefer_wired: s.ip_aliases?.prefer_wired !== false,
-        interval: s.ip_aliases?.interval ?? 60,
-        ips: asArray(s.ip_aliases?.ips),
-        netmask: s.ip_aliases?.netmask || '255.255.255.255',
+        auto_bind: aliases.auto_bind !== false,
+        prefer_wired: aliases.prefer_wired !== false,
+        interval: aliases.interval ?? 60,
+        ips: asArray(aliases.ips),
+        netmask: finiteText(aliases.netmask, '') || '255.255.255.255',
       },
       metrics_interval: s.metrics_interval || 90,
       alert_interval: s.alert_interval || 90,
@@ -1790,13 +1797,13 @@ async function load() {
       // Host shell is opt-in: default to OFF whenever the server does not
       // explicitly say it is on, so a missing field can never read as enabled.
       terminal: {
-        host_enabled: s.terminal?.host_enabled === true,
-        shell: s.terminal?.shell || '',
-        cwd: s.terminal?.cwd || '',
+        host_enabled: terminal.host_enabled === true,
+        shell: finiteText(terminal.shell, ''),
+        cwd: finiteText(terminal.cwd, ''),
       },
       ollama: {
-        url: s.ollama?.url || 'http://127.0.0.1:11434',
-        label: s.ollama?.label || '',
+        url: finiteText(ollama.url, '') || 'http://127.0.0.1:11434',
+        label: finiteText(ollama.label, ''),
       },
     }
     accountForm.value.username = form.value.auth.username
@@ -2261,13 +2268,13 @@ async function saveUps() {
   }
   const generation = beginSaving()
   try {
-    const r = await putUpsSettings({
+    const r = asRecord(await putUpsSettings({
       alerts_enabled: f.alerts_enabled,
       low_battery_pct: f.low_battery_pct,
       shutdown,
-    })
+    }))
     if (!pageAlive) return
-    if (r.ups) upsInfo.value = r.ups
+    if (r.ups) upsInfo.value = asRecord(r.ups)
     buildStackRows()
     toast('✅ ' + t('common.save'))
   } catch (e) {
@@ -2281,11 +2288,11 @@ async function saveUps() {
 async function runDrill() {
   const generation = beginDrillBusy()
   try {
-    const next = await runUpsShutdownDrill()
+    const next = asRecord(await runUpsShutdownDrill())
     if (!pageAlive) return
     upsDrill.value = {
-      ...asRecord(next),
-      steps: asArray(asRecord(next).steps).map((s) => asRecord(s)),
+      ...next,
+      steps: asArray(next.steps).map((s) => asRecord(s)),
     }
   } catch (e) {
     if (!pageAlive) return
@@ -2299,9 +2306,9 @@ async function saveHalt() {
   if (!confirm(t('settings.ups_halt_confirm', { n: finiteN(haltLevel.value) }))) return
   const generation = beginSaving()
   try {
-    const r = await putUpsHalt({ haltlevel: Number(haltLevel.value) })
+    const r = asRecord(await putUpsHalt({ haltlevel: Number(haltLevel.value) }))
     if (!pageAlive) return
-    if (r.ups) upsInfo.value = r.ups
+    if (r.ups) upsInfo.value = asRecord(r.ups)
     toast('✅ ' + t('settings.ups_halt_set'))
   } catch (e) {
     if (!pageAlive) return
@@ -2315,7 +2322,7 @@ async function testNotify() {
   if (saving.value) return
   const generation = beginSaving()
   try {
-    const r = await apiTest()
+    const r = asRecord(await apiTest())
     if (!pageAlive) return
     toast(r.ok ? '✅ ' + t('common.ok') : '❌ ' + (finiteText(r.message, '') || t('common.fail')))
   } catch (e) {
@@ -2330,7 +2337,7 @@ async function forceCheck() {
   if (saving.value) return
   const generation = beginSaving()
   try {
-    const r = await forceAlertCheck()
+    const r = asRecord(await forceAlertCheck())
     if (!pageAlive) return
     toast(`${t('settings.force_check')} · ${asArray(r.emitted).length}`)
   } catch (e) {
