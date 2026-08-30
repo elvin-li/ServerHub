@@ -3154,6 +3154,8 @@ describe('leftover Infinity interpolations', () => {
     expect(wg).not.toMatch(/readiness\?\.wan_interface \|\| 'en0'/)
     expect(wg).toMatch(/finiteText\(readiness\?\.wan_interface, ''\) \|\| 'en0'/)
     expect(wg).toMatch(/v-for="r in asArray\(asRecord\(pingResult\)\.results\)"/)
+    expect(wg).toMatch(/recGet\(c, 'ok'\)/)
+    expect(wg).toMatch(/recGet\(c, 'id'\)/)
   })
 
   it('VMs leftover ids go through finiteText', () => {

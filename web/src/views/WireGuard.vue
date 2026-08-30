@@ -610,7 +610,7 @@ import {
 import { useDismissable } from '../composables/useDismissable'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN, finiteText, withUnit } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, recGet, withUnit } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -722,7 +722,7 @@ const cfgForm = ref({
 const SELF_EXPLAINING = new Set(['peer_origin'])
 const blockingChecks = computed(
   () => asArray(asRecord(readiness.value).checks).map((row) => asRecord(row)).filter(
-    (c) => !c.ok && c.level === 'error' && !SELF_EXPLAINING.has(c.id),
+    (c) => !recGet(c, 'ok') && recGet(c, 'level') === 'error' && !SELF_EXPLAINING.has(recGet(c, 'id')),
   ),
 )
 // `running` is already the status bar at the top of the page and the Start button
@@ -731,14 +731,14 @@ const blockingChecks = computed(
 const ALREADY_SHOWN = new Set([...SELF_EXPLAINING, 'running'])
 const warningChecks = computed(
   () => asArray(asRecord(readiness.value).checks).map((row) => asRecord(row)).filter(
-    (c) => !c.ok && c.level === 'warn' && !ALREADY_SHOWN.has(c.id),
+    (c) => !recGet(c, 'ok') && recGet(c, 'level') === 'warn' && !ALREADY_SHOWN.has(recGet(c, 'id')),
   ),
 )
 const downloadUrl = computed(
-  () => (peerDialog.value ? wireguardPeerDownloadUrl(finiteText(peerDialog.value.pubkey, ''), peerFormat.value) : '#'),
+  () => (peerDialog.value ? wireguardPeerDownloadUrl(finiteText(recGet(peerDialog.value, 'pubkey'), ''), peerFormat.value) : '#'),
 )
 const peerFilename = computed(() => {
-  const safe = finiteText(peerDialog.value?.name, 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
+  const safe = finiteText(recGet(peerDialog.value, 'name'), 'peer').replace(/[^A-Za-z0-9_-]/g, '-')
   const ext = { wg: '.conf', clash: '-clash.yaml', clashfull: '-clash-full.yaml', sr: '-shadowrocket.txt', wst: '-wstunnel.conf' }
   return finiteText(safe, 'peer') + (ext[peerFormat.value] || '.conf')
 })
@@ -977,7 +977,7 @@ async function selectFormat(fmt) {
   const generation = loadGeneration
   peerFormat.value = fmt
   try {
-    const result = asRecord(await getWireguardPeerConfig(peerDialog.value.pubkey, fmt))
+    const result = asRecord(await getWireguardPeerConfig(finiteText(recGet(peerDialog.value, 'pubkey'), ''), fmt))
     if (generation !== loadGeneration || !pageAlive) return
     peerContent.value = finiteText(result.content, '')
     renderQr(peerContent.value, fmt)
