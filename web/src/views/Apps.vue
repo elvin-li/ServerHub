@@ -1182,7 +1182,7 @@ async function launchOpenInner(it, u) {
         const id = (it.id && String(it.id).includes(':'))
           ? it.id
           : `native:${it.source_id || it.id || 'native-screen-sharing'}`
-        const result = await manageApp(id, 'open')
+        const result = asRecord(await manageApp(id, 'open'))
         if (!stillOnApps(generation)) return
         if (result.ok) {
           toast(`✅ ${t('apps.open_url')} · ${result.url || u}`)
@@ -1291,7 +1291,7 @@ async function setAutostartItem(it, enabled) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await setAppAutostart(it.id, enabled)
+    const result = asRecord(await setAppAutostart(it.id, enabled))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(asRecord(it).name)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
@@ -1310,7 +1310,7 @@ async function setDockerPolicy(it, policy) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await setDockerAutostartPolicy(name, policy)
+    const result = asRecord(await setDockerAutostartPolicy(name, policy))
     if (!stillOnApps(generation)) return
     toast(result.ok ? `✅ restart=${finiteText(policy)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
@@ -1328,7 +1328,7 @@ async function runAutostartNow() {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await runAppAutostartNow()
+    const result = asRecord(await runAppAutostartNow())
     if (!stillOnApps(generation)) return
     toast(result.ok ? '✅ ' + (finiteText(result.message, '') || t('common.ok')) : '❌ ' + softText(result))
     // This starts every autostart-enabled app, so the table it was launched from
@@ -1357,7 +1357,7 @@ async function toggleManagedAutostart(it, enabled) {
       await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled)
       return
     }
-    const result = await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off')
+    const result = asRecord(await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off'))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + softText(result))
     await loadManaged(true)
@@ -1693,7 +1693,7 @@ async function saveCredential(applyToService) {
   const generation = detailGeneration
   credentialBusy.value = true
   try {
-    const result = await saveAppCredential({
+    const result = asRecord(await saveAppCredential({
       service_id: detail.value.id,
       display_name: finiteText(detail.value.name, '') || finiteText(detail.value.id),
       username: f.username,
@@ -1701,7 +1701,7 @@ async function saveCredential(applyToService) {
       url: f.url,
       notes: f.notes,
       apply_to_service: !!applyToService,
-    })
+    }))
     if (generation !== detailGeneration || !pageAlive) return
     credential.value = result.credential
     credentialForm.value.password = ''
@@ -1769,7 +1769,7 @@ async function doManagedAction(it, action) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await manageApp(it.id, action)
+    const result = asRecord(await manageApp(it.id, action))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${finiteText(action)}` : '❌ ' + softText(result))
     await loadManaged(true)
@@ -1797,7 +1797,7 @@ async function doManagedUninstall(it) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await manageApp(it.id, 'uninstall', removeData)
+    const result = asRecord(await manageApp(it.id, 'uninstall', removeData))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + softText(result))
     detail.value = null
@@ -2091,7 +2091,7 @@ async function doUninstall(tpl) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const r = await uninstallCatalog(tpl.id, { remove_data: removeData })
+    const r = asRecord(await uninstallCatalog(tpl.id, { remove_data: removeData }))
     if (!stillOnApps(generation)) return
     toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(asRecord(tpl).name)}` : '❌ ' + firstLine(r.message))
     if (r.message && !r.ok) {
@@ -2114,7 +2114,7 @@ async function run(s, action) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const r = await runStack(s.id, action)
+    const r = asRecord(await runStack(s.id, action))
     if (!stillOnApps(generation)) return
     toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
     if (r.job_id) openJob(r.job_id, s.name)
