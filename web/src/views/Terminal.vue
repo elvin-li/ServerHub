@@ -167,9 +167,9 @@ async function load() {
   try {
     const response = asRecord(await getContainers(false))
     if (!pageAlive) return
-    containers.value = asArray(response.containers)
+    containers.value = asArray(recGet(response, 'containers'))
       .map((c) => asRecord(c))
-      .filter((c) => c.state === 'ok' || finiteText(c.status, '').startsWith('Up'))
+      .filter((c) => recGet(c, 'state') === 'ok' || finiteText(recGet(c, 'status'), '').startsWith('Up'))
       .map((c) => asRecord({
         id: c.raw_name || c.id || c.name,
         label: c.name || c.raw_name,

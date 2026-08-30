@@ -152,7 +152,7 @@ function formatBrief(snap) {
       engine: brief.engine_up ? t('common.on') : t('common.off'),
     }),
   ]
-  const problems = asArray(brief.problems)
+  const problems = asArray(recGet(brief, 'problems'))
   if (problems.length) {
     lines.push(t('assistant.brief_problems'))
     for (const raw of problems.slice(0, 6)) {
@@ -169,7 +169,7 @@ function displayText(out, query) {
   const reply = asRecord(out)
   if (reply.kind === 'find') {
     if (!query) return t('assistant.find_browse')
-    return asArray(reply.panels).length
+    return asArray(recGet(reply, 'panels')).length
       ? t('assistant.find_result')
       : t('assistant.find_none', { q: finiteText(query, '') })
   }

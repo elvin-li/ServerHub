@@ -89,7 +89,7 @@
         <div class="field-grid">
           <label for="vm-create-distro">{{ t('vms.distro') }}</label>
           <select id="vm-create-distro" v-model="createForm.distro" :aria-label="t('vms.distro')">
-            <option v-for="d in (asArray(data?.orb_distros).length ? asArray(data.orb_distros) : asArray(distros))" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
+            <option v-for="d in (asArray(recGet(data, 'orb_distros')).length ? asArray(recGet(data, 'orb_distros')) : asArray(distros))" :key="finiteText(d)" :value="d">{{ finiteText(d) }}</option>
           </select>
           <!-- No aria-label here: it overrode the for/id labels with the
                placeholder, so "Version" was announced as its example value. -->
@@ -331,7 +331,7 @@ async function act(v, action) {
     if (generation !== loadGeneration || !pageAlive) return
     const out = asRecord(j)
     msg.value = finiteText(recGet(out, 'message'), '')
-    if (out.ips) msg.value = t('vms.ip_result', { ips: asArray(out.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
+    if (recGet(out, 'ips')) msg.value = t('vms.ip_result', { ips: asArray(recGet(out, 'ips')).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
     toast(`✅ ${asRecord(labels.value)[action] || action}`)
     scheduleRefresh(action === 'restart' ? 3000 : 1000)
   } catch (e) {

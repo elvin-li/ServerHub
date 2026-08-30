@@ -245,30 +245,30 @@
          passthrough over USB or Thunderbolt bridges, so unknown is not broken.
          Grading lives in smartGrade(), which mirrors hub/alerts.py _smart_reasons()
          so this page and the alert list can never disagree about the same disk. -->
-    <div v-if="asArray(smartNotice.down).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--down)">
+    <div v-if="asArray(recGet(smartNotice, 'down')).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--down)">
       <h3 style="margin:0 0 6px">
-        <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: asArray(smartNotice.down).length }) }}
+        <span class="led err" style="margin-right:6px"></span>{{ t('main_extra.smart_bad_title', { n: asArray(recGet(smartNotice, 'down')).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.down)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(recGet(smartNotice, 'down'))" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
     </div>
-    <div v-if="asArray(smartNotice.warn).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
+    <div v-if="asArray(recGet(smartNotice, 'warn')).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--warn)">
       <h3 style="margin:0 0 6px">
-        <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: asArray(smartNotice.warn).length }) }}
+        <span class="led warn" style="margin-right:6px"></span>{{ t('main_extra.smart_watch_title', { n: asArray(recGet(smartNotice, 'warn')).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.warn)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(recGet(smartNotice, 'warn'))" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
       <p style="font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0">{{ t('main_extra.smart_watch_hint') }}</p>
     </div>
-    <div v-if="asArray(smartNotice.unknown).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--line)">
+    <div v-if="asArray(recGet(smartNotice, 'unknown')).length" class="tile" style="margin-bottom:8px;border-left:3px solid var(--line)">
       <h3 style="margin:0 0 6px;color:var(--sub)">
-        <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: asArray(smartNotice.unknown).length }) }}
+        <span class="led off" style="margin-right:6px"></span>{{ t('main_extra.smart_unknown_title', { n: asArray(recGet(smartNotice, 'unknown')).length }) }}
       </h3>
-      <div v-for="d in asArray(smartNotice.unknown)" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
+      <div v-for="d in asArray(recGet(smartNotice, 'unknown'))" :key="finiteText(recGet(d, 'id'))" style="font-size:12px;line-height:1.6">
         <strong class="mono">{{ finiteText(recGet(d, 'label')) }}</strong>
         <span style="color:var(--sub)"> · {{ finiteText(recGet(d, 'reasons')) }}</span>
       </div>
@@ -757,10 +757,11 @@ const canFormat = computed(() => {
 // Unassigned: non-system disks that are offline, spun down, or have no volumes
 const unassigned = computed(() => {
   return asArray(powerDisks.value).map((d) => asRecord(d)).filter((d) => {
-    if (d.system) return false
+    if (recGet(d, 'system')) return false
     const vols = asArray(recGet(d, 'volumes'))
     if (!vols.length) return true
-    if (d.power_state === 'spun_down' || d.power_state === 'offline' || d.power_state === 'idle') return true
+    const power = recGet(d, 'power_state')
+    if (power === 'spun_down' || power === 'offline' || power === 'idle') return true
     return false
   })
 })
@@ -857,7 +858,7 @@ function smartReasons(smart) {
   // separates red from amber: the raw counters alone are a bad severity signal, so
   // "crossed the threshold the vendor set" is the fatal test, and a non-zero raw
   // count is only the warn below.
-  for (const attr of asArray(smart.attrs)) {
+  for (const attr of asArray(recGet(smart, 'attrs'))) {
     if (!attr || typeof attr !== 'object' || String(attr.type || '') !== 'Pre-fail') continue
     const value = smartNum(attr.value)
     // A threshold of 0 means the vendor declared no failure point for this

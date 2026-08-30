@@ -533,7 +533,7 @@ function navCurrent(item) {
   // an *ancestor* of the open page, so it takes `true` and leaves `page` to
   // the child.
   if (!isActive(item)) return undefined
-  return asArray(item.children).some(isChildActive) ? 'true' : 'page'
+  return asArray(recGet(item, 'children')).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {
@@ -562,7 +562,7 @@ function isChildActive(c) {
   if (c.exact) return path === c.to
   // A child may own several routes (e.g. Array covers /main and /storage), so
   // honour `match` here too — otherwise /storage highlights nothing.
-  if (c.match) return asArray(c.match).some(m => path === m || path.startsWith(m + '/'))
+  if (recGet(c, 'match')) return asArray(recGet(c, 'match')).some(m => path === m || path.startsWith(m + '/'))
   return path === c.to || path.startsWith(c.to + '/')
 }
 
@@ -853,7 +853,7 @@ function onCmdKey(e) {
 }
 const cmdResults = computed(() => {
   const q = asTrimmed(cmdQuery.value).toLowerCase()
-  const items = asArray(nav.value).flatMap(n => n.children ? [n, ...asArray(n.children)] : [n])
+  const items = asArray(nav.value).flatMap(n => recGet(n, 'children') ? [n, ...asArray(recGet(n, 'children'))] : [n])
   const matched = q
     ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
     : items

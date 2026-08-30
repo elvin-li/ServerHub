@@ -33,14 +33,14 @@
 
     <!-- Configured members that are not mounted right now. -->
     <div
-      v-if="asArray(view?.missing_members).length"
+      v-if="asArray(recGet(view, 'missing_members')).length"
       class="tile"
       style="margin-bottom:12px;border-left:3px solid var(--warn)"
     >
       <h2 style="margin:0 0 6px">{{ t('pool.missing_title') }}</h2>
       <p class="note">{{ t('pool.missing_body') }}</p>
       <p class="mono" style="font-size:11px;margin:6px 0 0">
-        <span v-for="m in asArray(view.missing_members)" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
+        <span v-for="m in asArray(recGet(view, 'missing_members'))" :key="finiteText(m)" style="margin-right:10px">{{ finiteText(m) }}</span>
       </p>
     </div>
 

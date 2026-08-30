@@ -154,7 +154,7 @@ const command = ref(p.command || '')
 const direction = ref(p.direction || 'push')
 const src = ref(p.src || '')
 const dest = ref(p.dest || '')
-const excludeText = ref(asArray(p.exclude).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
+const excludeText = ref(asArray(recGet(p, 'exclude')).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
 const del = ref(Boolean(p.delete))
 const compress = ref(Boolean(p.compress))
 const bwlimit = ref(p.bwlimit_kbps || null)
@@ -276,7 +276,7 @@ onMounted(async () => {
   try {
     const d = asRecord(await getStacks())
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = asArray(d.stacks).map((s) => asRecord(s))
+    stacks.value = asArray(recGet(d, 'stacks')).map((s) => asRecord(s))
     stacksError.value = ''
     if (!stackId.value && asArray(stacks.value).length) stackId.value = asRecord(asArray(stacks.value)[0]).id
   } catch (e) {

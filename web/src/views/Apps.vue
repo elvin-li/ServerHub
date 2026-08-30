@@ -995,9 +995,9 @@ const filteredManaged = computed(() => {
 
 const autostartGroups = computed(() => {
   const bag = asRecord(autostart.value)
-  const g = asArray(bag.groups)
+  const g = asArray(recGet(bag, 'groups'))
   if (g.length) return g
-  const set = new Set(asArray(bag.items).map(i => recGet(i, 'group') || t('common.other')))
+  const set = new Set(asArray(recGet(bag, 'items')).map(i => recGet(i, 'group') || t('common.other')))
   return [...set]
 })
 
@@ -1047,12 +1047,14 @@ function stateLabel(s) {
 function canAct(it, act) {
   if (!it) return false
   if (act === 'uninstall') return true
-  const acts = asArray(it.actions)
+  const acts = asArray(recGet(it, 'actions'))
   if (acts.includes(act)) return true
   // fallbacks when backend omits flags
-  if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd')) return true
-  if (act === 'start' && (it.state === 'down' || it.state === 'stopped')) return true
-  if (act === 'stop' && it.state === 'ok' && it.kind !== 'native') return true
+  const kind = recGet(it, 'kind')
+  const state = recGet(it, 'state')
+  if (act === 'logs' && (kind === 'docker' || kind === 'native' || kind === 'launchd')) return true
+  if (act === 'start' && (state === 'down' || state === 'stopped')) return true
+  if (act === 'stop' && state === 'ok' && kind !== 'native') return true
   if (act === 'restart' && it.state === 'ok') return true
   return false
 }
@@ -1128,7 +1130,7 @@ function catalogOpenUrl(tpl) {
   }
   const host = finiteText(window.location.hostname, '') || 'localhost'
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
-  const vars = asArray(tpl.vars)
+  const vars = asArray(recGet(tpl, 'vars'))
   for (const v of vars) {
     if (v && v.name && v.default != null && v.default !== '') {
       out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
@@ -1220,7 +1222,7 @@ async function loadManaged(force = false) {
     if (generation !== managedGeneration) return
     managed.value = {
       ...payload,
-      items: asArray(payload.items),
+      items: asArray(recGet(payload, 'items')),
       counts: payload.counts == null ? null : asRecord(payload.counts),
     }
     managedError.value = ''
@@ -1268,8 +1270,8 @@ async function loadAutostart(force = false) {
     if (generation !== appsDataGeneration) return
     autostart.value = {
       ...payload,
-      items: asArray(payload.items),
-      groups: asArray(payload.groups),
+      items: asArray(recGet(payload, 'items')),
+      groups: asArray(recGet(payload, 'groups')),
       counts: payload.counts == null ? null : asRecord(payload.counts),
     }
     autostartError.value = ''
@@ -1423,7 +1425,7 @@ async function cfRefresh() {
   try {
     const status = asRecord(await getCloudflareStatus())
     if (!stillOnApps(generation)) return
-    cfStatus.value = { ...status, tunnels: asArray(status.tunnels) }
+    cfStatus.value = { ...status, tunnels: asArray(recGet(status, 'tunnels')) }
     if (status.active_tunnel && !cfSelectedTunnel.value) {
       cfSelectedTunnel.value = status.active_tunnel
     }
@@ -1880,8 +1882,8 @@ async function refresh(manual = false) {
   try {
     const d = asRecord(await getStacks())
     if (generation !== appsDataGeneration) return
-    stacks.value = asArray(d.stacks)
-    jobs.value = asArray(d.jobs)
+    stacks.value = asArray(recGet(d, 'stacks'))
+    jobs.value = asArray(recGet(d, 'jobs'))
   } catch (e) {
     if (generation !== appsDataGeneration) return
     // The job-completion poll calls this in the background (the server, not
@@ -1898,9 +1900,9 @@ async function loadCatalog() {
   try {
     const d = asRecord(await getCatalog())
     if (generation !== appsDataGeneration) return
-    catalog.value = asArray(d.templates)
+    catalog.value = asArray(recGet(d, 'templates'))
     overview.value = d
-    const cats = asArray(d.categories)
+    const cats = asArray(recGet(d, 'categories'))
     if (cats.length) categories.value = cats
     catalogError.value = ''
   } catch (e) {

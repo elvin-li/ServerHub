@@ -162,7 +162,7 @@ const cleaned = computed(() =>
     const rec = asRecord(s)
     return {
       ...rec,
-      values: asArray(rec.values).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
+      values: asArray(recGet(rec, 'values')).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
     }
   }).filter(s => asArray(recGet(s, 'values')).some(v => v != null))
 )

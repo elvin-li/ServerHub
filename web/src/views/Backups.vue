@@ -375,13 +375,13 @@ async function refresh(manual = false) {
   try {
     const d = asRecord(await getBackups())
     if (generation !== backupsGeneration || !pageAlive) return
-    backups.value = asArray(d.backups).map((row) => asRecord(row))
+    backups.value = asArray(recGet(d, 'backups')).map((row) => asRecord(row))
     root.value = finiteText(d.root, '')
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
     const reported = finiteN(d.total, null)
-    total.value = reported == null ? asArray(d.backups).length : reported
-    postgresTargets.value = asArray(d.postgres_targets).map((row) => asRecord(row))
+    total.value = reported == null ? asArray(recGet(d, 'backups')).length : reported
+    postgresTargets.value = asArray(recGet(d, 'postgres_targets')).map((row) => asRecord(row))
     immich.value = asRecord(d.immich)
     loadError.value = ''
   } catch (e) {
@@ -403,7 +403,7 @@ async function loadJobs(manual = false) {
   try {
     const d = asRecord(await getSchedulerJobs())
     if (generation !== jobsGeneration || !pageAlive) return
-    jobs.value = asArray(d.jobs).map((row) => asRecord(row))
+    jobs.value = asArray(recGet(d, 'jobs')).map((row) => asRecord(row))
     jobsError.value = ''
     jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
