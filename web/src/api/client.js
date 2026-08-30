@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -37,33 +37,37 @@ export function resetAuthLost() {
  *  server's English `message` when this build has no key for the code yet.
  *  Legacy string details are passed through unchanged. */
 function errorText(payload, statusText) {
-  const d = payload?.detail
-  if (d && typeof d === 'object' && !Array.isArray(d) && d.code) {
-    const key = `err.${d.code}`
-    const translated = t(key, asRecord(d.params))
+  const body = asRecord(payload)
+  const d = body.detail
+  const rec = asRecord(d)
+  if (d && typeof d === 'object' && !Array.isArray(d) && rec.code) {
+    const key = `err.${rec.code}`
+    const translated = t(key, asRecord(rec.params))
     // Privileged-operation failures carry the tool's own stderr tail in
     // params.detail; appending it keeps the generic "operation failed" text
     // from hiding the actual cause (e.g. wg-quick's error line).
-    const detail = typeof d.params?.detail === 'string' ? d.params.detail.trim() : ''
+    const params = asRecord(rec.params)
+    const detail = typeof params.detail === 'string' ? params.detail.trim() : ''
     // t() returns the key itself when it is missing — prefer the server text.
     if (translated !== key) return detail ? `${translated}\n${detail}` : translated
-    return detail ? `${d.message || d.code}\n${detail}` : d.message || d.code
+    return detail ? `${finiteText(rec.message, '') || rec.code}\n${detail}` : finiteText(rec.message, '') || rec.code
   }
   if (typeof d === 'string' && d) return d
   // FastAPI request-validation errors: detail is a list of
   // {loc: [...], msg, type}.  Rendering the raw array as JSON is unreadable,
   // so summarise it as "field: reason" for each offending field.
-  if (Array.isArray(d) && d.length) {
-    const parts = d.map((it) => {
-      const field = Array.isArray(it?.loc)
-        ? it.loc.filter((s) => s !== 'body' && s !== 'query').join('.')
-        : ''
-      const msg = it?.msg || t('err.request_failed')
+  const items = asArray(d)
+  if (items.length) {
+    const parts = items.map((it) => {
+      const row = asRecord(it)
+      const field = asArray(row.loc)
+        .filter((s) => s !== 'body' && s !== 'query').join('.')
+      const msg = row.msg || t('err.request_failed')
       return field ? `${field}: ${msg}` : msg
     })
     return `${t('err.invalid_input')} — ${parts.join('; ')}`
   }
-  if (typeof payload?.message === 'string' && payload.message) return payload.message
+  if (typeof body.message === 'string' && body.message) return body.message
   return statusText || t('err.request_failed')
 }
 
@@ -89,7 +93,7 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
         const err = new Error(errorText(j, r.statusText))
         err.status = r.status
         err.body = j
-        err.code = (j?.detail && typeof j.detail === 'object' && j.detail.code) || null
+        err.code = (asRecord(asRecord(j).detail).code) || null
         // Privileged macOS operations need the operator's administrator
         // password. The server says so with these two codes; ask for it in an
         // in-browser dialog and retry once with it attached. A wrong password
