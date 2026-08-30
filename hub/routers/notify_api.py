@@ -132,7 +132,12 @@ def _validated_record(body: ChannelBody, cid: str) -> tuple[dict, dict]:
     # at-cap entries to add up, and services.yaml must stay far below its
     # 1MB read cap even with _MAX_CHANNELS records in it.
     try:
-        serialized = json.dumps(record, ensure_ascii=False, default=str)
+        serialized = json.dumps(
+            notify_channels._json_safe(record),
+            ensure_ascii=False,
+            default=str,
+            allow_nan=False,
+        )
     except (TypeError, ValueError, RecursionError):
         serialized = ""
     if len(serialized) > _RECORD_MAX:

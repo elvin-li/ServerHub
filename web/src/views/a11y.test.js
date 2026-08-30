@@ -3316,12 +3316,12 @@ describe('leftover Infinity interpolations', () => {
     const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
     expect(gateway).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(gateway).not.toMatch(/pid \{\{ data\.pid \}\}/)
-    expect(gateway).toMatch(/finiteN\(data\.pid/)
+    expect(gateway).toMatch(/finiteN\(asRecord\(data\)\.pid/)
     expect(gateway).not.toMatch(/\{\{\s*data\.label\s*\}\}/)
-    expect(gateway).toMatch(/finiteText\(data\.label\)/)
+    expect(gateway).toMatch(/finiteText\(asRecord\(data\)\.label\)/)
     expect(gateway).not.toMatch(/\(s\.server_names \|\| \[\]\)\.join\(', '\) \|\| '—'/)
     expect(gateway).not.toMatch(/\{\{\s*data\.conf\s*\}\}/)
-    expect(gateway).toMatch(/finiteText\(data\.conf\)/)
+    expect(gateway).toMatch(/finiteText\(asRecord\(data\)\.conf\)/)
     expect(gateway).not.toMatch(/\{\{\s*\(s\.listens \|\| \[\]\)\.join/)
     expect(gateway).toMatch(/asArray\(asRecord\(s\)\.listens\)\.map\(n => finiteText\(n/)
     expect(gateway).toMatch(/asArray\(asRecord\(s\)\.server_names\)\.map\(n => finiteText\(n/)
@@ -3329,6 +3329,7 @@ describe('leftover Infinity interpolations', () => {
     expect(gateway).toMatch(/finiteText\(msg\)/)
     expect(gateway).not.toMatch(/msg\.value = j\.message \|\| ''/)
     expect(gateway).toMatch(/msg\.value = finiteText\(j\.message, ''\)/)
+    expect(gateway).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Maintenance leftover rc and finished reject Infinity', () => {

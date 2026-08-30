@@ -20,10 +20,10 @@
                beside it in colour (same as the VMs and Network inline LEDs). -->
           <span class="led" :class="asRecord(data).running ? 'on' : 'err'" aria-hidden="true"></span>
           <strong>{{ asRecord(data).running ? t('gateway.running') : t('gateway.stopped') }}</strong>
-          <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
+          <span v-if="finiteN(asRecord(data).pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(asRecord(data).pid) }}</span>
         </div>
-        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(data.label) }) }}</div>
-        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(data.conf) }}</div>
+        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(asRecord(data).label) }) }}</div>
+        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(asRecord(data).conf) }}</div>
       </div>
       <div class="tile span-8">
         <h2>{{ t('gateway.about') }}</h2>
@@ -99,7 +99,7 @@ async function load() {
     loadError.value = ''
   } catch (e) {
     if (seq !== loadSeq || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (seq === loadSeq) loaded.value = true
