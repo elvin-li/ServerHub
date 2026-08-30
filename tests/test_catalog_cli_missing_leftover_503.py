@@ -298,20 +298,26 @@ class CatalogUninstallCliVanishedTests(_CatalogSandbox):
         self.assertIn("ok", r)
         probe.assert_not_called()
 
-    def test_sentinel_with_the_binary_still_on_disk_is_not_a_missing_cli(self):
-        """A vanished cwd (same FileNotFoundError sentinel) with the CLI
-        still on disk keeps the ordinary uninstall path instead of the
-        engine-down 503 that points at the wrong remedy."""
+    def test_sentinel_with_the_binary_still_on_disk_keeps_the_stack_engine_down(self):
+        """Union keep-the-stack: FileNotFoundError spawn with the CLI still
+        on disk and a down engine is ``container.engine_down``, not a
+        destructive uninstall that deletes the compose tree."""
         probe = mock.Mock(return_value=False)
         with (
             mock.patch.object(catalog, "run_capped", return_value=MISSING),
             mock.patch.object(catalog, "engine_up", probe),
             mock.patch.object(catalog, "cli_on_disk", return_value=True),
         ):
-            r = catalog.uninstall_template(self.tid, remove_data=True, confirm=True)
-        self.assertIn("ok", r)
-        # The message-pattern gate fails first, so no probe is spawned.
-        probe.assert_not_called()
+            with self.assertRaises(HTTPException) as ctx:
+                catalog.uninstall_template(self.tid, remove_data=True, confirm=True)
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(_detail(ctx)["code"], "container.engine_down")
+        self.assertTrue(
+            (self.dest_dir / "docker-compose.yml").exists(),
+            "keep-the-stack leaves the compose tree",
+        )
+        self.assertEqual(len(self.registered), 1, "stack must stay registered")
+        probe.assert_called_once_with(force=True)
 
 
 class AppsComposeCliVanishedTests(unittest.TestCase):
