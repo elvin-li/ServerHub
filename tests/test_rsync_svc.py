@@ -467,5 +467,28 @@ class RunJobTests(unittest.TestCase):
         self.assertTrue(log and log[0].startswith("!!"))
 
 
+class LeftoverClassBombTests(unittest.TestCase):
+    """Bare isinstance used to 500 rsync validation on leftover __class__ bombs."""
+
+    def test_local_path_class_bomb_is_refused_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertFalse(rsync_svc._local_path_ok(ClassBomb()))
+        self.assertFalse(rsync_svc._remote_ok(ClassBomb()))
+
+    def test_validated_class_bomb_params_are_coded_not_a_500(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        with self.assertRaises(HTTPException) as ctx:
+            rsync_svc.validated(ClassBomb())
+        self.assertEqual(_code(ctx), "rsync.bad_params")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
