@@ -74,7 +74,7 @@
         <label>{{ t('notifych.notify_resolve') }}</label>
         <input type="checkbox" v-model="editing.notify_resolve" :aria-label="t('notifych.notify_resolve')" />
 
-        <template v-for="f in fieldsFor(editing.type)" :key="'f-' + f">
+        <template v-for="f in asArray(fieldsFor(editing.type))" :key="'f-' + finiteText(f)">
           <label>{{ fieldLabel(f) }}</label>
           <select v-if="f === 'tls'" v-model="editing.config.tls" :aria-label="fieldLabel(f)">
             <option value="starttls">STARTTLS</option>
@@ -90,7 +90,7 @@
           />
         </template>
 
-        <template v-for="s in secretsFor(editing.type)" :key="'s-' + s">
+        <template v-for="s in asArray(secretsFor(editing.type))" :key="'s-' + finiteText(s)">
           <label>{{ fieldLabel(s) }}</label>
           <input
             v-model="editing.secrets[s]"

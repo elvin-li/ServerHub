@@ -768,9 +768,9 @@
         </p>
         <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
           {{ summaryLine(remoteResult) }}
-          <ul v-if="asArray(remoteResult.rejected).length" class="plain-list mono" style="margin-top:6px">
-            <li v-for="r in asArray(remoteResult.rejected)" :key="r.id">
-              {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
+          <ul v-if="asArray(asRecord(remoteResult).rejected).length" class="plain-list mono" style="margin-top:6px">
+            <li v-for="r in asArray(asRecord(remoteResult).rejected)" :key="finiteText(asRecord(r).id)">
+              {{ finiteText(asRecord(r).id) }} — {{ t(`catalog_remote.reject_${asRecord(r).reason}`) }}
             </li>
           </ul>
         </div>
