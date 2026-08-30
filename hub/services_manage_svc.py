@@ -32,10 +32,20 @@ from hub.status import _jsonable, full_status, invalidate_status
 from hub.util import read_bytes_capped, safe_json_loads, sh, tail_file_lines
 
 
+def _isinst(value, types) -> bool:
+    """isinstance that a leftover raising ``__class__`` cannot 500 through."""
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
-    if isinstance(value, str):
+    if _isinst(value, str):
         return value
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
     if value is None:
         return ""
@@ -61,7 +71,7 @@ def _utf8_clean(value) -> str:
 
 def _as_int(value):
     """Finite int, or None.  ``int(inf)`` OverflowError is not ValueError."""
-    if isinstance(value, bool) or value is None:
+    if _isinst(value, bool) or value is None:
         return None
     try:
         return int(value)
@@ -87,14 +97,14 @@ def _cfg_entry_id(raw) -> str:
     page itself offered to edit.  A renderable int coerces through the
     ``str()`` probe; an over-cap hex leftover (``id: 0xfff…`` loads uncapped
     and its ``str()`` raises the digit-cap ValueError ``json.dumps`` would)
-    drops only its entry; bool passes ``isinstance(int)`` and must not
+    drops only its entry; bool passes ``_isinst(int)`` and must not
     become ``"True"``.
     """
-    if isinstance(raw, (bytes, bytearray)):
+    if _isinst(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8", "replace")
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         return raw.encode("utf-8", "replace").decode("utf-8").strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if _isinst(raw, bool) or not _isinst(raw, int):
         return ""
     try:
         return str(raw)
@@ -106,13 +116,13 @@ def _flat_services(force: bool = False) -> list[dict]:
     st = full_status(force=force)
     items = []
     for g in st.get("groups") or []:
-        if not isinstance(g, dict):
+        if not _isinst(g, dict):
             continue
         rows = g.get("services")
-        if not isinstance(rows, list):
+        if not _isinst(rows, list):
             continue
         for s in rows:
-            if isinstance(s, dict):
+            if _isinst(s, dict):
                 items.append(s)
     return items
 
@@ -130,7 +140,7 @@ def find_service(sid: str, force: bool = False) -> dict | None:
 def _svc_meta(svc: dict | None) -> dict:
     """Discovery ``meta`` must be a mapping; a list leftover must not 500."""
     raw = (svc or {}).get("meta")
-    return raw if isinstance(raw, dict) else {}
+    return raw if _isinst(raw, dict) else {}
 
 
 #: Leftover multi-MB LaunchAgent plist used to OOM GET /api/services.
@@ -144,7 +154,7 @@ def _plist_dict(path: Path) -> dict | None:
         raise
     except BaseException:
         return None
-    return data if isinstance(data, dict) else None
+    return data if _isinst(data, dict) else None
 
 
 def _plist_label(path: Path) -> str:
@@ -230,28 +240,28 @@ def _docker_inspect(name: str) -> dict:
     except (TypeError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
         return {}
-    if not isinstance(parsed, dict):
+    if not _isinst(parsed, dict):
         return {}
     cleaned = _jsonable(parsed)
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isinst(cleaned, dict) else {}
 
 
 def _docker_ports_summary(insp: dict) -> list[str]:
     out = []
     ns = insp.get("NetworkSettings") or {}
-    if not isinstance(ns, dict):
+    if not _isinst(ns, dict):
         ns = {}
     net = ns.get("Ports") or {}
-    if not isinstance(net, dict):
+    if not _isinst(net, dict):
         return out
     for cont_port, binds in net.items():
         if not binds:
             out.append(f"{cont_port} (not published)")
             continue
-        if not isinstance(binds, list):
+        if not _isinst(binds, list):
             continue
         for b in binds:
-            if not isinstance(b, dict):
+            if not _isinst(b, dict):
                 continue
             host = b.get("HostIp") or "0.0.0.0"
             hp = b.get("HostPort") or "?"
@@ -263,19 +273,19 @@ def _url_from_inspect(insp: dict) -> str | None:
     host = host_ip()
     skip = {"1883", "5432", "6379", "3306", "5672", "9092", "9100"}
     ns = insp.get("NetworkSettings") or {}
-    if not isinstance(ns, dict):
+    if not _isinst(ns, dict):
         ns = {}
     net = ns.get("Ports") or {}
-    if not isinstance(net, dict):
+    if not _isinst(net, dict):
         return None
     for cont_port, binds in net.items():
-        if not binds or not isinstance(binds, list):
+        if not binds or not _isinst(binds, list):
             continue
         cp = str(cont_port).split("/")[0]
         if cp in skip:
             continue
         for b in binds:
-            if not isinstance(b, dict):
+            if not _isinst(b, dict):
                 continue
             hp = b.get("HostPort")
             if hp:
@@ -299,9 +309,9 @@ def service_detail(sid: str) -> dict:
         "url": svc.get("url"),
         "group": svc.get("group"),
         "port": svc.get("port"),
-        "ports": svc.get("ports") if isinstance(svc.get("ports"), list) else [],
-        "links": svc.get("links") if isinstance(svc.get("links"), list) else [],
-        "actions": [a for a in svc.get("actions") if isinstance(a, str)] if isinstance(svc.get("actions"), list) else [],
+        "ports": svc.get("ports") if _isinst(svc.get("ports"), list) else [],
+        "links": svc.get("links") if _isinst(svc.get("links"), list) else [],
+        "actions": [a for a in svc.get("actions") if _isinst(a, str)] if _isinst(svc.get("actions"), list) else [],
         "meta": _svc_meta(svc),
         "auto": bool(svc.get("auto")),
         "backend": svc.get("backend"),
@@ -334,7 +344,7 @@ def service_detail(sid: str) -> dict:
         detail["plist"] = str(pp) if pp else None
         argv = pl.get("ProgramArguments")
         # leftover RecursionError on ``str(argv-item)`` used to 500 GET detail.
-        argv = [_as_text(a) for a in argv] if isinstance(argv, list) else []
+        argv = [_as_text(a) for a in argv] if _isinst(argv, list) else []
         detail["program"] = pl.get("Program") or (" ".join(argv) if argv else None)
         detail["working_dir"] = pl.get("WorkingDirectory")
         detail["run_at_load"] = bool(pl.get("RunAtLoad"))
@@ -359,26 +369,26 @@ def service_detail(sid: str) -> dict:
     elif kind == "container":
         insp = _docker_inspect(sid)
         if insp:
-            cfg_c = insp.get("Config") if isinstance(insp.get("Config"), dict) else {}
-            state = insp.get("State") if isinstance(insp.get("State"), dict) else {}
-            host_cfg = insp.get("HostConfig") if isinstance(insp.get("HostConfig"), dict) else {}
+            cfg_c = insp.get("Config") if _isinst(insp.get("Config"), dict) else {}
+            state = insp.get("State") if _isinst(insp.get("State"), dict) else {}
+            host_cfg = insp.get("HostConfig") if _isinst(insp.get("HostConfig"), dict) else {}
             detail["image"] = cfg_c.get("Image")
             detail["created"] = insp.get("Created")
             detail["status_raw"] = state.get("Status")
             detail["started_at"] = state.get("StartedAt")
             detail["finished_at"] = state.get("FinishedAt")
-            rp = host_cfg.get("RestartPolicy") if isinstance(host_cfg.get("RestartPolicy"), dict) else {}
+            rp = host_cfg.get("RestartPolicy") if _isinst(host_cfg.get("RestartPolicy"), dict) else {}
             detail["restart_policy"] = rp.get("Name")
             detail["network_mode"] = host_cfg.get("NetworkMode")
             detail["ports"] = _docker_ports_summary(insp)
             if not detail.get("url"):
                 detail["url"] = ov.get("url") or _url_from_inspect(insp)
-            labels = cfg_c.get("Labels") if isinstance(cfg_c.get("Labels"), dict) else {}
+            labels = cfg_c.get("Labels") if _isinst(cfg_c.get("Labels"), dict) else {}
             detail["compose_project"] = labels.get("com.docker.compose.project")
             detail["compose_service"] = labels.get("com.docker.compose.service")
             mounts = []
-            for m in insp.get("Mounts") if isinstance(insp.get("Mounts"), list) else []:
-                if not isinstance(m, dict):
+            for m in insp.get("Mounts") if _isinst(insp.get("Mounts"), list) else []:
+                if not _isinst(m, dict):
                     continue
                 mounts.append({
                     "source": m.get("Source"),
@@ -387,7 +397,7 @@ def service_detail(sid: str) -> dict:
                     "rw": m.get("RW"),
                 })
             detail["mounts"] = mounts[:30]
-            env = cfg_c.get("Env") if isinstance(cfg_c.get("Env"), list) else []
+            env = cfg_c.get("Env") if _isinst(cfg_c.get("Env"), list) else []
             # Redact by key AND by value.  This detail is reachable by member
             # accounts for services on their list, and a key-name allowlist
             # leaks secrets carried under innocuous names: DATABASE_URL=
@@ -396,7 +406,7 @@ def service_detail(sid: str) -> dict:
             # or is a long opaque token.
             redacted = []
             for e in env[:40]:
-                if isinstance(e, str) and "=" in e:
+                if _isinst(e, str) and "=" in e:
                     k, v = e.split("=", 1)
                     if any(x in k.upper() for x in ("PASS", "SECRET", "TOKEN", "KEY", "PWD", "CRED", "AUTH")):
                         redacted.append(f"{k}=***")
@@ -419,7 +429,7 @@ def service_detail(sid: str) -> dict:
                     if hasattr(vms_svc, fn):
                         try:
                             data = getattr(vms_svc, fn)()
-                            arr = data if isinstance(data, list) else (data.get("vms") or data.get("items") or [])
+                            arr = data if _isinst(data, list) else (data.get("vms") or data.get("items") or [])
                             v = next((x for x in arr if x.get("id") == sid or x.get("name") == sid), None)
                             if v:
                                 break
@@ -439,7 +449,7 @@ def service_detail(sid: str) -> dict:
     elif kind in ("app", "app-engine"):
         # from services.yaml apps section
         for a in cfg().get("apps") or []:
-            if not isinstance(a, dict):
+            if not _isinst(a, dict):
                 continue
             # _cfg_entry_id: a numeric YAML id renders as text on the page,
             # and the bare ``== sid`` compare left its detail without config.
@@ -450,7 +460,7 @@ def service_detail(sid: str) -> dict:
 
     elif kind == "script":
         for s in cfg().get("scripts") or []:
-            if not isinstance(s, dict):
+            if not _isinst(s, dict):
                 continue
             # Same _cfg_entry_id compare as the apps branch above.
             if _cfg_entry_id(s.get("id")) == sid:
@@ -464,7 +474,7 @@ def service_detail(sid: str) -> dict:
                     "name": s.get("name") or sid,
                     "group": s.get("group") or "Custom",
                     "url": s.get("url") or "",
-                    "ports": list(s.get("ports")) if isinstance(s.get("ports"), list) else [],
+                    "ports": list(s.get("ports")) if _isinst(s.get("ports"), list) else [],
                     "start": s.get("start") or "",
                     "stop": s.get("stop") or "",
                     "adopted": bool(s.get("adopted_from")),
@@ -490,7 +500,7 @@ def service_detail(sid: str) -> dict:
         detail["actions"] = list(detail["actions"]) + ["open"]
 
     cleaned = _jsonable(detail)
-    return cleaned if isinstance(cleaned, dict) else {"id": sid}
+    return cleaned if _isinst(cleaned, dict) else {"id": sid}
 
 
 def service_logs(sid: str, lines: int = 150) -> dict:
@@ -573,7 +583,7 @@ def service_logs(sid: str, lines: int = 150) -> dict:
             sources = logs_svc.log_sources()
             def _src_name(row):
                 n = row.get("name")
-                return n.lower() if isinstance(n, str) else ""
+                return n.lower() if _isinst(n, str) else ""
             hit = next(
                 (s for s in sources if s["id"] == sid or sid in _src_name(s)),
                 None,
@@ -671,7 +681,7 @@ def update_override(sid: str, patch: dict) -> dict:
         elif k == "hide":
             clean[k] = bool(v) if v is not None else None
         elif k in ("name", "group", "url"):
-            if v is None or (isinstance(v, str) and not v.strip()):
+            if v is None or (_isinst(v, str) and not v.strip()):
                 clean[k] = None  # clear
             else:
                 # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be
@@ -687,7 +697,7 @@ def update_override(sid: str, patch: dict) -> dict:
     # ``cur`` merges the pre-existing override, which a hand-edited
     # services.yaml can poison (inf port, ``\ud800``); clean the whole echo.
     cleaned = _jsonable({"ok": True, "id": sid, "override": cur})
-    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def hide_service(sid: str, hide: bool = True) -> dict:
@@ -747,7 +757,7 @@ def _clean_cmd(value) -> str | None:
     """
     if value is None:
         return None
-    if isinstance(value, str):
+    if _isinst(value, str):
         try:
             value.encode("utf-8")
         except UnicodeEncodeError:
@@ -763,10 +773,10 @@ def _taken_service_ids() -> set[str]:
     taken = set()
     for key in ("apps", "scripts", "stacks"):
         entries = data.get(key)
-        if not isinstance(entries, list):
+        if not _isinst(entries, list):
             continue
         for entry in entries:
-            if not isinstance(entry, dict):
+            if not _isinst(entry, dict):
                 continue
             # _cfg_entry_id, not bare str(): one over-cap hex YAML id
             # (``id: 0xfff…`` loads uncapped) raised the int->str digit-cap
@@ -789,7 +799,7 @@ def adopt_defaults(svc: dict) -> dict:
     process = _full_process_name(meta.get("pid")) or meta.get("process") or ""
     command_path = _process_command_path(meta.get("pid"))
     raw_ports = meta.get("ports")
-    if not isinstance(raw_ports, list):
+    if not _isinst(raw_ports, list):
         raw_ports = [meta["port"]] if meta.get("port") else []
     ports = []
     for p in raw_ports:
@@ -805,11 +815,11 @@ def adopt_defaults(svc: dict) -> dict:
         ports[0] if ports else None,
         extras=configured_signatures(),
     )
-    if not isinstance(sig, dict):
+    if not _isinst(sig, dict):
         sig = meta.get("signature")
-    if not isinstance(sig, dict):
+    if not _isinst(sig, dict):
         sig = svc.get("signature")
-    if not isinstance(sig, dict):
+    if not _isinst(sig, dict):
         sig = {}
     recognised = sig.get("confidence") == "high"
     name = sig["name"] if recognised else (process or svc.get("name") or "")
@@ -942,14 +952,14 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     def apply(data: dict) -> None:
         nonlocal stored_sig
         scripts = data.get("scripts")
-        if not isinstance(scripts, list):
+        if not _isinst(scripts, list):
             scripts = []
             data["scripts"] = scripts
         scripts.append(entry)
         # The auto row disappears on its own once the port is claimed, but a
         # stale hide/override for it would silently apply to nothing forever.
         ov = data.get("overrides")
-        if isinstance(ov, dict):
+        if _isinst(ov, dict):
             ov.pop(sid, None)
         if learned:
             stored_sig = remember_into(data, learned)
@@ -962,7 +972,7 @@ def adopt_service(sid: str, patch: dict | None = None) -> dict:
     # Defaults come from discovery (lsof / plists), which can carry leftover
     # junk of its own; clean the whole echo, not just the operator fields.
     cleaned = _jsonable(result)
-    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": new_id}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True, "id": new_id}
 
 
 def _signature_from_adopt(
@@ -997,7 +1007,7 @@ def _signature_from_adopt(
 
 def _parse_ports(raw) -> list[int]:
     ports: list[int] = []
-    rows = raw if isinstance(raw, (list, tuple, set, frozenset)) else []
+    rows = raw if _isinst(raw, (list, tuple, set, frozenset)) else []
     for p in rows:
         n = _as_int(p)
         if n is None:
@@ -1016,8 +1026,8 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
     # as "8080" (the collectors coerce), but the bare ``== sid`` here matched
     # int against str and 404'd the edit of a row the page itself offered.
     if not any(
-        isinstance(s, dict) and _cfg_entry_id(s.get("id")) == sid
-        for s in (scripts if isinstance(scripts, list) else [])
+        _isinst(s, dict) and _cfg_entry_id(s.get("id")) == sid
+        for s in (scripts if _isinst(scripts, list) else [])
     ):
         raise api_error("services.script_not_found", id=sid)
     if "ports" in patch:
@@ -1030,7 +1040,7 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
 
     def apply(data: dict) -> None:
         for entry in data.get("scripts") or []:
-            if not isinstance(entry, dict) or _cfg_entry_id(entry.get("id")) != sid:
+            if not _isinst(entry, dict) or _cfg_entry_id(entry.get("id")) != sid:
                 continue
             # _utf8_clean: a JSON ``"\ud800"`` name/group/url used to be
             # stored verbatim and 500 the echoed entry on the response encode.
@@ -1072,7 +1082,7 @@ def update_script(sid: str, patch: dict | None = None) -> dict:
     # A hand-edited services.yaml entry can carry leftover junk (inf ports,
     # a lone surrogate); clean the echoed entry, not just the patch fields.
     cleaned = _jsonable({"ok": True, "id": sid, "entry": updated})
-    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def forget_script(sid: str) -> dict:
@@ -1086,19 +1096,19 @@ def forget_script(sid: str) -> dict:
 
     def apply(data: dict) -> None:
         scripts = data.get("scripts")
-        if not isinstance(scripts, list):
+        if not _isinst(scripts, list):
             scripts = []
         keep = []
         for entry in scripts:
             # Same _cfg_entry_id compare as update_script: a numeric YAML id
             # renders as text on the page, and forgetting it must find it.
-            if isinstance(entry, dict) and _cfg_entry_id(entry.get("id")) == sid:
+            if _isinst(entry, dict) and _cfg_entry_id(entry.get("id")) == sid:
                 removed.update(entry)
                 continue
             keep.append(entry)
         data["scripts"] = keep
         ov = data.get("overrides")
-        if isinstance(ov, dict):
+        if _isinst(ov, dict):
             ov.pop(sid, None)
 
     config.mutate(apply)
@@ -1108,7 +1118,7 @@ def forget_script(sid: str) -> dict:
     # The removed row is whatever services.yaml held — clean the echo so a
     # hand-edited leftover (inf, ``\ud800``) cannot 500 the DELETE response.
     cleaned = _jsonable({"ok": True, "id": sid, "removed": removed})
-    return cleaned if isinstance(cleaned, dict) else {"ok": True, "id": sid}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True, "id": sid}
 
 
 def list_signatures() -> dict:
@@ -1117,7 +1127,7 @@ def list_signatures() -> dict:
         "signatures": [yaml_signature(s) for s in configured_signatures()],
         "builtin_count": builtin_count(),
     })
-    return cleaned if isinstance(cleaned, dict) else {"signatures": [], "builtin_count": 0}
+    return cleaned if _isinst(cleaned, dict) else {"signatures": [], "builtin_count": 0}
 
 
 def upsert_signature(patch: dict | None = None) -> dict:
@@ -1159,10 +1169,10 @@ def list_group_rules() -> dict:
     from hub import group_rules
 
     cleaned = _jsonable(group_rules.list_rules())
-    if not isinstance(cleaned, dict):
+    if not _isinst(cleaned, dict):
         return {"rules": [], "source": "seed"}
     rules = cleaned.get("rules")
-    cleaned["rules"] = rules if isinstance(rules, list) else []
+    cleaned["rules"] = rules if _isinst(rules, list) else []
     source = cleaned.get("source")
     cleaned["source"] = source if source in ("yaml", "seed") else "seed"
     return cleaned
@@ -1184,10 +1194,10 @@ def save_group_rules(payload: dict | None = None) -> dict:
     """Upsert one grouping rule, or replace the whole list."""
     from hub import group_rules
 
-    result = group_rules.save_rules(payload if isinstance(payload, dict) else {})
+    result = group_rules.save_rules(payload if _isinst(payload, dict) else {})
     _bust_group_rule_views()
     cleaned = _jsonable(result)
-    return cleaned if isinstance(cleaned, dict) else {"ok": True}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True}
 
 
 def delete_group_rule(rule_id: str) -> dict:
@@ -1197,15 +1207,15 @@ def delete_group_rule(rule_id: str) -> dict:
     result = group_rules.delete_rule(rule_id)
     _bust_group_rule_views()
     cleaned = _jsonable(result)
-    return cleaned if isinstance(cleaned, dict) else {"ok": True}
+    return cleaned if _isinst(cleaned, dict) else {"ok": True}
 
 
 def enrich_service_list_item(s: dict) -> dict:
     """Add management action hints used by Services UI (non-breaking)."""
-    if not isinstance(s, dict):
+    if not _isinst(s, dict):
         return {"actions": []}
     raw = s.get("actions")
-    acts = list(raw) if isinstance(raw, list) else []
+    acts = list(raw) if _isinst(raw, list) else []
     kind = s.get("kind") or ""
     if s.get("url") and "open" not in acts:
         acts.append("open")
@@ -1221,12 +1231,12 @@ def enrich_service_list_item(s: dict) -> dict:
 def list_manageable(force: bool = False) -> dict:
     st = full_status(force=force)
     groups = []
-    raw_groups = st.get("groups") if isinstance(st.get("groups"), list) else []
+    raw_groups = st.get("groups") if _isinst(st.get("groups"), list) else []
     for g in raw_groups:
-        if not isinstance(g, dict):
+        if not _isinst(g, dict):
             continue
-        rows = g.get("services") if isinstance(g.get("services"), list) else []
-        svcs = [enrich_service_list_item(s) for s in rows if isinstance(s, dict)]
+        rows = g.get("services") if _isinst(g.get("services"), list) else []
+        svcs = [enrich_service_list_item(s) for s in rows if _isinst(s, dict)]
         groups.append({"group": g.get("group"), "services": svcs})
     return {
         **st,
