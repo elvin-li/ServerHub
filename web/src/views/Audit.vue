@@ -37,18 +37,18 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in asArray(filteredRows)" :key="finiteText(asRecord(e).ts) + ':' + finiteText(asRecord(e).event) + ':' + finiteText(asRecord(e).username) + ':' + i">
-              <td class="mono col-hide-m">{{ fmt(asRecord(e).ts) }}</td>
+            <tr v-for="(e, i) in asArray(filteredRows)" :key="finiteText(recGet(e, 'ts')) + ':' + finiteText(recGet(e, 'event')) + ':' + finiteText(recGet(e, 'username')) + ':' + i">
+              <td class="mono col-hide-m">{{ fmt(recGet(e, 'ts')) }}</td>
               <td class="mono">
-                {{ finiteText(asRecord(e).event) }}
-                <div class="show-m sub">{{ fmt(asRecord(e).ts) }}</div>
-                <div v-if="finiteText(asRecord(e).client, '')" class="show-m sub">{{ finiteText(asRecord(e).client) }}</div>
+                {{ finiteText(recGet(e, 'event')) }}
+                <div class="show-m sub">{{ fmt(recGet(e, 'ts')) }}</div>
+                <div v-if="finiteText(recGet(e, 'client'), '')" class="show-m sub">{{ finiteText(recGet(e, 'client')) }}</div>
                 <div v-if="detail(e)" class="show-m sub">{{ detail(e) }}</div>
               </td>
-              <td><strong>{{ finiteText(asRecord(e).username) }}</strong></td>
-              <td class="mono col-hide-m">{{ finiteText(asRecord(e).client) }}</td>
+              <td><strong>{{ finiteText(recGet(e, 'username')) }}</strong></td>
+              <td class="mono col-hide-m">{{ finiteText(recGet(e, 'client')) }}</td>
               <td>
-                <span class="badge" :class="badgeClass(asRecord(e).outcome)">{{ finiteText(asRecord(e).outcome) }}</span>
+                <span class="badge" :class="badgeClass(recGet(e, 'outcome'))">{{ finiteText(recGet(e, 'outcome')) }}</span>
               </td>
               <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ detail(e) }}</td>
             </tr>
@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -126,7 +126,7 @@ const filteredRows = computed(() => {
     return list.filter((e) => {
       try {
         const row = asRecord(e)
-        const hay = `${fieldText(row.event)} ${fieldText(row.username)} ${fieldText(row.client)} ${fieldText(row.outcome)} ${detail(e)}`
+        const hay = `${fieldText(recGet(row, 'event'))} ${fieldText(recGet(row, 'username'))} ${fieldText(recGet(row, 'client'))} ${fieldText(recGet(row, 'outcome'))} ${detail(e)}`
         return hay.toLowerCase().includes(needle)
       } catch {
         return false
@@ -180,11 +180,11 @@ async function refresh(manual = false) {
     const d = asRecord(await getAuthAudit(200))
     if (generation !== loadGeneration || !pageAlive) return
     try {
-      entries.value = asArray(d.entries).slice()
+      entries.value = asArray(recGet(d, 'entries')).slice()
     } catch {
       entries.value = []
     }
-    const retained = finiteN(d.retained_lines, null)
+    const retained = finiteN(recGet(d, 'retained_lines'), null)
     maxRetained.value = retained != null && Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''
   } catch (e) {
