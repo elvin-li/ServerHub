@@ -60,15 +60,15 @@
         >
           <div class="nav-drawer-title">{{ t('brand') }}</div>
           <router-link
-            v-for="item in nav"
-            :key="item.to"
-            :to="item.to"
+            v-for="item in asArray(nav)"
+            :key="finiteText(asRecord(item).to)"
+            :to="asRecord(item).to"
             :class="{ active: isActive(item) }"
             :aria-current="navCurrent(item)"
             @click="menuOpen = false"
           >
-            <component :is="item.icon" :size="15" />
-            <span>{{ t(item.labelKey) }}</span>
+            <component :is="asRecord(item).icon" :size="15" />
+            <span>{{ t(asRecord(item).labelKey) }}</span>
           </router-link>
           <div class="top-controls">
             <label class="nav-tool">
@@ -86,7 +86,7 @@
                 data-test="nav-theme"
               >
                 <option value="system">{{ t('theme.system') }}</option>
-                <option v-for="th in themes" :key="th.id" :value="th.id">{{ t(th.labelKey) }}</option>
+                <option v-for="th in asArray(themes)" :key="finiteText(asRecord(th).id)" :value="asRecord(th).id">{{ t(asRecord(th).labelKey) }}</option>
               </select>
             </label>
             <button class="logout-btn" type="button" @click="logout">{{ t('auth.logout') }}</button>
