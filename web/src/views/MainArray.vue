@@ -939,19 +939,19 @@ function smartBadge(d) {
 const smartNotice = computed(() => {
   const out = { down: [], warn: [], unknown: [] }
   for (const d of asArray(smartMerged.value)) {
-    const label = [finiteText(d.smart?.model, '') || finiteText(d.name, '') || finiteText(d.id, ''), finiteText(d.device, '')].filter(Boolean).join(' ')
+    const label = [finiteText(recGet(recGet(d, 'smart'), 'model'), '') || finiteText(recGet(d, 'name'), '') || finiteText(recGet(d, 'id'), ''), finiteText(recGet(d, 'device'), '')].filter(Boolean).join(' ')
     const grade = smartGrade(d)
     if (grade === 'unknown') {
       // Only when the read actually failed.  A /api/smart device with no matching
       // storage entry has neither SMART nor an error, and inventing a row for it
       // would report a problem nobody has.
-      if (d.error) out.unknown.push({ id: d.id, label, reasons: finiteText(d.error) })
+      if (recGet(d, 'error')) out.unknown.push({ id: recGet(d, 'id'), label, reasons: finiteText(recGet(d, 'error')) })
       continue
     }
     if (grade === 'ok') continue
-    const [down, warn] = smartReasons(d.smart)
+    const [down, warn] = smartReasons(recGet(d, 'smart'))
     out[grade].push({
-      id: d.id,
+      id: recGet(d, 'id'),
       label,
       reasons: (grade === 'down' ? [...down, ...warn] : warn).join(' · '),
     })
@@ -1118,9 +1118,9 @@ async function power(d, action) {
   const row = asRecord(d)
   const labels = { sleep: t('main_extra.act_sleep'), wake: t('main_extra.act_wake'), eject: t('main_extra.act_eject') }
   const tip = {
-    sleep: t('main_extra.confirm_sleep', { id: finiteText(row.id) }),
-    wake: t('main_extra.confirm_wake', { id: finiteText(row.id) }),
-    eject: t('main_extra.confirm_eject', { id: finiteText(row.id) }),
+    sleep: t('main_extra.confirm_sleep', { id: finiteText(recGet(row, 'id')) }),
+    wake: t('main_extra.confirm_wake', { id: finiteText(recGet(row, 'id')) }),
+    eject: t('main_extra.confirm_eject', { id: finiteText(recGet(row, 'id')) }),
   }
   if (!confirm(tip[action] || labels[action])) return
   const generation = loadSeq
@@ -1130,8 +1130,8 @@ async function power(d, action) {
     const j = asRecord(await setDiskPower(row.id, action))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
-    toast(j.ok ? `✅ ${labels[action]} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
-    if (j.ok) scheduleRefresh(1000)
+    toast(recGet(j, 'ok') ? `✅ ${labels[action]} ${finiteText(recGet(row, 'id'))}` : `❌ ${finiteText(recGet(j, 'message'))}`)
+    if (recGet(j, 'ok')) scheduleRefresh(1000)
   } catch (e) {
     if (generation !== loadSeq || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -1145,11 +1145,11 @@ async function power(d, action) {
 async function manage(v, action) {
   const row = asRecord(v)
   const tips = {
-    mount: `${t('main_extra.mount')} ${finiteText(row.id)}?`,
-    unmount: `${t('main_extra.unmount')} ${finiteText(row.id)} (${finiteText(row.mount, '') || t('main_extra.not_mounted')})?`,
-    mountDisk: `${t('main_extra.mount_disk')} ${finiteText(row.id)}?`,
-    unmountDisk: `${t('main_extra.unmount_disk')} ${finiteText(row.id)}?`,
-    eject: `${t('main.eject')} ${finiteText(row.id)}?`,
+    mount: `${t('main_extra.mount')} ${finiteText(recGet(row, 'id'))}?`,
+    unmount: `${t('main_extra.unmount')} ${finiteText(recGet(row, 'id'))} (${finiteText(recGet(row, 'mount'), '') || t('main_extra.not_mounted')})?`,
+    mountDisk: `${t('main_extra.mount_disk')} ${finiteText(recGet(row, 'id'))}?`,
+    unmountDisk: `${t('main_extra.unmount_disk')} ${finiteText(recGet(row, 'id'))}?`,
+    eject: `${t('main.eject')} ${finiteText(recGet(row, 'id'))}?`,
   }
   if (!confirm(tips[action] || action)) return
   const generation = loadSeq
@@ -1159,8 +1159,8 @@ async function manage(v, action) {
     const j = asRecord(await manageStorageDevice(row.id, { action }))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
-    toast(j.ok ? `✅ ${action} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
-    if (j.ok) scheduleRefresh(800)
+    toast(recGet(j, 'ok') ? `✅ ${action} ${finiteText(recGet(row, 'id'))}` : `❌ ${finiteText(recGet(j, 'message'))}`)
+    if (recGet(j, 'ok')) scheduleRefresh(800)
   } catch (e) {
     if (generation !== loadSeq || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -1173,7 +1173,7 @@ async function manage(v, action) {
 function openRename(v) {
   const row = asRecord(v)
   renameTarget.value = row
-  renameName.value = finiteText(row.volume_name, '') || finiteText(row.name, '')
+    renameName.value = finiteText(recGet(row, 'volume_name'), '') || finiteText(recGet(row, 'name'), '')
 }
 async function doRename() {
   if (!renameTarget.value || !asTrimmed(renameName.value)) return
@@ -1185,9 +1185,9 @@ async function doRename() {
       name: asTrimmed(renameName.value),
     }))
     if (generation !== loadSeq || !pageAlive) return
-    toast(j.ok ? '✅ ' + t('main_extra.renamed') : `❌ ${finiteText(j.message)}`)
-    lastMsg.value = finiteText(j.message, '')
-    if (j.ok) {
+    toast(recGet(j, 'ok') ? '✅ ' + t('main_extra.renamed') : `❌ ${finiteText(recGet(j, 'message'))}`)
+    lastMsg.value = finiteText(recGet(j, 'message'), '')
+    if (recGet(j, 'ok')) {
       renameTarget.value = null
       scheduleRefresh(800)
     }
@@ -1222,8 +1222,8 @@ async function doFormat() {
     }))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
-    toast(j.ok ? '✅ ' + t('main_extra.formatted') : `❌ ${finiteText(j.message)}`)
-    if (j.ok) {
+    toast(recGet(j, 'ok') ? '✅ ' + t('main_extra.formatted') : `❌ ${finiteText(recGet(j, 'message'))}`)
+    if (recGet(j, 'ok')) {
       formatTarget.value = null
       scheduleRefresh(1200)
     }
@@ -1282,8 +1282,8 @@ async function runSmartTest(dev, kind) {
   try {
     const j = asRecord(await startSmartTest(dev.device, kind))
     if (generation !== loadSeq || !pageAlive) return
-    toast(j.ok ? `✅ ${t('main_extra.smart_started')}` : `❌ ${finiteText(j.message, '') || finiteText(j.error)}`)
-    if (j.ok) {
+    toast(recGet(j, 'ok') ? `✅ ${t('main_extra.smart_started')}` : `❌ ${finiteText(recGet(j, 'message'), '') || finiteText(recGet(j, 'error'))}`)
+    if (recGet(j, 'ok')) {
       const seq = loadSeq
       const id = setTimeout(async () => {
         refreshTimers.delete(id)

@@ -645,7 +645,7 @@ async function refresh(manual = false) {
 
 function batchToast(j) {
   const text = t('docker.done_count', { done: finiteN(j.done, 0), total: finiteN(j.total, 0) })
-  toast(j.ok === false ? `⚠ ${text}` : `✅ ${text}`)
+  toast(recGet(j, 'ok') === false ? `⚠ ${text}` : `✅ ${text}`)
 }
 
 async function act(c, action) {
@@ -684,7 +684,7 @@ async function doUpdate(c) {
   try {
     const j = asRecord(await updateContainer(c.id))
     if (!stillOnList(generation)) return
-    toast('🚀 ' + (finiteText(j.message, '') || t('docker.updating')))
+    toast('🚀 ' + (finiteText(recGet(j, 'message'), '') || t('docker.updating')))
     if (j.job_id) watchJob(j.job_id)
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -742,7 +742,7 @@ async function checkUpdates() {
   try {
     const j = asRecord(await checkContainerUpdates())
     if (!stillOnList(generation)) return
-    toast('🚀 ' + finiteText(j.message))
+    toast('🚀 ' + finiteText(recGet(j, 'message')))
     if (j.job_id) watchJob(j.job_id)
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -851,7 +851,7 @@ async function runExec() {
   try {
     const j = asRecord(await execContainer(execC.value.id, execCmd.value))
     if (!stillOnList(generation)) return
-    execOut.value = finiteText(j.output, '') || finiteText(j.message, '') || jsonText(j, '')
+    execOut.value = finiteText(recGet(j, 'output'), '') || finiteText(recGet(j, 'message'), '') || jsonText(j, '')
   } catch (e) {
     if (!stillOnList(generation)) return
     execOut.value = finiteText(e.message, '')
@@ -985,7 +985,7 @@ async function doRun() {
     }
     const j = asRecord(await runContainer(body))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.container_created') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.container_created') : `❌ ${finiteText(recGet(j, 'message'))}`)
     if (j.ok) {
       showRun.value = false
       scheduleRefresh(800)
@@ -1005,9 +1005,9 @@ async function doPull() {
   try {
     const j = asRecord(await pullImageApi(asTrimmed(pullImage.value)))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.pull_done') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.pull_done') : `❌ ${finiteText(recGet(j, 'message'))}`)
     stopJobPolling()
-    jobLog.value = finiteText(j.message, '')
+    jobLog.value = finiteText(recGet(j, 'message'), '')
     loadImages()
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -1029,7 +1029,7 @@ async function rmi(im) {
   try {
     const j = asRecord(await removeImage(ref, true))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.removed') : `❌ ${finiteText(recGet(j, 'message'))}`)
     loadImages()
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -1045,7 +1045,7 @@ async function createVol() {
   try {
     const j = asRecord(await createVolume(asTrimmed(newVol.value)))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.volume_created') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.volume_created') : `❌ ${finiteText(recGet(j, 'message'))}`)
     newVol.value = ''
     loadVolumes()
   } catch (e) {
@@ -1063,7 +1063,7 @@ async function rmVol(v) {
   try {
     const j = asRecord(await removeVolume(v.Name, true))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.removed') : `❌ ${finiteText(recGet(j, 'message'))}`)
     loadVolumes()
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -1079,7 +1079,7 @@ async function createNet() {
   try {
     const j = asRecord(await createNetwork(asTrimmed(newNet.value)))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.network_created') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.network_created') : `❌ ${finiteText(recGet(j, 'message'))}`)
     newNet.value = ''
     loadNetworks()
   } catch (e) {
@@ -1097,7 +1097,7 @@ async function rmNet(n) {
   try {
     const j = asRecord(await removeNetwork(n.Name))
     if (!stillOnList(generation)) return
-    toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? '✅ ' + t('docker.removed') : `❌ ${finiteText(recGet(j, 'message'))}`)
     loadNetworks()
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -1116,7 +1116,7 @@ async function toggleAutostart(c) {
   try {
     const j = asRecord(await setRestartPolicy(c.id, next))
     if (!stillOnList(generation)) return
-    toast(j.ok ? `✅ ${t('docker.autostart')} → ${next}` : `❌ ${finiteText(j.message)}`)
+    toast(recGet(j, 'ok') ? `✅ ${t('docker.autostart')} → ${next}` : `❌ ${finiteText(recGet(j, 'message'))}`)
     refresh()
   } catch (e) {
     if (!stillOnList(generation)) return

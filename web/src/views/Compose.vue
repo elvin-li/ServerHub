@@ -233,8 +233,8 @@ async function save() {
     const j = asRecord(await putCompose(id, editor.value, true))
     if (generation !== composeGeneration || !pageAlive) return
     toast('✅ ' + t('compose.saved'))
-    const backup = finiteText(j.backup, '')
-    msg.value = (finiteText(j.message, '') || '') + (backup ? `\n${t('compose.backup')}: ${backup}` : '')
+    const backup = finiteText(recGet(j, 'backup'), '')
+    msg.value = (finiteText(recGet(j, 'message'), '') || '') + (backup ? `\n${t('compose.backup')}: ${backup}` : '')
   } catch (e) {
     if (generation !== composeGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -250,8 +250,8 @@ async function validate() {
   try {
     const j = asRecord(await validateCompose(editor.value, finiteText(recGet(compose.value, 'path'), '')))
     if (generation !== composeGeneration || !pageAlive) return
-    msg.value = (j.ok ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + finiteText(j.message, '')
-    toast(j.ok ? '✅ ' + t('compose.valid_toast_ok') : '❌ ' + t('compose.valid_toast_fail'))
+    msg.value = (recGet(j, 'ok') ? `✅ ${t('compose.valid_ok')}\n` : `❌ ${t('compose.valid_fail')}\n`) + finiteText(recGet(j, 'message'), '')
+    toast(recGet(j, 'ok') ? '✅ ' + t('compose.valid_toast_ok') : '❌ ' + t('compose.valid_toast_fail'))
   } catch (e) {
     if (generation !== composeGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

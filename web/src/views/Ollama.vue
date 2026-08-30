@@ -466,7 +466,7 @@ const testText = computed(() => {
   if (testBusy.value) return t('ollama.testing')
   const r = testResult.value
   if (!r) return t('ollama.testing')
-  return finiteText(r.response, '') || finiteText(r.thinking, '') || finiteText(r.error, '') || (r.ok ? '—' : t('ollama.test_failed'))
+  return finiteText(recGet(r, 'response'), '') || finiteText(recGet(r, 'thinking'), '') || finiteText(recGet(r, 'error'), '') || (recGet(r, 'ok') ? '—' : t('ollama.test_failed'))
 })
 
 const chatSendDisabled = computed(() =>
@@ -632,7 +632,7 @@ async function act(action) {
   try {
     const r = asRecord(await doAction(label, action))
     if (generation !== loadGeneration || !pageAlive) return
-    toast(r.ok ? `✅ ${label} · ${action}` : `❌ ${finiteText(r.message, '') || action}`)
+    toast(recGet(r, 'ok') ? `✅ ${label} · ${action}` : `❌ ${finiteText(recGet(r, 'message'), '') || action}`)
     if (r.ok) {
       if (actionTimer) clearTimeout(actionTimer)
       actionTimer = setTimeout(() => {
@@ -654,13 +654,13 @@ async function act(action) {
 // ── resident model unload ────────────────────────────────────────────────────
 async function unload(m) {
   const row = asRecord(m)
-  if (!confirm(t('ollama.confirm_unload', { name: finiteText(row.name) }))) return
+  if (!confirm(t('ollama.confirm_unload', { name: finiteText(recGet(row, 'name')) }))) return
   const generation = loadGeneration
   unloading.value = true
   try {
-    const r = asRecord(await unloadOllamaModel(row.name))
+    const r = asRecord(await unloadOllamaModel(recGet(row, 'name')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('ollama.unloaded', { name: finiteText(row.name) }))
+    toast('✅ ' + t('ollama.unloaded', { name: finiteText(recGet(row, 'name')) }))
     void refresh(true)
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -681,13 +681,13 @@ function closeDelete() {
 }
 async function doDelete() {
   const target = asRecord(deleteTarget.value)
-  if (!target.name || asTrimmed(deleteText.value) !== target.name) return
+  if (!recGet(target, 'name') || asTrimmed(deleteText.value) !== recGet(target, 'name')) return
   const generation = loadGeneration
   deleting.value = true
   try {
-    const r = asRecord(await deleteOllamaModel(target.name))
+    const r = asRecord(await deleteOllamaModel(recGet(target, 'name')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('ollama.deleted', { name: finiteText(target.name) }))
+    toast('✅ ' + t('ollama.deleted', { name: finiteText(recGet(target, 'name')) }))
     closeDelete()
     void refresh(true)
   } catch (e) {
