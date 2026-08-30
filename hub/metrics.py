@@ -15,6 +15,24 @@ from hub.util import safe_json_loads, sh, tail_file_lines
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in the sampler / jsonl path —
+    GET /api/metrics answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 METRICS_FILE = DATA_DIR / "metrics.jsonl"
 # ~48h at 90s interval ≈ 1920 points; keep headroom
 MAX_POINTS = 2880
@@ -77,7 +95,7 @@ def _plain_dict(value) -> dict | None:
     """
     if type(value) is dict:
         return value
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         try:
             return dict(value)
         except _CONTROL_FLOW:
@@ -129,7 +147,7 @@ def _cpu_used_quick(sensors: dict | None = None) -> float | None:
         # Exception, not the three usual conversion errors: ``float()`` of a
         # leftover float-subclass field dispatches into its own ``__float__``,
         # whose modules5 bomb killed the sampler tick past metrics5's guards.
-        if isinstance(s, dict) and s.get("cpu_used_pct") is not None:
+        if _isinst(s, dict) and s.get("cpu_used_pct") is not None:
             return float(s["cpu_used_pct"])
     except _CONTROL_FLOW:
         raise
@@ -157,19 +175,19 @@ def _sample() -> dict:
     load_pct = round(min(200.0, load1 / ncpu * 100), 1) if ncpu else None
 
     net_rx = net_tx = None
-    sensors_hit = isinstance(s, dict) and bool(s)
+    sensors_hit = _isinst(s, dict) and bool(s)
     if sensors_hit:
         # isinstance, not ``or {}``: a leftover truthy non-dict ``network`` /
         # ``memory`` in the snapshot ("down", a list) used to AttributeError
         # .get() here, killing the sampler tick — the jsonl row was silently
         # lost and maybe_rollup() was skipped with it.
         net = s.get("network")
-        if not isinstance(net, dict):
+        if not _isinst(net, dict):
             net = {}
         net_rx = net.get("rx_bps")
         net_tx = net.get("tx_bps")
         m = s.get("memory")
-        if not isinstance(m, dict):
+        if not _isinst(m, dict):
             m = {}
         if m.get("pressure_used_pct") is not None:
             mem_used_pct = m["pressure_used_pct"]
@@ -187,10 +205,10 @@ def _sample() -> dict:
                 # the snapshot is not one of the three conversion errors.
                 pass
         gpu = s.get("gpu")
-        if isinstance(gpu, dict):
+        if _isinst(gpu, dict):
             raw = gpu.get("util_pct")
             # Bool is an int; float(True) would store a fake 1.0% reading.
-            if not isinstance(raw, bool) and raw is not None:
+            if type(raw) is not bool and raw is not None:
                 try:
                     v = float(raw)
                     if v == v and v not in (float("inf"), float("-inf")):
@@ -343,7 +361,7 @@ def _utf8_text(value) -> str:
         raise
     except BaseException:
         return ""
-    if not isinstance(text, str):
+    if not _isinst(text, str):
         return ""
     try:
         text = str.encode(text, "utf-8", "replace").decode("utf-8")
@@ -375,9 +393,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -394,7 +412,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -407,11 +425,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
             # items()/keys()/__iter__ — a leftover subclass method bomb
@@ -424,7 +442,7 @@ def _jsonable(value, depth: int = 0):
                 return None
         out = {}
         for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except _CONTROL_FLOW:
@@ -433,9 +451,9 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot drop the real elements (``list(value)`` dispatched
                 # into the override and threw the payload away with it).
@@ -472,9 +490,9 @@ def sample_ts(raw) -> int | None:
     to be skipped (or, on the rollup path, ``int(inf)`` OverflowError 500'd
     ``GET /api/metrics?range=``).  Bool is rejected: ``True`` is an ``int``.
     """
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         text = raw.strip()
         if not text:
             return None
@@ -485,14 +503,14 @@ def sample_ts(raw) -> int | None:
                 raw = float(text)
             except ValueError:
                 return None
-    if not isinstance(raw, (int, float)):
+    if not _isinst(raw, (int, float)):
         return None
     # Base coercion first: ``float(raw)`` / ``int(raw)`` dispatch into a
     # subclass ``__float__`` / ``__int__`` / ``__trunc__``, whose modules5
     # bomb is none of the errors caught below and used to escape.
     if type(raw) not in (int, float):
         try:
-            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+            raw = int.__index__(raw) if _isinst(raw, int) else float.__float__(raw)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -519,7 +537,7 @@ def record_sample(sample: dict | None = None, *, immediate: bool = False) -> dic
         # used to blow up the ``sample or`` truthiness below and lose the row.
         sample = _plain_dict(sample)
     s = _jsonable(sample or _sample())
-    if not isinstance(s, dict):
+    if not _isinst(s, dict):
         s = {"t": sample_ts(time.time()) or 0}
     _last_sample = s
     try:
@@ -562,7 +580,7 @@ def latest_sample() -> dict | None:
             ]
             if lines:
                 parsed = safe_json_loads(lines[-1], loads=json.loads)
-                if isinstance(parsed, dict):
+                if _isinst(parsed, dict):
                     _last_sample = _jsonable(parsed)
                     return _last_sample
     except (OSError, ValueError, RecursionError):
@@ -605,10 +623,10 @@ def history(minutes: int = 60) -> list:
                     # ValueError out of json.loads, which used to 500
                     # GET /api/metrics on that line.
                     continue
-                t = sample_ts(o.get("t") if isinstance(o, dict) else None)
+                t = sample_ts(o.get("t") if _isinst(o, dict) else None)
                 if t is not None and t >= cutoff:
-                    o = _jsonable(o) if isinstance(o, dict) else None
-                    if not isinstance(o, dict):
+                    o = _jsonable(o) if _isinst(o, dict) else None
+                    if not _isinst(o, dict):
                         continue
                     o["t"] = t
                     out.append(o)
@@ -620,10 +638,10 @@ def history(minutes: int = 60) -> list:
                 o = safe_json_loads(line)
             except (ValueError, RecursionError):
                 continue
-            t = sample_ts(o.get("t") if isinstance(o, dict) else None)
+            t = sample_ts(o.get("t") if _isinst(o, dict) else None)
             if t is not None and t >= cutoff:
-                o = _jsonable(o) if isinstance(o, dict) else None
-                if not isinstance(o, dict):
+                o = _jsonable(o) if _isinst(o, dict) else None
+                if not _isinst(o, dict):
                     continue
                 o["t"] = t
                 out.append(o)
