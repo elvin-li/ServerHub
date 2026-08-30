@@ -15,7 +15,7 @@
             :class="{ active: locale === l.id }"
             :aria-pressed="locale === l.id"
             @click="pickLocale(l.id)"
-          >{{ finiteText(l.native) }}</button>
+          >{{ finiteText(asRecord(l).native) }}</button>
         </div>
       </div>
 
@@ -133,34 +133,34 @@
             <h2 id="launcher-title" class="section-title launcher-title">{{ t('settings.launcher_title') }}</h2>
             <p class="hint launcher-hint">{{ t('settings.launcher_hint') }}</p>
           </div>
-          <span v-if="launcher" class="launcher-overall" :class="launcher.app_running && launcher.panel_running ? 'is-ready' : 'is-idle'" aria-hidden="true">
+          <span v-if="launcher" class="launcher-overall" :class="asRecord(launcher).app_running && asRecord(launcher).panel_running ? 'is-ready' : 'is-idle'" aria-hidden="true">
             <span class="launcher-overall-dot"></span>
-            {{ launcher.app_running && launcher.panel_running ? t('common.running') : t('common.off') }}
+            {{ asRecord(launcher).app_running && asRecord(launcher).panel_running ? t('common.running') : t('common.off') }}
           </span>
         </div>
         <p v-if="launcher" class="sr-only" role="status" aria-live="polite" aria-atomic="true">
-          {{ t('settings.launcher_app') }}: {{ launcher.app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }};
-          {{ t('settings.launcher_menu_bar') }}: {{ launcher.app_running ? t('common.running') : t('common.off') }};
-          {{ t('settings.launcher_panel_service') }}: {{ launcher.panel_running ? t('common.running') : t('common.stopped') }};
-          {{ t('settings.launcher_login') }}: {{ launcher.login_enabled ? t('common.on') : t('common.off') }}
+          {{ t('settings.launcher_app') }}: {{ asRecord(launcher).app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }};
+          {{ t('settings.launcher_menu_bar') }}: {{ asRecord(launcher).app_running ? t('common.running') : t('common.off') }};
+          {{ t('settings.launcher_panel_service') }}: {{ asRecord(launcher).panel_running ? t('common.running') : t('common.stopped') }};
+          {{ t('settings.launcher_login') }}: {{ asRecord(launcher).login_enabled ? t('common.on') : t('common.off') }}
         </p>
         <div v-if="launcher" class="launcher-content">
           <dl class="launcher-status-grid">
             <div class="launcher-status-item">
               <dt>{{ t('settings.launcher_app') }}</dt>
-              <dd><span class="badge" :class="launcher.app_installed ? 'ok' : 'down'">{{ launcher.app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }}</span></dd>
+              <dd><span class="badge" :class="asRecord(launcher).app_installed ? 'ok' : 'down'">{{ asRecord(launcher).app_installed ? t('settings.launcher_installed') : t('settings.launcher_not_installed') }}</span></dd>
             </div>
             <div class="launcher-status-item">
               <dt>{{ t('settings.launcher_menu_bar') }}</dt>
-              <dd><span class="badge" :class="launcher.app_running ? 'ok' : 'warn'">{{ launcher.app_running ? t('common.running') : t('common.off') }}</span></dd>
+              <dd><span class="badge" :class="asRecord(launcher).app_running ? 'ok' : 'warn'">{{ asRecord(launcher).app_running ? t('common.running') : t('common.off') }}</span></dd>
             </div>
             <div class="launcher-status-item">
               <dt>{{ t('settings.launcher_panel_service') }}</dt>
-              <dd><span class="badge" :class="launcher.panel_running ? 'ok' : 'down'">{{ launcher.panel_running ? t('common.running') : t('common.stopped') }}</span></dd>
+              <dd><span class="badge" :class="asRecord(launcher).panel_running ? 'ok' : 'down'">{{ asRecord(launcher).panel_running ? t('common.running') : t('common.stopped') }}</span></dd>
             </div>
             <div class="launcher-status-item">
               <dt>{{ t('settings.launcher_login') }}</dt>
-              <dd><span class="badge" :class="launcher.login_enabled ? 'ok' : 'warn'">{{ launcher.login_enabled ? t('common.on') : t('common.off') }}</span></dd>
+              <dd><span class="badge" :class="asRecord(launcher).login_enabled ? 'ok' : 'warn'">{{ asRecord(launcher).login_enabled ? t('common.on') : t('common.off') }}</span></dd>
             </div>
           </dl>
           <div class="launcher-path">

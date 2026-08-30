@@ -499,7 +499,7 @@ describe('dashboard and storage surface leftovers', () => {
     // screen reader announced — nothing said what expands, and nothing said
     // whether it already had.
     const mainArray = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
-    const toggle = mainArray.match(/<button[^>]*v-if="asArray\(m\.smart\?\.attrs\)\.length"[\s\S]*?>/)
+    const toggle = mainArray.match(/<button[^>]*v-if="asArray\(asRecord\(asRecord\(m\)\.smart\)\.attrs\)\.length"[\s\S]*?>/)
     expect(toggle, 'SMART attribute expander').toBeTruthy()
     expect(toggle[0]).toMatch(/:aria-label="t\('main_extra\.smart_attrs_toggle'/)
     expect(toggle[0]).toMatch(/:aria-expanded="smartExpanded\.has\(asRecord\(m\)\.id\)"/)
@@ -818,7 +818,7 @@ describe('llm, photos, vpn and health surface leftovers', () => {
     // The issues arm was a bare "⚠️" — announced as "warning sign" at best,
     // with no words and no locale parity with the healthy arm.
     const health = readFileSync(resolve(SRC, 'views/Health.vue'), 'utf8')
-    expect(health).toMatch(/data\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
+    expect(health).toMatch(/asRecord\(data\)\.healthy \? '✅ ' \+ t\('common\.healthy'\) : '⚠️ ' \+ t\('common\.issues'\)/)
     expect(health).not.toMatch(/\{\{ data\.healthy \? '✅ OK' : '⚠️' \}\}/)
   })
 
@@ -872,7 +872,7 @@ describe('brew and gateway surface leftovers', () => {
     // it is decoration — same treatment as the VMs and Network inline LEDs.
     // (Table-cell LEDs are covered by their sr-only column header instead.)
     const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
-    expect(gateway).toMatch(/class="led" :class="data\.running \? 'on' : 'err'" aria-hidden="true"/)
+    expect(gateway).toMatch(/class="led" :class="asRecord\(data\)\.running \? 'on' : 'err'" aria-hidden="true"/)
   })
 })
 
@@ -2739,7 +2739,7 @@ describe('leftover Infinity interpolations', () => {
     // call-to-action showed up.
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
     expect(apps).not.toMatch(/v-if="cfStatus\.login_url" class="notes" style/)
-    expect(apps).toMatch(/v-if="cfStatus\.login_url" class="notes" role="status"/)
+    expect(apps).toMatch(/v-if="asRecord\(cfStatus\)\.login_url" class="notes" role="status"/)
   })
 
   it('Dashboard leftover volumes/ports/rss go through finite helpers', () => {
@@ -2859,7 +2859,7 @@ describe('leftover Infinity interpolations', () => {
     expect(settings).not.toMatch(/\{\{\s*diagMsg\s*\}\}/)
     expect(settings).toMatch(/finiteText\(diagMsg\)/)
     expect(settings).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
-    expect(settings).toMatch(/finiteText\(l\.native\)/)
+    expect(settings).toMatch(/finiteText\(asRecord\(l\)\.native\)/)
     expect(settings).not.toMatch(/n: haltLevel\.value \}\)/)
     expect(settings).toMatch(/n: finiteN\(haltLevel\.value\)/)
     expect(settings).not.toMatch(/\{\{\s*twofaEnroll\.manual_entry\s*\}\}/)
@@ -3110,7 +3110,7 @@ describe('leftover Infinity interpolations', () => {
     expect(wg).not.toMatch(/data\.address \|\| data\.subnet/)
     expect(wg).toMatch(/finiteText\(data\.address, ''\) \|\| finiteText\(data\.subnet\)/)
     expect(wg).not.toMatch(/data\.wstunnel\.port \|\| data\.wstunnel\.listen/)
-    expect(wg).toMatch(/finiteText\(data\.wstunnel\.port, ''\) \|\| finiteText\(data\.wstunnel\.listen\)/)
+    expect(wg).toMatch(/finiteText\(asRecord\(asRecord\(data\)\.wstunnel\)\.port, ''\) \|\| finiteText\(asRecord\(asRecord\(data\)\.wstunnel\)\.listen\)/)
     expect(wg).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(wg).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(wg).not.toMatch(/readiness\?\.wan_interface \|\| 'en0'/)
@@ -3244,6 +3244,8 @@ describe('leftover Infinity interpolations', () => {
     expect(health).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(health).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(health).toMatch(/v-for="c in asArray\(filtered\)"/)
+    expect(health).toMatch(/asRecord\(data\)\.healthy \? t\('common\.healthy'\)/)
+    expect(health).toMatch(/asArray\(asRecord\(data\)\.checks\)/)
   })
 
   it('Users leftover counts and uids go through finiteN', () => {
@@ -3543,6 +3545,7 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/v-for="\(im,i\) in asArray\(images\)"/)
     expect(containers).toMatch(/v-for="v in asArray\(volumes\)"/)
     expect(containers).toMatch(/v-for="n in asArray\(networks\)"/)
+    expect(containers).toMatch(/asRecord\(data\)\.engine_up \? t\('common\.running'\)/)
   })
 
   it('ScheduleJobForm leftover preview counts go through finiteN', () => {

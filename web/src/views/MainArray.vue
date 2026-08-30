@@ -570,17 +570,17 @@
                          accessible name was "▼ 12" — nothing says what
                          expands. aria-expanded carries the open state. -->
                     <button
-                      v-if="asArray(m.smart?.attrs).length"
+                      v-if="asArray(asRecord(asRecord(m).smart).attrs).length"
                       class="tiny"
                       :aria-label="t('main_extra.smart_attrs_toggle', { id: finiteText(asRecord(m).id) })"
                       :aria-expanded="smartExpanded.has(asRecord(m).id)"
                       @click="toggleSmartDetail(asRecord(m).id)"
                     >
-                      {{ smartExpanded.has(m.id) ? '▲' : '▼' }} {{ asArray(m.smart.attrs).length }}
+                      {{ smartExpanded.has(asRecord(m).id) ? '▲' : '▼' }} {{ asArray(asRecord(asRecord(m).smart).attrs).length }}
                     </button>
-                    <template v-if="asArray(m.caps?.supported).length">
+                    <template v-if="asArray(asRecord(asRecord(m).caps).supported).length">
                       <button
-                        v-for="k in asArray(m.caps.supported).filter(x => x !== 'offline')" :key="k"
+                        v-for="k in asArray(asRecord(asRecord(m).caps).supported).filter(x => x !== 'offline')" :key="k"
                         class="tiny primary"
                         :disabled="busy || smartTestBusy"
                         @click="runSmartTest(m, k)"

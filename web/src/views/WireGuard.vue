@@ -6,27 +6,27 @@
     </div>
 
     <!-- Running status card -->
-    <div v-if="data" class="wg-status-bar" :class="{ running: data.running }">
+    <div v-if="data" class="wg-status-bar" :class="{ running: asRecord(data).running }">
       <span class="wg-status-led"></span>
-      <span class="wg-status-text">{{ data.running ? t('wg.tunnel_running') : t('wg.tunnel_stopped') }}</span>
-      <span v-if="data.running" class="wg-status-meta">
-        {{ finiteText(data.interface) }} · {{ t('wg.listen_port') }} {{ finiteN(data.listen_port) }}
-        <template v-if="data.wstunnel?.running || data.wstunnel?.enabled">
-          · {{ t('wg.wstunnel_short') }} {{ finiteText(data.wstunnel.port, '') || finiteText(data.wstunnel.listen) }}
+      <span class="wg-status-text">{{ asRecord(data).running ? t('wg.tunnel_running') : t('wg.tunnel_stopped') }}</span>
+      <span v-if="asRecord(data).running" class="wg-status-meta">
+        {{ finiteText(asRecord(data).interface) }} · {{ t('wg.listen_port') }} {{ finiteN(asRecord(data).listen_port) }}
+        <template v-if="asRecord(asRecord(data).wstunnel).running || asRecord(asRecord(data).wstunnel).enabled">
+          · {{ t('wg.wstunnel_short') }} {{ finiteText(asRecord(asRecord(data).wstunnel).port, '') || finiteText(asRecord(asRecord(data).wstunnel).listen) }}
         </template>
-        · {{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }} {{ t('wg.peers_online') }}
+        · {{ finiteN(asRecord(data).active_count) }}/{{ finiteN(asRecord(data).peer_count) }} {{ t('wg.peers_online') }}
       </span>
     </div>
 
     <div class="toolbar">
       <button
-        v-if="data && !data.running"
+        v-if="data && !asRecord(data).running"
         class="primary wg-start"
         @click="control('up')"
         :disabled="busy"
       >&#9654; {{ t('wg.start') }}</button>
       <button
-        v-else-if="data?.running"
+        v-else-if="asRecord(data).running"
         class="danger wg-stop"
         @click="control('down')"
         :disabled="busy"

@@ -5,7 +5,7 @@
       <span class="meta">
         {{ t('pages.docker_meta') }} ·
         <template v-if="data">
-          {{ t('common.engine') }} {{ data.engine_up ? t('common.running') : t('common.stopped') }} · {{ asArray(containers).length }}
+          {{ t('common.engine') }} {{ asRecord(data).engine_up ? t('common.running') : t('common.stopped') }} · {{ asArray(containers).length }}
           <span v-if="finiteText(asRecord(data).update_checked_at, '')"> · {{ finiteText(asRecord(data).update_checked_at) }}</span>
         </template>
       </span>

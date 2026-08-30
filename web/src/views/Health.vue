@@ -14,8 +14,8 @@
         {{ t('health.passed') }} {{ finiteN(asRecord(asRecord(data).summary).ok) }} · {{ t('health.warnings') }} {{ finiteN(asRecord(asRecord(data).summary).warn) }} · {{ t('health.errors') }} {{ finiteN(asRecord(asRecord(data).summary).error) }}
         · {{ finiteN(asRecord(asRecord(data).summary).total) }}
       </span>
-      <span v-if="data" class="badge" :class="data.healthy ? 'ok' : 'down'" style="margin-left:4px">
-        {{ data.healthy ? t('common.healthy') : t('common.issues') }}
+      <span v-if="data" class="badge" :class="asRecord(data).healthy ? 'ok' : 'down'" style="margin-left:4px">
+        {{ asRecord(data).healthy ? t('common.healthy') : t('common.issues') }}
       </span>
     </div>
 
@@ -39,7 +39,7 @@
         <!-- Spell the state, not an emoji alone: the issues arm was a bare
              "⚠️", announced as "warning sign" (or nothing) with no words and
              no locale parity with the healthy arm. -->
-        <div class="v" style="font-size:16px">{{ data.healthy ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
+        <div class="v" style="font-size:16px">{{ asRecord(data).healthy ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
       </div>
     </div>
 
@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ asArray(filtered).length }} / {{ asArray(data?.checks).length }}
+        {{ asArray(filtered).length }} / {{ asArray(asRecord(data).checks).length }}
       </span>
     </div>
 

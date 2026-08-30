@@ -18,8 +18,8 @@
         <div class="row">
           <!-- aria-hidden: the LED only repeats the Running/Stopped text
                beside it in colour (same as the VMs and Network inline LEDs). -->
-          <span class="led" :class="data.running ? 'on' : 'err'" aria-hidden="true"></span>
-          <strong>{{ data.running ? t('gateway.running') : t('gateway.stopped') }}</strong>
+          <span class="led" :class="asRecord(data).running ? 'on' : 'err'" aria-hidden="true"></span>
+          <strong>{{ asRecord(data).running ? t('gateway.running') : t('gateway.stopped') }}</strong>
           <span v-if="finiteN(data.pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(data.pid) }}</span>
         </div>
         <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(data.label) }) }}</div>
