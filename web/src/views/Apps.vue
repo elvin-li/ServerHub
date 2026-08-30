@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, asArray, asRecord, asTrimmed, jsonText } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord, asTrimmed, jsonText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -978,17 +978,16 @@ function fieldText(value) {
 
 const filteredManaged = computed(() => {
   let list = asArray(asRecord(managed.value).items)
-  if (mkind.value !== 'all') list = list.filter(x => asRecord(x).kind === mkind.value)
+  if (mkind.value !== 'all') list = list.filter((x) => recGet(x, 'kind') === mkind.value)
   const rawQ = mq.value
   const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
-    list = list.filter(x => {
-      const rec = asRecord(x)
-      return fieldText(rec.name).toLowerCase().includes(s)
-        || fieldText(rec.id).toLowerCase().includes(s)
-        || fieldText(rec.path).toLowerCase().includes(s)
-        || fieldText(rec.package).toLowerCase().includes(s)
-        || fieldText(rec.ports_summary).toLowerCase().includes(s)
+    list = list.filter((x) => {
+      return fieldText(recGet(x, 'name')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'id')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'path')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'package')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'ports_summary')).toLowerCase().includes(s)
     })
   }
   return list
@@ -1821,24 +1820,23 @@ const quickCats = computed(() => {
 
 const filtered = computed(() => {
   let list = asArray(catalog.value)
-  if (cat.value === 'featured') list = list.filter(x => asRecord(x).featured)
-  else if (cat.value === 'native') list = list.filter(x => asRecord(x).kind === 'native')
-  else if (cat.value === 'docker') list = list.filter(x => (asRecord(x).kind || 'docker') === 'docker')
-  else if (cat.value && cat.value !== 'all') list = list.filter(x => asRecord(x).category === cat.value)
-  if (onlyFeatured.value) list = list.filter(x => asRecord(x).featured)
-  if (hideInstalled.value) list = list.filter(x => !asRecord(x).installed)
+  if (cat.value === 'featured') list = list.filter((x) => recGet(x, 'featured'))
+  else if (cat.value === 'native') list = list.filter((x) => recGet(x, 'kind') === 'native')
+  else if (cat.value === 'docker') list = list.filter((x) => (recGet(x, 'kind') || 'docker') === 'docker')
+  else if (cat.value && cat.value !== 'all') list = list.filter((x) => recGet(x, 'category') === cat.value)
+  if (onlyFeatured.value) list = list.filter((x) => recGet(x, 'featured'))
+  if (hideInstalled.value) list = list.filter((x) => !recGet(x, 'installed'))
   const rawQ = q.value
   const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
-    list = list.filter(x => {
-      const rec = asRecord(x)
-      return fieldText(rec.name).toLowerCase().includes(s)
-        || fieldText(rec.desc).toLowerCase().includes(s)
-        || fieldText(rec.id).toLowerCase().includes(s)
-        || fieldText(rec.package).toLowerCase().includes(s)
-        || asArray(rec.tags).some(tg => fieldText(tg).toLowerCase().includes(s))
-        || fieldText(rec.category).toLowerCase().includes(s)
-        || fieldText(rec.kind).toLowerCase().includes(s)
+    list = list.filter((x) => {
+      return fieldText(recGet(x, 'name')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'desc')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'id')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'package')).toLowerCase().includes(s)
+        || asArray(recGet(x, 'tags')).some((tg) => fieldText(tg).toLowerCase().includes(s))
+        || fieldText(recGet(x, 'category')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'kind')).toLowerCase().includes(s)
     })
   }
   return list

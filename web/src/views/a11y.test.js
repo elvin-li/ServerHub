@@ -2638,6 +2638,8 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
     expect(apps).toMatch(/finiteN\(asArray\(catalog\)\.length\)/)
     expect(apps).toMatch(/finiteN\(asArray\(filteredManaged\)\.length\)/)
+    expect(apps).toMatch(/fieldText\(recGet\(x, 'name'\)\)/)
+    expect(apps).toMatch(/recGet\(x, 'featured'\)/)
     expect(apps).toMatch(/finiteN\(autostart\.counts\.autostart_on\)/)
     expect(apps).not.toMatch(/\{\{\s*managed\.counts\.total\s*\}\}/)
     expect(apps).toMatch(/finiteN\(overview\.value\.total, null\)/)
