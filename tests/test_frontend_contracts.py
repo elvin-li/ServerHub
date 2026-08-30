@@ -162,16 +162,16 @@ class TestVmConsoleFrontendContract(unittest.TestCase):
         client = CLIENT.read_text()
         self.assertIn("await import('@novnc/novnc')", component)
         self.assertNotRegex(component, r"^import\s+.*@novnc/novnc", re.M)
-        self.assertIn("createVmConsoleSession(asRecord(props.vm).console_id)", component)
-        self.assertIn("encodeURIComponent(consoleId)", client)
+        self.assertIn("createVmConsoleSession(recGet(props.vm, 'console_id'))", component)
+        self.assertIn("asUri(consoleId)", client)
         self.assertIn("/console/session", client)
 
     def test_console_is_capability_gated_and_orb_keeps_shell(self):
         view = (WEB_SRC / "views" / "VMs.vue").read_text()
-        self.assertIn("asRecord(row.console).available === true", view)
-        self.assertIn("row.console_id", view)
-        self.assertIn("row.backend !== 'orb'", view)
-        self.assertIn("a !== 'shell' || row.backend === 'orb'", view)
+        self.assertIn("recGet(recGet(row, 'console'), 'available') === true", view)
+        self.assertIn("recGet(row, 'console_id')", view)
+        self.assertIn("recGet(row, 'backend') !== 'orb'", view)
+        self.assertIn("a !== 'shell' || recGet(row, 'backend') === 'orb'", view)
         self.assertIn("vms.console_unavailable_orbstack", view)
         self.assertNotRegex(view, r"(?<![.\w])fetch\(")
 
