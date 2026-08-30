@@ -967,7 +967,10 @@ const CAT_I18N = {
 
 const jobMap = computed(() => {
   const m = {}
-  for (const j of asArray(jobs.value)) if (j.stack_id) m[j.stack_id] = j.job_id
+  for (const j of asArray(jobs.value)) {
+    const stackId = recGet(j, 'stack_id')
+    if (stackId) m[stackId] = recGet(j, 'job_id')
+  }
   return m
 })
 
@@ -1816,7 +1819,7 @@ const quickCats = computed(() => {
   const prefer = ['all', 'native', 'docker', 'featured', 'network', 'remote', 'media', 'files', 'ops', 'monitor']
   const map = Object.fromEntries(asArray(categories.value).map((c) => {
     const rec = asRecord(c)
-    return [rec.id, rec]
+    return [recGet(rec, 'id'), rec]
   }))
   return prefer.map(id => map[id] || { id, label: id }).filter(Boolean)
 })
@@ -1851,7 +1854,7 @@ function catLabel(id) {
     const tr = t(key)
     if (tr && tr !== key) return tr
   }
-  const c = asArray(categories.value).find(x => x.id === id)
+  const c = asArray(categories.value).find(x => recGet(x, 'id') === id)
   return finiteText(c?.label, '') || finiteText(id, '') || 'other'
 }
 
@@ -1861,7 +1864,7 @@ function countLabel(id) {
     return n != null ? ` (${n})` : ''
   }
   if (id === 'featured') {
-    const n = asArray(catalog.value).filter(x => x.featured).length
+    const n = asArray(catalog.value).filter(x => recGet(x, 'featured')).length
     return n ? ` (${n})` : ''
   }
   if (id === 'native') {
@@ -2145,8 +2148,8 @@ function openJob(jobId, title) {
     try {
       const j = asRecord(await getStackJob(curJob.value))
       if (generation !== jobPollGeneration) return
-      logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : '')
-      if (!j.running) {
+      logText.value = finiteText(recGet(j, 'log'), '') + (recGet(j, 'running') ? '\n⏳…' : '')
+      if (!recGet(j, 'running')) {
         stopJobPolling()
         refresh()
         return

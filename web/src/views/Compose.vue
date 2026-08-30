@@ -333,7 +333,7 @@ function watchJob(id) {
       const j = asRecord(await getStackJob(id))
       if (generation !== jobPollGeneration) return
       jobLog.value = finiteText(recGet(j, 'log'), '')
-      if (!j.running) {
+      if (!recGet(j, 'running')) {
         stopJobPolling()
         if (pageAlive) busy.value = false
         void loadStacks()

@@ -193,8 +193,8 @@ async function pollLog(generation) {
   try {
     const j = asRecord(await getMaintenanceLog(id))
     if (generation !== pollGeneration || curId.value !== id || !pageAlive) return
-    logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(j.rc) })))
-    if (!j.running) {
+    logText.value = finiteText(recGet(j, 'log'), '') + (recGet(j, 'running') ? '\n⏳…' : (recGet(j, 'rc') == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(recGet(j, 'rc')) })))
+    if (!recGet(j, 'running')) {
       stopLogPolling()
       void refresh()
       return

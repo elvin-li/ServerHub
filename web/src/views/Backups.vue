@@ -346,8 +346,8 @@ let pageAlive = true
 let backupsGeneration = 0
 let jobsGeneration = 0
 
-const rsyncJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => j.type === 'rsync'))
-const stackJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => j.type === 'stack_backup'))
+const rsyncJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => recGet(j, 'type') === 'rsync'))
+const stackJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => recGet(j, 'type') === 'stack_backup'))
 
 function fmt(t) {
   return fmtTs(t, '')
@@ -399,7 +399,7 @@ async function refresh(manual = false) {
 
 async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
-  const wasRunning = asArray(jobs.value).some((j) => j.running)
+  const wasRunning = asArray(jobs.value).some((j) => recGet(j, 'running'))
   try {
     const d = asRecord(await getSchedulerJobs())
     if (generation !== jobsGeneration || !pageAlive) return
@@ -408,7 +408,7 @@ async function loadJobs(manual = false) {
     jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
     // the operator to press "Refresh list" to see the backup they just made.
-    if (wasRunning && !asArray(jobs.value).some((j) => j.running)) void refresh()
+    if (wasRunning && !asArray(jobs.value).some((j) => recGet(j, 'running'))) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')

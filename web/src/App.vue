@@ -514,7 +514,7 @@ const activeGroup = computed(() => {
   return null
 })
 
-const activeChildren = computed(() => asArray(activeGroup.value?.children))
+const activeChildren = computed(() => asArray(recGet(activeGroup.value, 'children')))
 
 function isActive(item) {
   const path = route.path

@@ -609,7 +609,7 @@ function cpuNum(s) {
 }
 function allSelected(items) {
   const list = asArray(items)
-  return list.length && list.every(c => asArray(selected.value).includes(c.id))
+  return list.length && list.every(c => asArray(selected.value).includes(recGet(c, 'id')))
 }
 function toggleAll(items, ev) {
   const ids = asArray(items).map(c => c.id)
@@ -773,8 +773,8 @@ function watchJob(id) {
     try {
       const j = asRecord(await getStackJob(id))
       if (generation !== jobPollGeneration) return
-      jobLog.value = j.log || ''
-      if (!j.running) {
+      jobLog.value = finiteText(recGet(j, 'log'), '')
+      if (!recGet(j, 'running')) {
         stopJobPolling()
         void refresh()
         return

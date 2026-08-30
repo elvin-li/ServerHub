@@ -316,8 +316,8 @@ const policies = computed(() => {
 
 /** Every poolable volume the backend reported, members and unassigned alike. */
 const allCandidates = computed(() => [
-  ...asArray(view.value?.members).map((row) => asRecord(row)),
-  ...asArray(view.value?.unassigned).map((row) => asRecord(row)),
+  ...asArray(recGet(view.value, 'members')).map((row) => asRecord(row)),
+  ...asArray(recGet(view.value, 'unassigned')).map((row) => asRecord(row)),
 ])
 
 const selectedMembers = computed(() => {
@@ -333,7 +333,7 @@ const availableCandidates = computed(() => {
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
 const shownSummary = computed(() => asRecord(preview.value?.summary || view.value?.summary))
 const shownTarget = computed(() => preview.value?.next_write_target ?? view.value?.next_write_target)
-const shownFaults = computed(() => asArray(preview.value?.fault_model || view.value?.fault_model).map((row) => asRecord(row)))
+const shownFaults = computed(() => asArray(recGet(preview.value, 'fault_model') || recGet(view.value, 'fault_model')).map((row) => asRecord(row)))
 
 function barClass(pct) {
   if (pct >= 90) return 'danger'

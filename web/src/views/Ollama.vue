@@ -714,7 +714,7 @@ async function pollPullLog(generation) {
     const j = asRecord(await getOllamaPullLog())
     if (generation !== pullGeneration) return
     pullInfo.value = j
-    if (!j.running) {
+    if (!recGet(j, 'running')) {
       stopPullPolling()
       void refresh(true)
       return
@@ -763,7 +763,7 @@ async function resumePullTail() {
   try {
     const j = asRecord(await getOllamaPullLog())
     if (!pageAlive) return
-    if (j.running) {
+    if (recGet(j, 'running')) {
       pullInfo.value = j
       stopPullPolling()
       const generation = pullGeneration
