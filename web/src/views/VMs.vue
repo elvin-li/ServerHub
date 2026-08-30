@@ -245,7 +245,7 @@ function hasWebConsole(v) {
 function webUrl(v) {
   const raw = finiteText(asRecord(v).url, '').trim()
   if (!raw) return ''
-  const host = finiteText(window.location.hostname, '') || finiteText(data.value?.host_ip, '') || 'localhost'
+  const host = finiteText(window.location.hostname, '') || finiteText(asRecord(data.value).host_ip, '') || 'localhost'
   const out = raw
     .replaceAll('${host}', host)
     .replaceAll('{host}', host)
@@ -292,29 +292,29 @@ async function act(v, action) {
   const row = asRecord(v)
   if (action === 'clone') {
     cloneTarget.value = row
-    cloneName.value = finiteText(row.name, '') + '-copy'
+    cloneName.value = finiteText(asRecord(row).name, '') + '-copy'
     return
   }
   if (action === 'rename') {
     renameTarget.value = row
-    renameName.value = finiteText(row.name, '')
+    renameName.value = finiteText(asRecord(row).name, '')
     return
   }
-  if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: finiteText(row.name) }))) return
-  if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: finiteText(row.name) }))) return
-  if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: finiteText(row.name) }))) return
+  if (action === 'delete' && !confirm(t('vms.confirm_delete', { name: finiteText(asRecord(row).name) }))) return
+  if (action === 'stop' && !confirm(t('vms.confirm_stop', { name: finiteText(asRecord(row).name) }))) return
+  if (action === 'kill' && !confirm(t('vms.confirm_kill', { name: finiteText(asRecord(row).name) }))) return
   // force:true is sent for every action except stop (see the vmAction call below),
   // so restart and suspend are hard operations on every backend -- not just UTM.
   // Gating the confirmation on backend === 'utm' let an orb restart/suspend go out
   // forcibly on a single click.
-  if (action === 'restart' && !confirm(t('vms.confirm_restart_force', { name: finiteText(row.name) }))) return
-  if (action === 'suspend' && !confirm(t('vms.confirm_restart_force', { name: finiteText(row.name) }))) return
+  if (action === 'restart' && !confirm(t('vms.confirm_restart_force', { name: finiteText(asRecord(row).name) }))) return
+  if (action === 'suspend' && !confirm(t('vms.confirm_restart_force', { name: finiteText(asRecord(row).name) }))) return
   if (action === 'shell') {
     try {
-      const j = requireOk(await vmAction(row.id, { action: 'shell' }))
+      const j = requireOk(await vmAction(asRecord(row).id, { action: 'shell' }))
       if (!pageAlive) return
       const out = asRecord(j)
-      msg.value = finiteText(out.message, '') || finiteText(out.command, '')
+      msg.value = finiteText(asRecord(out).message, '') || finiteText(asRecord(out).command, '')
       toast('✅ ' + t('vms.shell_below'))
     } catch (e) {
       if (!pageAlive) return
@@ -326,10 +326,10 @@ async function act(v, action) {
   busy.value = true
   msg.value = t('vms.working')
   try {
-    const j = requireOk(await vmAction(row.id, { action, force: action !== 'stop' }))
+    const j = requireOk(await vmAction(asRecord(row).id, { action, force: action !== 'stop' }))
     if (generation !== loadGeneration || !pageAlive) return
     const out = asRecord(j)
-    msg.value = finiteText(out.message, '')
+    msg.value = finiteText(asRecord(out).message, '')
     if (out.ips) msg.value = t('vms.ip_result', { ips: asArray(out.ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') })
     toast(`✅ ${asRecord(labels.value)[action] || action}`)
     scheduleRefresh(action === 'restart' ? 3000 : 1000)
@@ -403,7 +403,7 @@ async function doCreate() {
     }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('vms.created'))
-    msg.value = finiteText(j.message, '')
+    msg.value = finiteText(asRecord(j).message, '')
     showCreate.value = false
     scheduleRefresh(2000)
   } catch (e) {
