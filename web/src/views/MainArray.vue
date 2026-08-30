@@ -668,7 +668,7 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getStorage, getThresholds, manageStorageDevice, setDiskPower, getSmartOverview, startSmartTest } from '../api/client'
 import { injectI18n } from '../i18n'
 import { startVisibleInterval } from '../lib/poll'
-import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, fmtTs, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -751,7 +751,7 @@ const canFormat = computed(() => {
   const target = asRecord(formatTarget.value)
   if (!target.id && !target.volume_name) return false
   const expect = (finiteText(target.volume_name, '') || finiteText(target.id, '')).trim()
-  const got = formatConfirm.value.trim()
+  const got = asTrimmed(formatConfirm.value)
   return got && (got === expect || got === target.id)
 })
 // Unassigned: non-system disks that are offline, spun down, or have no volumes
@@ -1173,13 +1173,13 @@ function openRename(v) {
   renameName.value = finiteText(row.volume_name, '') || finiteText(row.name, '')
 }
 async function doRename() {
-  if (!renameTarget.value || !renameName.value.trim()) return
+  if (!renameTarget.value || !asTrimmed(renameName.value)) return
   const generation = loadSeq
   busy.value = true
   try {
     const j = asRecord(await manageStorageDevice(renameTarget.value.id, {
       action: 'rename',
-      name: renameName.value.trim(),
+      name: asTrimmed(renameName.value),
     }))
     if (generation !== loadSeq || !pageAlive) return
     toast(j.ok ? '✅ ' + t('main_extra.renamed') : `❌ ${finiteText(j.message)}`)
@@ -1212,10 +1212,10 @@ async function doFormat() {
   try {
     const j = asRecord(await manageStorageDevice(formatTarget.value.id, {
       action: formatWhole.value ? 'eraseDisk' : 'eraseVolume',
-      name: formatName.value.trim() || 'UNTITLED',
+      name: asTrimmed(formatName.value) || 'UNTITLED',
       fs: formatFs.value,
       confirm: true,
-      confirm_name: formatConfirm.value.trim(),
+      confirm_name: asTrimmed(formatConfirm.value),
     }))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')

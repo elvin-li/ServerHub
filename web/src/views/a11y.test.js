@@ -3534,6 +3534,8 @@ describe('leftover Infinity interpolations', () => {
     expect(app).not.toMatch(/v-for="th in themes"/)
     expect(app).toMatch(/asArray\(c\.match\)\.some/)
     expect(app).not.toMatch(/return c\.match\.some/)
+    expect(app).toMatch(/asTrimmed\(cmdQuery\.value\)/)
+    expect(app).not.toMatch(/cmdQuery\.value\.trim\(\)/)
   })
 
   it('theme leftover catalogues go through asArray', () => {

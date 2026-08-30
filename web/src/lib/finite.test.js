@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, asJsonBody, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+import { asArray, asRecord, asJsonBody, asTrimmed, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
 
 describe('asJsonBody leftover answers', () => {
   it('keeps lists and mappings, fail-closes primitives', () => {
@@ -19,6 +19,16 @@ describe('asRecord leftover mappings', () => {
     expect(asRecord(['a'])).toEqual({})
     expect(asRecord(null)).toEqual({})
     expect(asRecord('x')).toEqual({})
+  })
+})
+
+describe('asTrimmed leftover needles', () => {
+  it('trims exact strings and fail-closes leftover non-strings', () => {
+    expect(asTrimmed('  x  ')).toBe('x')
+    expect(asTrimmed('')).toBe('')
+    expect(asTrimmed(null)).toBe('')
+    expect(asTrimmed(12)).toBe('')
+    expect(asTrimmed({ trim: () => { throw new Error('boom') } })).toBe('')
   })
 })
 

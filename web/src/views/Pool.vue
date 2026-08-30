@@ -283,7 +283,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -431,7 +431,7 @@ async function doSave() {
     const data = mapPool(asRecord(await saveStoragePool({
       mounts: selected.value,
       policy: policy.value,
-      name: poolName.value.trim() || 'pool',
+      name: asTrimmed(poolName.value) || 'pool',
       min_free_gb: Number(minFreeGb.value) || 0,
     })))
     if (generation !== loadGeneration || !pageAlive) return

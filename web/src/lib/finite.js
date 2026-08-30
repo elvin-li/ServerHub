@@ -21,6 +21,11 @@ export function asRecord(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 
+/** Hostile leftover needles used to throw on `.trim()`. */
+export function asTrimmed(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)

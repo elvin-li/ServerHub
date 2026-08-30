@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, asArray, asRecord, jsonText } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord, asTrimmed, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -1964,7 +1964,7 @@ async function saveRemoteSource() {
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
-    const r = asRecord(await setCatalogRemoteSource(remoteUrl.value.trim()))
+    const r = asRecord(await setCatalogRemoteSource(asTrimmed(remoteUrl.value)))
     if (!stillOnApps(generation)) return
     toast('✅ ' + t('catalog_remote.saved'))
     await loadRemote()

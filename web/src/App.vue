@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { asArray, asRecord, finiteN, finiteText } from './lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -881,7 +881,7 @@ const cmdResults = computed(() => {
 })
 const cmdFlat = computed(() => {
   const items = asArray(cmdResults.value).map((n) => ({ type: 'nav', ...n }))
-  const q = cmdQuery.value.trim()
+  const q = asTrimmed(cmdQuery.value)
   if (authState.canManage && q) {
     items.push({ type: 'ai', query: q, to: '__ai__' })
   }

@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN as finiteNum, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN as finiteNum, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -473,7 +473,7 @@ const chatSendDisabled = computed(() =>
   chatBusy.value
   || !data.value?.reachable
   || !chatModel.value
-  || !chatInput.value.trim())
+  || !asTrimmed(chatInput.value))
 
 function defaultChatModel(j) {
   const row = asRecord(j)
@@ -681,7 +681,7 @@ function closeDelete() {
 }
 async function doDelete() {
   const target = asRecord(deleteTarget.value)
-  if (!target.name || deleteText.value.trim() !== target.name) return
+  if (!target.name || asTrimmed(deleteText.value) !== target.name) return
   const generation = loadGeneration
   deleting.value = true
   try {
@@ -737,7 +737,7 @@ function startPullPolling() {
 }
 
 async function startPull() {
-  const name = pullName.value.trim()
+  const name = asTrimmed(pullName.value)
   if (!name || pullBusy.value || pullInfo.value?.running) return
   const generation = loadGeneration
   pullBusy.value = true
@@ -776,7 +776,7 @@ async function resumePullTail() {
 
 // ── in-panel chat ────────────────────────────────────────────────────────────
 async function sendChat() {
-  const text = chatInput.value.trim()
+  const text = asTrimmed(chatInput.value)
   if (chatBusy.value || !data.value?.reachable || !chatModel.value || !text) return
   chatInput.value = ''
   chatMessages.value.push({ role: 'user', content: text })
@@ -825,7 +825,7 @@ function clearChat() {
 
 // ── quick test ───────────────────────────────────────────────────────────────
 async function runTest() {
-  if (testBusy.value || !testModel.value || !testPrompt.value.trim()) return
+  if (testBusy.value || !testModel.value || !asTrimmed(testPrompt.value)) return
   const generation = loadGeneration
   testBusy.value = true
   testResult.value = null

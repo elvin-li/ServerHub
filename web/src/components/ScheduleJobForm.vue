@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -184,7 +184,7 @@ function applyPreset() {
 
 /** Plain-language reading of the common cron shapes; raw stays authoritative. */
 const cronText = computed(() => {
-  const fields = cron.value.trim().split(/\s+/)
+  const fields = asTrimmed(cron.value).split(/\s+/)
   if (fields.length !== 5) return t('sched.cron_invalid')
   const [min, hour, dom, mon, dow] = fields
   const num = (s) => (/^\d{1,2}$/.test(s) ? finiteN(s, null) : null)
@@ -210,9 +210,9 @@ const cronText = computed(() => {
 })
 
 const canSave = computed(() => {
-  if (!name.value.trim() || cron.value.trim().split(/\s+/).length !== 5) return false
-  if (type.value === 'command') return Boolean(command.value.trim())
-  if (type.value === 'rsync') return Boolean(src.value.trim() && dest.value.trim())
+  if (!asTrimmed(name.value) || asTrimmed(cron.value).split(/\s+/).length !== 5) return false
+  if (type.value === 'command') return Boolean(asTrimmed(command.value))
+  if (type.value === 'rsync') return Boolean(asTrimmed(src.value) && asTrimmed(dest.value))
   if (type.value === 'stack_backup') return Boolean(stackId.value)
   return true
 })
@@ -220,9 +220,9 @@ const canSave = computed(() => {
 function rsyncParams() {
   return {
     direction: direction.value,
-    src: src.value.trim(),
-    dest: dest.value.trim(),
-    exclude: excludeText.value.split('\n').map((s) => s.trim()).filter(Boolean),
+    src: asTrimmed(src.value),
+    dest: asTrimmed(dest.value),
+    exclude: asTrimmed(excludeText.value).split('\n').map((s) => asTrimmed(s)).filter(Boolean),
     delete: del.value,
     compress: compress.value,
     bwlimit_kbps: bwlimit.value || null,
@@ -230,7 +230,7 @@ function rsyncParams() {
 }
 
 function buildParams() {
-  if (type.value === 'command') return { command: command.value.trim() }
+  if (type.value === 'command') return { command: asTrimmed(command.value) }
   if (type.value === 'rsync') return rsyncParams()
   if (type.value === 'stack_backup') return { stack_id: stackId.value, retain: retain.value || 14 }
   return {}
@@ -260,9 +260,9 @@ async function doPreview() {
 
 function save() {
   emit('save', {
-    name: name.value.trim(),
+    name: asTrimmed(name.value),
     type: type.value,
-    cron: cron.value.trim(),
+    cron: asTrimmed(cron.value),
     enabled: enabled.value,
     timeout: timeout.value || null,
     params: buildParams(),

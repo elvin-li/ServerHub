@@ -125,7 +125,7 @@ import {
   validateCompose,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -261,11 +261,11 @@ async function validate() {
 }
 
 async function create() {
-  if (!newId.value.trim()) return toast('❌ ' + t('compose.id_required'))
+  if (!asTrimmed(newId.value)) return toast('❌ ' + t('compose.id_required'))
   const generation = stacksGeneration
   busy.value = true
   try {
-    const j = asRecord(await createCompose(newId.value.trim(), newName.value || newId.value, newContent.value))
+    const j = asRecord(await createCompose(asTrimmed(newId.value), asTrimmed(newName.value) || asTrimmed(newId.value), newContent.value))
     if (generation !== stacksGeneration || !pageAlive) return
     toast('✅ ' + t('compose.created', { id: finiteText(asRecord(j).id) }))
     showCreate.value = false

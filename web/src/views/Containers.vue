@@ -445,7 +445,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -1000,11 +1000,11 @@ async function doRun() {
 }
 
 async function doPull() {
-  if (!pullImage.value.trim()) return
+  if (!asTrimmed(pullImage.value)) return
   const generation = listGeneration
   busy.value = true
   try {
-    const j = asRecord(await pullImageApi(pullImage.value.trim()))
+    const j = asRecord(await pullImageApi(asTrimmed(pullImage.value)))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.pull_done') : `❌ ${finiteText(j.message)}`)
     stopJobPolling()
@@ -1044,7 +1044,7 @@ async function createVol() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = asRecord(await createVolume(newVol.value.trim()))
+    const j = asRecord(await createVolume(asTrimmed(newVol.value)))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.volume_created') : `❌ ${finiteText(j.message)}`)
     newVol.value = ''
@@ -1078,7 +1078,7 @@ async function createNet() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = asRecord(await createNetwork(newNet.value.trim()))
+    const j = asRecord(await createNetwork(asTrimmed(newNet.value)))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.network_created') : `❌ ${finiteText(j.message)}`)
     newNet.value = ''

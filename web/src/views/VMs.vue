@@ -163,7 +163,7 @@ import VncConsole from '../components/VncConsole.vue'
 import { createVm, getVms, vmAction } from '../api/client'
 import { startVisibleInterval } from '../lib/poll'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -346,13 +346,13 @@ async function act(v, action) {
 
 async function doClone() {
   const target = asRecord(cloneTarget.value)
-  if (!target.id || !cloneName.value.trim()) return
+  if (!target.id || !asTrimmed(cloneName.value)) return
   const generation = loadGeneration
   busy.value = true
   try {
     const j = requireOk(await vmAction(target.id, {
       action: 'clone',
-      name: cloneName.value.trim(),
+      name: asTrimmed(cloneName.value),
     }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('vms.cloned'))
@@ -369,13 +369,13 @@ async function doClone() {
 
 async function doRename() {
   const target = asRecord(renameTarget.value)
-  if (!target.id || !renameName.value.trim()) return
+  if (!target.id || !asTrimmed(renameName.value)) return
   const generation = loadGeneration
   busy.value = true
   try {
     const j = requireOk(await vmAction(target.id, {
       action: 'rename',
-      name: renameName.value.trim(),
+      name: asTrimmed(renameName.value),
     }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + (finiteText(asRecord(j).message, '') || t('vms.renamed')))
