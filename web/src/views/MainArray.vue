@@ -1004,6 +1004,14 @@ function wrapStorage(next) {
     },
   }
 }
+function wrapSmart(next) {
+  const row = asRecord(next)
+  return {
+    ...row,
+    devices: asArray(row.devices).map((d) => asRecord(d)),
+    history: asArray(row.history).map((h) => asRecord(h)),
+  }
+}
 function kindLabel(d) {
   const row = asRecord(d)
   if (row.system) return t('main_extra.kind_system')
@@ -1091,12 +1099,12 @@ async function loadInitial() {
 async function loadSmartThresholds() {
   const mySeq = loadSeq
   try {
-    const th = await getThresholds()
+    const th = asRecord(await getThresholds())
     if (mySeq !== loadSeq || !pageAlive) return
     smartThresholds.value = {
-      smart_temp_c: smartNum(th?.smart_temp_c) ?? SMART_THRESHOLD_DEFAULTS.smart_temp_c,
-      smart_wear_pct: smartNum(th?.smart_wear_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_wear_pct,
-      smart_spare_pct: smartNum(th?.smart_spare_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_spare_pct,
+      smart_temp_c: smartNum(th.smart_temp_c) ?? SMART_THRESHOLD_DEFAULTS.smart_temp_c,
+      smart_wear_pct: smartNum(th.smart_wear_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_wear_pct,
+      smart_spare_pct: smartNum(th.smart_spare_pct) ?? SMART_THRESHOLD_DEFAULTS.smart_spare_pct,
     }
   } catch {
     // Defaults already in place; nothing to report to the operator.
@@ -1169,10 +1177,10 @@ async function doRename() {
   const generation = loadSeq
   busy.value = true
   try {
-    const j = await manageStorageDevice(renameTarget.value.id, {
+    const j = asRecord(await manageStorageDevice(renameTarget.value.id, {
       action: 'rename',
       name: renameName.value.trim(),
-    })
+    }))
     if (generation !== loadSeq || !pageAlive) return
     toast(j.ok ? '✅ ' + t('main_extra.renamed') : `❌ ${finiteText(j.message)}`)
     lastMsg.value = finiteText(j.message, '')
@@ -1202,13 +1210,13 @@ async function doFormat() {
   busy.value = true
   lastMsg.value = t('main_extra.formatting')
   try {
-    const j = await manageStorageDevice(formatTarget.value.id, {
+    const j = asRecord(await manageStorageDevice(formatTarget.value.id, {
       action: formatWhole.value ? 'eraseDisk' : 'eraseVolume',
       name: formatName.value.trim() || 'UNTITLED',
       fs: formatFs.value,
       confirm: true,
       confirm_name: formatConfirm.value.trim(),
-    })
+    }))
     if (generation !== loadSeq || !pageAlive) return
     lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? '✅ ' + t('main_extra.formatted') : `❌ ${finiteText(j.message)}`)
@@ -1252,7 +1260,7 @@ async function openSmart() {
   smartLoading.value = true
   smartError.value = ''
   try {
-    const next = await getSmartOverview()
+    const next = wrapSmart(await getSmartOverview())
     if (seq !== loadSeq || !pageAlive) return
     smartData.value = next
   } catch (e) {
@@ -1269,7 +1277,7 @@ async function runSmartTest(dev, kind) {
   const generation = loadSeq
   smartTestBusy.value = true
   try {
-    const j = await startSmartTest(dev.device, kind)
+    const j = asRecord(await startSmartTest(dev.device, kind))
     if (generation !== loadSeq || !pageAlive) return
     toast(j.ok ? `✅ ${t('main_extra.smart_started')}` : `❌ ${finiteText(j.message, '') || finiteText(j.error)}`)
     if (j.ok) {
@@ -1277,7 +1285,7 @@ async function runSmartTest(dev, kind) {
       const id = setTimeout(async () => {
         refreshTimers.delete(id)
         try {
-          const next = await getSmartOverview()
+          const next = wrapSmart(await getSmartOverview())
           if (seq !== loadSeq || !pageAlive) return
           smartData.value = next
         } catch {}
