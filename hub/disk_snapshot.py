@@ -476,10 +476,10 @@ def root_whole_disks() -> frozenset[str]:
             if parent:
                 found.add(parent)
             stores = info.get("APFSPhysicalStores") or []
-            if not isinstance(stores, list):
+            if not _isa(stores, list):
                 stores = []
             for store in stores:
-                if isinstance(store, dict):
+                if _isa(store, dict):
                     device = store.get("APFSPhysicalStore") or store.get("DeviceIdentifier")
                 else:
                     device = store

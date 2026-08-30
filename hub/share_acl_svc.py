@@ -273,7 +273,7 @@ def _rc_int(rc) -> int:
     if rc is False:
         return 0
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             # Passed the final-type gate without being either singleton:
             # a lying impostor, junk by definition.
             return -255
@@ -283,7 +283,7 @@ def _rc_int(rc) -> int:
         # ``int(rc)`` for everything else keeps the shares10 contract: a
         # stringy "0" from an odd stub parses (the str->int path is
         # parse-capped, so a 4300+-digit string is ValueError -> junk).
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         if type(value) is not int:
             return -255
         # Digit-cap probe: past CPython's int->str cap the status cannot be
