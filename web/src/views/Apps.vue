@@ -309,7 +309,7 @@
       <LoadFailure v-if="autostartError" :detail="autostartError" :retry="() => loadAutostart(true)" :busy="loading" />
       <div v-else-if="!autostartLoaded" class="hint-line">{{ t('common.loading') }}</div>
       <template v-else>
-      <div v-for="grp in asArray(autostartGroups)" :key="grp" class="auto-group">
+      <div v-for="grp in asArray(autostartGroups)" :key="finiteText(grp)" class="auto-group">
         <h2 class="section-title">{{ finiteText(grp) }}</h2>
         <div class="managed-table-wrap" style="margin-bottom:14px">
           <table class="managed-table">

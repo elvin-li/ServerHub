@@ -45,7 +45,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(a,i) in asArray(filtered)" :key="i">
+          <tr v-for="(a,i) in asArray(filtered)" :key="finiteText(asRecord(a).name) + ':' + finiteText(asRecord(a).event) + ':' + i">
             <td class="mono col-hide-m">{{ fmt(asRecord(a).t) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`
