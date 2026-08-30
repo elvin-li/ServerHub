@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -709,9 +709,48 @@ function stillOnNetwork(generation) {
   return pageAlive && generation === loadGeneration
 }
 
+function mapNetwork(raw) {
+  const row = asRecord(raw)
+  const failover = asRecord(row.network_failover)
+  const foState = asRecord(failover.state)
+  const foResult = asRecord(foState.last_result)
+  const alias = asRecord(row.alias_auto)
+  const aliasCfg = asRecord(alias.config)
+  return {
+    ...row,
+    listening: asArray(row.listening).map((p) => asRecord(p)),
+    docker_ports: asArray(row.docker_ports).map((p) => asRecord(p)),
+    docker_networks: asArray(row.docker_networks).map((n) => {
+      const net = asRecord(n)
+      return { ...net, containers: asArray(net.containers).map((c) => asRecord(c)) }
+    }),
+    interface_addresses: asArray(row.interface_addresses).map((iface) => {
+      const rec = asRecord(iface)
+      return { ...rec, addresses: asArray(rec.addresses).map((a) => asRecord(a)) }
+    }),
+    interfaces: asArray(row.interfaces).map((i) => {
+      const rec = asRecord(i)
+      return { ...rec, ipv4: asArray(rec.ipv4).map((a) => asRecord(a)) }
+    }),
+    services: asArray(row.services).map((s) => asRecord(s)),
+    routes: asArray(row.routes).map((r) => asRecord(r)),
+    default_route: asRecord(row.default_route),
+    network_failover: {
+      ...failover,
+      state: {
+        ...foState,
+        last_result: { ...foResult, wifi: asRecord(foResult.wifi) },
+      },
+    },
+    alias_auto: { ...alias, config: aliasCfg },
+    wstunnel: asRecord(row.wstunnel),
+    wifi_power: asRecord(row.wifi_power),
+  }
+}
+
 const filteredListen = computed(() => {
   const q = portQ.value.trim().toLowerCase()
-  const list = asArray(data.value?.listening)
+  const list = asArray(asRecord(data.value).listening).map((p) => asRecord(p))
   if (!q) return list
   return list.filter(p =>
     (p.process || '').toLowerCase().includes(q)
@@ -722,7 +761,7 @@ const filteredListen = computed(() => {
 
 const filteredDockerPorts = computed(() => {
   const q = dockerPortQ.value.trim().toLowerCase()
-  const list = asArray(data.value?.docker_ports)
+  const list = asArray(asRecord(data.value).docker_ports).map((p) => asRecord(p))
   if (!q) return list
   return list.filter(p =>
     (p.container || '').toLowerCase().includes(q)
@@ -733,11 +772,11 @@ const filteredDockerPorts = computed(() => {
 
 const containerNames = computed(() => {
   const s = new Set()
-  for (const p of asArray(data.value?.docker_ports)) {
+  for (const p of asArray(asRecord(data.value).docker_ports).map((p) => asRecord(p))) {
     if (p.container) s.add(p.container)
   }
-  for (const n of asArray(data.value?.docker_networks)) {
-    for (const c of asArray(n.containers)) {
+  for (const n of asArray(asRecord(data.value).docker_networks).map((n) => asRecord(n))) {
+    for (const c of asArray(n.containers).map((c) => asRecord(c))) {
       if (c.name) s.add(c.name)
     }
   }
@@ -745,54 +784,58 @@ const containerNames = computed(() => {
 })
 
 const deviceOptions = computed(() => {
-  return asArray(data.value?.interface_addresses).map(i => i.device)
+  return asArray(asRecord(data.value).interface_addresses).map((i) => asRecord(i).device)
 })
 
 const failoverModeLabel = computed(() => {
-  const mode = data.value?.network_failover?.state?.mode
+  const mode = asRecord(asRecord(asRecord(data.value).network_failover).state).mode
   return ({ wired: t('network.mode_wired'), wifi_backup: t('network.mode_wifi_backup'), waiting_for_failover: t('network.mode_waiting'), starting: t('network.mode_starting'), disabled: t('network.disabled_state') })[mode] || t('network.mode_pending')
 })
 
 const failoverWifiLabel = computed(() => {
-  const result = data.value?.network_failover?.state?.last_result
-  const on = result?.wifi?.on
+  const result = asRecord(asRecord(asRecord(data.value).network_failover).state).last_result
+  const on = asRecord(asRecord(result).wifi).on
   return on === true ? t('network.on') : (on === false ? t('network.off') : t('network.unknown'))
 })
 
 function isWifi(s) {
-  return /wi-?fi|airport|无线/i.test((s.name || '') + (s.hardware_port || '')) // cjk-input: networksetup port names are localized
+  const row = asRecord(s)
+  return /wi-?fi|airport|无线/i.test((row.name || '') + (row.hardware_port || '')) // cjk-input: networksetup port names are localized
 }
 function looksEthernet(s) {
   if (isWifi(s)) return false
-  const n = (s.name || '') + (s.hardware_port || '')
-  const d = s.device || ''
+  const row = asRecord(s)
+  const n = (row.name || '') + (row.hardware_port || '')
+  const d = row.device || ''
   return /ethernet|lan|usb.*lan|有线/i.test(n) || (d.startsWith('en') && d !== 'en0') // cjk-input: networksetup port names are localized
 }
 
 function serviceHasIpv4(s) {
-  const ip = String(s?.ip || '').trim()
+  const ip = String(asRecord(s).ip || '').trim()
   return Boolean(ip) && ip.toLowerCase() !== 'none'
 }
 
 function priorityStatusKey(s) {
-  if (s.disabled) return 'network.off'
-  if (isWifi(s)) {
+  const row = asRecord(s)
+  if (row.disabled) return 'network.off'
+  if (isWifi(row)) {
     // Live radio from overview, not the last failover tick.
-    if (data.value?.wifi_power?.on === false) return 'network.off'
-    if (!serviceHasIpv4(s)) return 'network.no_ipv4'
+    if (asRecord(asRecord(data.value).wifi_power).on === false) return 'network.off'
+    if (!serviceHasIpv4(row)) return 'network.no_ipv4'
   }
   return 'network.on'
 }
 
 function asServiceList(raw) {
-  return asArray(raw)
+  return asArray(raw).map((s) => asRecord(s))
 }
 
 function cloneServiceOrder(raw) {
-  if (!Array.isArray(raw)) return []
+  const list = asArray(raw).map((s) => asRecord(s))
+  if (!list.length) return []
   try {
-    const cloned = jsonLoad(jsonDump(raw) || 'null')
-    return Array.isArray(cloned) ? cloned : []
+    const cloned = jsonLoad(jsonDump(list) || 'null')
+    return asArray(cloned).map((s) => asRecord(s))
   } catch {
     return []
   }
@@ -823,7 +866,7 @@ async function refresh(force = false) {
   try {
     const next = await getSystemNetwork(force)
     if (generation !== loadGeneration) return
-    data.value = next
+    data.value = mapNetwork(next)
     loadError.value = ''
     syncOrderFromData()
     if (asArray(deviceOptions.value).length && !asArray(deviceOptions.value).includes(aliasForm.value.device)) {
