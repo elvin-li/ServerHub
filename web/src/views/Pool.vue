@@ -66,24 +66,24 @@
       <div class="tile span-3">
         <h3>{{ t('pool.sum_total') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(shownSummary.total_gb) }} <span class="unit">GB</span>
+          {{ finiteN(asRecord(shownSummary).total_gb) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('pool.sum_members', { n: finiteN(shownSummary.member_count, 0) }) }}</div>
+        <div class="sub">{{ t('pool.sum_members', { n: finiteN(asRecord(shownSummary).member_count, 0) }) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_used') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(shownSummary.used_gb) }} <span class="unit">GB</span>
+          {{ finiteN(asRecord(shownSummary).used_gb) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('common.free') }} {{ fmtGb(shownSummary.avail_gb) }}</div>
-        <div class="pct-bar" :class="barClass(shownSummary.pct)" style="margin-top:6px">
-          <i :style="{ width: barPct(shownSummary.pct) + '%' }"></i>
+        <div class="sub">{{ t('common.free') }} {{ fmtGb(asRecord(shownSummary).avail_gb) }}</div>
+        <div class="pct-bar" :class="barClass(asRecord(shownSummary).pct)" style="margin-top:6px">
+          <i :style="{ width: barPct(asRecord(shownSummary).pct) + '%' }"></i>
         </div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_largest') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(shownSummary.largest_single_file_gb) }} <span class="unit">GB</span>
+          {{ finiteN(asRecord(shownSummary).largest_single_file_gb) }} <span class="unit">GB</span>
         </div>
         <div class="sub">{{ t('pool.sum_largest_hint') }}</div>
       </div>

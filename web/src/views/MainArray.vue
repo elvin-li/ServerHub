@@ -596,11 +596,11 @@
                           <tr>
                             <th style="font-size:10px;width:40px">ID</th>
                             <th style="font-size:10px">{{ t('common.name') }}</th>
-                            <th style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.raw !== undefined">{{ t('main_extra.smart_value') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
-                            <th class="col-hide-m" style="font-size:10px" v-if="asArray(asRecord(asRecord(m).smart).attrs)[0]?.type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
-                            <th style="font-size:10px">{{ asArray(asRecord(asRecord(m).smart).attrs)[0]?.raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
+                            <th style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).raw !== undefined">{{ t('main_extra.smart_value') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).worst !== undefined">{{ t('main_extra.smart_worst') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).thresh !== undefined">{{ t('main_extra.smart_thresh') }}</th>
+                            <th class="col-hide-m" style="font-size:10px" v-if="asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).type !== undefined">{{ t('main_extra.smart_attr_type') }}</th>
+                            <th style="font-size:10px">{{ asRecord(asArray(asRecord(asRecord(m).smart).attrs)[0]).raw !== undefined ? t('main_extra.smart_raw') : t('common.status') }}</th>
                           </tr>
                         </thead>
                         <tbody>

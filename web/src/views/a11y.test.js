@@ -2983,6 +2983,7 @@ describe('leftover Infinity interpolations', () => {
     expect(array).toMatch(/fmtGb\(asRecord\(d\)\.used_gb\)/)
     expect(array).toMatch(/withUnit\(asRecord\(d\)\.pct, '%'\)/)
     expect(array).toMatch(/fmtTs\(asRecord\(h\)\.ts\)/)
+    expect(array).toMatch(/asRecord\(asArray\(asRecord\(asRecord\(m\)\.smart\)\.attrs\)\[0\]\)\.raw/)
     expect(array).not.toMatch(/data\?\.array\?\.system_count \?\? 0/)
     expect(array).toMatch(/finiteN\(data\?\.array\?\.system_count/)
     expect(array).toMatch(/finiteN\(data\?\.array\?\.disk_count/)
@@ -3080,6 +3081,9 @@ describe('leftover Infinity interpolations', () => {
     expect(pool).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(pool).not.toMatch(/:key="m" style="margin-right:10px">\{\{ m \}\}<\/span>/)
     expect(pool).toMatch(/finiteText\(m\)/)
+    expect(pool).toMatch(/fmtGb\(asRecord\(shownSummary\)\.avail_gb\)/)
+    expect(pool).toMatch(/finiteN\(asRecord\(shownSummary\)\.total_gb\)/)
+    expect(pool).toMatch(/finiteN\(asRecord\(shownSummary\)\.used_gb\)/)
   })
 
   it('WireGuard leftover ports/mtu/latency go through finite helpers', () => {
