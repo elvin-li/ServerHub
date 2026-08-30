@@ -337,7 +337,7 @@ async function act(v, action) {
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
-    msg.value = e.message
+    msg.value = finiteText(e.message)
   } finally {
     // The 15s poll's refresh() bumps loadGeneration while an action is in flight.
     if (pageAlive) busy.value = false
@@ -410,7 +410,7 @@ async function doCreate() {
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
-    msg.value = e.message
+    msg.value = finiteText(e.message)
   } finally {
     if (pageAlive) busy.value = false
   }

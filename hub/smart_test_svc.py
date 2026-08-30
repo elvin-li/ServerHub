@@ -1033,7 +1033,10 @@ def _append_history(record: dict) -> None:
             HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
             replace_bytes(
                 HISTORY_PATH,
-                json.dumps(history, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+                json.dumps(
+                    _jsonable(history) if _isa(history, list) else [],
+                    indent=2, ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8"),
             )
         except (OSError, TypeError, ValueError, RecursionError):
             # RecursionError: leftover nested SMART history after _jsonable is

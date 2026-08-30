@@ -352,7 +352,7 @@ async function loadAccounts() {
     accountsError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    accountsError.value = e.message || String(e)
+    accountsError.value = finiteText(e.message || String(e), '')
   } finally {
     if (generation === loadGeneration) accountsLoaded.value = true
   }
@@ -372,7 +372,7 @@ async function loadServiceOptions() {
     serviceOptionsError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    serviceOptionsError.value = e.message || String(e)
+    serviceOptionsError.value = finiteText(e.message || String(e), '')
   } finally {
     if (generation === loadGeneration) serviceOptionsLoaded.value = true
   }

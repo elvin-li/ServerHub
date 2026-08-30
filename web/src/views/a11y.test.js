@@ -3167,6 +3167,7 @@ describe('leftover Infinity interpolations', () => {
     expect(vms).toMatch(/asArray\(data\?\.orb_distros\)/)
     expect(vms).toMatch(/v-for="v in asArray\(vms\)"/)
     expect(vms).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(vms).toMatch(/msg\.value = finiteText\(e\.message\)/)
   })
 
   it('Tools leftover disk/pid interpolations go through finite helpers', () => {
@@ -3314,6 +3315,8 @@ describe('leftover Infinity interpolations', () => {
     expect(users).toMatch(/asArray\(createForm\.value\.resources\)/)
     expect(users).toMatch(/function secretLen\([\s\S]*typeof value === 'string'/)
     expect(users).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(users).toMatch(/accountsError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(users).toMatch(/serviceOptionsError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Gateway leftover pids go through finiteN', () => {
