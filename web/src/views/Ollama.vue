@@ -445,14 +445,15 @@ const duplicateLabels = computed(() => {
 })
 
 const openaiCompatUrl = computed(() => {
-  const base = (finiteText(data.value?.url, '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
+  const base = (finiteText(asRecord(data.value).url, '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
   return finiteText(`${base}/v1`, '')
 })
 
 const serviceBadge = computed(() => {
+  const row = asRecord(data.value)
   if (!data.value) return { cls: '', text: '' }
-  if (data.value.reachable) return { cls: 'ok', text: t('ollama.state_running') }
-  if (data.value.service?.running) return { cls: 'warn', text: t('ollama.state_starting') }
+  if (row.reachable) return { cls: 'ok', text: t('ollama.state_running') }
+  if (asRecord(row.service).running) return { cls: 'warn', text: t('ollama.state_starting') }
   return { cls: 'down', text: t('ollama.state_stopped') }
 })
 
@@ -532,11 +533,11 @@ async function copyText(text) {
 async function loadOllamaSettings() {
   const generation = loadGeneration
   try {
-    const s = await getSettings()
+    const s = asRecord(await getSettings())
     if (generation !== loadGeneration || !pageAlive) return
     ollamaForm.value = {
-      url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
-      label: s.ollama?.label || '',
+      url: asRecord(s.ollama).url || asRecord(data.value).url || 'http://127.0.0.1:11434',
+      label: asRecord(s.ollama).label || '',
     }
     ollamaSettingsLoaded.value = true
     ollamaSettingsError.value = ''
@@ -545,7 +546,7 @@ async function loadOllamaSettings() {
     ollamaSettingsLoaded.value = false
     ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
-      url: data.value?.url || 'http://127.0.0.1:11434',
+      url: asRecord(data.value).url || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
     }
   }
