@@ -46,7 +46,7 @@
       </div>
       <div ref="logEl" class="assist-log" :aria-live="asArray(turns).length ? 'polite' : undefined">
         <p v-if="!asArray(turns).length" class="assist-empty">{{ t('assistant.empty') }}</p>
-        <article v-for="(turn, i) in asArray(turns)" :key="i" class="assist-turn" :class="asRecord(turn).role">
+        <article v-for="(turn, i) in asArray(turns)" :key="finiteText(asRecord(turn).role) + ':' + i" class="assist-turn" :class="asRecord(turn).role">
           <div class="assist-who">{{ asRecord(turn).role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
           <pre class="assist-text">{{ finiteText(asRecord(turn).content) }}</pre>
           <div v-if="asArray(asRecord(turn).panels).length" class="assist-panels">

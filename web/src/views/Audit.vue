@@ -37,7 +37,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in asArray(filteredRows)" :key="i">
+            <tr v-for="(e, i) in asArray(filteredRows)" :key="finiteText(asRecord(e).ts) + ':' + finiteText(asRecord(e).event) + ':' + finiteText(asRecord(e).username) + ':' + i">
               <td class="mono col-hide-m">{{ fmt(asRecord(e).ts) }}</td>
               <td class="mono">
                 {{ finiteText(asRecord(e).event) }}

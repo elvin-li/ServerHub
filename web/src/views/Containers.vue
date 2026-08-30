@@ -210,7 +210,7 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th class="col-hide-m">ID</th><th>{{ t('docker.size') }}</th><th class="col-hide-m">{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(im,i) in asArray(images)" :key="i">
+            <tr v-for="(im,i) in asArray(images)" :key="finiteText(asRecord(im).ID) + ':' + finiteText(asRecord(im).Tag) + ':' + i">
               <td class="mono">
                 {{ finiteText(asRecord(im).Repository) }}
                 <div class="show-m sub">{{ String(finiteText(asRecord(im).ID, '')).replace('sha256:','').slice(0,12) }} · {{ finiteText(asRecord(im).CreatedSince, '') || finiteText(asRecord(im).CreatedAt) }}</div>
