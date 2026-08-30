@@ -88,7 +88,7 @@ def _ok_payload(result: dict) -> dict:
     rule this router missed).
     """
     cleaned = _jsonable(result)
-    return cleaned if isinstance(cleaned, dict) else {"ok": True}
+    return cleaned if _isa(cleaned, dict) else {"ok": True}
 
 
 class SMBCreate(BaseModel):
@@ -205,7 +205,7 @@ def shares():
     # where every sibling answers with the field dropped or the text
     # scrubbed (the nas_storage / storage ``_rendered`` rule).
     cleaned = _jsonable(shares_svc.shares_overview())
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 @router.post("/api/shares/smb")
