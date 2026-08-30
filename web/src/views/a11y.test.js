@@ -3110,6 +3110,8 @@ describe('leftover Infinity interpolations', () => {
     expect(pool).toMatch(/fmtGb\(asRecord\(shownSummary\)\.avail_gb\)/)
     expect(pool).toMatch(/finiteN\(asRecord\(shownSummary\)\.total_gb\)/)
     expect(pool).toMatch(/finiteN\(asRecord\(shownSummary\)\.used_gb\)/)
+    expect(pool).toMatch(/recGet\(c, 'mount'\)/)
+    expect(pool).toMatch(/recGet\(m, 'mount'\)/)
   })
 
   it('WireGuard leftover ports/mtu/latency go through finite helpers', () => {
@@ -3729,6 +3731,8 @@ describe('leftover Infinity interpolations', () => {
     expect(ch).toMatch(/Object\.keys\(asRecord\(types\.value\)\)/)
     expect(ch).toMatch(/:key="finiteText\(ty\)"/)
     expect(ch).not.toMatch(/:key="ty"/)
+    expect(ch).toMatch(/recGet\(row, 'id'\)/)
+    expect(ch).toMatch(/recGet\(editing\.value, 'id'\)/)
   })
 
   it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {

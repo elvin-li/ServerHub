@@ -117,7 +117,7 @@ import {
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText, recGet } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -299,10 +299,10 @@ async function removeChannel(c) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = asRecord(await deleteNotifyChannel(row.id))
+    const r = asRecord(await deleteNotifyChannel(finiteText(recGet(row, 'id'), '')))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.delete'))
-    if (asRecord(editing.value).id === row.id) editing.value = null
+    if (recGet(editing.value, 'id') === recGet(row, 'id')) editing.value = null
     await load()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

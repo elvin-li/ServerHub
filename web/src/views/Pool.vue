@@ -283,7 +283,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearStoragePool, getStoragePool, planStoragePool, saveStoragePool } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, withUnit } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, barPct, finiteN, finiteText, fmtGb, recGet, withUnit } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -321,13 +321,13 @@ const allCandidates = computed(() => [
 ])
 
 const selectedMembers = computed(() => {
-  const by = new Map(asArray(allCandidates.value).map((c) => [asRecord(c).mount, asRecord(c)]))
+  const by = new Map(asArray(allCandidates.value).map((c) => [recGet(c, 'mount'), asRecord(c)]))
   return asArray(selected.value).map((m) => by.get(m)).filter(Boolean).map((row) => asRecord(row))
 })
 
 const availableCandidates = computed(() => {
   const chosen = new Set(asArray(selected.value))
-  return asArray(allCandidates.value).map((c) => asRecord(c)).filter((c) => !chosen.has(c.mount))
+  return asArray(allCandidates.value).map((c) => asRecord(c)).filter((c) => !chosen.has(recGet(c, 'mount')))
 })
 
 /** Preview numbers when one is loaded, otherwise the saved pool's. */
@@ -366,7 +366,7 @@ function syncFromView(raw) {
   const data = mapPool(raw)
   view.value = data
   preview.value = null
-  selected.value = asArray(data.members).map((m) => asRecord(m).mount)
+  selected.value = asArray(data.members).map((m) => recGet(m, 'mount'))
   poolName.value = finiteText(data.name, '') || 'pool'
   minFreeGb.value = Number(finiteN(data.min_free_gb, 0)) || 0
   if (data.policy) policy.value = data.policy
