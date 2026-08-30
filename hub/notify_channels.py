@@ -227,7 +227,7 @@ def _mapping_get(mapping, key, default=None):
     """Field read that a dict-subclass ``.get`` bomb cannot 500.
 
     The ``hub.ups_svc._mapping_get`` rule, which these notify readers never
-    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get`` raises,
+    got: ``_isa(x, dict)`` passes an odd subclass whose ``get`` raises,
     and one such channel row used to raise out of :func:`channels` and 500
     every /api/alerts/channels route — plus POST /api/alerts/test through
     :func:`dispatch`, which claims it never raises.  ``dict.get`` reads the
@@ -391,7 +391,7 @@ def _id_text(raw) -> str:
     """A channel id coerced to its string form via the str() probe.
 
     services.yaml is hand-editable, so ``id: 123`` arrives as an *int*.  The
-    strict ``isinstance(id, str)`` comparisons this replaces made such a row
+    strict ``_isa(id, str)`` comparisons this replaces made such a row
     visible in GET /api/alerts/channels yet unreachable by PUT/DELETE/test
     (``123 == "123"`` is False), and save_channel appended a duplicate row
     instead of replacing it.  YAML hex/octal (``id: 0xFF…``) loads uncapped
@@ -496,7 +496,7 @@ def _id_text(raw) -> str:
 # ── configuration ─────────────────────────────────────────────────────────────
 
 def _raw_notify_cfg() -> dict:
-    # Try-wrapped: settings_section's own ``isinstance(raw, dict)`` gate runs
+    # Try-wrapped: settings_section's own ``_isa(raw, dict)`` gate runs
     # a leftover section's ``__class__`` property, so a bomb planted as the
     # whole ``settings.notify`` value used to raise out of this read and 500
     # five of the six channel routes at once (dispatch alone wrapped it).
@@ -582,21 +582,21 @@ def save_channel(ch: dict) -> dict:
     """Upsert one channel into settings.notify.channels (cross-process safe)."""
     def apply(data: dict) -> None:
         settings = data.get("settings")
-        if not isinstance(settings, dict):
+        if not _isa(settings, dict):
             settings = {}
             data["settings"] = settings
         notify = settings.get("notify")
-        if not isinstance(notify, dict):
+        if not _isa(notify, dict):
             notify = {}
             settings["notify"] = notify
         chans = notify.get("channels")
-        if not isinstance(chans, list):
+        if not _isa(chans, list):
             chans = []
             notify["channels"] = chans
         for i, existing in enumerate(chans):
             # _id_text, not ``==``: a numeric YAML ``id: 123`` used to miss
             # the str "123" here and the upsert appended a duplicate row.
-            if isinstance(existing, dict) and _id_text(existing.get("id")) == ch["id"]:
+            if _isa(existing, dict) and _id_text(existing.get("id")) == ch["id"]:
                 chans[i] = ch
                 return
         chans.append(ch)
@@ -627,17 +627,17 @@ def delete_channel(cid: str) -> bool:
 
     def apply(data: dict) -> None:
         settings = data.get("settings")
-        if not isinstance(settings, dict):
+        if not _isa(settings, dict):
             return
         notify = settings.get("notify")
-        if not isinstance(notify, dict):
+        if not _isa(notify, dict):
             return
         chans = notify.get("channels")
-        if not isinstance(chans, list):
+        if not _isa(chans, list):
             return
         # _id_text, not ``==``: a numeric YAML ``id: 123`` was listed but
         # could never be deleted (``123 == "123"`` is False → 404 forever).
-        kept = [c for c in chans if not (isinstance(c, dict) and _id_text(c.get("id")) == cid)]
+        kept = [c for c in chans if not (_isa(c, dict) and _id_text(c.get("id")) == cid)]
         if len(kept) != len(chans):
             removed.append(cid)
         notify["channels"] = kept
@@ -781,7 +781,7 @@ def _load_secrets() -> dict[str, dict]:
         # (torn write leaving non-UTF-8 bytes); the alert sweep reads this.
         # RecursionError: a leftover deeply-nested document is not ValueError.
         return {}
-    if not isinstance(raw, dict):
+    if not _isa(raw, dict):
         return {}
     # Scrub keys (and values) *on load*, before they become lookup keys.
     # ``json.loads`` happily produces a lone-surrogate KEY from an escaped
@@ -790,7 +790,7 @@ def _load_secrets() -> dict[str, dict]:
     # the senders on the alert thread — still carried surrogates that no
     # UTF-8 encode downstream (urllib headers, SMTP login) can survive.
     cleaned = _json_safe(raw)
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 def _require_secrets_readable() -> None:
@@ -831,7 +831,7 @@ def _require_secrets_readable() -> None:
         data = safe_json_loads(text, parse_int=_capped_json_int)
     except (ValueError, RecursionError):
         raise api_error("notify.secrets_unreadable")
-    if data is not None and not isinstance(data, dict):
+    if data is not None and not _isa(data, dict):
         raise api_error("notify.secrets_unreadable")
 
 
@@ -1185,7 +1185,7 @@ def _write_secrets(data: dict) -> None:
     the encoder refused NaN.
     """
     cleaned = _json_safe(data)
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         cleaned = {}
     _drop_leftover_nonfile(SECRETS_FILE)
     try:
@@ -1211,8 +1211,8 @@ def public_channel(ch: dict) -> dict:
     stored = channel_secrets(raw_id)
     cid = _json_safe(raw_id if raw_id else ch.get("id"))
     name = _json_safe(ch.get("name"))
-    if not (isinstance(name, str) and name.strip()):
-        name = cid if isinstance(cid, str) and cid else cid
+    if not (_isa(name, str) and name.strip()):
+        name = cid if _isa(cid, str) and cid else cid
     out = {
         "id": cid,
         "type": _json_safe(ch.get("type")),
@@ -1646,7 +1646,7 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
                     "message": f"timed out ({DISPATCH_BUDGET:.0f}s dispatch budget exhausted)",
                 }))
         for r in results:
-            if isinstance(r, dict) and not r.get("ok"):
+            if _isa(r, dict) and not r.get("ok"):
                 _log.warning(
                     "notify channel %s (%s) failed: %s",
                     r.get("id"), r.get("type"), r.get("message"),
@@ -1656,7 +1656,7 @@ def dispatch(title: str, message: str, *, level=None, event=None, channel_id: st
         out = soft_fail("notify.no_match")
         out["results"] = []
         return out
-    failed = [r for r in results if isinstance(r, dict) and not r.get("ok")]
+    failed = [r for r in results if _isa(r, dict) and not r.get("ok")]
     return _json_safe({
         "ok": not failed,
         "sent": len(results) - len(failed),

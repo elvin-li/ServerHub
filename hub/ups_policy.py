@@ -410,7 +410,7 @@ def _jsonable(value, depth: int = 0):
 def _row_get(row, key):
     """Seam-row field read that a dict-subclass ``.get`` bomb cannot 500.
 
-    ``isinstance(s, dict)`` passes an odd subclass whose ``get`` raises (the
+    ``_isa(s, dict)`` passes an odd subclass whose ``get`` raises (the
     disk_power_svc pool5 class); one such row from the stack/script/status
     seams used to raise out of build_plan()/_catalog() and 500
     GET /api/ups/shutdown/plan and POST /api/ups/shutdown/drill with every
@@ -516,7 +516,7 @@ def _service_states() -> dict[str, str]:
         # Materialize under the guard: a list *subclass* passes the
         # isinstance gate but one whose ``__iter__`` raises used to abort
         # this reader mid-scan and wipe every sibling's state with it.
-        groups = list(groups) if isinstance(groups, list) else []
+        groups = list(groups) if _isa(groups, list) else []
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -627,7 +627,7 @@ def _load_state() -> dict:
             read_text_capped(STATE_FILE, _STATE_CAP),
             parse_int=_capped_json_int,
         )
-        if isinstance(data, dict):
+        if _isa(data, dict):
             return data
     except (OSError, ValueError, TypeError, RecursionError):
         pass
@@ -664,21 +664,21 @@ def public_state() -> dict:
     """What the UI renders: current phase plus the last completed cycle."""
     st = _load_state()
     phase = st.get("phase")
-    if not isinstance(phase, str) or not phase:
+    if not _isa(phase, str) or not phase:
         phase = PHASE_IDLE
     steps = st.get("steps")
-    if not isinstance(steps, list):
+    if not _isa(steps, list):
         steps = []
     reason = st.get("reason")
-    if not isinstance(reason, str):
+    if not _isa(reason, str):
         reason = ""
     last = st.get("last")
     return _jsonable({
         "phase": phase,
         "engaged_at": st.get("engaged_at"),
         "reason": reason,
-        "steps": [s for s in steps if isinstance(s, dict)],
-        "last": last if isinstance(last, dict) else None,
+        "steps": [s for s in steps if _isa(s, dict)],
+        "last": last if _isa(last, dict) else None,
     })
 
 
@@ -769,7 +769,7 @@ def build_plan(policy: dict | None = None) -> list[dict]:
         if sid and sid not in by_id:
             by_id[sid] = s
     wanted = policy.get("stacks")
-    if isinstance(wanted, list):
+    if _isa(wanted, list):
         ordered = [_cfg_text(x) for x in wanted]
     else:  # "all"
         ordered = [_cfg_text(_row_get(s, "id")) for s in stacks]
@@ -799,7 +799,7 @@ def build_plan(policy: dict | None = None) -> list[dict]:
     # that happens to match a stack id is a different step, not a duplicate.
     seen_svc: set[str] = set()
     raw_scripts = policy.get("stop_scripts")
-    script_ids = [_cfg_text(x) for x in (raw_scripts if isinstance(raw_scripts, list) else [])]
+    script_ids = [_cfg_text(x) for x in (raw_scripts if _isa(raw_scripts, list) else [])]
     script_ids = [sid for sid in script_ids if sid and not (sid in seen_svc or seen_svc.add(sid))]
     if script_ids:
         try:
@@ -850,7 +850,7 @@ def _cfg_text(value) -> str:
     guard above — and 500 GET /api/ups/shutdown/plan and
     POST /api/ups/shutdown/drill out of build_plan's bare ``_cfg_text`` call.
     """
-    if _isa(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return ""
     if _isa(value, int):
         try:
@@ -1066,13 +1066,13 @@ def _worker_busy(st: dict) -> bool:
     if _worker_active.is_set():
         return True
     owner = st.get("worker_owner")
-    if not isinstance(owner, dict):
+    if not _isa(owner, dict):
         return False
     pid = owner.get("pid")
-    # bool passes isinstance(int); a leftover ``pid: true`` used to probe
+    # bool passes _isa(int); a leftover ``pid: true`` used to probe
     # pid 1 (always alive) and read as busy for up to a day.  Zero/negative
     # pids probe this process / a whole process group, never a real owner.
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    if type(pid) is bool or not _isa(pid, int) or pid <= 0:
         return False
     # A claim older than a day is treated as stale even if the pid now happens
     # to be alive (pid reuse across a reboot), so it can never wedge forever.
@@ -1146,7 +1146,7 @@ def _engage(now: int, reason: str, policy: dict) -> dict:
 
 def _step_ref(st: dict, kind: str, sid: str) -> dict | None:
     for step in st.get("steps") or []:
-        if isinstance(step, dict) and step.get("kind") == kind and step.get("id") == sid:
+        if _isa(step, dict) and step.get("kind") == kind and step.get("id") == sid:
             return step
     return None
 
@@ -1172,7 +1172,7 @@ def _run_stop_sequence() -> None:
     from hub.paths import DOCKER
 
     st = _load_state()
-    steps = [s for s in (st.get("steps") or []) if isinstance(s, dict)]
+    steps = [s for s in (st.get("steps") or []) if _isa(s, dict)]
     stack_steps = [s for s in steps if s.get("kind") == "stack"]
     engine = _engine_up() if any(s.get("running") for s in stack_steps) else True
 
@@ -1248,7 +1248,7 @@ def _run_restore_sequence() -> None:
     from hub.status import invalidate_status
 
     st = _load_state()
-    steps = [s for s in (st.get("steps") or []) if isinstance(s, dict)]
+    steps = [s for s in (st.get("steps") or []) if _isa(s, dict)]
     now = _now()
     failures: list[str] = []
     started: list[str] = []
