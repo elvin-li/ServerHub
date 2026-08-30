@@ -46,19 +46,19 @@
       </div>
       <div ref="logEl" class="assist-log" :aria-live="asArray(turns).length ? 'polite' : undefined">
         <p v-if="!asArray(turns).length" class="assist-empty">{{ t('assistant.empty') }}</p>
-        <article v-for="(turn, i) in asArray(turns)" :key="finiteText(asRecord(turn).role) + ':' + i" class="assist-turn" :class="asRecord(turn).role">
-          <div class="assist-who">{{ asRecord(turn).role === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
-          <pre class="assist-text">{{ finiteText(asRecord(turn).content) }}</pre>
-          <div v-if="asArray(asRecord(turn).panels).length" class="assist-panels">
+        <article v-for="(turn, i) in asArray(turns)" :key="finiteText(recGet(turn, 'role')) + ':' + i" class="assist-turn" :class="recGet(turn, 'role')">
+          <div class="assist-who">{{ recGet(turn, 'role') === 'user' ? t('assistant.you') : t('assistant.bot') }}</div>
+          <pre class="assist-text">{{ finiteText(recGet(turn, 'content')) }}</pre>
+          <div v-if="asArray(recGet(turn, 'panels')).length" class="assist-panels">
             <button
-              v-for="p in asArray(asRecord(turn).panels)"
-              :key="finiteText(asRecord(p).path, '')"
+              v-for="p in asArray(recGet(turn, 'panels'))"
+              :key="finiteText(recGet(p, 'path'), '')"
               class="tiny"
               type="button"
-              @click="go(asRecord(p).path)"
-            >{{ finiteText(asRecord(p).title) }} <span class="mono">{{ finiteText(asRecord(p).path) }}</span></button>
+              @click="go(recGet(p, 'path'))"
+            >{{ finiteText(recGet(p, 'title')) }} <span class="mono">{{ finiteText(recGet(p, 'path')) }}</span></button>
           </div>
-          <div v-if="asRecord(turn).meta" class="assist-meta">{{ finiteText(asRecord(turn).meta) }}</div>
+          <div v-if="recGet(turn, 'meta')" class="assist-meta">{{ finiteText(recGet(turn, 'meta')) }}</div>
         </article>
       </div>
       <form class="assist-form" @submit.prevent="send('auto')">
@@ -86,7 +86,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { askAssistant } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -242,10 +242,10 @@ async function send(action, preset = '') {
     }
     pending.pending = false
     pending.content = finiteText(displayText(out, query), '') || t('assistant.empty_reply')
-    pending.panels = asArray(asRecord(out).panels).map((p) => asRecord(p))
-    if (asRecord(out).used_llm && asRecord(out).model) {
-      pending.meta = t('assistant.via_model', { model: finiteText(asRecord(out).model) })
-    } else if (asRecord(out).kind === 'brief' || asRecord(out).kind === 'answer') {
+    pending.panels = asArray(recGet(out, 'panels')).map((p) => asRecord(p))
+    if (recGet(out, 'used_llm') && recGet(out, 'model')) {
+      pending.meta = t('assistant.via_model', { model: finiteText(recGet(out, 'model')) })
+    } else if (recGet(out, 'kind') === 'brief' || recGet(out, 'kind') === 'answer') {
       pending.meta = t('assistant.via_template')
     }
   } catch (err) {

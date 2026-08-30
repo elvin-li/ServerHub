@@ -9,8 +9,8 @@
             v-for="(g, i) in asArray(ticks)"
             :key="'yl'+i"
             class="y-lbl"
-            :style="{ top: asRecord(g).pct + '%' }"
-          >{{ finiteText(asRecord(g).label) }}</span>
+            :style="{ top: recGet(g, 'pct') + '%' }"
+          >{{ finiteText(recGet(g, 'label')) }}</span>
         </div>
 
         <div class="plot-body">
@@ -25,36 +25,36 @@
                 v-for="(g, i) in asArray(ticks)"
                 :key="'g'+i"
                 :x1="0" :x2="W"
-                :y1="asRecord(g).y" :y2="asRecord(g).y"
+                :y1="recGet(g, 'y')" :y2="recGet(g, 'y')"
                 stroke="currentColor"
-                :stroke-opacity="asRecord(g).value === 0 ? 0.16 : 0.08"
+                :stroke-opacity="recGet(g, 'value') === 0 ? 0.16 : 0.08"
                 vector-effect="non-scaling-stroke"
               />
             </g>
 
             <g v-for="(s, si) in asArray(drawn)" :key="'s'+si">
               <polygon
-                v-for="(area, ai) in asArray(asRecord(s).polys)"
+                v-for="(area, ai) in asArray(recGet(s, 'polys'))"
                 :key="'p'+ai"
                 :points="area"
-                :fill="asRecord(s).color"
-                :opacity="asRecord(s).fillOpacity"
+                :fill="recGet(s, 'color')"
+                :opacity="recGet(s, 'fillOpacity')"
                 stroke="none"
               />
               <polyline
-                v-for="(area, ai) in asArray(asRecord(s).areas)"
+                v-for="(area, ai) in asArray(recGet(s, 'areas'))"
                 :key="'a'+ai"
                 :points="area"
-                :fill="asRecord(s).color"
-                :opacity="asRecord(s).fillOpacity"
+                :fill="recGet(s, 'color')"
+                :opacity="recGet(s, 'fillOpacity')"
                 stroke="none"
               />
               <polyline
-                v-for="(line, li) in asArray(asRecord(s).lines)"
+                v-for="(line, li) in asArray(recGet(s, 'lines'))"
                 :key="'l'+li"
                 :points="line"
                 fill="none"
-                :stroke="asRecord(s).color"
+                :stroke="recGet(s, 'color')"
                 :stroke-width="stacked ? 1.25 : 2"
                 stroke-linejoin="round"
                 stroke-linecap="round"
@@ -92,17 +92,17 @@
             :key="'xl'+i"
             class="x-lbl"
             :class="{ first: i === 0, last: i === asArray(xTicks).length - 1 }"
-            :style="{ left: asRecord(g).pct + '%' }"
-          >{{ finiteText(asRecord(g).label) }}</span>
+            :style="{ left: recGet(g, 'pct') + '%' }"
+          >{{ finiteText(recGet(g, 'label')) }}</span>
         </div>
       </div>
     </div>
 
     <div class="lc-legend" v-if="asArray(legend).length && !quiet">
-      <span v-for="(s, i) in asArray(legend)" :key="finiteText(asRecord(s).name) + ':' + i" class="leg">
-        <i :style="{ background: asRecord(s).color }"></i>
-        <span class="leg-name">{{ finiteText(asRecord(s).name) }}</span>
-        <b v-if="asRecord(s).latest != null">{{ formatLegend(asRecord(s).latest) }}</b>
+      <span v-for="(s, i) in asArray(legend)" :key="finiteText(recGet(s, 'name')) + ':' + i" class="leg">
+        <i :style="{ background: recGet(s, 'color') }"></i>
+        <span class="leg-name">{{ finiteText(recGet(s, 'name')) }}</span>
+        <b v-if="recGet(s, 'latest') != null">{{ formatLegend(recGet(s, 'latest')) }}</b>
       </span>
       <span v-if="unit" class="leg-unit">{{ finiteText(unitHint) }}</span>
     </div>
@@ -112,7 +112,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, recGet } from '../lib/finite'
 
 // refLabel formats the reference line, which is a localized string.  Without
 // this the component threw a ReferenceError the moment any caller passed a
@@ -164,7 +164,7 @@ const cleaned = computed(() =>
       ...rec,
       values: asArray(rec.values).map(v => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
     }
-  }).filter(s => asArray(asRecord(s).values).some(v => v != null))
+  }).filter(s => asArray(recGet(s, 'values')).some(v => v != null))
 )
 
 function niceNum(range, round) {
@@ -210,12 +210,12 @@ const scale = computed(() => {
   if (props.stacked) {
     // Stacked totals drive the y-scale.
     const seriesList = asArray(cleaned.value)
-    const n = Math.max(0, ...seriesList.map(s => asArray(asRecord(s).values).length))
+    const n = Math.max(0, ...seriesList.map(s => asArray(recGet(s, 'values')).length))
     for (let i = 0; i < n; i++) {
       let sum = 0
       let any = false
       for (const s of seriesList) {
-        const v = asArray(asRecord(s).values)[i]
+        const v = asArray(recGet(s, 'values'))[i]
         if (v != null && Number.isFinite(v)) {
           sum += Math.max(0, v)
           any = true
@@ -225,7 +225,7 @@ const scale = computed(() => {
     }
   } else {
     for (const s of asArray(cleaned.value)) {
-      for (const v of asArray(asRecord(s).values)) if (v != null) all.push(v)
+      for (const v of asArray(recGet(s, 'values'))) if (v != null) all.push(v)
     }
   }
   if (props.reference != null) all.push(props.reference)
@@ -381,7 +381,7 @@ const xTicks = computed(() => {
 })
 
 const xAxisTwoLine = computed(() =>
-  xTicks.value.some((g) => String(asRecord(g).label).includes('\n'))
+  xTicks.value.some((g) => String(recGet(g, 'label')).includes('\n'))
 )
 
 function xOf(i, n) {
@@ -440,7 +440,7 @@ const drawn = computed(() => {
 
   if (!props.stacked) {
     return seriesList.map(s => {
-      const vals = asArray(asRecord(s).values)
+      const vals = asArray(recGet(s, 'values'))
       const n = vals.length
       const lines = []
       const areas = []
@@ -462,19 +462,19 @@ const drawn = computed(() => {
         pts.push(`${xOf(i, n)},${yOf(vv)}`)
       }
       flush()
-      return { lines, areas, polys: [], color: asRecord(s).color || 'var(--accent)', fillOpacity: fill }
+      return { lines, areas, polys: [], color: recGet(s, 'color') || 'var(--accent)', fillOpacity: fill }
     })
   }
 
   // Stacked: bottom→top cumulative bands (Activity Monitor CPU LOAD).
-  const n = Math.max(...seriesList.map(s => asArray(asRecord(s).values).length), 0)
+  const n = Math.max(...seriesList.map(s => asArray(recGet(s, 'values')).length), 0)
   const base = new Array(n).fill(0)
   const out = []
   for (const s of seriesList) {
     const topLine = []
     const polyPts = []
     for (let i = 0; i < n; i++) {
-      const raw = asArray(asRecord(s).values)[i]
+      const raw = asArray(recGet(s, 'values'))[i]
       const x = xOf(i, n)
       if (raw == null || !Number.isFinite(raw)) {
         // Gap: close any open poly later by splitting — keep continuous for demo simplicity.
@@ -501,7 +501,7 @@ const drawn = computed(() => {
       lines,
       areas: [],
       polys,
-      color: asRecord(s).color || 'var(--accent)',
+      color: recGet(s, 'color') || 'var(--accent)',
       fillOpacity: fill,
     })
   }
@@ -524,11 +524,11 @@ const refLabel = computed(() => {
 const legend = computed(() =>
   asArray(cleaned.value).map(s => {
     let latest = null
-    const vals = asArray(asRecord(s).values)
+    const vals = asArray(recGet(s, 'values'))
     for (let i = vals.length - 1; i >= 0; i--) {
       if (vals[i] != null) { latest = vals[i]; break }
     }
-    return { name: asRecord(s).name, color: asRecord(s).color, latest }
+    return { name: recGet(s, 'name'), color: recGet(s, 'color'), latest }
   })
 )
 

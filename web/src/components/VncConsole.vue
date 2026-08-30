@@ -5,17 +5,17 @@
       class="modal vnc-modal"
       role="dialog"
       aria-modal="true"
-      :aria-label="t('vms.console_title', { name: finiteText(asRecord(vm).name) })"
+      :aria-label="t('vms.console_title', { name: finiteText(recGet(vm, 'name')) })"
     >
       <header class="vnc-header">
         <div>
-          <div class="name">{{ t('vms.console_title', { name: finiteText(asRecord(vm).name) }) }}</div>
+          <div class="name">{{ t('vms.console_title', { name: finiteText(recGet(vm, 'name')) }) }}</div>
           <div class="vnc-meta">
-            {{ t('vms.console_protocol', { protocol: finiteText(asRecord(asRecord(vm).console).protocol, '') || 'VNC' }) }}
+            {{ t('vms.console_protocol', { protocol: finiteText(recGet(recGet(vm, 'console'), 'protocol'), '') || 'VNC' }) }}
             <span v-if="sessionInfo">
               · {{ t('vms.console_session_limits', {
-                expires: finiteSecs(asRecord(sessionInfo).expires_in),
-                max: finiteSecs(asRecord(sessionInfo).max_session_seconds),
+                expires: finiteSecs(recGet(sessionInfo, 'expires_in')),
+                max: finiteSecs(recGet(sessionInfo, 'max_session_seconds')),
               }) }}
             </span>
           </div>
@@ -67,7 +67,7 @@
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createVmConsoleSession } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asRecord, finiteN, finiteText } from '../lib/finite'
+import { asRecord, finiteN, finiteText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -81,8 +81,8 @@ const screenEl = ref(null)
 const status = ref('loading')
 const errorMessage = ref('')
 const autoScale = ref(true)
-const viewOnly = ref(Boolean(asRecord(asRecord(props.vm).console).view_only))
-const sessionViewOnly = ref(Boolean(asRecord(asRecord(props.vm).console).view_only))
+const viewOnly = ref(Boolean(recGet(recGet(props.vm, 'console'), 'view_only')))
+const sessionViewOnly = ref(Boolean(recGet(recGet(props.vm, 'console'), 'view_only')))
 const sessionInfo = ref(null)
 const rfbClient = ref(null)
 const isFullscreen = ref(false)
@@ -90,7 +90,7 @@ const fullscreenSupported = typeof document !== 'undefined' && Boolean(document.
 let disposed = false
 
 const connected = computed(() => status.value === 'connected')
-const viewOnlyLocked = computed(() => Boolean(asRecord(asRecord(props.vm).console).view_only || sessionViewOnly.value))
+const viewOnlyLocked = computed(() => Boolean(recGet(recGet(props.vm, 'console'), 'view_only') || sessionViewOnly.value))
 const statusLabel = computed(() => t(`vms.console_status_${finiteText(status.value, 'failed')}`))
 
 function finiteSecs(value) {
@@ -116,11 +116,11 @@ async function connect() {
     if (disposed) return
 
     status.value = 'requesting'
-    const session = asRecord(await createVmConsoleSession(asRecord(props.vm).console_id))
+    const session = asRecord(await createVmConsoleSession(recGet(props.vm, 'console_id')))
     if (disposed) return
     sessionInfo.value = session
-    sessionViewOnly.value = Boolean(session.view_only)
-    viewOnly.value = Boolean(asRecord(asRecord(props.vm).console).view_only || session.view_only)
+    sessionViewOnly.value = Boolean(recGet(session, 'view_only'))
+    viewOnly.value = Boolean(recGet(recGet(props.vm, 'console'), 'view_only') || recGet(session, 'view_only'))
 
     status.value = 'connecting'
     const client = new RFB(screenEl.value, sameOriginWebSocketUrl(session.ws_url), { shared: true })
@@ -134,7 +134,7 @@ async function connect() {
     client.addEventListener('disconnect', (event) => {
       if (disposed) return
       rfbClient.value = null
-      if (asRecord(event.detail).clean !== false) {
+      if (recGet(event.detail, 'clean') !== false) {
         status.value = 'disconnected'
       } else {
         status.value = 'failed'
@@ -144,7 +144,7 @@ async function connect() {
     client.addEventListener('securityfailure', (event) => {
       if (disposed) return
       status.value = 'failed'
-      errorMessage.value = finiteText(asRecord(event.detail).reason, '') || t('vms.console_connection_failed')
+      errorMessage.value = finiteText(recGet(event.detail, 'reason'), '') || t('vms.console_connection_failed')
     })
 
     // No retry loop or browser clipboard integration is registered; both
