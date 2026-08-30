@@ -20,7 +20,7 @@
     <template v-else>
       <div class="toolbar files-toolbar">
         <select v-model="rootId" class="cat-select" @change="onRootChange" :aria-label="t('files.root')">
-          <option v-for="r in asArray(roots)" :key="finiteText(asRecord(r).id)" :value="asRecord(r).id">{{ finiteText(asRecord(r).name) }}</option>
+          <option v-for="r in asArray(roots)" :key="finiteText(recGet(r, 'id'))" :value="recGet(r, 'id')">{{ finiteText(recGet(r, 'name')) }}</option>
         </select>
         <button type="button" @click="loadList" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
@@ -38,11 +38,11 @@
         </button>
         <!-- role=status: navigation, uploads and deletes change this count and
              it changed silently for a screen reader (Modules / Services). -->
-        <span class="meta-count" role="status" v-if="listing">{{ finiteN(asRecord(listing).count) }} {{ t('files.items') }}</span>
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(recGet(listing, 'count')) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
-          v-if="asRecord(fb).running"
+          v-if="recGet(fb, 'running')"
           type="button"
           class="danger"
           :disabled="busy"
@@ -55,11 +55,11 @@
       <!-- App.vue already owns two labelled navigation landmarks; a third one
            with no name is announced as an anonymous "navigation". -->
       <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
-        <button type="button" class="crumb" @click="goPath(asRecord(listing).root)">{{ finiteText(asRecord(listing).root_id, 'root') }}</button>
-        <template v-for="(c, i) in asArray(asRecord(listing).crumbs)" :key="finiteText(asRecord(c).path)">
+        <button type="button" class="crumb" @click="goPath(recGet(listing, 'root'))">{{ finiteText(recGet(listing, 'root_id'), 'root') }}</button>
+        <template v-for="(c, i) in asArray(recGet(listing, 'crumbs'))" :key="finiteText(recGet(c, 'path'))">
           <span class="sep">/</span>
-          <button type="button" class="crumb" :class="{ current: i === asArray(asRecord(listing).crumbs).length - 1 }" @click="goPath(asRecord(c).path)">
-            {{ finiteText(asRecord(c).name, '/') }}
+          <button type="button" class="crumb" :class="{ current: i === asArray(recGet(listing, 'crumbs')).length - 1 }" @click="goPath(recGet(c, 'path'))">
+            {{ finiteText(recGet(c, 'name'), '/') }}
           </button>
         </template>
       </nav>
@@ -84,27 +84,27 @@
               <td colspan="5"><strong>..</strong> <span class="sub">{{ t('files.parent') }}</span></td>
             </tr>
             <tr
-              v-for="it in asArray(asRecord(listing).items)"
-              :key="finiteText(asRecord(it).path)"
-              :class="{ selected: asArray(selected).includes(asRecord(it).path), dir: asRecord(it).is_dir }"
+              v-for="it in asArray(recGet(listing, 'items'))"
+              :key="finiteText(recGet(it, 'path'))"
+              :class="{ selected: asArray(selected).includes(recGet(it, 'path')), dir: recGet(it, 'is_dir') }"
               @dblclick="openItem(it)"
             >
               <td class="col-check" @click.stop>
-                <input type="checkbox" :checked="asArray(selected).includes(asRecord(it).path)" @change="toggleSel(asRecord(it).path)" :aria-label="t('files.select_item', { name: finiteText(asRecord(it).name) })" />
+                <input type="checkbox" :checked="asArray(selected).includes(recGet(it, 'path'))" @change="toggleSel(recGet(it, 'path'))" :aria-label="t('files.select_item', { name: finiteText(recGet(it, 'name')) })" />
               </td>
               <td class="name-cell" @click="openItem(it)" tabindex="0" role="button" @keydown.enter.prevent="openItem(it)" @keydown.space.prevent="openItem(it)">
                 <span class="name-inner">
-                  <span class="ico" aria-hidden="true">{{ asRecord(it).is_dir ? '📁' : (asRecord(it).is_link ? '🔗' : '📄') }}</span>
-                  <span class="name-text">{{ finiteText(asRecord(it).name) }}</span>
+                  <span class="ico" aria-hidden="true">{{ recGet(it, 'is_dir') ? '📁' : (recGet(it, 'is_link') ? '🔗' : '📄') }}</span>
+                  <span class="name-text">{{ finiteText(recGet(it, 'name')) }}</span>
                 </span>
-                <div class="show-m sub">{{ fmtTime(asRecord(it).mtime) }}{{ finiteText(asRecord(it).mode, '') ? ' · ' + finiteText(asRecord(it).mode) : '' }}</div>
+                <div class="show-m sub">{{ fmtTime(recGet(it, 'mtime')) }}{{ finiteText(recGet(it, 'mode'), '') ? ' · ' + finiteText(recGet(it, 'mode')) : '' }}</div>
               </td>
-              <td class="mono size-cell">{{ asRecord(it).is_dir ? '—' : fmtSize(asRecord(it).size) }}</td>
-              <td class="mono sub time-cell col-hide-m">{{ fmtTime(asRecord(it).mtime) }}</td>
-              <td class="mono sub mode-cell col-hide-m">{{ finiteText(asRecord(it).mode) }}</td>
+              <td class="mono size-cell">{{ recGet(it, 'is_dir') ? '—' : fmtSize(recGet(it, 'size')) }}</td>
+              <td class="mono sub time-cell col-hide-m">{{ fmtTime(recGet(it, 'mtime')) }}</td>
+              <td class="mono sub mode-cell col-hide-m">{{ finiteText(recGet(it, 'mode')) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
-                  <button v-if="asRecord(it).is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
+                  <button v-if="recGet(it, 'is_file')" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
                   <!-- Bound to busy like the toolbar buttons: without it a second
                        click during an in-flight delete issued a second request for
                        the same path and then reported its failure. -->
@@ -116,7 +116,7 @@
             <!-- A failed reload keeps the previous listing on screen; the row
                  must not claim the folder is empty when the read that would
                  prove it just failed (the banner above carries the reason). -->
-            <tr v-if="!asArray(asRecord(listing).items).length">
+            <tr v-if="!asArray(recGet(listing, 'items')).length">
               <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
@@ -166,7 +166,7 @@ let listRequest = 0
 let pageAlive = true
 
 const allSelected = computed(() => {
-  const items = asArray(asRecord(listing.value).items)
+  const items = asArray(recGet(listing.value, 'items'))
   return items.length > 0 && items.every((i) => asArray(selected.value).includes(recGet(i, 'path')))
 })
 
@@ -298,7 +298,7 @@ function toggleSel(path) {
 
 function toggleAll(e) {
   if (e.target.checked) {
-    selected.value = asArray(asRecord(listing.value).items).map((i) => recGet(i, 'path'))
+    selected.value = asArray(recGet(listing.value, 'items')).map((i) => recGet(i, 'path'))
   } else {
     selected.value = []
   }
@@ -370,7 +370,7 @@ async function doDeleteOne(it) {
 
 async function doDeleteSelected() {
   if (!asArray(selected.value).length) return
-  const items = asArray(asRecord(listing.value).items)
+  const items = asArray(recGet(listing.value, 'items'))
   const hasDir = asArray(selected.value).some((path) => recGet(items.find((it) => recGet(it, 'path') === path), 'is_dir'))
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
   if (!confirm(t(key, { n: asArray(selected.value).length }))) return
