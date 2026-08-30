@@ -1862,7 +1862,7 @@ function catLabel(id) {
 
 function countLabel(id) {
   if (id === 'all') {
-    const n = finiteN(overview.value.total, null)
+    const n = finiteN(recGet(overview.value, 'total'), null)
     return n != null ? ` (${n})` : ''
   }
   if (id === 'featured') {

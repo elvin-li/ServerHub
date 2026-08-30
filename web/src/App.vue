@@ -46,8 +46,8 @@
         </button>
         <div class="top-status-m" v-if="counts">
           <span class="pill" :class="engineClass">{{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
-          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
+          <span class="pill down" v-if="finiteN(recGet(counts, 'down'), 0)"><b>{{ finiteN(recGet(counts, 'down')) }}</b></span>
+          <span class="pill warn" v-if="finiteN(recGet(counts, 'warn'), 0)"><b>{{ finiteN(recGet(counts, 'warn')) }}</b></span>
         </div>
         <nav
           id="app-nav"
@@ -94,10 +94,10 @@
         </nav>
         <div class="top-status" v-if="counts">
           <span class="pill" :class="engineClass">{{ t('top.orbstack') }} {{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill ok"><b>{{ finiteN(counts.ok) }}</b></span>
-          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
-          <span class="pill" v-if="finiteN(counts.stopped, 0)" style="opacity:.75"><b>{{ finiteN(counts.stopped) }}</b></span>
-          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
+          <span class="pill ok"><b>{{ finiteN(recGet(counts, 'ok')) }}</b></span>
+          <span class="pill warn" v-if="finiteN(recGet(counts, 'warn'), 0)"><b>{{ finiteN(recGet(counts, 'warn')) }}</b></span>
+          <span class="pill" v-if="finiteN(recGet(counts, 'stopped'), 0)" style="opacity:.75"><b>{{ finiteN(recGet(counts, 'stopped')) }}</b></span>
+          <span class="pill down" v-if="finiteN(recGet(counts, 'down'), 0)"><b>{{ finiteN(recGet(counts, 'down')) }}</b></span>
           <span class="pill" v-if="status?.system">{{ fmtLoad(status.system.load1) }}</span>
           <router-link v-if="counts.down || counts.warn" class="pill down" to="/services" :aria-label="t('common.issues')">!</router-link>
           <router-link

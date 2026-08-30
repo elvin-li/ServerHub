@@ -181,7 +181,7 @@
       >
         <h2>{{ t('wg.foreign_peers_title') }}</h2>
         <p style="font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0 0">
-          {{ t('wg.foreign_peers_hint', { n: finiteN(readiness.peer_origin.foreign), total: finiteN(readiness.peer_origin.total) }) }}
+          {{ t('wg.foreign_peers_hint', { n: finiteN(recGet(recGet(readiness, 'peer_origin'), 'foreign')), total: finiteN(recGet(recGet(readiness, 'peer_origin'), 'total')) }) }}
         </p>
       </div>
 
