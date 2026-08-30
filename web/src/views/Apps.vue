@@ -1244,12 +1244,13 @@ async function loadManaged(force = false) {
 
 function softText(j, fallbackKey = 'common.fail') {
   const rec = asRecord(j)
-  if (rec.code) {
-    const key = `err.${rec.code}`
-    const translated = t(key, asRecord(rec.params))
+  const code = recGet(rec, 'code')
+  if (code) {
+    const key = `err.${code}`
+    const translated = t(key, asRecord(recGet(rec, 'params')))
     if (translated !== key) return translated
   }
-  return finiteText(rec.message, '') || t(fallbackKey)
+  return finiteText(recGet(rec, 'message'), '') || t(fallbackKey)
 }
 
 let appsDataGeneration = 0

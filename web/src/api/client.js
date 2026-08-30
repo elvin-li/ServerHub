@@ -38,19 +38,20 @@ export function resetAuthLost() {
  *  Legacy string details are passed through unchanged. */
 function errorText(payload, statusText) {
   const body = asRecord(payload)
-  const d = body.detail
+  const d = recGet(body, 'detail')
   const rec = asRecord(d)
-  if (d && typeof d === 'object' && !Array.isArray(d) && rec.code) {
-    const key = `err.${rec.code}`
-    const translated = t(key, asRecord(rec.params))
+  const code = recGet(rec, 'code')
+  if (d && typeof d === 'object' && !Array.isArray(d) && code) {
+    const key = `err.${code}`
+    const translated = t(key, asRecord(recGet(rec, 'params')))
     // Privileged-operation failures carry the tool's own stderr tail in
     // params.detail; appending it keeps the generic "operation failed" text
     // from hiding the actual cause (e.g. wg-quick's error line).
-    const params = asRecord(rec.params)
-    const detail = asTrimmed(params.detail)
+    const params = asRecord(recGet(rec, 'params'))
+    const detail = asTrimmed(recGet(params, 'detail'))
     // t() returns the key itself when it is missing — prefer the server text.
     if (translated !== key) return detail ? `${translated}\n${detail}` : translated
-    return detail ? `${finiteText(rec.message, '') || rec.code}\n${detail}` : finiteText(rec.message, '') || rec.code
+    return detail ? `${finiteText(recGet(rec, 'message'), '') || code}\n${detail}` : finiteText(recGet(rec, 'message'), '') || code
   }
   if (typeof d === 'string' && d) return d
   // FastAPI request-validation errors: detail is a list of
@@ -60,14 +61,15 @@ function errorText(payload, statusText) {
   if (items.length) {
     const parts = items.map((it) => {
       const row = asRecord(it)
-      const field = asArray(row.loc)
+      const field = asArray(recGet(row, 'loc'))
         .filter((s) => s !== 'body' && s !== 'query').join('.')
-      const msg = row.msg || t('err.request_failed')
+      const msg = recGet(row, 'msg') || t('err.request_failed')
       return field ? `${field}: ${msg}` : msg
     })
     return `${t('err.invalid_input')} — ${parts.join('; ')}`
   }
-  if (typeof body.message === 'string' && body.message) return body.message
+  const bodyMessage = recGet(body, 'message')
+  if (typeof bodyMessage === 'string' && bodyMessage) return bodyMessage
   return statusText || t('err.request_failed')
 }
 
@@ -1029,22 +1031,22 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
         const parsed = jsonLoad(trimmed)
         if (parsed == null || typeof parsed !== 'object') continue
         const chunk = asRecord(parsed)
-        if (chunk.error) {
-          const err = new Error(String(chunk.error))
+        if (recGet(chunk, 'error')) {
+          const err = new Error(String(recGet(chunk, 'error')))
           err.status = 502
           throw err
         }
-        const msg = asRecord(chunk.message)
-        if (msg.content) content += msg.content
-        if (msg.thinking) thinking += msg.thinking
-        const snap = { ok: true, model, content, thinking, done: Boolean(chunk.done) }
+        const msg = asRecord(recGet(chunk, 'message'))
+        if (recGet(msg, 'content')) content += recGet(msg, 'content')
+        if (recGet(msg, 'thinking')) thinking += recGet(msg, 'thinking')
+        const snap = { ok: true, model, content, thinking, done: Boolean(recGet(chunk, 'done')) }
         if (signal?.aborted) {
           const err = new Error('aborted')
           err.name = 'AbortError'
           throw err
         }
         onChunk?.(snap)
-        if (chunk.done) return snap
+        if (recGet(chunk, 'done')) return snap
       }
     }
     if (signal?.aborted) {

@@ -174,20 +174,22 @@ function levelBadge(level) {
 }
 
 function softText(j, fallbackKey = 'common.fail') {
-  if (j?.code) {
-    const key = `err.${j.code}`
-    const translated = t(key, j.params || {})
+  const rec = asRecord(j)
+  const code = recGet(rec, 'code')
+  if (code) {
+    const key = `err.${code}`
+    const translated = t(key, asRecord(recGet(rec, 'params')))
     if (translated !== key) return translated
   }
-  return j?.message || t(fallbackKey)
+  return finiteText(recGet(rec, 'message'), '') || t(fallbackKey)
 }
 
 function fieldsFor(ty) {
-  return asArray(types.value[ty]?.fields)
+  return asArray(recGet(recGet(types.value, ty), 'fields'))
 }
 
 function secretsFor(ty) {
-  return asArray(types.value[ty]?.secrets)
+  return asArray(recGet(recGet(types.value, ty), 'secrets'))
 }
 
 async function load() {
