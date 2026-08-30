@@ -502,8 +502,8 @@ function finiteN(v) {
  * this page never rendered: the tables claimed "no models" over a failed
  * read (the same false-empty the unreachable branch already avoids). */
 function emptyListText(emptyKey) {
-  if (!data.value?.reachable) return t('ollama.daemon_unreachable')
-  if (data.value?.error) return t('ollama.list_error', { error: finiteText(data.value.error, '') })
+  if (!recGet(data.value, 'reachable')) return t('ollama.daemon_unreachable')
+  if (recGet(data.value, 'error')) return t('ollama.list_error', { error: finiteText(recGet(data.value, 'error'), '') })
   return t(emptyKey)
 }
 
@@ -623,7 +623,7 @@ function refreshNow() {
 
 // ── service control (existing /api/action channel; target = launchd label) ──
 async function act(action) {
-  const label = finiteText(data.value?.service?.label, '')
+  const label = finiteText(recGet(recGet(data.value, 'service'), 'label'), '')
   if (!label) return
   if (action === 'stop' && !confirm(t('ollama.confirm_stop', { name: finiteText(label) }))) return
   if (action === 'restart' && !confirm(t('services.confirm_restart', { name: finiteText(label) }))) return

@@ -2945,6 +2945,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(ollama).toMatch(/recGet\(m, 'pending'\)/)
     expect(ollama).toMatch(/if \(recGet\(r, 'ok'\)\) \{/)
+    expect(ollama).toMatch(/finiteText\(recGet\(data.value, 'error'/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
