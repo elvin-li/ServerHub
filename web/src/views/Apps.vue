@@ -1116,9 +1116,9 @@ function catalogOpenUrl(tpl) {
     const host = finiteText(window.location.hostname, '') || 'localhost'
     return `vnc://${host}`
   }
-  const hinted = finiteText(tpl.url_hint, '') || finiteText(tpl.url, '')
+  const hinted = finiteText(recGet(tpl, 'url_hint'), '') || finiteText(recGet(tpl, 'url'), '')
   if (hinted) return hinted
-  const ut = finiteText(tpl.url_template, '')
+  const ut = finiteText(recGet(tpl, 'url_template'), '')
   if (!ut) {
     // ports-only fallback for web-ish services
     const ports = asArray(recGet(tpl, 'ports'))

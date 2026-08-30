@@ -182,17 +182,17 @@
             :aria-label="t('ollama.pull_name_label')"
             @keydown.enter="startPull"
           />
-          <button class="primary" :disabled="pullBusy || pullInfo?.running || !asTrimmed(pullName)" @click="startPull">
-            {{ pullInfo?.running ? t('ollama.pull_running_short') : t('ollama.act_pull') }}
+          <button class="primary" :disabled="pullBusy || recGet(pullInfo, 'running') || !asTrimmed(pullName)" @click="startPull">
+            {{ recGet(pullInfo, 'running') ? t('ollama.pull_running_short') : t('ollama.act_pull') }}
           </button>
         </div>
-        <div v-if="pullInfo && (pullInfo.running || pullInfo.log)">
+        <div v-if="pullInfo && (recGet(pullInfo, 'running') || recGet(pullInfo, 'log'))">
           <div class="meta" style="margin-bottom:6px">
-            <span v-if="pullInfo.running">⏳ {{ t('ollama.pull_running', { name: finiteText(pullInfo.model, '') }) }}</span>
-            <span v-else-if="pullInfo.rc === 0">✅ {{ t('ollama.pull_done_ok') }}</span>
-            <span v-else-if="pullInfo.rc != null">❌ {{ t('ollama.pull_done_fail', { rc: finiteN(pullInfo.rc) }) }}</span>
+            <span v-if="recGet(pullInfo, 'running')">⏳ {{ t('ollama.pull_running', { name: finiteText(recGet(pullInfo, 'model'), '') }) }}</span>
+            <span v-else-if="recGet(pullInfo, 'rc') === 0">✅ {{ t('ollama.pull_done_ok') }}</span>
+            <span v-else-if="recGet(pullInfo, 'rc') != null">❌ {{ t('ollama.pull_done_fail', { rc: finiteN(recGet(pullInfo, 'rc')) }) }}</span>
           </div>
-          <pre class="logbox" aria-live="polite">{{ finiteText(pullInfo.log, '') || t('maintenance.log_loading') }}</pre>
+          <pre class="logbox" aria-live="polite">{{ finiteText(recGet(pullInfo, 'log'), '') || t('maintenance.log_loading') }}</pre>
         </div>
       </div>
 

@@ -1422,7 +1422,7 @@ describe('storage state semantics', () => {
   it('does not present a missing array status as started', () => {
     expect(main).not.toContain("data?.array?.status || 'started'")
     expect(main).not.toContain("data?.array?.status || t('network.unknown')")
-    expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
+    expect(main).toContain("finiteText(recGet(recGet(data, 'array'), 'status'), '') || t('network.unknown')")
   })
 
   it('preserves the saved pool free-space floor when editing other fields', () => {
@@ -2725,7 +2725,7 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).not.toMatch(/logText\.value = j\.log \+/)
     expect(apps).toMatch(/logText\.value = finiteText\(recGet\(j, 'log'\), ''\)/)
     expect(apps).not.toMatch(/if \(tpl\.url_hint\) return tpl\.url_hint/)
-    expect(apps).toMatch(/finiteText\(tpl\.url_hint, ''\) \|\| finiteText\(tpl\.url, ''\)/)
+    expect(apps).toMatch(/finiteText\(recGet\(tpl, 'url_hint'\), ''\) \|\| finiteText\(recGet\(tpl, 'url'\), ''\)/)
     expect(apps).toMatch(/v-for="tpl in asArray\(filtered\)"/)
     expect(apps).toMatch(/v-for="it in asArray\(filteredManaged\)"/)
   })
@@ -3009,8 +3009,8 @@ describe('leftover Infinity interpolations', () => {
     expect(array).toMatch(/fmtTs\(recGet\(h, 'ts'\)\)/)
     expect(array).toMatch(/recGet\(asArray\(recGet\(recGet\(m, 'smart'\), 'attrs'\)\)\[0\], 'raw'\)/)
     expect(array).not.toMatch(/data\?\.array\?\.system_count \?\? 0/)
-    expect(array).toMatch(/finiteN\(data\?\.array\?\.system_count/)
-    expect(array).toMatch(/finiteN\(data\?\.array\?\.disk_count/)
+    expect(array).toMatch(/finiteN\(recGet\(recGet\(data, 'array'\), 'system_count'/)
+    expect(array).toMatch(/finiteN\(recGet\(recGet\(data, 'array'\), 'disk_count'/)
     expect(array).toMatch(/finiteText\(recGet\(recGet\(m, 'smart'\), 'temp'\)\)/)
     expect(array).toMatch(/finiteText\(recGet\(d, 'size'\)\)/)
     expect(array).toMatch(/finiteText\(recGet\(m, 'size'\)\)/)
@@ -3026,9 +3026,9 @@ describe('leftover Infinity interpolations', () => {
     expect(array).toMatch(/finiteText\(recGet\(a, 'thresh'\)\)/)
     expect(array).toMatch(/finiteText\(recGet\(a, 'raw'\)\)/)
     expect(array).not.toMatch(/\{\{\s*renameTarget\.id\s*\}\}/)
-    expect(array).toMatch(/finiteText\(renameTarget\.id\)/)
+    expect(array).toMatch(/finiteText\(recGet\(renameTarget, 'id'\)\)/)
     expect(array).not.toMatch(/\{\{\s*formatTarget\.id\s*\}\}/)
-    expect(array).toMatch(/finiteText\(formatTarget\.id\)/)
+    expect(array).toMatch(/finiteText\(recGet\(formatTarget, 'id'\)\)/)
     expect(array).not.toMatch(/\{\{\s*v\.id\s*\}\}/)
     expect(array).toMatch(/finiteText\(recGet\(v, 'id'\)\)/)
     expect(array).not.toMatch(/\{\{\s*m\.id\s*\}\}/)
@@ -3040,7 +3040,7 @@ describe('leftover Infinity interpolations', () => {
     expect(array).not.toMatch(/d\.protocol \|\| '—'/)
     expect(array).toMatch(/finiteText\(recGet\(d, 'protocol'\)\)/)
     expect(array).not.toMatch(/\{\{\s*data\.array\.status\s*\}\}/)
-    expect(array).toMatch(/finiteText\(data\.array\.status\)/)
+    expect(array).toMatch(/finiteText\(recGet\(recGet\(data, 'array'\), 'status'\)\)/)
     expect(array).not.toMatch(/\{\{\s*d\.label\s*\}\}/)
     expect(array).toMatch(/finiteText\(recGet\(d, 'label'\)\)/)
     expect(array).not.toMatch(/m\.smart\?\.model \|\| m\.smart\?\.serial \|\| '—'/)
@@ -4120,7 +4120,7 @@ describe('leftover Infinity interpolations', () => {
 
   it('keeps MainArray unknown-status leftover composition', () => {
     const main = readFileSync(resolve(SRC, 'views/MainArray.vue'), 'utf8')
-    expect(main).toContain("finiteText(data?.array?.status, '') || t('network.unknown')")
+    expect(main).toContain("finiteText(recGet(recGet(data, 'array'), 'status'), '') || t('network.unknown')")
   })
 })
 

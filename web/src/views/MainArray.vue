@@ -6,10 +6,10 @@
       <button class="primary" @click="refresh" :disabled="loading || busy">{{ t('common.refresh') }}</button>
       <button @click="openSmart" :disabled="smartLoading">{{ t('main.smart_btn') }}</button>
       <span class="meta" style="color:var(--sub)">
-        {{ t('main_extra.summary_counts', { disks: asArray(data?.power_disks).length, vols: asArray(data?.volumes).length }) }}
+        {{ t('main_extra.summary_counts', { disks: asArray(recGet(data, 'power_disks')).length, vols: asArray(recGet(data, 'volumes')).length }) }}
       </span>
-      <span v-if="data?.array" class="badge" :class="data.array.status === 'started' ? 'ok' : 'warn'">
-        {{ t('main_extra.array_state', { state: finiteText(data.array.status) }) }}
+      <span v-if="recGet(data, 'array')" class="badge" :class="recGet(recGet(data, 'array'), 'status') === 'started' ? 'ok' : 'warn'">
+        {{ t('main_extra.array_state', { state: finiteText(recGet(recGet(data, 'array'), 'status')) }) }}
       </span>
     </div>
 
@@ -27,23 +27,23 @@
          reported no disks, no volumes and no SMART data on a storage page. -->
     <LoadFailure v-if="loadError" :detail="loadError" :retry="refresh" :busy="loading || busy" />
     <!-- Unraid-style array summary -->
-    <div class="dash-grid" style="margin-bottom:12px" v-if="data?.array || data?.totals">
+    <div class="dash-grid" style="margin-bottom:12px" v-if="recGet(data, 'array') || recGet(data, 'totals')">
       <div class="tile span-3">
         <h2>{{ t('main.array_status') }}</h2>
         <div
           class="v"
-          :style="{ fontSize: '16px', color: data?.array?.status === 'started' ? 'var(--ok-text)' : 'var(--warn-text)' }"
-        >{{ finiteText(data?.array?.status, '') || t('network.unknown') }}</div>
-        <div class="sub">{{ finiteN(data?.array?.system_count, 0) }} + {{ finiteN(data?.array?.data_count, 0) }}</div>
+          :style="{ fontSize: '16px', color: recGet(recGet(data, 'array'), 'status') === 'started' ? 'var(--ok-text)' : 'var(--warn-text)' }"
+        >{{ finiteText(recGet(recGet(data, 'array'), 'status'), '') || t('network.unknown') }}</div>
+        <div class="sub">{{ finiteN(recGet(recGet(data, 'array'), 'system_count'), 0) }} + {{ finiteN(recGet(recGet(data, 'array'), 'data_count'), 0) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('main.capacity') }}</h2>
-        <div class="v" style="font-size:16px">{{ finiteN(data?.array?.total_tb) }} <span style="font-size:12px;font-weight:500;color:var(--sub)">TB</span></div>
-        <div class="sub">{{ t('common.used') }} {{ finiteN(data?.array?.used_tb) }} · {{ t('common.free') }} {{ finiteN(data?.array?.free_tb) }} TB</div>
+        <div class="v" style="font-size:16px">{{ finiteN(recGet(recGet(data, 'array'), 'total_tb')) }} <span style="font-size:12px;font-weight:500;color:var(--sub)">TB</span></div>
+        <div class="sub">{{ t('common.used') }} {{ finiteN(recGet(recGet(data, 'array'), 'used_tb')) }} · {{ t('common.free') }} {{ finiteN(recGet(recGet(data, 'array'), 'free_tb')) }} TB</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('main.physical') }}</h2>
-        <div class="v">{{ finiteN(data?.array?.disk_count, asArray(data?.disks).length) }}</div>
+        <div class="v">{{ finiteN(recGet(recGet(data, 'array'), 'disk_count'), asArray(recGet(data, 'disks')).length) }}</div>
         <div class="sub">SMART</div>
       </div>
       <div class="tile span-3">
@@ -446,7 +446,7 @@
     <div ref="renamePanel" v-if="renameTarget" class="modal-bg" @click.self="renameTarget=null" role="presentation">
       <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="array-rename-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="array-rename-title" class="name">{{ t('main_extra.rename') }} · {{ finiteText(renameTarget.id) }}</span>
+          <span id="array-rename-title" class="name">{{ t('main_extra.rename') }} · {{ finiteText(recGet(renameTarget, 'id')) }}</span>
           <button class="tiny" @click="renameTarget=null">{{ t('common.close') }}</button>
         </div>
         <label style="font-size:12px;color:var(--sub)">{{ t('main_extra.new_name') }}</label>
@@ -463,7 +463,7 @@
       <div class="modal" style="max-width:480px" role="dialog" aria-modal="true" aria-labelledby="array-format-title">
         <div class="row" style="margin-bottom:10px">
           <span id="array-format-title" class="name" style="color:var(--down-text)">
-            {{ formatWhole ? t('main_extra.erase_disk') : t('main_extra.format') }} · {{ finiteText(formatTarget.id) }}
+            {{ formatWhole ? t('main_extra.erase_disk') : t('main_extra.format') }} · {{ finiteText(recGet(formatTarget, 'id')) }}
           </span>
           <button class="tiny" @click="formatTarget=null">{{ t('common.close') }}</button>
         </div>
@@ -481,10 +481,10 @@
           <!-- The aria-label used to repeat the placeholder, so the control was
                announced as its example value instead of what it is; the grid
                <label> above carries the real name. -->
-          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) })" :aria-label="t('main_extra.confirm')"/>
+          <input v-model="formatConfirm" type="text" :placeholder="t('main_extra.format_type_ph', { name: finiteText(recGet(formatTarget, 'volume_name'), '') || finiteText(recGet(formatTarget, 'id')) })" :aria-label="t('main_extra.confirm')"/>
         </div>
         <p style="font-size:11px;color:var(--sub);margin:8px 0 12px">
-          {{ t('main_extra.format_confirm_hint', { name: finiteText(formatTarget.volume_name, '') || finiteText(formatTarget.id) }) }}
+          {{ t('main_extra.format_confirm_hint', { name: finiteText(recGet(formatTarget, 'volume_name'), '') || finiteText(recGet(formatTarget, 'id')) }) }}
         </p>
         <div class="btns">
           <button class="danger" :disabled="busy || !canFormat" @click="doFormat">{{ t('main_extra.format_ok') }}</button>
@@ -1180,7 +1180,7 @@ async function doRename() {
   const generation = loadSeq
   busy.value = true
   try {
-    const j = asRecord(await manageStorageDevice(renameTarget.value.id, {
+    const j = asRecord(await manageStorageDevice(recGet(renameTarget.value, 'id'), {
       action: 'rename',
       name: asTrimmed(renameName.value),
     }))
@@ -1213,7 +1213,7 @@ async function doFormat() {
   busy.value = true
   lastMsg.value = t('main_extra.formatting')
   try {
-    const j = asRecord(await manageStorageDevice(formatTarget.value.id, {
+    const j = asRecord(await manageStorageDevice(recGet(formatTarget.value, 'id'), {
       action: formatWhole.value ? 'eraseDisk' : 'eraseVolume',
       name: asTrimmed(formatName.value) || 'UNTITLED',
       fs: formatFs.value,

@@ -376,7 +376,7 @@ async function refresh(manual = false) {
     const d = asRecord(await getBackups())
     if (generation !== backupsGeneration || !pageAlive) return
     backups.value = asArray(recGet(d, 'backups')).map((row) => asRecord(row))
-    root.value = finiteText(d.root, '')
+    root.value = finiteText(recGet(d, 'root'), '')
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
     const reported = finiteN(d.total, null)

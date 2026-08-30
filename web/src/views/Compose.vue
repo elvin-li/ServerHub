@@ -210,7 +210,7 @@ async function reloadCompose() {
     const j = asRecord(await getCompose(id))
     if (generation !== composeGeneration || !pageAlive || selected.value !== id) return
     compose.value = j
-    editor.value = finiteText(j.content, '')
+    editor.value = finiteText(recGet(j, 'content'), '')
     msg.value = ''
     composeError.value = ''
   } catch (e) {
