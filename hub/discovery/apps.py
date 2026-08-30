@@ -112,7 +112,7 @@ def collect_apps(engine_up):
     # out of the workers avoids putting avoidable traffic through the shared
     # config lock while the probes are in flight.
     plans: list[dict] = []
-    for raw in cfg().get("apps") or []:
+    for raw in cfg().get("apps") if _isinst(cfg().get("apps"), list) else []:
         a = resolve_value(raw)
         if not _isinst(a, dict):
             continue
@@ -182,7 +182,7 @@ def _probe_port(port):
 
 def collect_scripts():
     scripts = []
-    for raw in cfg().get("scripts") or []:
+    for raw in cfg().get("scripts") if _isinst(cfg().get("scripts"), list) else []:
         s = resolve_value(raw)
         if _isinst(s, dict):
             scripts.append(s)

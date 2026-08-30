@@ -1732,10 +1732,10 @@ def _loop(interval: int = 90):
     try:
         st = full_status(force=False)
         baseline = {}
-        for g in st.get("groups") or []:
+        for g in st.get("groups") if _isa(st.get("groups"), list) else []:
             if not _isa(g, dict):
                 continue
-            for s in g.get("services") or []:
+            for s in g.get("services") if _isa(g.get("services"), list) else []:
                 if not _isa(s, dict):
                     continue
                 # Same str() probe as check_once: a numeric YAML ``id: 123``
