@@ -170,7 +170,7 @@ def _isinst(value, types) -> bool:
     ``__class__`` is a raising property detonates a bare ``isinstance`` gate.
     ``catalog_overview`` merges the *native* catalog's rows — another module's
     payload — into GET /api/catalog, and the row filter's bare
-    ``isinstance(a, dict)`` ran before ``_jsonable`` could launder anything: a
+    ``_isinst(a, dict)`` ran before ``_jsonable`` could launder anything: a
     single poisoned row raised straight out of the store overview instead of
     being dropped while its siblings (and the whole docker half) survived.
     A lying ``__class__`` (answers ``dict``) is not an error and still reports
@@ -565,12 +565,12 @@ def host_languages() -> tuple[str, ...]:
         # keeps the oversize refusal as OSError(EFBIG).
         blob = read_bytes_capped(_GLOBAL_PREFS, _PREFS_CAP)
         prefs = plistlib.loads(blob)
-        raw = prefs.get("AppleLanguages") if isinstance(prefs, dict) else []
+        raw = prefs.get("AppleLanguages") if _isinst(prefs, dict) else []
     except _CONTROL_FLOW:
         raise
     except BaseException:
         raw = []
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
         # A scalar leftover used to raise on `for tag in 3` and 500 the store.
         raw = []
     seen: list[str] = []
@@ -662,21 +662,21 @@ def _parse_template(path: Path) -> tuple[dict, str]:
             # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
             # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
             loaded = {}
-        if isinstance(loaded, dict):
+        if _isinst(loaded, dict):
             meta.update(loaded)
         body = m.group(2)
     found = sorted(set(VAR_RE.findall(body)))
     declared = meta.get("vars")
-    if not isinstance(declared, list):
+    if not _isinst(declared, list):
         declared = []
     by_name: dict[str, dict] = {}
     for v in declared:
-        if isinstance(v, str) and v:
+        if _isinst(v, str) and v:
             name = _plain_str(v)
             if not name:
                 continue
             by_name[name] = {"name": name, "default": "", "label": name, "required": True}
-        elif isinstance(v, dict):
+        elif _isinst(v, dict):
             name = _plain_str(v.get("name"))
             if not name:
                 continue
@@ -897,7 +897,7 @@ def _build_listing(now: float, sig: str) -> list:
         except OSError:
             continue
         tid = meta.get("id") or p.stem
-        if isinstance(tid, int) and not isinstance(tid, bool):
+        if type(tid) is int:
             # A numeric YAML id (`id: 8080`) must behave like its quoted twin:
             # coerce via a str() probe, not the strict isinstance gate that
             # silently renamed the entry to the filename.  Over-cap ints
@@ -907,7 +907,7 @@ def _build_listing(now: float, sig: str) -> list:
                 tid = str(tid)
             except ValueError:
                 tid = p.stem
-        if not isinstance(tid, str) or not tid or "\x00" in tid:
+        if not _isinst(tid, str) or not tid or "\x00" in tid:
             tid = p.stem
         meta["id"] = tid
         is_remote = p.parent != TEMPLATES
@@ -1050,12 +1050,12 @@ def catalog_overview() -> dict:
     ]
     # Prefer native: if Cloudflared brew is installed, steer away from Docker twin
     native_ids_installed = {
-        a["id"] for a in native if a.get("installed") and isinstance(a.get("id"), str)
+        a["id"] for a in native if a.get("installed") and _isinst(a.get("id"), str)
     }
     for d in docker:
         if d.get("id") == "cloudflared" and "native-cloudflared" in native_ids_installed:
             existing = d.get("notes")
-            existing = existing if isinstance(existing, str) else str(existing or "")
+            existing = existing if _isinst(existing, str) else str(existing or "")
             d["notes"] = (
                 existing
                 + (" · " if existing else "")
@@ -1077,10 +1077,10 @@ def catalog_overview() -> dict:
         # A list leftover in category/kind used to raise on `by_cat[c]`
         # and 500 the store after the row filter already accepted the dict.
         c = t.get("category")
-        c = c if isinstance(c, str) and c else "other"
+        c = c if _isinst(c, str) and c else "other"
         by_cat[c] = by_cat.get(c, 0) + 1
         k = t.get("kind")
-        k = k if isinstance(k, str) and k else "docker"
+        k = k if _isinst(k, str) and k else "docker"
         by_cat[k] = by_cat.get(k, 0) + 1
     return {
         "templates": templates,
@@ -1134,11 +1134,11 @@ def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
 
         def apply(data: dict) -> None:
             stacks = data.get("stacks")
-            if not isinstance(stacks, list):
+            if not _isinst(stacks, list):
                 stacks = []
                 data["stacks"] = stacks
             for s in stacks:
-                if isinstance(s, dict) and (
+                if _isinst(s, dict) and (
                     s.get("id") == template_id or s.get("path") == str(dest_dir)
                 ):
                     raise _StacksUnchanged
@@ -1158,7 +1158,7 @@ def _register_stack(template_id: str, name: str, dest_dir: Path) -> None:
 
 def _suggest_url(meta: dict, values: dict) -> str | None:
     tpl = meta.get("url_template")
-    if not isinstance(tpl, str) or not tpl:
+    if not _isinst(tpl, str) or not tpl:
         return None
     # _safe_host_ip, not the raw seam: this fallback fires exactly when the
     # laundered HOST_IP came up empty — i.e. when the provider is already
@@ -1509,8 +1509,8 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             if f"./{d}" in rendered or f"/{d}" in rendered:
                 (dest_dir / d).mkdir(exist_ok=True)
         # optional bootstrap files from frontmatter
-        for bf in meta.get("bootstrap_files") if isinstance(meta.get("bootstrap_files"), list) else []:
-            if not isinstance(bf, dict) or not bf.get("path"):
+        for bf in meta.get("bootstrap_files") if _isinst(meta.get("bootstrap_files"), list) else []:
+            if not _isinst(bf, dict) or not bf.get("path"):
                 continue
             # _plain_str, not bare str(): bootstrap_files is the one block of
             # front matter _parse_template leaves raw.  A leftover hex-huge
@@ -1577,7 +1577,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         secret_names = {
             _plain_str(v.get("name"))
             for v in (meta.get("vars") or [])
-            if isinstance(v, dict) and v.get("secret")
+            if _isinst(v, dict) and v.get("secret")
         }
         redacted = {
             _plain_str(k): (
@@ -1758,10 +1758,10 @@ def _unregister_stack(template_id: str, dest_dir: Path | None = None) -> None:
 
         def apply(data: dict) -> None:
             stacks = data.get("stacks")
-            rows = stacks if isinstance(stacks, list) else []
+            rows = stacks if _isinst(stacks, list) else []
             kept = [
                 s for s in rows
-                if not isinstance(s, dict)
+                if not _isinst(s, dict)
                 or (s.get("id") != template_id
                     and (not dest_s or s.get("path") != dest_s))
             ]

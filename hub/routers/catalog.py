@@ -38,7 +38,7 @@ def _as_text(value) -> str:
             continue
     if type(value) is not bool:
         try:
-            if isinstance(value, float):
+            if _isinst(value, float):
                 finite = float.__float__(value)
                 if finite != finite or finite in (float("inf"), float("-inf")):
                     return ""
@@ -231,7 +231,7 @@ def save_app_credential(body: CredentialSaveBody, request: Request):
     message = "Credential saved securely to the macOS Keychain"
     if body.apply_to_service:
         result = service_credentials.apply(body.service_id, body.username, body.password)
-        if not isinstance(result, dict):
+        if not _isinst(result, dict):
             result = {}
         applied = bool(result.get("ok"))
         text = _as_text(result.get("message"))

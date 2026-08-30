@@ -303,12 +303,12 @@ def _rc_int(rc) -> int:
     timeout, a vanished CLI, or success.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
         # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
         # cannot fire, and a lying-``__class__`` impostor TypeErrors here
         # instead of passing the gate (the modules5 unbound convention).
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         # Digit-cap probe: past CPython's int->str cap the status cannot be
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
@@ -438,12 +438,12 @@ def inspect_object(out: str) -> dict | None:
         parsed = safe_json_loads(out, parse_int=parse_int_capped)
     except (TypeError, ValueError, RecursionError):
         return None
-    if isinstance(parsed, list):
+    if _isa(parsed, list):
         parsed = parsed[0] if parsed else None
-    if not isinstance(parsed, dict):
+    if not _isa(parsed, dict):
         return None
     cleaned = _jsonable(parsed)
-    return cleaned if isinstance(cleaned, dict) else None
+    return cleaned if _isa(cleaned, dict) else None
 
 
 def docker_json(args: list[str], timeout=30) -> Any:
@@ -452,7 +452,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
     if rc != 0:
         return None, rc, err or out
     if not out.strip():
-        argv = args if isinstance(args, (list, tuple)) else ()
+        argv = args if _isa(args, (list, tuple)) else ()
         return [] if "--format" in " ".join(str(a) for a in argv) else None, 0, ""
     try:
         # docker --format '{{json .}}' produces NDJSON
@@ -468,22 +468,22 @@ def docker_json(args: list[str], timeout=30) -> Any:
                         # RecursionError: leftover nested NDJSON row is not
                         # ValueError; skip it so siblings still list.
                         continue
-                    if isinstance(parsed, list):
+                    if _isa(parsed, list):
                         objs.extend(
-                            _jsonable(x) for x in parsed if isinstance(x, dict)
+                            _jsonable(x) for x in parsed if _isa(x, dict)
                         )
-                    elif isinstance(parsed, dict):
+                    elif _isa(parsed, dict):
                         objs.append(_jsonable(parsed))
-                return [x for x in objs if isinstance(x, dict)], 0, ""
+                return [x for x in objs if _isa(x, dict)], 0, ""
         parsed = safe_json_loads(out, parse_int=parse_int_capped)
-        if isinstance(parsed, list):
+        if _isa(parsed, list):
             return [
-                x for x in (_jsonable(row) for row in parsed if isinstance(row, dict))
-                if isinstance(x, dict)
+                x for x in (_jsonable(row) for row in parsed if _isa(row, dict))
+                if _isa(x, dict)
             ], 0, ""
-        if isinstance(parsed, dict):
+        if _isa(parsed, dict):
             cleaned = _jsonable(parsed)
-            return cleaned if isinstance(cleaned, dict) else {}, 0, ""
+            return cleaned if _isa(cleaned, dict) else {}, 0, ""
         return [], 0, ""
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
         return [], 0, ""
@@ -628,8 +628,8 @@ def peek_engine() -> bool | None:
 
 def redact_env(env_list: list[str] | None) -> list[str]:
     out = []
-    for e in env_list if isinstance(env_list, list) else []:
-        if not isinstance(e, str):
+    for e in env_list if _isa(env_list, list) else []:
+        if not _isa(e, str):
             continue
         if "=" in e:
             k, v = e.split("=", 1)
