@@ -257,7 +257,7 @@
           </div>
           <div v-if="!asRecord(preview).total" class="meta">{{ t('sched.preview_empty') }}</div>
           <div v-else style="max-height:300px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-            <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="i">{{ finiteText(line) }}</div>
+            <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="finiteText(line) + ':' + i">{{ finiteText(line) }}</div>
           </div>
         </template>
       </div>

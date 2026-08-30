@@ -99,7 +99,7 @@
     </div>
 
     <div class="lc-legend" v-if="asArray(legend).length && !quiet">
-      <span v-for="(s, i) in asArray(legend)" :key="i" class="leg">
+      <span v-for="(s, i) in asArray(legend)" :key="finiteText(asRecord(s).name) + ':' + i" class="leg">
         <i :style="{ background: asRecord(s).color }"></i>
         <span class="leg-name">{{ finiteText(asRecord(s).name) }}</span>
         <b v-if="asRecord(s).latest != null">{{ formatLegend(asRecord(s).latest) }}</b>

@@ -208,7 +208,7 @@
           <div v-if="!asArray(chatMessages).length" class="meta">{{ t('ollama.chat_empty') }}</div>
           <div
             v-for="(m, i) in asArray(chatMessages)"
-            :key="i"
+            :key="finiteText(asRecord(m).role) + ':' + i"
             class="chat-msg"
             :class="asRecord(m).role"
           >

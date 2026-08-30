@@ -149,7 +149,7 @@
                 <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(asRecord(c).ports)">{{ finiteText(asRecord(c).ports) }}</td>
                 <td class="mono col-hide-m" style="max-width:140px" :title="mountTitle(c)">
                   <template v-if="asArray(asRecord(c).mounts).length">
-                    <div v-for="(m,i) in asArray(asRecord(c).mounts).slice(0,2)" :key="i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    <div v-for="(m,i) in asArray(asRecord(c).mounts).slice(0,2)" :key="finiteText(asRecord(m).src) + ':' + finiteText(asRecord(m).dst) + ':' + i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                       {{ shortPath(asRecord(m).src) }} → {{ finiteText(asRecord(m).dst) }}
                     </div>
                     <span v-if="asArray(asRecord(c).mounts).length>2" style="color:var(--sub)">+{{ asArray(asRecord(c).mounts).length-2 }}</span>
@@ -425,7 +425,7 @@
           <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ finiteText(asRecord(asRecord(inspectData).RestartPolicy).Name) }}</div>
         </div>
         <h2 class="section-title">{{ t('docker.mounts') }}</h2>
-        <div v-for="(m,i) in asArray(asRecord(inspectData).Mounts)" :key="i" class="mono" style="margin-bottom:3px">
+        <div v-for="(m,i) in asArray(asRecord(inspectData).Mounts)" :key="finiteText(asRecord(m).Source) + ':' + finiteText(asRecord(m).Destination) + ':' + i" class="mono" style="margin-bottom:3px">
           {{ finiteText(asRecord(m).Source) }} → {{ finiteText(asRecord(m).Destination) }}
         </div>
         <h2 class="section-title">{{ t('docker.env_masked') }}</h2>

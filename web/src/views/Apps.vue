@@ -566,14 +566,14 @@
         <section class="drawer-sec" v-if="asArray(asRecord(detail).data_paths).length">
           <h3>{{ t('apps.sec_data') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(p,i) in asArray(asRecord(detail).data_paths)" :key="i">{{ finiteText(p) }}</li>
+            <li v-for="(p,i) in asArray(asRecord(detail).data_paths)" :key="finiteText(p) + ':' + i">{{ finiteText(p) }}</li>
           </ul>
         </section>
 
         <section class="drawer-sec" v-if="asArray(asRecord(detail).databases).length">
           <h3>{{ t('apps.sec_db') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(d,i) in asArray(asRecord(detail).databases)" :key="i">{{ finiteText(asRecord(d).type) }} · {{ finiteText(asRecord(d).path) }} <span v-if="asRecord(d).mount">→ {{ finiteText(asRecord(d).mount) }}</span></li>
+            <li v-for="(d,i) in asArray(asRecord(detail).databases)" :key="finiteText(asRecord(d).path) + ':' + i">{{ finiteText(asRecord(d).type) }} · {{ finiteText(asRecord(d).path) }} <span v-if="asRecord(d).mount">→ {{ finiteText(asRecord(d).mount) }}</span></li>
           </ul>
         </section>
 
@@ -582,7 +582,7 @@
           <table class="mini-table" v-if="asArray(asRecord(detail).ports).length">
             <thead><tr><th>{{ t('apps.col_ports') }}</th><th>target</th><th>ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(p,i) in asArray(asRecord(detail).ports)" :key="i">
+              <tr v-for="(p,i) in asArray(asRecord(detail).ports)" :key="finiteText(asRecord(p).published) + ':' + finiteText(asRecord(p).target) + ':' + i">
                 <td class="mono">{{ finiteText(asRecord(p).published) }}</td>
                 <td class="mono">{{ finiteText(asRecord(p).target) }}</td>
                 <td class="mono">{{ finiteText(asRecord(p).container, '') }}</td>
@@ -591,7 +591,7 @@
           </table>
           <div v-if="asArray(asRecord(detail).listening).length" class="sub-line" style="margin-top:8px">
             {{ t('apps.listening') }}:
-            <span v-for="(l,i) in asArray(asRecord(detail).listening)" :key="i" class="mono"> {{ finiteText(asRecord(l).name) }} </span>
+            <span v-for="(l,i) in asArray(asRecord(detail).listening)" :key="finiteText(asRecord(l).name) + ':' + i" class="mono"> {{ finiteText(asRecord(l).name) }} </span>
           </div>
         </section>
 
@@ -600,7 +600,7 @@
           <table class="mini-table">
             <thead><tr><th>network</th><th>IP</th><th>gw / ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(n,i) in asArray(asRecord(detail).networks)" :key="i">
+              <tr v-for="(n,i) in asArray(asRecord(detail).networks)" :key="finiteText(asRecord(n).network) + ':' + finiteText(asRecord(n).ip) + ':' + i">
                 <td class="mono">{{ finiteText(asRecord(n).network) }}</td>
                 <td class="mono">{{ finiteText(asRecord(n).ip) }}</td>
                 <td class="mono">{{ finiteText(asRecord(n).gateway, '') || finiteText(asRecord(n).container, '') }}</td>
@@ -614,7 +614,7 @@
           <table class="mini-table">
             <thead><tr><th>src</th><th>dst</th><th>type</th></tr></thead>
             <tbody>
-              <tr v-for="(m,i) in asArray(asRecord(detail).mounts)" :key="i">
+              <tr v-for="(m,i) in asArray(asRecord(detail).mounts)" :key="finiteText(asRecord(m).source) + ':' + finiteText(asRecord(m).destination) + ':' + i">
                 <td class="mono path-cell" :title="finiteText(asRecord(m).source)">{{ finiteText(asRecord(m).source) }}</td>
                 <td class="mono">{{ finiteText(asRecord(m).destination) }}</td>
                 <td>{{ finiteText(asRecord(m).type) }}</td>
@@ -628,7 +628,7 @@
           <table class="mini-table">
             <thead><tr><th>name</th><th>image</th><th>state</th><th>ports</th></tr></thead>
             <tbody>
-              <tr v-for="(c,i) in asArray(asRecord(detail).containers)" :key="i">
+              <tr v-for="(c,i) in asArray(asRecord(detail).containers)" :key="finiteText(asRecord(c).name) + ':' + i">
                 <td class="mono">{{ finiteText(asRecord(c).name) }}</td>
                 <td class="mono path-cell">{{ finiteText(asRecord(c).image) }}</td>
                 <td>{{ finiteText(asRecord(c).state) }}</td>

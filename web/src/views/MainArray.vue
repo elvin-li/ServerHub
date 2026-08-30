@@ -640,7 +640,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(h, i) in asArray(asRecord(smartData).history).slice(0, 15)" :key="i">
+                  <tr v-for="(h, i) in asArray(asRecord(smartData).history).slice(0, 15)" :key="finiteText(asRecord(h).ts) + ':' + finiteText(asRecord(h).device) + ':' + i">
                     <td class="mono" style="font-size:10px">{{ fmtTs(asRecord(h).ts) }}</td>
                     <td class="mono" style="font-size:10px">
                       {{ finiteText(asRecord(h).device) }}
