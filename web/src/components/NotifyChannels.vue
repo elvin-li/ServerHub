@@ -260,8 +260,11 @@ async function save() {
       config: e.config,
       secrets,
     }
-    if (e.existing) await updateNotifyChannel(e.id, body)
-    else await createNotifyChannel(body)
+    if (e.existing) {
+      const r = asRecord(await updateNotifyChannel(e.id, body))
+    } else {
+      const r = asRecord(await createNotifyChannel(body))
+    }
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.save'))
     editing.value = null
@@ -296,7 +299,7 @@ async function removeChannel(c) {
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteNotifyChannel(row.id)
+    const r = asRecord(await deleteNotifyChannel(row.id))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.delete'))
     if (asRecord(editing.value).id === row.id) editing.value = null

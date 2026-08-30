@@ -636,7 +636,7 @@ async function removeSelected() {
   const generation = loadGeneration
   pendingLoading.value = true
   try {
-    await postPhotosHubPendingRemove(asArray(selected.value))
+    const r = asRecord(await postPhotosHubPendingRemove(asArray(selected.value)))
     if (generation !== loadGeneration || !pageAlive) return
     await loadPending()
     if (generation !== loadGeneration || !pageAlive) return

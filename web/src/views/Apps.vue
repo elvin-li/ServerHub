@@ -1354,7 +1354,7 @@ async function toggleManagedAutostart(it, enabled) {
   try {
     // Prefer dedicated autostart_id (brew:xxx) when present
     if (it.autostart_id) {
-      await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled)
+      const r = asRecord(await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled))
       return
     }
     const result = asRecord(await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off'))
@@ -1703,7 +1703,7 @@ async function saveCredential(applyToService) {
       apply_to_service: !!applyToService,
     }))
     if (generation !== detailGeneration || !pageAlive) return
-    credential.value = result.credential
+    credential.value = asRecord(result.credential)
     credentialForm.value.password = ''
     credentialForm.value.confirm = ''
     showCredentialPassword.value = false
@@ -1723,7 +1723,7 @@ async function deleteCredential() {
   const generation = detailGeneration
   credentialBusy.value = true
   try {
-    await deleteAppCredential(detail.value.id)
+    const r = asRecord(await deleteAppCredential(detail.value.id))
     if (generation !== detailGeneration || !pageAlive) return
     await loadCredential(detail.value)
     if (generation !== detailGeneration || !pageAlive) return
@@ -1964,7 +1964,7 @@ async function saveRemoteSource() {
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
-    await setCatalogRemoteSource(remoteUrl.value.trim())
+    const r = asRecord(await setCatalogRemoteSource(remoteUrl.value.trim()))
     if (!stillOnApps(generation)) return
     toast('✅ ' + t('catalog_remote.saved'))
     await loadRemote()

@@ -162,7 +162,7 @@ async function save() {
     if (image.length) body.image = image
     if (prefix.length) body.launchd_prefix = prefix
     if (ports.length) body.ports = ports
-    await saveGroupRules(body)
+    const r = asRecord(await saveGroupRules(body))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.saved')}`)
     editing.value = null
@@ -180,7 +180,7 @@ async function removeRow(row) {
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteGroupRule(asRecord(row).id)
+    const r = asRecord(await deleteGroupRule(asRecord(row).id))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.removed')}`)
     await load()

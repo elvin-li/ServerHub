@@ -463,8 +463,11 @@ async function saveJob(body) {
   busy.value = true
   try {
     const existing = asRecord(asRecord(jobEditor.value).job)
-    if (existing.id) await updateSchedulerJob(existing.id, body)
-    else await createSchedulerJob(body)
+    if (existing.id) {
+      const r = asRecord(await updateSchedulerJob(existing.id, body))
+    } else {
+      const r = asRecord(await createSchedulerJob(body))
+    }
     if (!pageAlive) return
     toast('✅ ' + t('sched.saved'))
     jobEditor.value = null
@@ -484,7 +487,7 @@ async function runJob(job) {
     : 'backups.confirm_rsync_run'
   if (!confirm(t(confirmKey, { name: finiteText(row.name, '') || finiteText(row.id) }))) return
   try {
-    await runSchedulerJobNow(row.id)
+    const r = asRecord(await runSchedulerJobNow(row.id))
     if (!pageAlive) return
     toast('✅ ' + t('sched.started', { name: finiteText(row.name) }))
     await loadJobs()
@@ -498,7 +501,7 @@ async function removeJob(job) {
   const row = asRecord(job)
   if (!confirm(t('sched.confirm_delete', { name: finiteText(row.name) }))) return
   try {
-    await deleteSchedulerJob(row.id)
+    const r = asRecord(await deleteSchedulerJob(row.id))
     if (!pageAlive) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()

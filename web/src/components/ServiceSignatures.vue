@@ -178,7 +178,7 @@ async function save() {
     if (e.http === 'true') body.http = true
     else if (e.http === 'false') body.http = false
     else body.http = null
-    await upsertServiceSignature(body)
+    const r = asRecord(await upsertServiceSignature(body))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.saved')}`)
     editing.value = null
@@ -196,7 +196,7 @@ async function removeRow(row) {
   const generation = loadGeneration
   busy.value = true
   try {
-    await forgetServiceSignature(asRecord(row).slug)
+    const r = asRecord(await forgetServiceSignature(asRecord(row).slug))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.removed')}`)
     if (asRecord(editing.value).slug === asRecord(row).slug) editing.value = null
