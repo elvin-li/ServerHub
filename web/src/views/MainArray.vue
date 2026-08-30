@@ -580,7 +580,7 @@
                     </button>
                     <template v-if="asArray(asRecord(asRecord(m).caps).supported).length">
                       <button
-                        v-for="k in asArray(asRecord(asRecord(m).caps).supported).filter(x => x !== 'offline')" :key="k"
+                        v-for="k in asArray(asRecord(asRecord(m).caps).supported).filter((x) => asTrimmed(x) !== 'offline')" :key="finiteText(k)"
                         class="tiny primary"
                         :disabled="busy || smartTestBusy"
                         @click="runSmartTest(m, k)"

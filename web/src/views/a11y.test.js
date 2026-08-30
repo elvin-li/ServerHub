@@ -2007,6 +2007,8 @@ describe('operations polling and submission guards', () => {
     expect(poll).toMatch(/if \(gen !== generation\) return\s*\n\s*await tick\(\)/)
     expect(client).toMatch(/const userAborted = Boolean\(signal\?\.aborted\)/)
     expect(client).toMatch(/if \(signal\?\.aborted\) \{\s*\n\s*const err = new Error\('aborted'\)/)
+    expect(client).toMatch(/finiteN\(value, null\)/)
+    expect(client).not.toMatch(/value: Number\(value\)/)
   })
 
   it('discards a second-await mutation that used to land after leave', () => {
@@ -3065,6 +3067,8 @@ describe('leftover Infinity interpolations', () => {
     expect(array).not.toMatch(/reasons: d\.error/)
     expect(array).toMatch(/reasons: finiteText\(d\.error\)/)
     expect(array).toMatch(/const devices = asArray\(asRecord\(asRecord\(data\.value\)\.array\)\.devices\)/)
+    expect(array).toMatch(/asTrimmed\(x\) !== 'offline'/)
+    expect(array).toMatch(/:key="finiteText\(k\)"/)
   })
 
   it('Pool leftover capacities go through fmtGb/withUnit', () => {
@@ -3704,6 +3708,8 @@ describe('leftover Infinity interpolations', () => {
     expect(ch).toMatch(/v-for="c in asArray\(channels\)"/)
     expect(ch).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(ch).toMatch(/Object\.keys\(asRecord\(types\.value\)\)/)
+    expect(ch).toMatch(/:key="finiteText\(ty\)"/)
+    expect(ch).not.toMatch(/:key="ty"/)
   })
 
   it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {

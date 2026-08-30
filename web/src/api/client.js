@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, asJsonBody, asTrimmed, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, asJsonBody, asTrimmed, finiteN, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -415,8 +415,10 @@ export const getSystemSettings = () => json('/api/settings/system')
 // a page that said "temperature fine" while the alert log said otherwise would be
 // a bug the operator cannot diagnose.
 export const getThresholds = () => json('/api/settings/thresholds')
-export const setPowerSetting = (key, value) =>
-  json('/api/settings/power', jsonBody('POST', { key, value: Number(value) }))
+export const setPowerSetting = (key, value) => {
+  const n = finiteN(value, null)
+  return json('/api/settings/power', jsonBody('POST', { key, value: typeof n === 'number' ? n : 0 }))
+}
 export const generateDiagnostics = () => json('/api/diagnostics')
 
 // Tools domain
