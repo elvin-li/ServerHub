@@ -27,6 +27,27 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in :func:`registry` (YAML apps /
+    scripts rows, Orb machine rows), :func:`_plist_dict` (LaunchAgent
+    loads), :func:`_registry_id`, and :func:`_script_argv` — POST
+    ``/api/action`` and GET registry consumers answered HTTP 500 instead
+    of dropping the junk row.  Fail-closed: treat the leftover as none of
+    the claimed types.  A lying ``__class__`` (answers ``int``) is *not*
+    an error and still reports its claim here.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 action JSON."""
     if value is None:
@@ -97,7 +118,7 @@ def _app_process_name(name: str) -> str:
 
 
 def _script_argv(command) -> list[str]:
-    if isinstance(command, (list, tuple)):
+    if _isinst(command, (list, tuple)):
         # ``str()`` not ``_as_text``: leftover ``!!binary`` ``b'--all'`` must
         # stay ``"b'--all'"``, not decode into a real ``--all`` option.
         argv = []
@@ -215,7 +236,7 @@ def _plist_dict(path) -> dict | None:
         raise
     except BaseException:
         return None
-    return data if isinstance(data, dict) else None
+    return data if _isinst(data, dict) else None
 
 
 def _plist_disabled(path: str) -> bool:
@@ -249,11 +270,11 @@ def _registry_id(raw) -> str:
     passes ``isinstance(int)`` and must not become ``"True"``.  Matches
     ``discovery.apps._entry_id`` so the id a row serves is the key here.
     """
-    if isinstance(raw, (bytes, bytearray)):
+    if _isinst(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8", "replace")
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         return _as_text(raw).strip()
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if type(raw) is bool or not _isinst(raw, int):
         return ""
     try:
         return str(raw)
@@ -264,7 +285,7 @@ def _registry_id(raw) -> str:
 def registry():
     reg = {}
     for a in cfg().get("apps") or []:
-        if not isinstance(a, dict):
+        if not _isinst(a, dict):
             continue
         sid = _registry_id(a.get("id"))
         if not sid:
@@ -274,7 +295,7 @@ def registry():
         else:
             reg[sid] = ("app", a)
     for s in cfg().get("scripts") or []:
-        if not isinstance(s, dict):
+        if not _isinst(s, dict):
             continue
         sid = _registry_id(s.get("id"))
         if not sid:
@@ -310,7 +331,7 @@ def registry():
     try:
         from hub import vms_svc
         for m in vms_svc.list_orb_machines():
-            if not isinstance(m, dict):
+            if not _isinst(m, dict):
                 continue
             oid = _as_text(m.get("id")).strip()
             oname = _as_text(m.get("orb_name")).strip()
