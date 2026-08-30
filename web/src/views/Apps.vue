@@ -980,7 +980,7 @@ const filteredManaged = computed(() => {
   let list = asArray(asRecord(managed.value).items)
   if (mkind.value !== 'all') list = list.filter(x => asRecord(x).kind === mkind.value)
   const rawQ = mq.value
-  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
+  const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
     list = list.filter(x => {
       const rec = asRecord(x)
@@ -1020,7 +1020,7 @@ const autostartByGroup = computed(() => {
  * carrying it covers the page.
  */
 function firstLine(message) {
-  const text = String(finiteText(message, '') || '').trim()
+  const text = asTrimmed(finiteText(message, ''))
   if (!text) return t('common.fail')
   return text.split('\n')[0]
 }
@@ -1096,8 +1096,8 @@ function openUrl(it) {
     return `http://${browseHost()}:${m[1]}`
   }
   // native ports list like "8125"
-  if (ps && /^\d{2,5}/.test(ps.trim())) {
-    const port = ps.trim().split(/[,\s]/)[0]
+  if (ps && /^\d{2,5}/.test(asTrimmed(ps))) {
+    const port = asTrimmed(ps).split(/[,\s]/)[0]
     if (!['1883', '5432', '6379', '3306', '5900', '9100'].includes(port)) {
       return `http://${browseHost()}:${port}`
     }
@@ -1828,7 +1828,7 @@ const filtered = computed(() => {
   if (onlyFeatured.value) list = list.filter(x => asRecord(x).featured)
   if (hideInstalled.value) list = list.filter(x => !asRecord(x).installed)
   const rawQ = q.value
-  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
+  const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
     list = list.filter(x => {
       const rec = asRecord(x)

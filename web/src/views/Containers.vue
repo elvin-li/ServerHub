@@ -200,7 +200,7 @@
     <template v-else-if="data && tab==='images'">
       <div class="toolbar">
         <input v-model="pullImage" type="text" :placeholder="t('docker.pull_ph')" style="min-width:200px"  :aria-label="t('docker.pull_ph')"/>
-        <button class="primary" :disabled="busy || !pullImage.trim()" @click="doPull">{{ t('docker.pull') }}</button>
+        <button class="primary" :disabled="busy || !asTrimmed(pullImage)" @click="doPull">{{ t('docker.pull') }}</button>
         <button class="danger" :disabled="busy" @click="doPrune('images')">{{ t('docker.prune_images') }}</button>
         <button @click="loadImages" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
@@ -232,7 +232,7 @@
     <template v-else-if="data && tab==='volumes'">
       <div class="toolbar">
         <input v-model="newVol" type="text" :placeholder="t('docker.new_vol_ph')" style="min-width:160px"  :aria-label="t('docker.new_vol_ph')"/>
-        <button class="primary" :disabled="busy || !newVol.trim()" @click="createVol">{{ t('docker.create_vol') }}</button>
+        <button class="primary" :disabled="busy || !asTrimmed(newVol)" @click="createVol">{{ t('docker.create_vol') }}</button>
         <button class="danger" :disabled="busy" @click="doPrune('volumes')">{{ t('docker.prune_volumes') }}</button>
         <button @click="loadVolumes" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
@@ -262,7 +262,7 @@
     <template v-else-if="data && tab==='networks'">
       <div class="toolbar">
         <input v-model="newNet" type="text" :placeholder="t('docker.new_net_ph')" style="min-width:160px"  :aria-label="t('docker.new_net_ph')"/>
-        <button class="primary" :disabled="busy || !newNet.trim()" @click="createNet">{{ t('docker.create_net') }}</button>
+        <button class="primary" :disabled="busy || !asTrimmed(newNet)" @click="createNet">{{ t('docker.create_net') }}</button>
         <button class="danger" :disabled="busy" @click="doPrune('networks')">{{ t('docker.prune_networks') }}</button>
         <button @click="loadNetworks" :disabled="busy">{{ t('common.refresh') }}</button>
       </div>
@@ -405,7 +405,7 @@
           <input type="checkbox" v-model="runForm.privileged" :aria-label="t('docker.privileged')" />
         </div>
         <div class="btns" style="margin-top:14px">
-          <button class="primary" :disabled="busy || !runForm.image.trim()" @click="doRun">{{ t('docker.create_start') }}</button>
+          <button class="primary" :disabled="busy || !asTrimmed(runForm.image)" @click="doRun">{{ t('docker.create_start') }}</button>
           <button @click="showRun=false">{{ t('common.cancel') }}</button>
         </div>
       </div>
@@ -545,7 +545,7 @@ const systemCount = computed(() => asArray(containers.value).filter(c => asRecor
 const filteredContainers = computed(() => {
   let list = containers.value
   if (hideSystem.value) list = list.filter(c => !asRecord(c).system)
-  const qq = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
+  const qq = asTrimmed(q.value).toLowerCase()
   if (!qq) return list
   return list.filter((c) => {
     const rec = asRecord(c)
@@ -966,7 +966,7 @@ async function doPrune(kind) {
 }
 
 function splitCsv(s) {
-  return (s || '').split(/[,;\n]/).map(x => x.trim()).filter(Boolean)
+  return asTrimmed(s).split(/[,;\n]/).map((x) => asTrimmed(x)).filter(Boolean)
 }
 
 async function doRun() {
@@ -974,14 +974,14 @@ async function doRun() {
   busy.value = true
   try {
     const body = {
-      image: runForm.value.image.trim(),
-      name: runForm.value.name.trim() || null,
+      image: asTrimmed(runForm.value.image),
+      name: asTrimmed(runForm.value.name) || null,
       restart: runForm.value.restart,
       ports: splitCsv(runForm.value.ports),
       volumes: splitCsv(runForm.value.volumes),
       env: splitCsv(runForm.value.env),
-      network: runForm.value.network.trim() || null,
-      command: runForm.value.command.trim() || null,
+      network: asTrimmed(runForm.value.network) || null,
+      command: asTrimmed(runForm.value.command) || null,
       privileged: !!runForm.value.privileged,
     }
     const j = asRecord(await runContainer(body))

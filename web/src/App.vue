@@ -852,7 +852,7 @@ function onCmdKey(e) {
   }
 }
 const cmdResults = computed(() => {
-  const q = cmdQuery.value.toLowerCase().trim()
+  const q = asTrimmed(cmdQuery.value).toLowerCase()
   const items = asArray(nav.value).flatMap(n => n.children ? [n, ...asArray(n.children)] : [n])
   const matched = q
     ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))

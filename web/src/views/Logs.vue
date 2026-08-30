@@ -49,7 +49,7 @@
     <!-- Filter-miss and empty-file are different answers: "(empty)" on a
          full log whose filter matched nothing told the operator the file
          has no lines. Same split Brew/Health pinned (common.no_match). -->
-    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ finiteText(filter, '').trim() && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ asTrimmed(finiteText(filter, '')) && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
@@ -58,7 +58,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN, finiteText, jsonLoad, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonLoad, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -106,7 +106,7 @@ function asLogLines(raw) {
 
 const displayLines = computed(() => {
   const rawFilter = filter.value
-  const f = typeof rawFilter === 'string' ? rawFilter.trim().toLowerCase() : ''
+  const f = asTrimmed(rawFilter).toLowerCase()
   const all = asArray(asLogLines(text.value))
   if (!f) return all
   return all.filter((l) => lineText(l).toLowerCase().includes(f))

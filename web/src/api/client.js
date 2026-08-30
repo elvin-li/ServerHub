@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, asJsonBody, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, asJsonBody, asTrimmed, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -47,7 +47,7 @@ function errorText(payload, statusText) {
     // params.detail; appending it keeps the generic "operation failed" text
     // from hiding the actual cause (e.g. wg-quick's error line).
     const params = asRecord(rec.params)
-    const detail = typeof params.detail === 'string' ? params.detail.trim() : ''
+    const detail = asTrimmed(params.detail)
     // t() returns the key itself when it is missing — prefer the server text.
     if (translated !== key) return detail ? `${translated}\n${detail}` : translated
     return detail ? `${finiteText(rec.message, '') || rec.code}\n${detail}` : finiteText(rec.message, '') || rec.code
@@ -1022,7 +1022,7 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
       const lines = buf.split('\n')
       buf = lines.pop() ?? ''
       for (const line of lines) {
-        const trimmed = line.trim()
+        const trimmed = asTrimmed(line)
         if (!trimmed) continue
         const parsed = jsonLoad(trimmed)
         if (parsed == null || typeof parsed !== 'object') continue

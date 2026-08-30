@@ -73,7 +73,7 @@
           :disabled="busy"
           @keydown.esc.stop="emit('close')"
         />
-        <button class="primary" type="submit" :disabled="busy || !draft.trim()" data-test="assistant-send">
+        <button class="primary" type="submit" :disabled="busy || !asTrimmed(draft)" data-test="assistant-send">
           {{ busy ? t('assistant.thinking') : t('assistant.send') }}
         </button>
       </form>
@@ -86,7 +86,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { askAssistant } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -126,8 +126,8 @@ watch(() => props.open, async (isOpen) => {
     await send(action)
     return
   }
-  if (finiteText(props.seed, '').trim()) {
-    draft.value = finiteText(props.seed, '').trim()
+  if (asTrimmed(finiteText(props.seed, ''))) {
+    draft.value = asTrimmed(finiteText(props.seed, ''))
     emit('consumed-seed')
     await send('auto')
   }
@@ -193,7 +193,7 @@ function historyPayload() {
 }
 
 async function send(action, preset = '') {
-  const query = (preset || draft.value).trim()
+  const query = asTrimmed(preset || draft.value)
   if (action === 'ask' && !query) return
   sendGeneration += 1
   const generation = sendGeneration

@@ -182,7 +182,7 @@
             :aria-label="t('ollama.pull_name_label')"
             @keydown.enter="startPull"
           />
-          <button class="primary" :disabled="pullBusy || pullInfo?.running || !pullName.trim()" @click="startPull">
+          <button class="primary" :disabled="pullBusy || pullInfo?.running || !asTrimmed(pullName)" @click="startPull">
             {{ pullInfo?.running ? t('ollama.pull_running_short') : t('ollama.act_pull') }}
           </button>
         </div>
@@ -264,7 +264,7 @@
             maxlength="2000"
             @keydown.enter="runTest"
           />
-          <button class="primary" :disabled="testBusy || !testModel || !testPrompt.trim()" @click="runTest">
+          <button class="primary" :disabled="testBusy || !testModel || !asTrimmed(testPrompt)" @click="runTest">
             {{ testBusy ? t('ollama.testing') : t('ollama.act_test') }}
           </button>
         </div>
@@ -357,7 +357,7 @@
         <div class="row">
           <button
             class="danger"
-            :disabled="deleteText.trim() !== asRecord(deleteTarget).name || deleting"
+            :disabled="asTrimmed(deleteText) !== asRecord(deleteTarget).name || deleting"
             @click="doDelete"
           >{{ t('ollama.delete_confirm') }}</button>
           <button @click="closeDelete">{{ t('common.cancel') }}</button>
@@ -564,8 +564,8 @@ async function saveOllamaSettings() {
   try {
     const r = asRecord(await putSettings({
       ollama: {
-        url: ollamaForm.value.url.trim(),
-        label: ollamaForm.value.label.trim(),
+        url: asTrimmed(asRecord(ollamaForm.value).url),
+        label: asTrimmed(asRecord(ollamaForm.value).label),
       },
     }))
     if (generation !== loadGeneration || !pageAlive) return

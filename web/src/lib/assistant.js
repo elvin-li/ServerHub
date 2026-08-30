@@ -1,4 +1,4 @@
-import { asArray, asRecord, finiteText } from './finite'
+import { asArray, asRecord, asTrimmed, finiteText } from './finite'
 
 /** Shell event: open the AI drawer from any page (Dashboard, etc.). */
 export const ASSISTANT_EVENT = 'serverhub:assistant'
@@ -13,7 +13,7 @@ export function openAssistant(detail = {}) {
  * Used by Cmd+K so "logs" / "docker" jump without opening the drawer.
  */
 export function matchCatalog(panels, query, limit = 6) {
-  const needle = finiteText(query, '').trim().toLowerCase()
+  const needle = asTrimmed(finiteText(query, '')).toLowerCase()
   if (!needle || !asArray(panels).length) return []
   const scored = []
   for (const panel of asArray(panels)) {

@@ -72,7 +72,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getAuthAudit } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -121,7 +121,7 @@ function fieldText(value) {
 const filteredRows = computed(() => {
   try {
     const list = asArray(rows.value)
-    const needle = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
+    const needle = asTrimmed(q.value).toLowerCase()
     if (!needle) return list
     return list.filter((e) => {
       try {

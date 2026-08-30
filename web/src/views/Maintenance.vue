@@ -91,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -117,7 +117,7 @@ let listTimer = null
 const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
 const filtered = computed(() => {
   const list = asArray(tasks.value)
-  const qq = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
+  const qq = asTrimmed(q.value).toLowerCase()
   if (!qq) return list
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw

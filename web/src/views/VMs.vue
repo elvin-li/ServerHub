@@ -125,7 +125,7 @@
         <label for="vm-clone-name" style="font-size:12px;color:var(--sub)">{{ t('vms.new_name') }}</label>
         <input id="vm-clone-name" v-model="cloneName" type="text" style="width:100%;margin:8px 0 12px" :aria-label="t('vms.new_name')" />
         <div class="btns">
-          <button class="primary" :disabled="busy || !cloneName.trim()" @click="doClone">{{ t('vms.clone') }}</button>
+          <button class="primary" :disabled="busy || !asTrimmed(cloneName)" @click="doClone">{{ t('vms.clone') }}</button>
           <button @click="cloneTarget=null">{{ t('common.cancel') }}</button>
         </div>
       </div>
@@ -149,7 +149,7 @@
         <input id="vm-rename-name" v-model="renameName" type="text" style="width:100%;margin:8px 0 12px" @keyup.enter="doRename" :aria-label="t('vms.display_name')" />
         <p style="font-size:11px;color:var(--sub);margin:0 0 10px">{{ t('vms.rename_hint') }}</p>
         <div class="btns">
-          <button class="primary" :disabled="busy || !renameName.trim()" @click="doRename">{{ t('common.confirm') }}</button>
+          <button class="primary" :disabled="busy || !asTrimmed(renameName)" @click="doRename">{{ t('common.confirm') }}</button>
           <button @click="renameTarget=null">{{ t('common.cancel') }}</button>
         </div>
       </div>
@@ -243,7 +243,7 @@ function hasWebConsole(v) {
  * Returns '' when the URL is missing or still unresolved, so the button hides.
  */
 function webUrl(v) {
-  const raw = finiteText(asRecord(v).url, '').trim()
+  const raw = asTrimmed(finiteText(asRecord(v).url, ''))
   if (!raw) return ''
   const host = finiteText(window.location.hostname, '') || finiteText(asRecord(data.value).host_ip, '') || 'localhost'
   const out = raw
@@ -395,12 +395,12 @@ async function doCreate() {
   msg.value = t('vms.creating')
   try {
     let distro = createForm.value.distro
-    if (createForm.value.version.trim()) {
-      distro = `${distro}:${createForm.value.version.trim()}`
+    if (asTrimmed(createForm.value.version)) {
+      distro = `${distro}:${asTrimmed(createForm.value.version)}`
     }
     const j = requireOk(await createVm({
       distro,
-      name: createForm.value.name.trim() || null,
+      name: asTrimmed(createForm.value.name) || null,
     }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('vms.created'))

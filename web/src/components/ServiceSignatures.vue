@@ -87,7 +87,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forgetServiceSignature, getServiceSignatures, upsertServiceSignature } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -114,9 +114,9 @@ function fmtPorts(ports) {
 }
 
 function parseList(raw) {
-  return String(raw || '')
+  return asTrimmed(raw)
     .split(/[\s,]+/)
-    .map((s) => s.trim())
+    .map((s) => asTrimmed(s))
     .filter(Boolean)
 }
 

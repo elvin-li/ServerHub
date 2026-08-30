@@ -452,7 +452,7 @@
         <label style="font-size:12px;color:var(--sub)">{{ t('main_extra.new_name') }}</label>
         <input v-model="renameName" type="text" style="width:100%;margin:8px 0 12px" @keyup.enter="doRename" :aria-label="t('main_extra.new_name')" />
         <div class="btns">
-          <button class="primary" :disabled="busy || !renameName.trim()" @click="doRename">{{ t('common.confirm') }}</button>
+          <button class="primary" :disabled="busy || !asTrimmed(renameName)" @click="doRename">{{ t('common.confirm') }}</button>
           <button @click="renameTarget=null">{{ t('common.cancel') }}</button>
         </div>
       </div>
@@ -750,7 +750,7 @@ const fsTypes = computed(() => {
 const canFormat = computed(() => {
   const target = asRecord(formatTarget.value)
   if (!target.id && !target.volume_name) return false
-  const expect = (finiteText(target.volume_name, '') || finiteText(target.id, '')).trim()
+  const expect = asTrimmed(finiteText(target.volume_name, '') || finiteText(target.id, ''))
   const got = asTrimmed(formatConfirm.value)
   return got && (got === expect || got === target.id)
 })
@@ -816,7 +816,7 @@ const smartMerged = computed(() => {
 function smartNum(raw) {
   if (raw == null || typeof raw === 'boolean') return null
   if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
-  const s = String(raw).trim()
+  const s = typeof raw === 'string' ? asTrimmed(raw) : String(raw)
   if (!s) return null
   // The critical-warning bitmap is printed in hex; a decimal scan would read
   // "0x02" (spare below threshold) as 0 and drop the warning silently.
@@ -841,7 +841,7 @@ function smartReasons(smart) {
   // thresholds.  Anything that is not PASSED/OK is fatal, "WARNING" included --
   // smartctl uses that word for a crossed vendor threshold, which is a different
   // thing from our own soft warn level below.
-  const health = String(smart.health || '').trim()
+  const health = asTrimmed(finiteText(asRecord(smart).health, ''))
   if (health && !['PASSED', 'OK'].includes(health.toUpperCase().replace(/!+$/, ''))) {
     down.push(t('main_extra.smart_r_health', { v: finiteText(health) }))
   }
@@ -885,7 +885,7 @@ function smartReasons(smart) {
 
   // NVMe critical warning bitmap: any bit set is the controller reporting a fault
   // (spare exhausted, degraded reliability, read-only, over temperature).
-  const crit = String(smart.critical_warning || '').trim()
+  const crit = asTrimmed(finiteText(asRecord(smart).critical_warning, ''))
   const critNum = smartNum(crit)
   if (critNum != null && critNum > 0) {
     down.push(t('main_extra.smart_r_critical_warning', { v: crit }))
