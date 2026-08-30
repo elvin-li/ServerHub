@@ -91,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -114,7 +114,7 @@ let pollTimer = null
 let pollGeneration = 0
 let listTimer = null
 
-const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
+const anyRunning = computed(() => asArray(tasks.value).some((row) => recGet(row, 'running')))
 const filtered = computed(() => {
   const list = asArray(tasks.value)
   const qq = asTrimmed(q.value).toLowerCase()
@@ -122,13 +122,11 @@ const filtered = computed(() => {
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
   // on it — typing one character in the filter box blanked the whole page.
-  // asRecord: a leftover list cell that is not a mapping (null / string)
-  // used to throw on ``row.name`` and blank the whole page.
-  return list.filter(row => {
-    const rec = asRecord(row)
-    return String(rec.name ?? '').toLowerCase().includes(qq)
-      || String(rec.id ?? '').toLowerCase().includes(qq)
-      || String(rec.desc ?? '').toLowerCase().includes(qq)
+  // recGet: leftover getter bombs on name/id/desc used to blank the page.
+  return list.filter((row) => {
+    return String(recGet(row, 'name') ?? '').toLowerCase().includes(qq)
+      || String(recGet(row, 'id') ?? '').toLowerCase().includes(qq)
+      || String(recGet(row, 'desc') ?? '').toLowerCase().includes(qq)
   })
 })
 

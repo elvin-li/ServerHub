@@ -2563,7 +2563,8 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.NCPU/)
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\.value\)\.info\)\.MemTotal/)
     expect(containers).toMatch(/finiteN\(asArray\(filteredContainers\)\.length\)/)
-    expect(containers).toMatch(/finiteText\(rec\.name, ''\)\.toLowerCase\(\)/)
+    expect(containers).toMatch(/finiteText\(recGet\(c, 'name'\), ''\)\.toLowerCase\(\)/)
+    expect(containers).toMatch(/recGet\(c, 'system'\)/)
     expect(containers).toMatch(/Object\.keys\(asRecord\(map\)\)/)
     expect(containers).toMatch(/asTrimmed\(q\.value\)\.toLowerCase\(\)/)
     expect(containers).not.toMatch(/typeof q\.value === 'string' \? q\.value\.trim\(\)\.toLowerCase\(\)/)
@@ -3382,6 +3383,8 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).toMatch(/finiteN\(asArray\(tasks\)\.length\)/)
     expect(maintenance).toMatch(/asTrimmed\(q\.value\)\.toLowerCase\(\)/)
     expect(maintenance).not.toMatch(/typeof q\.value === 'string' \? q\.value\.trim\(\)\.toLowerCase\(\)/)
+    expect(maintenance).toMatch(/recGet\(row, 'running'\)/)
+    expect(maintenance).toMatch(/recGet\(row, 'name'\)/)
   })
 
   it('Account leftover recovery counts go through finiteN', () => {

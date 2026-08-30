@@ -445,7 +445,7 @@ import {
   removeImage, removeNetwork, removeVolume, runContainer, setRestartPolicy, updateContainer,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -540,20 +540,19 @@ const engineMem = computed(() => {
   return (n / 2 ** 30).toFixed(1)
 })
 
-const systemCount = computed(() => asArray(containers.value).filter(c => asRecord(c).system).length)
+const systemCount = computed(() => asArray(containers.value).filter((c) => recGet(c, 'system')).length)
 
 const filteredContainers = computed(() => {
   let list = containers.value
-  if (hideSystem.value) list = list.filter(c => !asRecord(c).system)
+  if (hideSystem.value) list = list.filter((c) => !recGet(c, 'system'))
   const qq = asTrimmed(q.value).toLowerCase()
   if (!qq) return list
   return list.filter((c) => {
-    const rec = asRecord(c)
-    return finiteText(rec.name, '').toLowerCase().includes(qq)
-      || finiteText(rec.id, '').toLowerCase().includes(qq)
-      || finiteText(rec.subtitle, '').toLowerCase().includes(qq)
-      || finiteText(rec.image, '').toLowerCase().includes(qq)
-      || finiteText(rec.project, '').toLowerCase().includes(qq)
+    return finiteText(recGet(c, 'name'), '').toLowerCase().includes(qq)
+      || finiteText(recGet(c, 'id'), '').toLowerCase().includes(qq)
+      || finiteText(recGet(c, 'subtitle'), '').toLowerCase().includes(qq)
+      || finiteText(recGet(c, 'image'), '').toLowerCase().includes(qq)
+      || finiteText(recGet(c, 'project'), '').toLowerCase().includes(qq)
   })
 })
 
