@@ -277,7 +277,7 @@ async function refresh(manual = false) {
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // Background 15s ticks stay silent: LoadFailure already marks the state on
     // screen, and re-toasting every interval while the panel is down is noise.
     // The retry button passes its click event as `manual`, so it still toasts.

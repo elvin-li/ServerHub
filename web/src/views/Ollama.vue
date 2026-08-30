@@ -607,7 +607,7 @@ async function refresh(force = false) {
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   } finally {
     if (generation === loadGeneration && pageAlive) {

@@ -316,7 +316,7 @@ async function load() {
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === loadGeneration) {

@@ -2925,6 +2925,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).toMatch(/v-for="c in asArray\(asRecord\(m\)\.capabilities\)"/)
     expect(ollama).toMatch(/const models = computed\(\(\) => asArray\(asRecord\(data\.value\)\.models\)\.map\(\(row\) => asRecord\(row\)\)\)/)
     expect(ollama).toMatch(/const resident = computed\(\(\) => asArray\(asRecord\(data\.value\)\.resident\)\.map\(\(row\) => asRecord\(row\)\)\)/)
+    expect(ollama).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
@@ -3165,6 +3166,7 @@ describe('leftover Infinity interpolations', () => {
     expect(vms).not.toMatch(/data\?\.orb_distros \|\| distros/)
     expect(vms).toMatch(/asArray\(data\?\.orb_distros\)/)
     expect(vms).toMatch(/v-for="v in asArray\(vms\)"/)
+    expect(vms).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Tools leftover disk/pid interpolations go through finite helpers', () => {
@@ -3251,6 +3253,7 @@ describe('leftover Infinity interpolations', () => {
     expect(modules).toMatch(/asArray\(list\)\.length/)
     expect(modules).toMatch(/asCategoryMap\(j\.by_category\)/)
     expect(modules).toMatch(/asRecord\(await getModules\(\)\)/)
+    expect(modules).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Health leftover summary counts go through finiteN', () => {
@@ -3310,6 +3313,7 @@ describe('leftover Infinity interpolations', () => {
     expect(users).toMatch(/const next = asRecord\(await getUsers\(\)\)/)
     expect(users).toMatch(/asArray\(createForm\.value\.resources\)/)
     expect(users).toMatch(/function secretLen\([\s\S]*typeof value === 'string'/)
+    expect(users).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Gateway leftover pids go through finiteN', () => {
@@ -3426,6 +3430,7 @@ describe('leftover Infinity interpolations', () => {
     expect(alerts).toMatch(/'❌ ' \+ finiteText\(r\.message, ''\)/)
     expect(alerts).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
     expect(alerts).toMatch(/finiteN\(asArray\(alerts\)\.length\)/)
+    expect(alerts).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Scheduler leftover counts/duration/rc go through finite helpers', () => {
@@ -3664,6 +3669,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ch).not.toMatch(/toast\('❌ ' \+ err\.message\)/)
     expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(err\.message\)\)/)
     expect(ch).toMatch(/v-for="c in asArray\(channels\)"/)
+    expect(ch).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {

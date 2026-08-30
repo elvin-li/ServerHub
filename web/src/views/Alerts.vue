@@ -130,7 +130,7 @@ async function refresh(manual = false) {
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // A background tick that fails must not re-toast every interval while the
     // panel is unreachable — LoadFailure already marks the state on screen.
     // The `false` return is lib/poll's opt-in sentinel for backoff.
