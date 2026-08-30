@@ -172,12 +172,12 @@ def _rc_int(rc) -> int:
     success, a timeout, or a vanished CLI.
     """
     try:
-        if isinstance(rc, bool):
+        if _isa(rc, bool):
             return int(rc)
         # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
         # cannot fire, and a lying-``__class__`` impostor TypeErrors here
         # instead of passing the gate (the modules5 unbound convention).
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         # Digit-cap probe: past CPython's int->str cap the status cannot be
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
@@ -312,7 +312,7 @@ def _legacy_shares(output: str) -> list[dict]:
 
 
 def _flag(value: object) -> bool:
-    if isinstance(value, str):
+    if _isa(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
 
@@ -340,11 +340,11 @@ def _json_shares(output: str) -> list[dict]:
         # RecursionError: leftover deeply-nested ``sharing -l -f json`` is
         # not ValueError; GET /api/shares used to 500.
         raise ValueError("sharing JSON is not an object") from e
-    if not isinstance(parsed, dict):
+    if not _isa(parsed, dict):
         raise ValueError("sharing JSON is not an object")
     result = []
     for record_name, raw in parsed.items():
-        if not isinstance(raw, dict):
+        if not _isa(raw, dict):
             continue
         path = raw.get("path")
         smb_name = raw.get("smb_name") or str(record_name)
@@ -397,7 +397,7 @@ _GB = 1_000_000_000  # decimal, matching how macOS reports disk sizes
 def _plist_first(record: dict, key: str) -> str | None:
     """First value of a dscl plist attribute (they are always string arrays).
 
-    A str() probe, not an ``isinstance(str)`` gate: a numeric leftover record
+    A str() probe, not an ``_isa(str)`` gate: a numeric leftover record
     id must keep behaving as its string form.  XML plists load
     ``<integer>0x…</integer>`` with ``int(x, 16)`` — exempt from CPython's
     int(str) digit cap — so a >4300-digit *already-int* leftover reached the
@@ -407,7 +407,7 @@ def _plist_first(record: dict, key: str) -> str | None:
     untyped raise.  Only the unusable value is dropped; siblings survive.
     """
     values = record.get(key)
-    if isinstance(values, list) and values:
+    if _isa(values, list) and values:
         try:
             return str(values[0])
         except ValueError:
@@ -453,11 +453,11 @@ def parse_time_machine_records(plist_text: str | bytes) -> dict[str, dict]:
         # closes the parser's own contract.  InvalidFileException is folded in
         # too so the failure message is consistent.
         raise ValueError("SharePoints plist is not readable") from e
-    if not isinstance(records, list):
+    if not _isa(records, list):
         raise ValueError("SharePoints plist is not an array")
     result: dict[str, dict] = {}
     for record in records:
-        if not isinstance(record, dict):
+        if not _isa(record, dict):
             continue
         name = _plist_first(record, "dsAttrTypeStandard:RecordName")
         if not name:
@@ -692,14 +692,14 @@ def time_machine_status(shares: list[dict] | None = None) -> dict:
     # had just rescued.
     tm_count = 0
     try:
-        rows = list.__iter__(shares) if isinstance(shares, list) else iter(())
+        rows = list.__iter__(shares) if _isa(shares, list) else iter(())
     except _CONTROL_FLOW:
         raise
     except BaseException:
         rows = iter(())
     try:
         for share in rows:
-            if isinstance(share, dict) and _truthy(dict.get(share, "time_machine")):
+            if _isa(share, dict) and _truthy(dict.get(share, "time_machine")):
                 tm_count += 1
     except _CONTROL_FLOW:
         raise
@@ -917,8 +917,8 @@ def _validate_quota(time_machine: bool, quota_gb) -> int | None:
     if not time_machine:
         raise ShareValidationError("shares.quota_requires_time_machine")
     if (
-        isinstance(quota_gb, bool)
-        or not isinstance(quota_gb, int)
+        type(quota_gb) is bool
+        or not _isa(quota_gb, int)
         or not 1 <= quota_gb <= _TM_QUOTA_MAX_GB
     ):
         raise ShareValidationError("shares.bad_quota")
@@ -1137,15 +1137,15 @@ def file_services() -> list[dict]:
     host = host_ip()
     raw_links = resolve_value(cfg().get("quick_links") or [])
     links = {}
-    for link in raw_links if isinstance(raw_links, list) else []:
-        if not isinstance(link, dict):
+    for link in raw_links if _isa(raw_links, list) else []:
+        if not _isa(link, dict):
             continue
         name = link.get("name")
         url = link.get("url")
         # YAML `.inf` / bytes leftover used to land in the payload and 500
         # Starlette's allow_nan=False JSON encoder. Leftover ``\\ud800`` in a
         # URL did the same via UnicodeEncodeError.
-        if isinstance(name, str) and isinstance(url, str) and name and url:
+        if _isa(name, str) and _isa(url, str) and name and url:
             name, url = _as_text(name), _as_text(url)
             if name and url:
                 links[name] = url

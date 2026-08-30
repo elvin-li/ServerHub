@@ -418,7 +418,7 @@ def list_services() -> list:
     # above — and 500 GET /api/brew/services.
     if _isinstance(data, list):
         # Unbound base iteration into an exact list before the truth test:
-        # ``isinstance(data, list) and data`` ran *outside* the try above, so
+        # ``_isinstance(data, list) and data`` ran *outside* the try above, so
         # a leftover list-subclass whose ``__bool__``/``__len__`` raises
         # 500'd GET /api/brew/services at the gate, and an ``__iter__`` bomb
         # inside the loop wiped every row into the text fallback.  The
