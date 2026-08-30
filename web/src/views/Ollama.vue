@@ -630,7 +630,7 @@ async function act(action) {
   const generation = loadGeneration
   svcBusy.value = true
   try {
-    const r = await doAction(label, action)
+    const r = asRecord(await doAction(label, action))
     if (generation !== loadGeneration || !pageAlive) return
     toast(r.ok ? `✅ ${label} · ${action}` : `❌ ${finiteText(r.message, '') || action}`)
     if (r.ok) {
@@ -658,7 +658,7 @@ async function unload(m) {
   const generation = loadGeneration
   unloading.value = true
   try {
-    await unloadOllamaModel(row.name)
+    const r = asRecord(await unloadOllamaModel(row.name))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('ollama.unloaded', { name: finiteText(row.name) }))
     void refresh(true)
@@ -685,7 +685,7 @@ async function doDelete() {
   const generation = loadGeneration
   deleting.value = true
   try {
-    await deleteOllamaModel(target.name)
+    const r = asRecord(await deleteOllamaModel(target.name))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('ollama.deleted', { name: finiteText(target.name) }))
     closeDelete()
@@ -742,7 +742,7 @@ async function startPull() {
   const generation = loadGeneration
   pullBusy.value = true
   try {
-    await startOllamaPull(name)
+    const r = asRecord(await startOllamaPull(name))
     if (generation !== loadGeneration || !pageAlive) return
     toast('🚀 ' + t('ollama.pull_started', { name: finiteText(name) }))
     pullName.value = ''

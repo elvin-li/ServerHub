@@ -788,10 +788,6 @@ async function load(manual = false) {
   try {
     const [status, ready] = await Promise.all([
       getWireguard(),
-      // Keep the previous readiness on failure instead of collapsing to null.
-      // The blocking-checks panel renders on `readiness && !readiness.ready`, so
-      // a failed probe hid it entirely -- and a tunnel that is up but carrying no
-      // traffic (the normal macOS failure) then looked perfectly healthy.
       getWireguardReadiness().catch(() => readiness.value),
     ])
     if (generation !== loadGeneration) return
@@ -811,7 +807,7 @@ async function load(manual = false) {
       // field uses this as its placeholder, and an IP that was free minutes ago
       // may now be taken. An empty placeholder is honest; a wrong one is not.
       getWireguardNextIp()
-        .then((r) => { if (generation === loadGeneration) nextIp.value = r.next_ip })
+        .then((r) => { if (generation === loadGeneration) nextIp.value = asRecord(r).next_ip })
         .catch(() => { if (generation === loadGeneration) nextIp.value = '' })
     }
   } catch (e) {
@@ -838,7 +834,7 @@ async function withBusy(fn, okKey) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const result = await fn()
+    const result = asRecord(await fn())
     if (generation !== loadGeneration || !pageAlive) return null
     if (okKey) toast('✅ ' + t(okKey))
     await load()

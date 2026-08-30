@@ -552,16 +552,11 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         text = _utf8_text(text)
         ok = rc == 0
         unreachable = looks_engine_down(text) or (
-            # A vanished DOCKER binary is run_capped's exact ``(-1, "not
-            # found")`` sentinel; it used to fall through and fail the
-            # save/create as ``compose.invalid: not found`` — a 400 blaming
-            # the operator's YAML for a missing CLI.  But the sentinel is
-            # any FileNotFoundError spawn: a *cwd* that vanished between the
-            # mkdir above and the spawn raises the same way, so the binary
-            # must be confirmed gone from disk before the sentinel reads as
-            # a missing CLI — with the CLI present and the engine merely
-            # off, the coded 503 pointed the operator at the wrong remedy.
-            rc == -1 and looks_cli_vanished(text) and not cli_on_disk()
+            # FileNotFoundError spawn collapses to ``(-1, "not found")``.
+            # Requiring ``not cli_on_disk()`` skipped this path on runners
+            # that still have a docker binary (catalog leftover HTTP).
+            # Forced ``engine_up`` below still refuses to classify while up.
+            rc == -1 and looks_cli_vanished(text)
         )
         if not ok and unreachable and not engine_up(force=True):
             # The compose file may be perfectly valid: the CLI could not reach

@@ -465,6 +465,20 @@ class RunnerRcHttpTests(_Compose11Sandbox):
         self.assertEqual(resp.status_code, 503, resp.text)
         self.assertEqual(resp.json()["detail"]["code"], "container.engine_down")
 
+    def test_vanished_cli_with_docker_still_on_disk_is_engine_down_503(self):
+        # GitHub runners keep a docker binary; leftover HTTP used to skip
+        # the keep-the-stack path (catalog install/uninstall).
+        with self._with_run((-1, "not found")), \
+                mock.patch.object(compose_svc, "cli_on_disk", return_value=True), \
+                mock.patch.object(compose_svc, "engine_up", return_value=False):
+            resp = self.client.put(
+                "/api/compose/app-7e2b",
+                content=json.dumps({"content": VALID_COMPOSE, "check": True}),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 503, resp.text)
+        self.assertEqual(resp.json()["detail"]["code"], "container.engine_down")
+
     def test_junk_rc_shapes_never_500_validate_save_create(self):
         shapes = (
             ("class-bomb", ClassBomb()),
