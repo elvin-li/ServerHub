@@ -295,3 +295,35 @@ class SaveApiTests(unittest.TestCase):
                 ),
                 "Apps",
             )
+
+
+class LeftoverClassBombTests(unittest.TestCase):
+    """Bare isinstance used to 500 grouping on leftover __class__ bombs."""
+
+    def test_str_list_class_bomb_is_empty_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertEqual(group_rules._str_list(ClassBomb()), ())
+
+    def test_port_list_class_bomb_is_empty_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertEqual(group_rules._port_list(ClassBomb()), ())
+
+    def test_match_group_class_bomb_service_is_none_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertIsNone(group_rules.match_group(ClassBomb(), rules=[]))
+
+    def test_bool_id_still_does_not_become_a_string_list(self):
+        self.assertEqual(group_rules._str_list(True), ())
+        self.assertEqual(group_rules._port_list(True), ())

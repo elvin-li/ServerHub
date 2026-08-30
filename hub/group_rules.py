@@ -20,6 +20,25 @@ from hub.errors import api_error
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in :func:`_str_list`,
+    :func:`_port_list`, :func:`parse_rule`, :func:`configured_group_rules`
+    and the match walk — GET /api/group-rules and Services grouping answered
+    HTTP 500 instead of dropping the junk cell.  Fail-closed.  A lying
+    ``__class__`` still reports its claim; bool ids stay ``type(x) is bool``.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _RE_HINT = re.compile(r"[|.*+?\[\](){}]")
@@ -152,10 +171,10 @@ def _as_int(value) -> int | None:
 def _str_list(raw) -> tuple[str, ...]:
     if raw is None or type(raw) is bool:
         return ()
-    if isinstance(raw, (bytes, bytearray, str)):
+    if _isinst(raw, (bytes, bytearray, str)):
         text = _utf8_text(raw).strip()
         return (text,) if text else ()
-    if not isinstance(raw, (list, tuple, set, frozenset)):
+    if not _isinst(raw, (list, tuple, set, frozenset)):
         return ()
     out: list[str] = []
     try:
@@ -169,7 +188,7 @@ def _str_list(raw) -> tuple[str, ...]:
     for item in items:
         if type(item) is bool or item is None:
             continue
-        if isinstance(item, (int, float)) and type(item) is not bool:
+        if _isinst(item, (int, float)) and type(item) is not bool:
             # YAML leftover ``.inf`` / a bare port in a string field.
             continue
         text = _utf8_text(item).strip()
@@ -181,13 +200,13 @@ def _str_list(raw) -> tuple[str, ...]:
 def _port_list(raw) -> tuple[int, ...]:
     if raw is None or type(raw) is bool:
         return ()
-    if isinstance(raw, (int, float)) and type(raw) is not bool:
+    if _isinst(raw, (int, float)) and type(raw) is not bool:
         n = _as_int(raw)
         return (n,) if n is not None else ()
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         n = _as_int(raw.strip())
         return (n,) if n is not None else ()
-    if not isinstance(raw, (list, tuple, set, frozenset)):
+    if not _isinst(raw, (list, tuple, set, frozenset)):
         return ()
     out: list[int] = []
     try:
@@ -231,7 +250,7 @@ def _valid_slug(value) -> str:
 
 def parse_rule(raw, *, taken: set[str] | None = None) -> dict | None:
     """Normalise one rule for matching, or None if it cannot be used."""
-    if not isinstance(raw, dict):
+    if not _isinst(raw, dict):
         return None
     group = _utf8_text(raw.get("group")).strip()
     if not group:
@@ -292,7 +311,7 @@ def yaml_rule(rule: dict) -> dict:
         val = rule.get(key)
         if not val:
             continue
-        if isinstance(val, tuple):
+        if _isinst(val, tuple):
             row[key] = list(val) if len(val) > 1 else val[0]
         else:
             row[key] = val
@@ -304,7 +323,7 @@ def yaml_rule(rule: dict) -> dict:
 def _parse_many(raw_list) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
-    if not isinstance(raw_list, (list, tuple)):
+    if not _isinst(raw_list, (list, tuple)):
         return out
     try:
         items = list(raw_list)
@@ -338,12 +357,12 @@ def rules_from_config(data=None) -> tuple[list[dict], str]:
             raise
         except BaseException:
             return _parse_many(SEED_RULES), "seed"
-    if not isinstance(data, dict):
+    if not _isinst(data, dict):
         return _parse_many(SEED_RULES), "seed"
     if "group_rules" not in data:
         return _parse_many(SEED_RULES), "seed"
     raw = data.get("group_rules")
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
         return [], "yaml"
     return _parse_many(raw), "yaml"
 
@@ -366,7 +385,7 @@ def _service_ports(service: dict) -> set[int]:
     for n in _port_list(service.get("ports")):
         found.add(n)
     meta = service.get("meta")
-    if isinstance(meta, dict):
+    if _isinst(meta, dict):
         n = _as_int(meta.get("port"))
         if n is not None:
             found.add(n)
@@ -376,7 +395,7 @@ def _service_ports(service: dict) -> set[int]:
 
 
 def _process_name(service: dict) -> str:
-    meta = service.get("meta") if isinstance(service.get("meta"), dict) else {}
+    meta = service.get("meta") if _isinst(service.get("meta"), dict) else {}
     for key in ("process", "proc", "owner"):
         text = _utf8_text(service.get(key) or meta.get(key)).strip()
         if text:
@@ -456,19 +475,19 @@ def _rule_matches(rule: dict, service: dict, *, launchd_interval: bool) -> bool:
 
 def explicit_group(value) -> str | None:
     """Non-empty group override, or None (so rules may apply)."""
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return None
-    if isinstance(value, float):
+    if _isinst(value, float):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         text = _utf8_text(value).strip()
         return text or None
-    if isinstance(value, int):
+    if _isinst(value, int):
         # Leftover ``.inf`` / a port used as a group — still an explicit value
         # the caller already decided to keep; stringify only if it is usable.
         text = _utf8_text(value).strip()
         return text or None
-    if isinstance(value, (bytes, bytearray, str)):
+    if _isinst(value, (bytes, bytearray, str)):
         text = _utf8_text(value).strip()
         return text or None
     text = _utf8_text(value).strip()
@@ -489,7 +508,7 @@ def match_group(
     """
     if explicit_group(explicit):
         return None
-    if not isinstance(service, dict):
+    if not _isinst(service, dict):
         return None
     try:
         interval = bool(launchd_interval) or bool(service.get("launchd_interval"))
@@ -506,10 +525,10 @@ def match_group(
     except BaseException:
         rows = []
     for rule in rows:
-        if isinstance(rule, dict) and rule.get("has_matcher") is not None and "_launchd_re" in rule:
+        if _isinst(rule, dict) and rule.get("has_matcher") is not None and "_launchd_re" in rule:
             parsed = rule
         else:
-            parsed = parse_rule(rule if isinstance(rule, dict) else {})
+            parsed = parse_rule(rule if _isinst(rule, dict) else {})
         if not parsed:
             continue
         try:
@@ -539,7 +558,7 @@ def resolve_group(
     if exp:
         return exp
     hit = match_group(
-        service if isinstance(service, dict) else {},
+        service if _isinst(service, dict) else {},
         launchd_interval=launchd_interval,
         rules=rules,
     )
@@ -551,10 +570,10 @@ def resolve_group(
 
 def resolve_yaml_entry_group(entry, *, fallback: str, rules=None) -> Any:
     """Yaml ``apps[]`` / ``scripts[]``: a non-blank ``group`` always wins."""
-    if not isinstance(entry, dict):
+    if not _isinst(entry, dict):
         return fallback
     raw = entry.get("group")
-    if isinstance(raw, str) and not raw.strip():
+    if _isinst(raw, str) and not raw.strip():
         raw = None
     if raw is not None:
         # Leftover ``group: .inf`` / a bare int must not leak into JSON.
@@ -585,7 +604,7 @@ def list_rules(data=None) -> dict:
 
 
 def _parse_for_save(raw, taken: set[str]) -> dict:
-    if not isinstance(raw, dict):
+    if not _isinst(raw, dict):
         raise api_error("services.group_rule_invalid")
     group = _utf8_text(raw.get("group")).strip()
     if not group:
@@ -611,14 +630,14 @@ def _write_rows(data: dict, rows: list[dict]) -> None:
 
 def save_rules(payload: dict | None) -> dict:
     """Upsert one rule, or replace the whole list when ``rules`` is present."""
-    if not isinstance(payload, dict):
+    if not _isinst(payload, dict):
         raise api_error("services.group_rule_invalid")
     stored: dict = {}
 
     def apply(data: dict) -> None:
         if "rules" in payload:
             raw_rules = payload.get("rules")
-            if not isinstance(raw_rules, list):
+            if not _isinst(raw_rules, list):
                 raise api_error("services.group_rule_invalid")
             taken: set[str] = set()
             parsed: list[dict] = []
