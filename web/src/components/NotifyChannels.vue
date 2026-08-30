@@ -197,7 +197,7 @@ async function load() {
     if (generation !== loadGeneration || !pageAlive) return
     channels.value = asArray(r.channels).map((c) => asRecord(c))
     types.value = asRecord(r.types)
-    typeIds.value = Object.keys(types.value)
+    typeIds.value = Object.keys(asRecord(types.value))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

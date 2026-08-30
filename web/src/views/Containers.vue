@@ -540,20 +540,21 @@ const engineMem = computed(() => {
   return (n / 2 ** 30).toFixed(1)
 })
 
-const systemCount = computed(() => asArray(containers.value).filter(c => c.system).length)
+const systemCount = computed(() => asArray(containers.value).filter(c => asRecord(c).system).length)
 
 const filteredContainers = computed(() => {
   let list = containers.value
-  if (hideSystem.value) list = list.filter(c => !c.system)
-  const qq = q.value.trim().toLowerCase()
+  if (hideSystem.value) list = list.filter(c => !asRecord(c).system)
+  const qq = finiteText(q.value, '').trim().toLowerCase()
   if (!qq) return list
-  return list.filter(c =>
-    (c.name || '').toLowerCase().includes(qq)
-    || (c.id || '').toLowerCase().includes(qq)
-    || (c.subtitle || '').toLowerCase().includes(qq)
-    || (c.image || '').toLowerCase().includes(qq)
-    || (c.project || '').toLowerCase().includes(qq)
-  )
+  return list.filter((c) => {
+    const rec = asRecord(c)
+    return finiteText(rec.name, '').toLowerCase().includes(qq)
+      || finiteText(rec.id, '').toLowerCase().includes(qq)
+      || finiteText(rec.subtitle, '').toLowerCase().includes(qq)
+      || finiteText(rec.image, '').toLowerCase().includes(qq)
+      || finiteText(rec.project, '').toLowerCase().includes(qq)
+  })
 })
 
 const displayGroups = computed(() => {
@@ -564,11 +565,11 @@ const displayGroups = computed(() => {
   if (!groupByProject.value) return [{ name: t('common.all'), items: list }]
   const map = {}
   for (const c of list) {
-    const k = c.project || t('docker.other_group')
+    const k = finiteText(asRecord(c).project, '') || t('docker.other_group')
     map[k] = map[k] || []
     map[k].push(c)
   }
-  return Object.keys(map).sort().map(k => ({ name: k, items: map[k] }))
+  return Object.keys(asRecord(map)).sort().map(k => ({ name: finiteText(k), items: asArray(asRecord(map)[k]) }))
 })
 
 function ledClass(c) {

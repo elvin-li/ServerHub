@@ -2559,6 +2559,8 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.NCPU/)
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\.value\)\.info\)\.MemTotal/)
     expect(containers).toMatch(/finiteN\(asArray\(filteredContainers\)\.length\)/)
+    expect(containers).toMatch(/finiteText\(rec\.name, ''\)\.toLowerCase\(\)/)
+    expect(containers).toMatch(/Object\.keys\(asRecord\(map\)\)/)
     expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
     expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
@@ -3673,6 +3675,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ch).toMatch(/toast\('❌ ' \+ finiteText\(err\.message\)\)/)
     expect(ch).toMatch(/v-for="c in asArray\(channels\)"/)
     expect(ch).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(ch).toMatch(/Object\.keys\(asRecord\(types\.value\)\)/)
   })
 
   it('AssistantDrawer leftover path/title interpolations go through finiteText', () => {
