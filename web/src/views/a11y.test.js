@@ -1426,7 +1426,7 @@ describe('storage state semantics', () => {
   })
 
   it('preserves the saved pool free-space floor when editing other fields', () => {
-    expect(pool).toContain('minFreeGb.value = Number(data.min_free_gb) || 0')
+    expect(pool).toContain('minFreeGb.value = Number(finiteN(data.min_free_gb, 0)) || 0')
     expect(pool).toContain('min_free_gb: Number(minFreeGb.value) || 0')
   })
 })

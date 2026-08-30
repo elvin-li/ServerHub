@@ -309,7 +309,10 @@ const minFreeGb = ref(0)
 let pageAlive = true
 let loadGeneration = 0
 
-const policies = computed(() => view.value?.policies || ['most-free', 'least-used-pct', 'round-robin'])
+const policies = computed(() => {
+  const list = asArray(asRecord(view.value).policies)
+  return list.length ? list : ['most-free', 'least-used-pct', 'round-robin']
+})
 
 /** Every poolable volume the backend reported, members and unassigned alike. */
 const allCandidates = computed(() => [
@@ -347,13 +350,25 @@ function policyLabel(p) {
   return keys[p] ? t(keys[p]) : p
 }
 
+function mapPool(raw) {
+  const data = asRecord(raw)
+  return {
+    ...data,
+    members: asArray(data.members).map((row) => asRecord(row)),
+    unassigned: asArray(data.unassigned).map((row) => asRecord(row)),
+    fault_model: asArray(data.fault_model).map((row) => asRecord(row)),
+    summary: asRecord(data.summary),
+  }
+}
+
 /** Adopt whatever the backend says is saved, discarding any local edits. */
-function syncFromView(data) {
+function syncFromView(raw) {
+  const data = mapPool(raw)
   view.value = data
   preview.value = null
-  selected.value = asArray(data.members).map((m) => m.mount)
-  poolName.value = data.name || 'pool'
-  minFreeGb.value = Number(data.min_free_gb) || 0
+  selected.value = asArray(data.members).map((m) => asRecord(m).mount)
+  poolName.value = finiteText(data.name, '') || 'pool'
+  minFreeGb.value = Number(finiteN(data.min_free_gb, 0)) || 0
   if (data.policy) policy.value = data.policy
 }
 
@@ -361,7 +376,7 @@ async function refresh() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const data = await getStoragePool(true)
+    const data = mapPool(await getStoragePool(true))
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     loadError.value = ''
@@ -396,7 +411,7 @@ async function doPreview() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const planned = await planStoragePool(selected.value, policy.value)
+    const planned = mapPool(await planStoragePool(selected.value, policy.value))
     if (generation !== loadGeneration || !pageAlive) return
     preview.value = planned
     lastMsg.value = t('pool.msg_preview', { n: asArray(selected.value).length })
@@ -413,12 +428,12 @@ async function doSave() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const data = await saveStoragePool({
+    const data = mapPool(await saveStoragePool({
       mounts: selected.value,
       policy: policy.value,
       name: poolName.value.trim() || 'pool',
       min_free_gb: Number(minFreeGb.value) || 0,
-    })
+    }))
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     lastMsg.value = t('pool.msg_saved')
@@ -436,7 +451,7 @@ async function doClear() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const data = await clearStoragePool()
+    const data = mapPool(await clearStoragePool())
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     clearOpen.value = false
