@@ -136,9 +136,9 @@ def _rc_int(rc) -> int:
     Exception-only seam, a raw 500 on the compose logs and action routes.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
     except _CONTROL_FLOW:
@@ -198,7 +198,7 @@ def _plist_dict(path: Path) -> dict | None:
         raise
     except BaseException:
         return None
-    return data if isinstance(data, dict) else None
+    return data if _isa(data, dict) else None
 
 
 def _utf8_text(value) -> str:
@@ -277,7 +277,7 @@ def _utf8_text(value) -> str:
 def _mapping_get(mapping, key, default=None):
     """Field read that a dict-subclass ``.get`` bomb cannot 500.
 
-    The ups_svc convention: ``isinstance(x, dict)`` passes an odd subclass
+    The ups_svc convention: ``_isa(x, dict)`` passes an odd subclass
     whose ``get`` raises, and one such ``list_containers()`` /
     ``list_all_vms()`` payload used to raise out of ``_container_rows`` /
     ``_vm_detail`` and 500 the Apps detail, logs and autostart-action
@@ -401,7 +401,7 @@ def _clean_rows(raw) -> list[dict]:
     out: list[dict] = []
     for row in list.__iter__(raw):
         cleaned = _jsonable_safe(row) if _isa(row, dict) else None
-        if isinstance(cleaned, dict):
+        if _isa(cleaned, dict):
             out.append(cleaned)
     return out
 
@@ -533,7 +533,7 @@ def _field_text(value, fallback: str = "") -> str:
     if callable(iso):
         try:
             text = iso()
-            return _utf8_text(text) if isinstance(text, str) and text else fallback
+            return _utf8_text(text) if _isa(text, str) and text else fallback
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -577,13 +577,13 @@ def _is_dir(path: Path) -> bool:
 def _scrub_utf8(value, depth: int = 0):
     if depth > 32:
         return None
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         for k, v in value.items():
             try:
-                key = k if isinstance(k, str) else str(k)
+                key = k if _isa(k, str) else str(k)
                 key = _utf8_text(key)
             except _CONTROL_FLOW:
                 raise
@@ -591,7 +591,7 @@ def _scrub_utf8(value, depth: int = 0):
                 continue
             out[key] = _scrub_utf8(v, depth + 1)
         return out
-    if isinstance(value, list):
+    if _isa(value, list):
         return [_scrub_utf8(v, depth + 1) for v in value]
     return value
 
@@ -650,9 +650,9 @@ def _safe_payload(payload):
     if not _isa(payload, dict):
         return payload
     cleaned = _jsonable_safe(payload)
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         cleaned = _salvage_dict(payload)
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         return payload
     return _scrub_utf8(cleaned)
 #: Apps page polls every 15s. An 8s snapshot missed on every sit tick
@@ -725,8 +725,8 @@ def _docker_stacks() -> list[dict]:
         pass
 
     for s in stacks:
-        sid = s.get("id") if isinstance(s.get("id"), str) else ""
-        raw_path = s.get("path") if isinstance(s.get("path"), str) else ""
+        sid = s.get("id") if _isa(s.get("id"), str) else ""
+        raw_path = s.get("path") if _isa(s.get("path"), str) else ""
         if not sid:
             try:
                 sid = Path(raw_path).name
@@ -736,7 +736,7 @@ def _docker_stacks() -> list[dict]:
             continue
         path = raw_path or str(SERVICES_ROOT / sid)
         compose_file = s.get("compose_file")
-        if not isinstance(compose_file, str) or not compose_file:
+        if not _isa(compose_file, str) or not compose_file:
             compose_file = "docker-compose.yml"
         try:
             compose = Path(path) / compose_file
@@ -745,10 +745,10 @@ def _docker_stacks() -> list[dict]:
         # match containers by compose project name or name prefix
         related = []
         running_names = s.get("running_containers")
-        if not isinstance(running_names, list):
+        if not _isa(running_names, list):
             running_names = []
         for c in containers:
-            if not isinstance(c, dict):
+            if not _isa(c, dict):
                 continue
             proj = str(c.get("project") or "")
             cid = str(c.get("id") or "")
@@ -758,15 +758,15 @@ def _docker_stacks() -> list[dict]:
         if not related and running_names:
             by_id = {}
             for c in containers:
-                if not isinstance(c, dict):
+                if not _isa(c, dict):
                     continue
                 ident = c.get("id")
-                if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+                if _isa(ident, bool) or not _isa(ident, (str, int)):
                     continue
                 by_id[ident] = c
                 by_id[str(ident)] = c
             for n in running_names:
-                if isinstance(n, bool) or not isinstance(n, (str, int)):
+                if _isa(n, bool) or not _isa(n, (str, int)):
                     continue
                 if n in by_id:
                     related.append(by_id[n])
@@ -811,7 +811,7 @@ def _docker_stacks() -> list[dict]:
         })
     # orphan compose dirs under Services with docker-compose.yml not in stacks
     try:
-        known = {s.get("id") for s in stacks if isinstance(s, dict)}
+        known = {s.get("id") for s in stacks if _isa(s, dict)}
         if _is_dir(SERVICES_ROOT):
             for d in sorted(SERVICES_ROOT.iterdir()):
                 if not _is_dir(d) or d.name in known:
@@ -856,7 +856,7 @@ def _url_from_docker_ports(port_strs: list[str]) -> str | None:
     """Parse '0.0.0.0:4000->4000/tcp' → http://host:4000"""
     host = _host_ip()
     for raw in port_strs:
-        ps = raw if isinstance(raw, str) else (str(raw) if raw not in (None, "") else "")
+        ps = raw if _isa(raw, str) else (str(raw) if raw not in (None, "") else "")
         if not ps:
             continue
         # 0.0.0.0:4000->4000/tcp  or  [::]:8123->8123/tcp
@@ -1036,7 +1036,7 @@ def _docker_detail(source_id: str) -> dict:
         containers = []
     related = []
     for c in containers:
-        if not isinstance(c, dict):
+        if not _isa(c, dict):
             continue
         proj = str(c.get("project") or "")
         cid = str(c.get("id") or c.get("name") or "")
@@ -1088,9 +1088,9 @@ def _docker_detail(source_id: str) -> dict:
             data = None
         if data is None:
             continue
-        net_settings = data.get("NetworkSettings") if isinstance(data.get("NetworkSettings"), dict) else {}
-        for m in data.get("Mounts") if isinstance(data.get("Mounts"), list) else []:
-            if not isinstance(m, dict):
+        net_settings = data.get("NetworkSettings") if _isa(data.get("NetworkSettings"), dict) else {}
+        for m in data.get("Mounts") if _isa(data.get("Mounts"), list) else []:
+            if not _isa(m, dict):
                 continue
             mounts.append({
                 "container": name,
@@ -1099,9 +1099,9 @@ def _docker_detail(source_id: str) -> dict:
                 "destination": m.get("Destination"),
                 "rw": m.get("RW"),
             })
-        nets = net_settings.get("Networks") if isinstance(net_settings.get("Networks"), dict) else {}
+        nets = net_settings.get("Networks") if _isa(net_settings.get("Networks"), dict) else {}
         for net_name, net in nets.items():
-            if not isinstance(net, dict):
+            if not _isa(net, dict):
                 continue
             networks.append({
                 "container": name,
@@ -1109,11 +1109,11 @@ def _docker_detail(source_id: str) -> dict:
                 "ip": net.get("IPAddress"),
                 "gateway": net.get("Gateway"),
             })
-        ports_map = net_settings.get("Ports") if isinstance(net_settings.get("Ports"), dict) else {}
+        ports_map = net_settings.get("Ports") if _isa(net_settings.get("Ports"), dict) else {}
         for cport, binds in ports_map.items():
-            if binds and isinstance(binds, list):
+            if binds and _isa(binds, list):
                 for b in binds:
-                    if not isinstance(b, dict):
+                    if not _isa(b, dict):
                         continue
                     ports.append({
                         "container": name,
@@ -1122,9 +1122,9 @@ def _docker_detail(source_id: str) -> dict:
                     })
             else:
                 ports.append({"container": name, "published": None, "target": cport})
-        cfg_app = data.get("Config") if isinstance(data.get("Config"), dict) else {}
-        for e in cfg_app.get("Env") if isinstance(cfg_app.get("Env"), list) else []:
-            if not isinstance(e, str):
+        cfg_app = data.get("Config") if _isa(data.get("Config"), dict) else {}
+        for e in cfg_app.get("Env") if _isa(cfg_app.get("Env"), list) else []:
+            if not _isa(e, str):
                 continue
             if any(k in e.upper() for k in ("PASSWORD", "SECRET", "TOKEN", "KEY=")):
                 env_sample.append(f"{e.split('=', 1)[0]}=***")
@@ -1142,7 +1142,7 @@ def _docker_detail(source_id: str) -> dict:
 
     db_hints = []
     for m in mounts:
-        if not isinstance(m, dict):
+        if not _isa(m, dict):
             continue
         dest = str(m.get("destination") or "").lower()
         src = str(m.get("source") or "")
@@ -1175,7 +1175,7 @@ def _docker_detail(source_id: str) -> dict:
                 "name": str(c.get("id") or c.get("name") or ""),
                 "image": _optional_text(c.get("image")),
                 "state": _optional_text(c.get("state") or c.get("status")),
-                "ports": _optional_text(c.get("ports")) if not isinstance(c.get("ports"), (dict, list)) else c.get("ports"),
+                "ports": _optional_text(c.get("ports")) if not _isa(c.get("ports"), (dict, list)) else c.get("ports"),
                 "id": str(c.get("cid") or c.get("id") or ""),
             }
             for c in related
@@ -1206,7 +1206,7 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
     if _exists(compose):
         r = _compose_cmd(str(compose), "logs", "--no-color", "--tail", str(lines), timeout=60)
         out = {"ok": r["ok"], "log": r["message"], "source": str(compose)}
-        if isinstance(r.get("code"), str):
+        if _isa(r.get("code"), str):
             # engine-down (or another coded soft-fail): keep the code so the
             # SPA can translate it instead of rendering raw daemon stderr.
             out["code"] = r["code"]
@@ -1223,12 +1223,12 @@ def _docker_logs(source_id: str, lines: int = 120) -> dict:
         containers = []
     matching = []
     for c in containers:
-        if not isinstance(c, dict):
+        if not _isa(c, dict):
             continue
-        name = c.get("name") if isinstance(c.get("name"), str) else str(c.get("id") or "")
-        labels = c.get("labels") if isinstance(c.get("labels"), dict) else {}
+        name = c.get("name") if _isa(c.get("name"), str) else str(c.get("id") or "")
+        labels = c.get("labels") if _isa(c.get("labels"), dict) else {}
         proj = labels.get("com.docker.compose.project") or ""
-        if proj == source_id or (isinstance(name, str) and name.startswith(source_id or "")):
+        if proj == source_id or (_isa(name, str) and name.startswith(source_id or "")):
             matching.append(name)
 
     # `docker logs` carries a 30s timeout and ran once per container in series, so
@@ -1253,7 +1253,7 @@ def _native_apps(force: bool = False) -> list[dict]:
     raw = _clean_rows(native_catalog.list_native_apps(force=force))
     installed = [
         a for a in raw
-        if a.get("installed") and isinstance(a.get("id"), str)
+        if a.get("installed") and _isa(a.get("id"), str)
     ]
 
     # Both autostart lookups used to be issued *inside* the per-app loop, so a
@@ -1319,15 +1319,15 @@ def _native_apps(force: bool = False) -> list[dict]:
         # map brew package → autostart from brew services / launchd
         auto = None
         auto_id = None
-        # isinstance(str) gates: a leftover junk ``package`` /
+        # _isa(str) gates: a leftover junk ``package`` /
         # ``launchd_label`` (a dict or list from a torn native listing) is
         # unhashable, and the ``.get`` lookups below used to raise
         # TypeError — costing the whole native section via _collect.
         pkg_name = a.get("package")
         launchd_label = a.get("launchd_label")
-        if not isinstance(launchd_label, str):
+        if not _isa(launchd_label, str):
             launchd_label = ""
-        if isinstance(pkg_name, str) and pkg_name and a.get("method") in ("brew_formula", "brew_cask"):
+        if _isa(pkg_name, str) and pkg_name and a.get("method") in ("brew_formula", "brew_cask"):
             auto_id = f"brew:{pkg_name}"
             # _mapping_get, not a bare ``.get``: the index is our own dict
             # but its *stored keys* are another module's rows verbatim, and
@@ -1393,7 +1393,7 @@ def _native_apps(force: bool = False) -> list[dict]:
                 cf_extra = {
                     "logged_in": _truthy(_mapping_get(cf, "logged_in")),
                     "active_tunnel": _field_text(_mapping_get(cf, "active_tunnel"), ""),
-                    "tunnels": tunnels if isinstance(tunnels, list) else [],
+                    "tunnels": tunnels if _isa(tunnels, list) else [],
                 }
                 notes_extra = _field_text(_mapping_get(cf, "notes"), "")
                 base_notes = _field_text(_mapping_get(a, "notes"), "")
@@ -1425,7 +1425,7 @@ def _native_apps(force: bool = False) -> list[dict]:
             "method": a.get("method"),
             "installed": True,
             "ports_summary": ", ".join(
-                str(p) for p in (a.get("ports") if isinstance(a.get("ports"), list) else [])
+                str(p) for p in (a.get("ports") if _isa(a.get("ports"), list) else [])
                 if p not in (None, "")
             ),
             "autostart": auto,
@@ -1470,7 +1470,7 @@ def _native_detail(source_id: str) -> dict:
         {},
     )
     pkg = app.get("package")
-    pkg_key = pkg.split("@", 1)[0] if isinstance(pkg, str) and pkg else ""
+    pkg_key = pkg.split("@", 1)[0] if _isa(pkg, str) and pkg else ""
     data_paths = []
     # _user_home, not the bare provider: a raising leftover used to 500 the
     # native detail route with no seam behind detail().
@@ -1506,7 +1506,7 @@ def _native_detail(source_id: str) -> dict:
     try:
         from hub import tools_svc
         for row in (tools_svc.listening_ports(80).get("ports") or []):
-            if not isinstance(row, dict):
+            if not _isa(row, dict):
                 continue
             name = row.get("name") or ""
             for p in port_nums:
@@ -1564,9 +1564,9 @@ def _native_detail(source_id: str) -> dict:
             # the old verbatim hand-off carried the same default-repr
             # address out inside ``cloudflared.active_tunnel``.
             cf_view = _jsonable_safe(cf) if _isa(cf, dict) else None
-            if not isinstance(cf_view, dict):
+            if not _isa(cf_view, dict):
                 cf_view = _salvage_dict(cf) if _isa(cf, dict) else None
-            if not isinstance(cf_view, dict):
+            if not _isa(cf_view, dict):
                 cf_view = {}
             cf_view["running"] = cf_running
             cf_view["active_tunnel"] = active
@@ -1618,7 +1618,7 @@ def _native_logs(source_id: str, lines: int = 120) -> dict:
         # 500 GET /api/apps/managed/logs where a *raising* backend already
         # answered ok:false.  Same contract: junk shapes cost the log body.
         cleaned = _jsonable_safe(cf_logs) if _isa(cf_logs, dict) else None
-        if isinstance(cleaned, dict):
+        if _isa(cleaned, dict):
             return cleaned
         return {"ok": False, "log": f"unusable log payload ({type(cf_logs).__name__})"}
     pkg = app.get("package")
@@ -1726,7 +1726,7 @@ def _launchd_apps() -> list[dict]:
             workdir = ""
         else:
             args = data.get("ProgramArguments") or []
-            if not isinstance(args, list):
+            if not _isa(args, list):
                 args = []
             # leftover RecursionError on ``str(Label)`` / argv used to 500 GET /api/apps.
             program = _as_text(args[0] if args else data.get("Program"))
@@ -1889,9 +1889,9 @@ def _launchd_detail(label: str) -> dict:
     # the siblings were sane — the ``_safe_payload`` per-field rule, which
     # this branch's apps13 sweep never got.  The bombed field costs itself.
     preview = _jsonable_safe(raw_preview) if _isa(raw_preview, dict) else None
-    if not isinstance(preview, dict):
+    if not _isa(preview, dict):
         preview = _salvage_dict(raw_preview) if _isa(raw_preview, dict) else None
-    if not isinstance(preview, dict):
+    if not _isa(preview, dict):
         preview = {}
     return {
         **listed,
@@ -1978,8 +1978,8 @@ def _vms() -> list[dict]:
             "installed": True,
             "ports_summary": "",
             "ips": [
-                ip for ip in (v.get("ips") if isinstance(v.get("ips"), list) else [])
-                if isinstance(ip, str) or (isinstance(ip, (int, float)) and ip == ip and ip not in (float("inf"), float("-inf")))
+                ip for ip in (v.get("ips") if _isa(v.get("ips"), list) else [])
+                if _isa(ip, str) or (_isa(ip, (int, float)) and ip == ip and ip not in (float("inf"), float("-inf")))
             ],
             "url": _optional_text(v.get("url")),
             "actions": _vm_actions(v),
@@ -1990,7 +1990,7 @@ def _vms() -> list[dict]:
 
 def _vm_actions(v: dict) -> list[str]:
     raw_acts = v.get("actions")
-    acts = list(raw_acts) if isinstance(raw_acts, list) else []
+    acts = list(raw_acts) if _isa(raw_acts, list) else []
     # normalize
     out = ["detail"]
     state = v.get("state") or ""
@@ -2029,7 +2029,7 @@ def _vm_detail(source_id: str) -> dict:
     )
     if not v:
         raise api_error("apps.vm_not_found")
-    ips = v.get("ips") if isinstance(v.get("ips"), list) else []
+    ips = v.get("ips") if _isa(v.get("ips"), list) else []
     return {
         "id": f"vm:{source_id}",
         "source_id": source_id,
@@ -2395,7 +2395,7 @@ def _action(app_id: str, action_name: str, **kwargs) -> dict:
                 "message": (r1["message"] + "\n" + r2["message"])[-2500:],
             }
             code = next(
-                (r.get("code") for r in (r1, r2) if isinstance(r.get("code"), str)),
+                (r.get("code") for r in (r1, r2) if _isa(r.get("code"), str)),
                 None,
             )
             if code:

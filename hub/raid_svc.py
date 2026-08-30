@@ -77,9 +77,9 @@ def _rc_int(rc) -> int:
     keeps the empty-plist branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         str(value)
         return value
     except _CONTROL_FLOW:
@@ -177,7 +177,7 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict:
         # raises xml.parsers.expat.ExpatError, which is not ValueError —
         # that used to 500 /api/raid.
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return parsed if _isa(parsed, dict) else {}
 
 
 def _disk_info(device: str) -> dict:
@@ -584,7 +584,7 @@ def _req_text(raw) -> str:
     ``str()`` these call sites used raised the int->str digit-cap ValueError
     (a 500 on POST /api/raid/sets, /delete, /repair and /members/*) where
     every other junk value gets the coded refusal.  A str() probe, not an
-    ``isinstance(str)`` gate: a finite numeric leftover must keep behaving as
+    ``_isa(str)`` gate: a finite numeric leftover must keep behaving as
     its string form and earn the same coded refusal path.  Lone surrogates
     are scrubbed so a refusal's own params cannot 500 the error body.
     """
@@ -718,7 +718,7 @@ def _admin_result(result) -> dict:
     # itself — a raw 500 on every raid mutation one line ahead of the
     # laundering built to absorb junk shapes.
     cleaned = _jsonable(result) if _isa(result, dict) else {}
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         return {"ok": False, "error": "failed"}
     # A diskutil that vanished between the eligibility check and the spawn
     # (an OS update mid-flight, a dying system volume) used to surface as the
@@ -771,7 +771,7 @@ def _size_fields(raw) -> tuple:
     the raw plist number).  A huge finite integer OverflowError'd the GB
     conversion the same way a 400-digit ``df`` block count did.
     """
-    if _isa(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None, None
     try:
         # One guard around the probes and the coercion: a float-subclass

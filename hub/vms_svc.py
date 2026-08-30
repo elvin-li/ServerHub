@@ -846,12 +846,12 @@ def _list_orb_machines_uncached() -> list[dict]:
             data = None
         try:
             if data is not None:
-                if isinstance(data, dict):
+                if _isa(data, dict):
                     data = data.get("machines") or data.get("items") or []
-                if not isinstance(data, list):
+                if not _isa(data, list):
                     data = []
                 for m in data:
-                    if not isinstance(m, dict):
+                    if not _isa(m, dict):
                         continue
                     # orbctl JSON names must be strings. Coercing ``name: 1``
                     # used to invent a machine called "1" on GET /api/vms.
@@ -860,13 +860,13 @@ def _list_orb_machines_uncached() -> list[dict]:
                         raw_name = m.get("Name")
                     if raw_name is None:
                         raw_name = m.get("id")
-                    if not isinstance(raw_name, str):
+                    if not _isa(raw_name, str):
                         continue
                     name = _as_text(raw_name).strip()
                     if not name:
                         continue
                     raw_status = m.get("state") or m.get("status") or m.get("Status") or ""
-                    if not isinstance(raw_status, str):
+                    if not _isa(raw_status, str):
                         raw_status = str(raw_status) if raw_status is not None else ""
                     status = _as_text(raw_status).lower()
                     item = _orb_item(name, status, m)
@@ -1023,7 +1023,7 @@ def rename_vm_display(vm_id: str, new_name: str) -> dict:
     """Rename display name via services.yaml overrides (utmctl has no rename)."""
     from hub.config import set_override
 
-    if not isinstance(new_name, str) or not new_name.strip():
+    if not _isa(new_name, str) or not new_name.strip():
         raise api_error("vms.name_required")
     # _as_text: a JSON ``"\ud800"`` name (a lone surrogate — json.loads accepts
     # the escape, Starlette's UTF-8 response encode does not) used to be stored
@@ -1221,7 +1221,7 @@ def _utm_action(ident: str, action: str, **kwargs) -> dict:
         new_name = kwargs.get("name")
         args = [UTMCTL, "clone", ident]
         if new_name is not None and new_name != "":
-            if not isinstance(new_name, str):
+            if not _isa(new_name, str):
                 raise api_error("vms.bad_machine_name")
             args += ["--name", _argv_name(new_name, code="vms.bad_machine_name")]
         rc, out, err = _spawn(args, 300)
@@ -1337,7 +1337,7 @@ def _orb_action(ident: str, action: str, **kwargs) -> dict:
         new_name = kwargs.get("name")
         if new_name is None or new_name == "":
             new_name = f"{ident}-clone"
-        elif not isinstance(new_name, str):
+        elif not _isa(new_name, str):
             raise api_error("vms.bad_machine_name")
         new_name = _argv_name(new_name, code="vms.bad_machine_name")
         rc, out, err = _spawn([ORBCTL, "clone", ident, new_name], 600)
@@ -1385,7 +1385,7 @@ def create_orb_machine(distro: str, name: str | None = None, arch: str | None = 
         raise api_error("vms.bad_distro")
     args = [ORBCTL, "create", distro]
     if name:
-        if not isinstance(name, str):
+        if not _isa(name, str):
             raise api_error("vms.bad_machine_name")
         name = name.strip()
         if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", name):

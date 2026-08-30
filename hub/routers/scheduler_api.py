@@ -23,6 +23,21 @@ from hub import audit, rsync_svc, scheduler_svc
 from hub.auth import request_client_id, request_username
 from hub.errors import api_error
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 router = APIRouter(tags=["scheduler"])
 
 _ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -133,7 +148,7 @@ def _public_job(job: dict, last=_LAST_UNSET) -> dict:
     primitives / already-laundered records — the result stays encodable.
     """
     cleaned = scheduler_svc._jsonable(job)
-    out = cleaned if isinstance(cleaned, dict) else {}
+    out = cleaned if _isinst(cleaned, dict) else {}
     jid = scheduler_svc._job_id(job)
     if jid:
         # Serve the identity the mutation routes match: a numeric YAML id
@@ -154,7 +169,7 @@ def _public_job(job: dict, last=_LAST_UNSET) -> dict:
     # record), so its keys are exact strs and the bound ``.get`` is safe.
     out["last"] = (
         {k: last.get(k) for k in ("ts", "end", "status", "rc", "duration", "trigger")}
-        if isinstance(last, dict) else None
+        if _isinst(last, dict) else None
     )
     return out
 
@@ -218,10 +233,10 @@ def _bridged_smart_schedule() -> dict | None:
     try:
         from hub import smart_test_svc
         schedule = smart_test_svc.get_schedule()
-        if not isinstance(schedule, dict):
+        if not _isinst(schedule, dict):
             return None
         interval = schedule.get("interval") or "off"
-        if not isinstance(interval, str):
+        if not _isinst(interval, str):
             interval = "off"
         period = smart_test_svc.SCHEDULE_INTERVALS.get(interval, 0)
         try:
@@ -249,7 +264,7 @@ def _bridged_smart_schedule() -> dict | None:
             except (OverflowError, ValueError):
                 next_run = None
         devices = schedule.get("devices") or []
-        if not isinstance(devices, list):
+        if not _isinst(devices, list):
             devices = []
         row = {
             "id": "smart-selftest",
@@ -267,7 +282,7 @@ def _bridged_smart_schedule() -> dict | None:
         # ``[Infinity]`` used to 500 GET /api/scheduler/jobs under
         # Starlette's allow_nan=False encoder.
         cleaned = scheduler_svc._jsonable(row)
-        return cleaned if isinstance(cleaned, dict) else None
+        return cleaned if _isinst(cleaned, dict) else None
     except scheduler_svc._CONTROL_FLOW:
         raise
     except BaseException:

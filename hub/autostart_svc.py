@@ -191,8 +191,8 @@ def _is_dir(path: Path) -> bool:
 
 
 def _plist_label(pl: dict, fallback: str) -> str:
-    raw = pl.get("Label") if isinstance(pl, dict) else None
-    return raw if isinstance(raw, str) and raw else fallback
+    raw = pl.get("Label") if _isinstance(pl, dict) else None
+    return raw if _isinstance(raw, str) and raw else fallback
 
 #: Labels this page must never switch *off*.  These are the panel itself and the
 #: login launcher that starts it, and disabling either from here was a one-click,
@@ -255,7 +255,7 @@ def _uid_domain() -> str:
 def _read_plist(path: Path) -> dict:
     try:
         pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-        return pl if isinstance(pl, dict) else {}
+        return pl if _isinstance(pl, dict) else {}
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -274,7 +274,7 @@ def _write_plist(path: Path, data: dict) -> None:
         # used to 500 POST /api/apps/autostart for a launchd/script toggle on a
         # plist that had already passed the bad_plist gate — homebrew.mxcl.*
         # agents included.  Same coded 409 as native_catalog's agent writes.
-        label = data.get("Label") if isinstance(data.get("Label"), str) else path.stem
+        label = data.get("Label") if _isinstance(data.get("Label"), str) else path.stem
         raise api_error(
             "catalog.plist_write_failed", label=label, detail=_as_text(exc)
         )
@@ -327,14 +327,14 @@ def _docker_autostart_items() -> list[dict]:
         return []
     from hub import containers_svc
     info = containers_svc.list_containers(with_stats=False)
-    raw = info.get("containers") if isinstance(info, dict) else None
+    raw = info.get("containers") if _isinstance(info, dict) else None
     items = []
-    for c in raw if isinstance(raw, list) else []:
-        if not isinstance(c, dict):
+    for c in raw if _isinstance(raw, list) else []:
+        if not _isinstance(c, dict):
             continue
         ident = c.get("id") if c.get("id") is not None else c.get("name")
         # bool is an int; True must not become the container name "True".
-        if isinstance(ident, bool) or ident is None or not isinstance(ident, (str, int)):
+        if type(ident) is bool or ident is None or not _isinstance(ident, (str, int)):
             continue
         name = str(ident)
         if not name:
@@ -573,13 +573,13 @@ def _launchd_items(loaded_snapshot: frozenset[str] | None = None) -> list[dict]:
             "autostart": auto,
             "running": loaded,
             "run_at_load": run_at,
-            "keep_alive": bool(keep) if not isinstance(keep, dict) else True,
+            "keep_alive": bool(keep) if not _isinstance(keep, dict) else True,
             "disabled": disabled,
             "plist": str(path),
             "detail": f"RunAtLoad={run_at} KeepAlive={bool(keep)} loaded={loaded}",
             "program": (
                 " ".join(_as_text(a) for a in pl["ProgramArguments"])[:100]
-                if isinstance(pl.get("ProgramArguments"), list) else ""
+                if _isinstance(pl.get("ProgramArguments"), list) else ""
             ),
             # No "disable" for the panel and its login launcher: offering the button
             # invited a click that stops ServerHub from ever starting at login, and
@@ -630,7 +630,7 @@ def set_launchd_autostart(label: str, enabled: bool) -> dict:
     pl = _read_plist(path)
     # A torn/non-dict plist used to come back as {} and this wrote
     # {RunAtLoad, Disabled} over the live agent, wiping ProgramArguments.
-    if not isinstance(pl.get("Label"), str) or not pl.get("Label"):
+    if not _isinstance(pl.get("Label"), str) or not pl.get("Label"):
         raise api_error("autostart.bad_plist", label=label)
     pl["RunAtLoad"] = bool(enabled)
     if enabled:
@@ -703,7 +703,7 @@ def _resolve_script_agent() -> tuple[Path, str]:
             declared = _read_plist(path).get("Label")
             # First file wins per label, so the answer does not depend on
             # directory order when two plists declare the same job.
-            if isinstance(declared, str) and declared not in by_label:
+            if _isinstance(declared, str) and declared not in by_label:
                 by_label[declared] = path
     except OSError:
         return default
@@ -841,7 +841,7 @@ def overview(force: bool = False) -> dict:
         "hint": "Docker uses restart policies; brew/LaunchAgents load at login. Stopping a brew service also cancels its login autostart.",
     }
     cleaned = _jsonable(v)
-    return cleaned if isinstance(cleaned, dict) else v
+    return cleaned if _isinstance(cleaned, dict) else v
 
 
 def set_autostart(item_id: str, enabled: bool, policy: str | None = None) -> dict:

@@ -545,7 +545,7 @@ def raise_for_admin_result(result: dict) -> dict:
         raise api_error("admin.failed")
     if _truthy(result.get("ok")):
         cleaned = _jsonable(result)
-        return cleaned if isinstance(cleaned, dict) else {"ok": True}
+        return cleaned if _isa(cleaned, dict) else {"ok": True}
     # _utf8_text, not str(): a leftover *already-int* error field past
     # CPython's int->str digit cap (YAML/plist hex loads uncapped through
     # ``int(x, 16)``) made the bare str() raise the digit-cap ValueError out
@@ -580,7 +580,7 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
         raise api_error("admin.failed")
     if _truthy(result.get("ok")):
         cleaned = _jsonable(result)
-        return cleaned if isinstance(cleaned, dict) else {"ok": True}
+        return cleaned if _isa(cleaned, dict) else {"ok": True}
     # Same str() probe as raise_for_admin_result: an over-cap already-int
     # error field must earn the coded fallback, not the digit-cap ValueError.
     raw_error = result.get("error")
@@ -606,7 +606,7 @@ def raise_service_error(result: dict, mapping: dict[str, str]) -> dict:
             if key in ("ok", "error"):
                 continue
             cleaned = _jsonable(v)
-            if isinstance(cleaned, (str, int, float)):
+            if _isa(cleaned, (str, int, float)):
                 params[key] = cleaned
         raise api_error(code, **params)
     return raise_for_admin_result(result)

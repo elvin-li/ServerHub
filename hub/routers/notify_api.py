@@ -25,6 +25,19 @@ router = APIRouter(tags=["notify"])
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 _LEVELS = ("info", "warn", "down")
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
@@ -75,17 +88,17 @@ def _generate_id(name: str | None) -> str:
 
 def _capped_value(field: str, value):
     """One config value, refused (coded 400) before it can outgrow the store."""
-    if isinstance(value, (bool, int)):
+    if _isinst(value, (bool, int)):
         # JSON-body ints are parse-capped well below the int->str digit
         # limit, so they are always renderable and always small.
         return value
-    if isinstance(value, list):
+    if _isinst(value, list):
         if len(value) > _LIST_MAX:
             raise api_error("notify.list_too_long", field=field, max=_LIST_MAX)
         for item in value:
-            if item is None or isinstance(item, (bool, int, float)):
+            if item is None or _isinst(item, (bool, int, float)):
                 continue
-            text = item if isinstance(item, str) else str(item)
+            text = item if _isinst(item, str) else str(item)
             if len(text) > _VALUE_MAX:
                 raise api_error("notify.value_too_long", field=field, max=_VALUE_MAX)
         return value

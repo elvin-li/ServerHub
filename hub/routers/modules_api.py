@@ -8,6 +8,21 @@ from pydantic import BaseModel
 from hub import audit, auth, bookmarks_svc, brew_svc, compose_svc, modules, nginx_svc, sensors_svc
 from hub.adaptive import scan_new_compose_projects
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 router = APIRouter(tags=["modules"])
 
 
@@ -81,7 +96,7 @@ def compose_put(stack_id: str, body: ComposeSave, request: Request = None):
     # accept legacy {validate: true} via model_extra if clients still send it
     do_check = body.check
     extra = getattr(body, "model_extra", None)
-    if not isinstance(extra, dict):
+    if not _isinst(extra, dict):
         extra = {}
     if "validate" in extra:
         do_check = bool(extra.get("validate"))
