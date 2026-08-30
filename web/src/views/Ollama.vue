@@ -593,13 +593,13 @@ async function refresh(force = false) {
     if (generation !== loadGeneration || !pageAlive) return false
     data.value = {
       ...j,
-      models: asArray(j.models).map((row) => asRecord(row)),
-      resident: asArray(j.resident).map((row) => asRecord(row)),
-      service: asRecord(j.service),
+      models: asArray(recGet(j, 'models')).map((row) => asRecord(row)),
+      resident: asArray(recGet(j, 'resident')).map((row) => asRecord(row)),
+      service: asRecord(recGet(j, 'service')),
     }
     loadError.value = ''
-    if (!testModel.value && asArray(j.models).length) {
-      testModel.value = asRecord(asArray(j.models)[0]).name
+    if (!testModel.value && asArray(recGet(j, 'models')).length) {
+      testModel.value = recGet(asRecord(asArray(recGet(j, 'models'))[0]), 'name')
     }
     if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.

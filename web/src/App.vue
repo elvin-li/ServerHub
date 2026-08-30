@@ -507,9 +507,9 @@ const nav = computed(() => {
 const activeGroup = computed(() => {
   const path = route.path
   for (const item of asArray(nav.value)) {
-    if (item.exact && path === item.to) return item
-    if (item.match && asArray(item.match).some(m => path === m || path.startsWith(m + '/'))) return item
-    if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
+    if (recGet(item, 'exact') && path === recGet(item, 'to')) return item
+    if (recGet(item, 'match') && asArray(recGet(item, 'match')).some(m => path === m || path.startsWith(m + '/'))) return item
+    if (!recGet(item, 'exact') && !recGet(item, 'match') && (path === recGet(item, 'to') || path.startsWith(recGet(item, 'to') + '/'))) return item
   }
   return null
 })
@@ -518,9 +518,9 @@ const activeChildren = computed(() => asArray(activeGroup.value?.children))
 
 function isActive(item) {
   const path = route.path
-  if (item.exact) return path === item.to
-  if (item.match) return asArray(item.match).some(m => path === m || path.startsWith(m + '/'))
-  return path === item.to || path.startsWith(item.to + '/')
+  if (recGet(item, 'exact')) return path === recGet(item, 'to')
+  if (recGet(item, 'match')) return asArray(recGet(item, 'match')).some(m => path === m || path.startsWith(m + '/'))
+  return path === recGet(item, 'to') || path.startsWith(recGet(item, 'to') + '/')
 }
 
 function navCurrent(item) {

@@ -125,8 +125,8 @@ async function load() {
   try {
     const data = asRecord(await getServiceSignatures())
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = asArray(data.signatures).map((r) => asRecord(r))
-    builtinCount.value = finiteN(data.builtin_count, 0)
+    rows.value = asArray(recGet(data, 'signatures')).map((r) => asRecord(r))
+    builtinCount.value = finiteN(recGet(data, 'builtin_count'), 0)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -148,13 +148,13 @@ function startEdit(row) {
   const rec = asRecord(row)
   editing.value = {
     existing: true,
-    slug: rec.slug,
-    name: rec.name || '',
-    category: rec.category || '',
-    procs: asArray(rec.procs).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
-    ports: asArray(rec.ports).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
-    http: httpValue(rec.http),
-    brew: rec.brew || '',
+    slug: recGet(rec, 'slug'),
+    name: recGet(rec, 'name') || '',
+    category: recGet(rec, 'category') || '',
+    procs: asArray(recGet(rec, 'procs')).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    ports: asArray(recGet(rec, 'ports')).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    http: httpValue(recGet(rec, 'http')),
+    brew: recGet(rec, 'brew') || '',
   }
 }
 

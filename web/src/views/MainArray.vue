@@ -1128,7 +1128,7 @@ async function power(d, action) {
   try {
     const j = asRecord(await setDiskPower(row.id, action))
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? `✅ ${labels[action]} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1000)
   } catch (e) {
@@ -1157,7 +1157,7 @@ async function manage(v, action) {
   try {
     const j = asRecord(await manageStorageDevice(row.id, { action }))
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? `✅ ${action} ${finiteText(row.id)}` : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(800)
   } catch (e) {
@@ -1220,7 +1220,7 @@ async function doFormat() {
       confirm_name: asTrimmed(formatConfirm.value),
     }))
     if (generation !== loadSeq || !pageAlive) return
-    lastMsg.value = (finiteText(j.message, '') || '') + (j.log ? '\n' + asArray(j.log).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
+    lastMsg.value = (finiteText(recGet(j, 'message'), '') || '') + (recGet(j, 'log') ? '\n' + asArray(recGet(j, 'log')).map(n => finiteText(n, '')).filter(Boolean).join('\n') : '')
     toast(j.ok ? '✅ ' + t('main_extra.formatted') : `❌ ${finiteText(j.message)}`)
     if (j.ok) {
       formatTarget.value = null
