@@ -157,10 +157,10 @@ def _compact_token_payload(text: str) -> dict | None:
         obj = safe_json_loads(data)
     except (ValueError, TypeError, RecursionError, OverflowError):
         return None
-    if not isinstance(obj, dict):
+    if not _safe_isinstance(obj, dict):
         return None
     account, tunnel = obj.get("a"), obj.get("t")
-    if not isinstance(account, str) or not isinstance(tunnel, str):
+    if not _safe_isinstance(account, str) or not _safe_isinstance(tunnel, str):
         return None
     if len(account) < 8 or len(tunnel) < 8:
         return None
@@ -576,7 +576,7 @@ def _load_state() -> dict:
             # RecursionError: leftover deeply-nested tunnel state is not ValueError.
             return {}
         data = _jsonable_state(data)
-        return data if isinstance(data, dict) else {}
+        return data if _safe_isinstance(data, dict) else {}
     return {}
 
 
@@ -1150,7 +1150,7 @@ def _start_failure_reason(info: dict | None = None) -> str:
     hint = _recent_tunnel_error()
     if hint:
         return hint
-    info = info if isinstance(info, dict) else {}
+    info = info if _safe_isinstance(info, dict) else {}
     last_exit = info.get("last_exit")
     state = _as_text(info.get("state") or "") or "not running"
     if last_exit not in (None, 0):
@@ -1216,7 +1216,7 @@ def status() -> dict:
     """Panel snapshot for Cloudflared."""
     _ensure_dirs()
     st = _jsonable_state(_load_state())
-    if not isinstance(st, dict):
+    if not _safe_isinstance(st, dict):
         st = {}
 
     def _tunnels() -> tuple[list, str | None]:
@@ -1361,7 +1361,7 @@ def login_start() -> dict:
         # only on this failure path and keeps every other spawn failure —
         # including a FileNotFoundError for a vanished cwd while the binary
         # is still present — as the raw result rather than inventing a lie.
-        if isinstance(e, FileNotFoundError) and not _path_is_file(Path(bin_path)):
+        if _safe_isinstance(e, FileNotFoundError) and not _path_is_file(Path(bin_path)):
             raise api_error("cloudflared.not_installed")
         return {
             "ok": False,
@@ -1511,7 +1511,7 @@ def start_with_tunnel(tunnel: str) -> dict:
     # from the _load_state seam used to 500 POST /start after the tunnel
     # itself was already up.  The scrub answers an exact dict.
     st = _jsonable_state(_load_state())
-    if not isinstance(st, dict):
+    if not _safe_isinstance(st, dict):
         st = {}
     st.update({"mode": "token", "tunnel_name": tunnel, "updated": time.time()})
     _save_state(st)
@@ -1540,7 +1540,7 @@ def start_with_token(token: str, label: str | None = None) -> dict:
     # from the _load_state seam used to 500 POST /start-token after the
     # tunnel itself was already up.  The scrub answers an exact dict.
     st = _jsonable_state(_load_state())
-    if not isinstance(st, dict):
+    if not _safe_isinstance(st, dict):
         st = {}
     st.update({
         "mode": "token",
@@ -1577,7 +1577,7 @@ def stop() -> dict:
 
 def restart() -> dict:
     st = _jsonable_state(_load_state())
-    if not isinstance(st, dict):
+    if not _safe_isinstance(st, dict):
         st = {}
     name = st.get("tunnel_name")
     if _path_is_file(TOKEN_FILE):
@@ -1701,7 +1701,7 @@ def uninstall_service() -> dict:
     # scrub answers an exact dict, so the pops and the persisted journal
     # keep every sane sibling.
     st = _jsonable_state(_load_state())
-    if not isinstance(st, dict):
+    if not _safe_isinstance(st, dict):
         st = {}
     st.pop("tunnel_name", None)
     st.pop("mode", None)
