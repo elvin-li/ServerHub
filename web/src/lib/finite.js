@@ -6,6 +6,11 @@
  * used to render "Infinity".
  */
 
+/** Hostile leftover JSON bodies used to be primitives; field reads then threw. */
+export function asJsonBody(value) {
+  return Array.isArray(value) ? value : asRecord(value)
+}
+
 /** Hostile leftover lists used to be mappings; `.filter`/`.map` then threw. */
 export function asArray(value) {
   return Array.isArray(value) ? value : []

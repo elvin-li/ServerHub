@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, asJsonBody, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -126,7 +126,7 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
         }
         throw err
       }
-      return j
+      return asJsonBody(j)
     } catch (e) {
       const isLast = i === attempts - 1
       const userAborted = Boolean(userSignal?.aborted)

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+import { asArray, asRecord, asJsonBody, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+
+describe('asJsonBody leftover answers', () => {
+  it('keeps lists and mappings, fail-closes primitives', () => {
+    expect(asJsonBody({ a: 1 })).toEqual({ a: 1 })
+    expect(asJsonBody(['a'])).toEqual(['a'])
+    expect(asJsonBody([])).toEqual([])
+    expect(asJsonBody(null)).toEqual({})
+    expect(asJsonBody('x')).toEqual({})
+    expect(asJsonBody(12)).toEqual({})
+  })
+})
 
 describe('asRecord leftover mappings', () => {
   it('keeps real objects and fail-closes lists', () => {
