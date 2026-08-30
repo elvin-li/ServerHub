@@ -624,7 +624,7 @@ def system_scheduler():
     # ``\ud800`` label, an over-cap plist int or a subclass row bomb
     # answered a raw 500 here and a 200 there.
     timers = system_settings_svc._json_tree(tools_svc.launchd_timers())
-    if not isinstance(timers, list):
+    if not _isa(timers, list):
         timers = []
     return {"timers": timers}
 
