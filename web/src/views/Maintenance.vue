@@ -117,7 +117,7 @@ let listTimer = null
 const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
 const filtered = computed(() => {
   const list = asArray(tasks.value)
-  const qq = q.value.trim().toLowerCase()
+  const qq = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
   if (!qq) return list
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw

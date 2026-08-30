@@ -545,7 +545,7 @@ const systemCount = computed(() => asArray(containers.value).filter(c => asRecor
 const filteredContainers = computed(() => {
   let list = containers.value
   if (hideSystem.value) list = list.filter(c => !asRecord(c).system)
-  const qq = finiteText(q.value, '').trim().toLowerCase()
+  const qq = typeof q.value === 'string' ? q.value.trim().toLowerCase() : ''
   if (!qq) return list
   return list.filter((c) => {
     const rec = asRecord(c)

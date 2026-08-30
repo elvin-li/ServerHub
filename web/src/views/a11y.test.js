@@ -2561,6 +2561,7 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/finiteN\(asArray\(filteredContainers\)\.length\)/)
     expect(containers).toMatch(/finiteText\(rec\.name, ''\)\.toLowerCase\(\)/)
     expect(containers).toMatch(/Object\.keys\(asRecord\(map\)\)/)
+    expect(containers).toMatch(/typeof q\.value === 'string' \? q\.value\.trim\(\)\.toLowerCase\(\)/)
     expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
     expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
@@ -3370,6 +3371,7 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).toMatch(/asRecord\(row\)/)
     expect(maintenance).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
     expect(maintenance).toMatch(/finiteN\(asArray\(tasks\)\.length\)/)
+    expect(maintenance).toMatch(/typeof q\.value === 'string' \? q\.value\.trim\(\)\.toLowerCase\(\)/)
   })
 
   it('Account leftover recovery counts go through finiteN', () => {
