@@ -785,7 +785,8 @@ async function sendChat() {
   chatBusy.value = true
   chatAbort = new AbortController()
   // The just-pushed user turn is not pending; include it. Drop empty assistant stubs.
-  const payload = chatMessages.value
+  const payload = asArray(chatMessages.value)
+    .map((m) => asRecord(m))
     .filter((m) => !m.pending && (m.role === 'user' || (m.role === 'assistant' && m.content)))
     .map((m) => ({ role: m.role, content: m.content }))
   void scrollChat()
