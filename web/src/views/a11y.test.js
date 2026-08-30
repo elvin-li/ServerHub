@@ -3788,6 +3788,7 @@ describe('leftover Infinity interpolations', () => {
     expect(compose).toMatch(/jobLog\.value = finiteText\(j\.log, ''\)/)
     expect(compose).toMatch(/v-for="s in asArray\(stacks\)"/)
     expect(compose).toMatch(/stacks\.value = asArray\(d\.stacks\)\.map\(\(s\) => asRecord\(s\)\)/)
+    expect(compose).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
   })
 
   it('Brew leftover names go through finiteText', () => {

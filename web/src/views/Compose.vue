@@ -186,7 +186,7 @@ async function loadStacks(manual = false) {
     loadError.value = ''
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // The job poll re-reads the list when a run ends — background timing, so
     // a failure there marks `loadError` on screen instead of toasting over
     // whatever the operator moved on to. User-initiated loads pass `manual`.

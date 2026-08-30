@@ -1555,7 +1555,8 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         }
         try:
             vars_json = json.dumps(
-                values, ensure_ascii=False, indent=2, allow_nan=False,
+                catalog_remote._jsonable(values),
+                ensure_ascii=False, indent=2, allow_nan=False,
             )
         except (TypeError, ValueError, OverflowError, RecursionError):
             vars_json = "{}"
@@ -1591,7 +1592,8 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
         }
         try:
             redacted_json = json.dumps(
-                redacted, ensure_ascii=False, indent=2, allow_nan=False,
+                catalog_remote._jsonable(redacted),
+                ensure_ascii=False, indent=2, allow_nan=False,
             )
         except (TypeError, ValueError, OverflowError, RecursionError):
             redacted_json = "{}"
