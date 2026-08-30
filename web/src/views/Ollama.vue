@@ -15,7 +15,7 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="56" />
 
     <!-- Ollama absent: clear empty state + a path to install it -->
-    <div v-else-if="data && !data.installed" class="card-block absent">
+    <div v-else-if="data && !asRecord(data).installed" class="card-block absent">
       <h2>{{ t('ollama.absent_title') }}</h2>
       <p class="meta">{{ t('ollama.absent_body') }}</p>
       <router-link class="btn-link" to="/apps">{{ t('ollama.absent_cta') }}</router-link>
@@ -31,27 +31,27 @@
         <div v-if="asArray(duplicateLabels).length" class="notice warn" role="alert">
           {{ t('ollama.duplicate_agents', { labels: asArray(duplicateLabels).map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
         </div>
-        <div v-if="data.url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
-          {{ t('ollama.url_rejected', { url: finiteText(data.url) }) }}
+        <div v-if="asRecord(data).url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
+          {{ t('ollama.url_rejected', { url: finiteText(asRecord(data).url) }) }}
         </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
-            <div class="mono">{{ finiteText(data.service?.label) }}</div>
+            <div class="mono">{{ finiteText(asRecord(asRecord(data).service).label) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.version') }}</div>
-            <div class="mono">{{ finiteText(data.version) }}</div>
+            <div class="mono">{{ finiteText(asRecord(data).version) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
-              <span>{{ finiteText(data.url) }}</span>
+              <span>{{ finiteText(asRecord(data).url) }}</span>
               <!-- Two identical "Copy" buttons sit in this card copying
                    different URLs; a form-controls listing cannot tell them
                    apart without the field name. The visible "Copy" text stays
                    first in the name (WCAG 2.5.3). -->
-              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(data.url)">{{ t('common.copy') }}</button>
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(asRecord(data).url)">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
@@ -61,18 +61,18 @@
               <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.openai_api') })" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
-          <div v-if="data.service?.pid">
+          <div v-if="asRecord(asRecord(data).service).pid">
             <div class="meta">{{ t('ollama.pid') }}</div>
-            <div class="mono">{{ finiteN(data.service.pid) }}</div>
+            <div class="mono">{{ finiteN(asRecord(asRecord(data).service).pid) }}</div>
           </div>
         </div>
-        <p v-if="data.service?.inferred" class="meta" style="margin:8px 0 0">
+        <p v-if="asRecord(asRecord(data).service).inferred" class="meta" style="margin:8px 0 0">
           {{ t('ollama.listing_missed') }}
         </p>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="svcBusy || !data.service?.label || data.reachable" @click="act('start')">{{ t('services.act_start') }}</button>
-          <button class="tiny danger" :disabled="svcBusy || !data.service?.label" @click="act('stop')">{{ t('services.act_stop') }}</button>
-          <button class="tiny" :disabled="svcBusy || !data.service?.label" @click="act('restart')">{{ t('services.act_restart') }}</button>
+          <button class="tiny primary" :disabled="svcBusy || !asRecord(asRecord(data).service).label || asRecord(data).reachable" @click="act('start')">{{ t('services.act_start') }}</button>
+          <button class="tiny danger" :disabled="svcBusy || !asRecord(asRecord(data).service).label" @click="act('stop')">{{ t('services.act_stop') }}</button>
+          <button class="tiny" :disabled="svcBusy || !asRecord(asRecord(data).service).label" @click="act('restart')">{{ t('services.act_restart') }}</button>
         </div>
       </div>
 
