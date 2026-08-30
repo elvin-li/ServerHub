@@ -985,12 +985,12 @@ function wrapStorage(next) {
     ...row,
     power_disks: asArray(row.power_disks).map((d) => {
       const disk = asRecord(d)
-      return { ...disk, volumes: asArray(disk.volumes).map((v) => asRecord(v)) }
+      return { ...disk, volumes: asArray(recGet(disk, 'volumes')).map((v) => asRecord(v)) }
     }),
-    volumes: asArray(row.volumes).map((v) => asRecord(v)),
-    disks: asArray(row.disks).map((d) => {
+    volumes: asArray(recGet(row, 'volumes')).map((v) => asRecord(v)),
+    disks: asArray(recGet(row, 'disks')).map((d) => {
       const disk = asRecord(d)
-      return { ...disk, smart: asRecord(disk.smart), volumes: asArray(disk.volumes).map((v) => asRecord(v)) }
+      return { ...disk, smart: asRecord(recGet(disk, 'smart')), volumes: asArray(recGet(disk, 'volumes')).map((v) => asRecord(v)) }
     }),
     array: {
       ...arr,
@@ -1008,23 +1008,23 @@ function wrapSmart(next) {
   const row = asRecord(next)
   return {
     ...row,
-    devices: asArray(row.devices).map((d) => asRecord(d)),
-    history: asArray(row.history).map((h) => asRecord(h)),
+    devices: asArray(recGet(row, 'devices')).map((d) => asRecord(d)),
+    history: asArray(recGet(row, 'history')).map((h) => asRecord(h)),
   }
 }
 function kindLabel(d) {
   const row = asRecord(d)
-  if (row.system) return t('main_extra.kind_system')
-  if (row.kind === 'removable') return t('main_extra.kind_removable')
-  if (row.rotational || row.kind === 'hdd' || row.kind === 'external_hdd') return t('main_extra.kind_hdd')
-  if (row.ssd) return 'SSD'
-  return finiteText(row.kind, '') || t('main_extra.kind_disk')
+  if (recGet(row, 'system')) return t('main_extra.kind_system')
+  if (recGet(row, 'kind') === 'removable') return t('main_extra.kind_removable')
+  if (recGet(row, 'rotational') || recGet(row, 'kind') === 'hdd' || recGet(row, 'kind') === 'external_hdd') return t('main_extra.kind_hdd')
+  if (recGet(row, 'ssd')) return 'SSD'
+  return finiteText(recGet(row, 'kind'), '') || t('main_extra.kind_disk')
 }
 function kindBadge(d) {
   const row = asRecord(d)
-  if (row.system) return 'down'
-  if (row.rotational || row.kind === 'hdd' || row.kind === 'external_hdd') return 'warn'
-  if (row.ssd) return 'ok'
+  if (recGet(row, 'system')) return 'down'
+  if (recGet(row, 'rotational') || recGet(row, 'kind') === 'hdd' || recGet(row, 'kind') === 'external_hdd') return 'warn'
+  if (recGet(row, 'ssd')) return 'ok'
   return 'accent'
 }
 

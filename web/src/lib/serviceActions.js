@@ -31,12 +31,14 @@ const ACT_ORDER = ['start', 'stop', 'restart', 'run', 'pause', 'unpause']
 export function canAct(s, act) {
   const row = asRecord(s)
   if (!s) return false
-  if (row.actions != null && !Array.isArray(row.actions)) return false
-  if (asArray(row.actions).includes(act)) return true
-  if (Array.isArray(row.actions)) return false
-  if (act === 'start' && (row.state === 'down' || row.state === 'stopped')) return true
-  if (act === 'stop' && row.state === 'ok') return true
-  if (act === 'restart' && row.state === 'ok') return true
+  const actions = recGet(row, 'actions')
+  if (actions != null && !Array.isArray(actions)) return false
+  if (asArray(actions).includes(act)) return true
+  if (Array.isArray(actions)) return false
+  const state = recGet(row, 'state')
+  if (act === 'start' && (state === 'down' || state === 'stopped')) return true
+  if (act === 'stop' && state === 'ok') return true
+  if (act === 'restart' && state === 'ok') return true
   return false
 }
 
@@ -53,14 +55,16 @@ export function primaryActs(s) {
 export function canLogs(s) {
   const row = asRecord(s)
   if (!s) return false
-  if (row.can_logs === false) return false
-  if (row.can_logs === true) return true
-  if (asArray(row.actions).includes('logs')) return true
+  const canLogsFlag = recGet(row, 'can_logs')
+  if (canLogsFlag === false) return false
+  if (canLogsFlag === true) return true
+  const actions = recGet(row, 'actions')
+  if (asArray(actions).includes('logs')) return true
   // A served action list without `logs` is authoritative. Member rows are
   // stripped to open/detail and omit can_logs; guessing from kind painted
   // Logs (and 403'd) for those accounts.
-  if (Array.isArray(row.actions) || (row.actions != null && typeof row.actions === 'object')) return false
-  return ['container', 'launchd', 'script'].includes(row.kind)
+  if (Array.isArray(actions) || (actions != null && typeof actions === 'object')) return false
+  return ['container', 'launchd', 'script'].includes(recGet(row, 'kind'))
 }
 
 export function ledOf(state) {
@@ -85,8 +89,8 @@ export function portOf(s) {
     const n = typeof p === 'number' ? p : (typeof p === 'string' && /^\d+$/.test(p) ? Number(p) : null)
     if (n != null && Number.isFinite(n) && !nums.includes(n)) nums.push(n)
   }
-  if (row.port != null) push(row.port)
-  const ports = asArray(row.ports)
+  if (recGet(row, 'port') != null) push(recGet(row, 'port'))
+  const ports = asArray(recGet(row, 'ports'))
   if (ports.length) {
     for (const p of ports) push(p)
     if (!nums.length) {
@@ -97,7 +101,7 @@ export function portOf(s) {
     }
   }
   if (nums.length) return nums.map((p) => `:${p}`).join(' ')
-  const m = String(finiteText(row.detail, '')).match(/:(\d{2,5})\b/)
+  const m = String(finiteText(recGet(row, 'detail'), '')).match(/:(\d{2,5})\b/)
   return m ? `:${m[1]}` : '—'
 }
 
