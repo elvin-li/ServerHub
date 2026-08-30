@@ -87,11 +87,17 @@ def _job_scalar(value):
     except BaseException:
         return None
     try:
-        return _jsonable(value)
+        cleaned = _jsonable(value)
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return None
+    # ClassBomb (raising ``__class__``) jsonable-falls to ``''``; a job
+    # scalar that is not an exact str must drop to None so GET /api/stacks
+    # drops one field instead of echoing a leftover empty string.
+    if cleaned == "" and type(value) is not str:
+        return None
+    return cleaned
 
 
 def _log_text(value) -> str:

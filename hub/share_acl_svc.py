@@ -273,6 +273,13 @@ def _rc_int(rc) -> int:
     if rc is False:
         return 0
     try:
+        # Bare isinstance on bool: for a genuine int-subclass rc, the
+        # real-type check misses and CPython consults ``__class__``.  A
+        # BaseException-raising property must read as junk (-255), not
+        # fall through ``_isa(int)`` (which answers True on the C-level
+        # type check) into ``int.__index__`` and forge exit 0.
+        if isinstance(rc, bool):
+            return -255
         if type(rc) is bool:
             # Passed the final-type gate without being either singleton:
             # a lying impostor, junk by definition.
