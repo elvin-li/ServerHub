@@ -6,6 +6,11 @@
  * used to render "Infinity".
  */
 
+/** Hostile leftover JSON bodies used to be primitives; field reads then threw. */
+export function asJsonBody(value) {
+  return Array.isArray(value) ? value : asRecord(value)
+}
+
 /** Hostile leftover lists used to be mappings; `.filter`/`.map` then threw. */
 export function asArray(value) {
   return Array.isArray(value) ? value : []
@@ -14,6 +19,32 @@ export function asArray(value) {
 /** Hostile leftover mappings used to be lists; Object.values/v-for then threw. */
 export function asRecord(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+/** Hostile leftover needles used to throw on `.trim()`. */
+export function asTrimmed(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/** Hostile leftover ids used to throw in encodeURIComponent. */
+export function asUri(value) {
+  try {
+    if (typeof value === 'number' && Number.isFinite(value)) return encodeURIComponent(String(value))
+    if (typeof value === 'string') return encodeURIComponent(value)
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+/** Hostile leftover field reads used to throw on getter bombs. */
+export function recGet(value, key, fallback = undefined) {
+  try {
+    const rec = asRecord(value)
+    return rec[key]
+  } catch {
+    return fallback
+  }
 }
 
 export function finiteN(value, fallback = '—') {

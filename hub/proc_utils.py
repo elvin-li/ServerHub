@@ -22,6 +22,23 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in ``ps`` COMMAND rows and
+    launchd ProgramArguments — GET /api/status answered HTTP 500 instead
+    of dropping the junk cell.  Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """Drop leftover types / lone surrogates so a bad ``ps`` row cannot 500."""
     if value is None:
@@ -93,7 +110,7 @@ def _pids_with_command_prefix(prefix: str) -> list[int]:
     found: list[int] = []
     seen: set[int] = set()
     for pid, cmd in rows:
-        text = cmd if isinstance(cmd, str) else _as_text(cmd)
+        text = cmd if _isinst(cmd, str) else _as_text(cmd)
         if text != prefix and not text.startswith(prefix + " "):
             continue
         if pid in seen:
@@ -113,7 +130,7 @@ def pids_for_exe(exe: str) -> list[int]:
 
 
 def _program_arguments(arguments) -> list[str]:
-    if not isinstance(arguments, (list, tuple)):
+    if not _isinst(arguments, (list, tuple)):
         return []
     out: list[str] = []
     for item in arguments:
@@ -155,7 +172,7 @@ def pids_for_argv(arguments) -> list[int]:
     out: list[int] = []
     seen: set[int] = set()
     for pid, cmd in rows:
-        text = cmd if isinstance(cmd, str) else _as_text(cmd)
+        text = cmd if _isinst(cmd, str) else _as_text(cmd)
         if text != argv0 or pid in seen:
             continue
         seen.add(pid)

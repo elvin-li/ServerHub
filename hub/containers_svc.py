@@ -74,36 +74,42 @@ def _job_scalar(value):
     """A job-row scalar (``rc`` / ``started`` / ``finished``) scrubbed for JSON.
 
     These fields are echoed to clients through ``_jsonable``, whose entry
-    ``isinstance(value, bool)`` reads a leftover value's ``__class__`` on the
+    ``_isinst(value, bool)`` reads a leftover value's ``__class__`` on the
     real-type miss — so a poisoned scalar whose ``__class__`` is a raising
     property 500'd GET /api/stacks (via ``job_public``) and
     GET /api/stacks/jobs/{id}.  Laundering each field on its own degrades the
     one bomb to ``None`` (the field drops) while its sibling fields survive.
     """
     try:
-        isinstance(value, str)
+        _isinst(value, str)
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return None
     try:
-        return _jsonable(value)
+        cleaned = _jsonable(value)
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return None
+    # ClassBomb (raising ``__class__``) jsonable-falls to ``''``; a job
+    # scalar that is not an exact str must drop to None so GET /api/stacks
+    # drops one field instead of echoing a leftover empty string.
+    if cleaned == "" and type(value) is not str:
+        return None
+    return cleaned
 
 
 def _log_text(value) -> str:
     """One job-log line as JSON-safe text; a ``__class__`` bomb drops to ''.
 
-    ``_as_text``'s entry ``isinstance(value, (bytes, bytearray))`` reads the
+    ``_as_text``'s entry ``_isinst(value, (bytes, bytearray))`` reads the
     operand's ``__class__`` on the real-type miss, so a leftover log line whose
     ``__class__`` is a raising property 500'd the log join on
     GET /api/stacks/jobs/{id}.
     """
     try:
-        isinstance(value, str)
+        _isinst(value, str)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -259,9 +265,9 @@ def _register_job(tid: str, *, stack_id: str, action: str) -> dict:
 
     Returns the live job dict (the ``run()`` thread mutates it in place).
     """
-    tid = tid if isinstance(tid, str) else str(tid)
-    stack_id = stack_id if isinstance(stack_id, str) else ""
-    action = action if isinstance(action, str) else str(action or "")
+    tid = tid if _isinst(tid, str) else str(tid)
+    stack_id = stack_id if _isinst(stack_id, str) else ""
+    action = action if _isinst(action, str) else str(action or "")
     with _cjobs_lock:
         # _row_running, not a bare ``j.get("running")``: a leftover
         # dict-subclass row (or a __bool__-bomb value) used to 500 every
@@ -406,7 +412,7 @@ def _classify_job_failure(j: dict) -> None:
     would misclassify this.  Healthy jobs never reach here, so the success
     path stays probe-free.
     """
-    raw_log = j.get("log") if isinstance(j.get("log"), list) else []
+    raw_log = j.get("log") if _isinst(j.get("log"), list) else []
     tail = "\n".join(_as_text(x) for x in raw_log[-_JOB_CLASSIFY_TAIL:])
     # ``cli_missing``: the docker CLI itself could not be spawned (vanished
     # mid-job — see _stream_job_command).  Same operator-facing state as the
@@ -419,7 +425,7 @@ def _classify_job_failure(j: dict) -> None:
         return
     fail = soft_fail("container.engine_down")
     j["code"] = fail["code"]
-    if isinstance(j.get("log"), list):
+    if _isinst(j.get("log"), list):
         j["log"].append(f"!! {fail['message']} ({fail['code']})")
 
 
@@ -591,18 +597,18 @@ def _load_update_status() -> dict:
             read_text_capped(UPDATE_STATUS_PATH, _UPDATE_STATUS_CAP),
             parse_int=parse_int_capped,
         )
-        if not isinstance(data, dict):
+        if not _isinst(data, dict):
             return {}
         cleaned = _jsonable(data)
-        return cleaned if isinstance(cleaned, dict) else {}
+        return cleaned if _isinst(cleaned, dict) else {}
     except (OSError, TypeError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested update status is not ValueError.
         return {}
 
 
 def _save_update_status(data: dict) -> None:
-    payload = _jsonable(data) if isinstance(data, dict) else {}
-    if not isinstance(payload, dict):
+    payload = _jsonable(data) if _isinst(data, dict) else {}
+    if not _isinst(payload, dict):
         payload = {}
     try:
         UPDATE_STATUS_PATH.parent.mkdir(exist_ok=True)
@@ -627,7 +633,7 @@ def _field_text(value, fallback: str = "") -> str:
     first gate below and 500 GET /api/stacks and POST /api/stacks/{id}/run
     ahead of every scrub in this funnel (the nas8 rule).
     """
-    if value is None or _isa(value, bool):
+    if value is None or type(value) is bool:
         return fallback
     if _isa(value, float):
         if type(value) is not float:
@@ -825,7 +831,7 @@ def _build_container_list() -> tuple[bool, list]:
             raise
         except BaseException:
             ov = {}
-        if not isinstance(ov, dict):
+        if not _isinst(ov, dict):
             ov = {}
         # _truthy, not a bare truth test: a ``__bool__``-bomb ``hide`` used
         # to 500 the same listings.  Fails open to "show" — junk is not a
@@ -899,19 +905,19 @@ def _build_container_list() -> tuple[bool, list]:
             except (TypeError, ValueError, RecursionError):
                 # RecursionError: leftover deeply-nested inspect JSON is not ValueError.
                 arr = []
-            if isinstance(arr, dict):
+            if _isinst(arr, dict):
                 arr = [arr]
-            if not isinstance(arr, list):
+            if not _isinst(arr, list):
                 arr = []
             by = {}
             for a in arr:
-                if not isinstance(a, dict):
+                if not _isinst(a, dict):
                     continue
                 a = _jsonable(a)
-                if not isinstance(a, dict):
+                if not _isinst(a, dict):
                     continue
                 raw_name = a.get("Name")
-                if not isinstance(raw_name, str):
+                if not _isinst(raw_name, str):
                     continue
                 key = raw_name.lstrip("/")
                 if key:
@@ -921,30 +927,30 @@ def _build_container_list() -> tuple[bool, list]:
                 if not a:
                     continue
                 try:
-                    host = a.get("HostConfig") if isinstance(a.get("HostConfig"), dict) else {}
-                    ns = a.get("NetworkSettings") if isinstance(a.get("NetworkSettings"), dict) else {}
-                    nets = ns.get("Networks") if isinstance(ns.get("Networks"), dict) else {}
+                    host = a.get("HostConfig") if _isinst(a.get("HostConfig"), dict) else {}
+                    ns = a.get("NetworkSettings") if _isinst(a.get("NetworkSettings"), dict) else {}
+                    nets = ns.get("Networks") if _isinst(ns.get("Networks"), dict) else {}
                     nmode = host.get("NetworkMode")
                     it["network"] = (
-                        nmode if isinstance(nmode, str) and nmode
+                        nmode if _isinst(nmode, str) and nmode
                         else (",".join(str(k) for k in nets.keys()) or "bridge")
                     )
                     ips = []
                     for _nname, nd in nets.items():
-                        if not isinstance(nd, dict):
+                        if not _isinst(nd, dict):
                             continue
                         ip = nd.get("IPAddress")
-                        if isinstance(ip, str) and ip:
+                        if _isinst(ip, str) and ip:
                             ips.append(ip)
                     it["ip"] = ", ".join(ips) if ips else None
-                    rp_obj = host.get("RestartPolicy") if isinstance(host.get("RestartPolicy"), dict) else {}
+                    rp_obj = host.get("RestartPolicy") if _isinst(host.get("RestartPolicy"), dict) else {}
                     rp = rp_obj.get("Name")
-                    rp = rp if isinstance(rp, str) and rp else "no"
+                    rp = rp if _isinst(rp, str) and rp else "no"
                     it["restart_policy"] = rp
                     it["autostart"] = rp in ("always", "unless-stopped", "on-failure")
                     mounts = []
-                    for m in a.get("Mounts") if isinstance(a.get("Mounts"), list) else []:
-                        if not isinstance(m, dict):
+                    for m in a.get("Mounts") if _isinst(a.get("Mounts"), list) else []:
+                        if not _isinst(m, dict):
                             continue
                         mounts.append({
                             "src": m.get("Source") or m.get("Name") or "",
@@ -953,23 +959,23 @@ def _build_container_list() -> tuple[bool, list]:
                         })
                     it["mounts"] = mounts
                     created = a.get("Created")
-                    created = created if isinstance(created, str) else (
+                    created = created if _isinst(created, str) else (
                         "" if created is None else str(created)
                     )
                     it["created"] = created[:19].replace("T", " ")
-                    img = it["image"] if isinstance(it.get("image"), str) else ""
-                    cfg_obj = a.get("Config") if isinstance(a.get("Config"), dict) else {}
+                    img = it["image"] if _isinst(it.get("image"), str) else ""
+                    cfg_obj = a.get("Config") if _isinst(a.get("Config"), dict) else {}
                     cfg_img = cfg_obj.get("Image")
-                    if not isinstance(cfg_img, str) or not cfg_img:
+                    if not _isinst(cfg_img, str) or not cfg_img:
                         cfg_img = img
                     it["image"] = cfg_img
                     st_u = None
-                    if isinstance(upd, dict):
+                    if _isinst(upd, dict):
                         if cfg_img:
                             st_u = upd.get(cfg_img)
-                        if not isinstance(st_u, dict) and img:
+                        if not _isinst(st_u, dict) and img:
                             st_u = upd.get(img)
-                    if not isinstance(st_u, dict):
+                    if not _isinst(st_u, dict):
                         st_u = None
                     if st_u and st_u.get("status") in ("true", "false", True, False):
                         it["update"] = st_u.get("status") in (True, "true", "update")
@@ -987,7 +993,7 @@ def _build_container_list() -> tuple[bool, list]:
 
 def _fetch_stats(running_names: list[str]) -> dict:
     """docker stats is ~2s; only call for running containers."""
-    running_names = [n for n in running_names if isinstance(n, str) and n]
+    running_names = [n for n in running_names if _isinst(n, str) and n]
     if not running_names:
         return {}
     # Named args slightly faster than scanning all when few containers
@@ -1083,7 +1089,7 @@ def batch_action(names: list[str], action: str) -> dict:
         except HTTPException as e:
             # Carry the code (container.engine_down and friends) so the SPA
             # can translate per-row failures instead of rendering a dict repr.
-            detail = e.detail if isinstance(e.detail, dict) else {}
+            detail = e.detail if _isinst(e.detail, dict) else {}
             entry = {
                 "id": _as_text(n),
                 "ok": False,
@@ -1105,18 +1111,18 @@ def _container_rows(payload) -> list:
     ``containers: 5`` (or a bare list leftover) used to raise on ``.get`` /
     ``for c in 5`` and 500 Start All / stack listing.
     """
-    rows = payload.get("containers") if isinstance(payload, dict) else []
-    return rows if isinstance(rows, list) else []
+    rows = payload.get("containers") if _isinst(payload, dict) else []
+    return rows if _isinst(rows, list) else []
 
 
 def action_all(action: str) -> dict:
     """Start/stop/pause/unpause all containers (Unraid Start All / Stop All)."""
     names = []
     for c in _container_rows(list_containers(with_stats=False)):
-        if not isinstance(c, dict):
+        if not _isinst(c, dict):
             continue
         ident = c.get("id")
-        if not isinstance(ident, str) or not ident:
+        if not _isinst(ident, str) or not ident:
             continue
         rs = c.get("raw_state")
         if action == "start" and rs not in ("running", "paused"):
@@ -1181,7 +1187,7 @@ def start_check_updates_job(images: list[str] | None = None) -> dict:
         images = sorted({
             str(c["image"])
             for c in _container_rows(list_containers(with_stats=False))
-            if isinstance(c, dict) and isinstance(c.get("image"), str) and c.get("image")
+            if _isinst(c, dict) and _isinst(c.get("image"), str) and c.get("image")
         })
     tid = f"docker-check-{_job_epoch()}"
     j0 = _register_job(tid, stack_id="_docker_update", action="check")
@@ -1239,13 +1245,13 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
         j["log"].append("inspect returned unusable JSON")
         return False
     host = data.get("HostConfig")
-    host = host if isinstance(host, dict) else {}
+    host = host if _isinst(host, dict) else {}
     cfg_ = data.get("Config")
-    cfg_ = cfg_ if isinstance(cfg_, dict) else {}
+    cfg_ = cfg_ if _isinst(cfg_, dict) else {}
     args = [DOCKER, "run", "-d", "--name", name]
     # restart policy
     rp_obj = host.get("RestartPolicy")
-    rp = str((rp_obj.get("Name") or "") if isinstance(rp_obj, dict) else "")
+    rp = str((rp_obj.get("Name") or "") if _isinst(rp_obj, dict) else "")
     if rp and rp != "no":
         args += ["--restart", rp]
     # network
@@ -1260,24 +1266,24 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
         args.append("--privileged")
     # binds
     binds = host.get("Binds")
-    for b in binds if isinstance(binds, list) else []:
-        if isinstance(b, str) and b:
+    for b in binds if _isinst(binds, list) else []:
+        if _isinst(b, str) and b:
             args += ["-v", b]
     # ports (skip if host network)
     if nmode != "host":
         pb = host.get("PortBindings") or {}
-        if not isinstance(pb, dict):
+        if not _isinst(pb, dict):
             pb = {}
         for cport, binds in pb.items():
             if not binds:
                 continue
-            if not isinstance(binds, list):
+            if not _isinst(binds, list):
                 continue
             cport_s = str(cport or "")
             if not cport_s:
                 continue
             for b in binds:
-                if not isinstance(b, dict):
+                if not _isinst(b, dict):
                     continue
                 hp = str(b.get("HostPort") or "")
                 hip = str(b.get("HostIp") or "")
@@ -1291,21 +1297,21 @@ def _recreate_simple(name: str, image: str, j: dict, env: dict) -> bool:
                     args += ["-p", cport_s]
     # env (skip PATH noise partially)
     env_list = cfg_.get("Env")
-    for e in env_list if isinstance(env_list, list) else []:
-        if not isinstance(e, str):
+    for e in env_list if _isinst(env_list, list) else []:
+        if not _isinst(e, str):
             continue
         if e.startswith("PATH="):
             continue
         args += ["-e", e]
-    if not isinstance(image, str) or not image.strip():
+    if not _isinst(image, str) or not image.strip():
         j["log"].append("image name is unusable")
         return False
     args.append(image)
     # cmd
     cmd = cfg_.get("Cmd")
-    if isinstance(cmd, (list, tuple)):
+    if _isinst(cmd, (list, tuple)):
         args += [str(part) for part in cmd if part is not None]
-    elif isinstance(cmd, str) and cmd:
+    elif _isinst(cmd, str) and cmd:
         args.append(cmd)
 
     j["log"].append("$ docker stop " + name)
@@ -1387,17 +1393,17 @@ def start_update_container_job(name: str) -> dict:
     data = inspect_object(out)
     if data is None:
         raise api_error("container.not_found")
-    cfg_upd = data.get("Config") if isinstance(data.get("Config"), dict) else {}
+    cfg_upd = data.get("Config") if _isinst(data.get("Config"), dict) else {}
     image = cfg_upd.get("Image")
-    image = image if isinstance(image, str) else ""
+    image = image if _isinst(image, str) else ""
     # Prefer compose project update if labeled
-    labels = cfg_upd.get("Labels") if isinstance(cfg_upd.get("Labels"), dict) else {}
+    labels = cfg_upd.get("Labels") if _isinst(cfg_upd.get("Labels"), dict) else {}
     project = labels.get("com.docker.compose.project")
-    project = project if isinstance(project, str) else ""
+    project = project if _isinst(project, str) else ""
     workdir = labels.get("com.docker.compose.project.working_dir")
-    workdir = workdir if isinstance(workdir, str) else ""
+    workdir = workdir if _isinst(workdir, str) else ""
     compose_files = labels.get("com.docker.compose.project.config_files")
-    compose_files = compose_files if isinstance(compose_files, str) else ""
+    compose_files = compose_files if _isinst(compose_files, str) else ""
 
     tid = f"docker-update-{name}-{_job_epoch()}"
     j0 = _register_job(tid, stack_id=project or name, action="update_container")
@@ -1410,14 +1416,14 @@ def start_update_container_job(name: str) -> dict:
             if workdir and compose_files:
                 cf = compose_files.split(",")[0]
                 svc_name = labels.get("com.docker.compose.service")
-                svc_name = svc_name if isinstance(svc_name, str) else ""
+                svc_name = svc_name if _isinst(svc_name, str) else ""
                 cmds = [
                     [DOCKER, "compose", "-f", cf, "pull", name if svc_name else ""],
                     [DOCKER, "compose", "-f", cf, "up", "-d", "--force-recreate",
                      svc_name or name],
                 ]
                 # clean empty args
-                cmds = [[a for a in c if isinstance(a, str) and a] for c in cmds]
+                cmds = [[a for a in c if _isinst(a, str) and a] for c in cmds]
                 for cmd in cmds:
                     j["log"].append("$ " + " ".join(cmd))
                     rc = _stream_job_command(cmd, j, cwd=workdir, env=env)
@@ -1553,20 +1559,20 @@ def inspect_container(name: str) -> dict:
         raise api_error("container.not_found")
     # redact env
     cfg_raw = data.get("Config")
-    if isinstance(cfg_raw, dict) and "Env" in cfg_raw:
+    if _isinst(cfg_raw, dict) and "Env" in cfg_raw:
         data["Config"]["Env"] = redact_env(cfg_raw.get("Env"))
     # slim response for UI
-    cfg_ = cfg_raw if isinstance(cfg_raw, dict) else {}
-    host = data.get("HostConfig") if isinstance(data.get("HostConfig"), dict) else {}
-    state = data.get("State") if isinstance(data.get("State"), dict) else {}
-    health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
-    ns = data.get("NetworkSettings") if isinstance(data.get("NetworkSettings"), dict) else {}
-    nets = ns.get("Networks") if isinstance(ns.get("Networks"), dict) else {}
-    mounts = data.get("Mounts") if isinstance(data.get("Mounts"), list) else []
-    labels = cfg_.get("Labels") if isinstance(cfg_.get("Labels"), dict) else {}
+    cfg_ = cfg_raw if _isinst(cfg_raw, dict) else {}
+    host = data.get("HostConfig") if _isinst(data.get("HostConfig"), dict) else {}
+    state = data.get("State") if _isinst(data.get("State"), dict) else {}
+    health = state.get("Health") if _isinst(state.get("Health"), dict) else {}
+    ns = data.get("NetworkSettings") if _isinst(data.get("NetworkSettings"), dict) else {}
+    nets = ns.get("Networks") if _isinst(ns.get("Networks"), dict) else {}
+    mounts = data.get("Mounts") if _isinst(data.get("Mounts"), list) else []
+    labels = cfg_.get("Labels") if _isinst(cfg_.get("Labels"), dict) else {}
     env = [
-        e for e in (cfg_.get("Env") if isinstance(cfg_.get("Env"), list) else [])
-        if isinstance(e, str)
+        e for e in (cfg_.get("Env") if _isinst(cfg_.get("Env"), list) else [])
+        if _isinst(e, str)
     ]
     ident = data.get("Id")
     ident = str(ident) if ident is not None else ""
@@ -1592,17 +1598,17 @@ def inspect_container(name: str) -> dict:
         "Entrypoint": cfg_.get("Entrypoint"),
         "Labels": labels,
         "Binds": [
-            b for b in (host.get("Binds") if isinstance(host.get("Binds"), list) else [])
-            if isinstance(b, str)
+            b for b in (host.get("Binds") if _isinst(host.get("Binds"), list) else [])
+            if _isinst(b, str)
         ],
-        "PortBindings": host.get("PortBindings") if isinstance(host.get("PortBindings"), dict) else {},
+        "PortBindings": host.get("PortBindings") if _isinst(host.get("PortBindings"), dict) else {},
         "RestartPolicy": host.get("RestartPolicy"),
         "NetworkMode": host.get("NetworkMode"),
         "Networks": list(nets.keys()),
         "Mounts": [
             {"Source": m.get("Source"), "Destination": m.get("Destination"),
              "Type": m.get("Type"), "RW": m.get("RW")}
-            for m in mounts if isinstance(m, dict)
+            for m in mounts if _isinst(m, dict)
         ],
         "raw": data,
     }
@@ -1638,11 +1644,11 @@ def list_images() -> list:
         ["images", "--format", "{{json .}}"], timeout=15)
     if rc != 0:
         _raise_list_failure("images")
-    if isinstance(data, dict):
+    if _isinst(data, dict):
         data = [data]
-    elif not isinstance(data, list):
+    elif not _isinst(data, list):
         data = []
-    return [row for row in data if isinstance(row, dict)]
+    return [row for row in data if _isinst(row, dict)]
 
 
 def list_volumes() -> list:
@@ -1798,17 +1804,17 @@ def build_run_args(body: dict) -> tuple[list, str, str]:
         network = cli_args.require_positional(network, label="network name")
         args += ["--network", network]
     # ports: ["8080:80", "443:443"]
-    for p in body.get("ports") if isinstance(body.get("ports"), list) else []:
+    for p in body.get("ports") if _isinst(body.get("ports"), list) else []:
         p = _as_text(p).strip()
         if p and re.match(r"^[0-9.:\-/tcpudp]+$", p):
             args += ["-p", p]
     # volumes: ["/host:/container", "vol:/data"]
-    for v in body.get("volumes") if isinstance(body.get("volumes"), list) else []:
+    for v in body.get("volumes") if _isinst(body.get("volumes"), list) else []:
         v = _as_text(v).strip()
         if v and ":" in v:
             args += ["-v", v]
     # env: ["KEY=val"]
-    for e in body.get("env") if isinstance(body.get("env"), list) else []:
+    for e in body.get("env") if _isinst(body.get("env"), list) else []:
         e = _as_text(e).strip()
         if e and "=" in e:
             args += ["-e", e]
@@ -1817,10 +1823,10 @@ def build_run_args(body: dict) -> tuple[list, str, str]:
     args.append("--")
     args.append(image)
     cmd = body.get("command")
-    if isinstance(cmd, str) and cmd.strip():
+    if _isinst(cmd, str) and cmd.strip():
         # simple shell form — split
         args += _as_text(cmd).strip().split()
-    elif isinstance(cmd, list):
+    elif _isinst(cmd, list):
         args += [_as_text(x) for x in cmd if _as_text(x)]
     return args, image, name
 
@@ -1897,7 +1903,7 @@ def _stack_paths() -> list[dict]:
     except BaseException:
         data = None
     try:
-        raw = dict.get(data, "stacks") if isinstance(data, dict) else None
+        raw = dict.get(data, "stacks") if _isinst(data, dict) else None
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -1971,7 +1977,7 @@ def _stack_paths() -> list[dict]:
                             break
                     except (OSError, ValueError):
                         continue
-            # _field_text probe, not an isinstance(str) gate: YAML ``id: 42``
+            # _field_text probe, not an _isinst(str) gate: YAML ``id: 42``
             # loads as an int, and the gate silently renamed the stack to its
             # directory name — POST /api/stacks/42/run then 404'd a stack the
             # operator could see.  A huge hex int past the digit cap still
@@ -2005,7 +2011,7 @@ def _stack_paths() -> list[dict]:
             # One _field_text probe does both jobs: it scrubs the lone
             # surrogate a YAML ``id: "\ud800"`` loads as (its raw form used
             # to 500 GET /api/stacks on Starlette's UTF-8 encode), and it
-            # renders a numeric YAML ``id: 42`` — the isinstance(str) gate
+            # renders a numeric YAML ``id: 42`` — the _isinst(str) gate
             # that stood here silently dropped that stack from the listing.
             # Only genuinely unrenderable ids (huge hex ints past the digit
             # cap, mappings) still skip the entry.
@@ -2078,10 +2084,10 @@ def _stack_io_paths(stack: dict) -> tuple[str | None, str | None]:
     dicts by hand (tests, tooling) keep their historical behavior.
     """
     workdir = stack.get("os_path")
-    if not isinstance(workdir, str) or not workdir:
+    if not _isinst(workdir, str) or not workdir:
         workdir = stack.get("path")
     compose = stack.get("os_compose_path")
-    if not isinstance(compose, str) or not compose:
+    if not _isinst(compose, str) or not compose:
         compose = stack.get("compose_path")
     return workdir, compose
 
@@ -2091,27 +2097,27 @@ def list_stacks() -> list:
     by_project: dict[str, list] = {}
     by_name: dict[str, dict] = {}
     for c in _container_rows(list_containers(with_stats=False)):
-        if not isinstance(c, dict):
+        if not _isinst(c, dict):
             continue
         cid = c.get("id")
-        if not isinstance(cid, str) or not cid:
+        if not _isinst(cid, str) or not cid:
             continue
         by_name[cid] = c
         proj = c.get("project")
-        if isinstance(proj, str) and proj:
+        if _isinst(proj, str) and proj:
             by_project.setdefault(proj, []).append(cid)
     for s in stacks:
-        if not isinstance(s, dict):
+        if not _isinst(s, dict):
             continue
         found: list[str] = []
-        sid = s.get("id") if isinstance(s.get("id"), str) else None
+        sid = s.get("id") if _isinst(s.get("id"), str) else None
         if s.get("path"):
             proj = Path(s["path"]).name
             found = list(by_project.get(proj) or (by_project.get(sid) if sid else None) or [])
         names = s.get("containers")
-        if isinstance(names, list):
+        if _isinst(names, list):
             for name in names:
-                if isinstance(name, str) and name in by_name and name not in found:
+                if _isinst(name, str) and name in by_name and name not in found:
                     found.append(name)
         # compose project often equals directory name; also match container_name == stack id
         if sid and sid in by_name and sid not in found:
@@ -2239,7 +2245,7 @@ def _job_log_lines(raw) -> list:
 
 def stack_job_log(job_id: str) -> dict:
     missing = {"running": False, "rc": None, "log": "(not started yet)", "job_id": ""}
-    if not isinstance(job_id, str):
+    if not _isinst(job_id, str):
         return missing
     # _plain_job: a dict-subclass row whose .get() raised used to 500 here.
     try:

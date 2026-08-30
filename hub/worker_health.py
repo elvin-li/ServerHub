@@ -189,9 +189,9 @@ def _coerce_interval(interval) -> float:
         # RuntimeError past the old arithmetic trio — out of register() on the
         # worker's own thread, and out of snapshot() where it silently wiped
         # the workers row from GET /api/health/checks.
-        if isinstance(interval, int):
+        if _isa(interval, int):
             interval = int.__index__(interval)
-        elif isinstance(interval, float):
+        elif _isa(interval, float):
             interval = float.__float__(interval)
         n = float(interval)
     except _CONTROL_FLOW:
@@ -224,11 +224,11 @@ def loop_interval(raw, default: int = 90, *, minimum: int = 30, maximum: int = 8
         # int-subclass ``__int__`` bomb blew ``int(raw)`` — both raised on
         # the sampler/alerter/scheduler start path instead of answering the
         # default interval.
-        if isinstance(raw, int):
+        if _isa(raw, int):
             raw = int.__index__(raw)
-        elif isinstance(raw, float):
+        elif _isa(raw, float):
             raw = float.__float__(raw)
-        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         n = int(raw)
     except _CONTROL_FLOW:
@@ -265,9 +265,9 @@ def _finite_beat(raw) -> float:
     if _isa(raw, bool) or raw is None:
         return 0.0
     try:
-        if isinstance(raw, int):
+        if _isa(raw, int):
             raw = int.__index__(raw)
-        elif isinstance(raw, float):
+        elif _isa(raw, float):
             raw = float.__float__(raw)
         beat = float(raw)
     except _CONTROL_FLOW:
@@ -289,9 +289,9 @@ def _coerce_now(now) -> float:
         # float-subclass ``__float__`` bomb raised RuntimeError past the old
         # arithmetic trio — out of snapshot()/problems() where it silently
         # wiped the workers row from GET /api/health/checks.
-        if isinstance(now, int) and not isinstance(now, bool):
+        if type(now) is int:
             now = int.__index__(now)
-        elif isinstance(now, float):
+        elif _isa(now, float):
             now = float.__float__(now)
         n = float(now)
     except _CONTROL_FLOW:

@@ -10,7 +10,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(tasks).length }}</span>
+      <span class="meta-count" role="status">{{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(tasks).length) }}</span>
     </div>
     <!-- The standard failed-load banner every sibling list page uses. The old
          inline placeholder only rendered once the table had rows, so a failed
@@ -30,21 +30,21 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in asArray(filtered)" :key="finiteText(asRecord(task).id)">
+          <tr v-for="task in asArray(filtered)" :key="finiteText(recGet(task, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(task).name) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(task).id) }}</div>
-              <div v-if="finiteText(asRecord(task).desc, '')" class="show-m sub">{{ finiteText(asRecord(task).desc) }}</div>
+              <strong>{{ finiteText(recGet(task, 'name')) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(recGet(task, 'id')) }}</div>
+              <div v-if="finiteText(recGet(task, 'desc'), '')" class="show-m sub">{{ finiteText(recGet(task, 'desc')) }}</div>
             </td>
-            <td class="col-hide-m" style="max-width:360px">{{ finiteText(asRecord(task).desc) }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ finiteText(recGet(task, 'desc')) }}</td>
             <td>
-              <span v-if="asRecord(task).running" class="badge warn">{{ t('maintenance.running') }}</span>
-              <span v-else-if="asRecord(task).rc === 0" class="badge ok">✅ {{ finiteText(asRecord(task).finished) }}</span>
-              <span v-else-if="asRecord(task).rc != null" class="badge down">❌ {{ finiteN(asRecord(task).rc) }}</span>
+              <span v-if="recGet(task, 'running')" class="badge warn">{{ t('maintenance.running') }}</span>
+              <span v-else-if="recGet(task, 'rc') === 0" class="badge ok">✅ {{ finiteText(recGet(task, 'finished')) }}</span>
+              <span v-else-if="recGet(task, 'rc') != null" class="badge down">❌ {{ finiteN(recGet(task, 'rc')) }}</span>
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="asRecord(task).running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="recGet(task, 'running') || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
@@ -91,7 +91,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getMaintenance, getMaintenanceLog, runMaintenance } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -114,21 +114,19 @@ let pollTimer = null
 let pollGeneration = 0
 let listTimer = null
 
-const anyRunning = computed(() => asArray(tasks.value).some(row => asRecord(row).running))
+const anyRunning = computed(() => asArray(tasks.value).some((row) => recGet(row, 'running')))
 const filtered = computed(() => {
   const list = asArray(tasks.value)
-  const qq = q.value.trim().toLowerCase()
+  const qq = asTrimmed(q.value).toLowerCase()
   if (!qq) return list
   // String(...): the API deliberately serves an under-cap int name/desc
   // verbatim (YAML `desc: 123`), and `(row.desc || '').toLowerCase()` threw
   // on it — typing one character in the filter box blanked the whole page.
-  // asRecord: a leftover list cell that is not a mapping (null / string)
-  // used to throw on ``row.name`` and blank the whole page.
-  return list.filter(row => {
-    const rec = asRecord(row)
-    return String(rec.name ?? '').toLowerCase().includes(qq)
-      || String(rec.id ?? '').toLowerCase().includes(qq)
-      || String(rec.desc ?? '').toLowerCase().includes(qq)
+  // recGet: leftover getter bombs on name/id/desc used to blank the page.
+  return list.filter((row) => {
+    return String(recGet(row, 'name') ?? '').toLowerCase().includes(qq)
+      || String(recGet(row, 'id') ?? '').toLowerCase().includes(qq)
+      || String(recGet(row, 'desc') ?? '').toLowerCase().includes(qq)
   })
 })
 
@@ -145,13 +143,13 @@ async function refresh() {
     // list.  Each row is asRecord so a leftover null cell cannot throw
     // later.  Do not wrap a Set as asArray — this payload is never a Set.
     const rows = asArray(list)
-    const fromEnvelope = asArray(asRecord(list).tasks)
+    const fromEnvelope = asArray(recGet(list, 'tasks'))
     tasks.value = (rows.length ? rows : fromEnvelope).map((row) => asRecord(row))
     loadError.value = ''
     return true
   } catch (e) {
     if (generation !== listGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   } finally {
     if (generation === listGeneration && pageAlive) loaded.value = true
@@ -167,13 +165,13 @@ async function run(task) {
   // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
   // absent from the documented example task, so the destructive entries shipped
   // unguarded.
-  if (!confirm(t('maintenance.confirm_run', { name: finiteText(rec.name) }))) return
+  if (!confirm(t('maintenance.confirm_run', { name: finiteText(recGet(rec, 'name')) }))) return
   const generation = listGeneration
   rec.running = true
   try {
-    await runMaintenance(rec.id)
+    const r = asRecord(await runMaintenance(recGet(rec, 'id')))
     if (generation !== listGeneration || !pageAlive) return
-    toast('🚀 ' + t('maintenance.started', { name: finiteText(rec.name) }))
+    toast('🚀 ' + t('maintenance.started', { name: finiteText(recGet(rec, 'name')) }))
     openLog(rec)
     await refresh()
   } catch (e) {
@@ -195,8 +193,8 @@ async function pollLog(generation) {
   try {
     const j = asRecord(await getMaintenanceLog(id))
     if (generation !== pollGeneration || curId.value !== id || !pageAlive) return
-    logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : (j.rc == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(j.rc) })))
-    if (!j.running) {
+    logText.value = finiteText(recGet(j, 'log'), '') + (recGet(j, 'running') ? '\n⏳…' : (recGet(j, 'rc') == null ? '' : '\n' + t('maintenance.log_end', { rc: finiteN(recGet(j, 'rc')) })))
+    if (!recGet(j, 'running')) {
       stopLogPolling()
       void refresh()
       return
@@ -205,7 +203,7 @@ async function pollLog(generation) {
     if (generation !== pollGeneration || !pageAlive) return
     // Say so instead of leaving the modal on maintenance.log_loading forever.
     // The loop still re-arms so a transient failure recovers on its own.
-    logText.value = `${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
+    logText.value = asTrimmed(`${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`)
   }
   if (generation === pollGeneration && curId.value === id && pageAlive) {
     pollTimer = setTimeout(() => { void pollLog(generation) }, 1500)
@@ -215,8 +213,8 @@ async function pollLog(generation) {
 function openLog(task) {
   stopLogPolling()
   const rec = asRecord(task)
-  curId.value = rec.id
-  logTitle.value = finiteText(rec.name)
+  curId.value = recGet(rec, 'id')
+  logTitle.value = finiteText(recGet(rec, 'name'))
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
   const generation = pollGeneration

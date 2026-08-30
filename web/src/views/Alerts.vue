@@ -30,7 +30,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ asArray(filtered).length }} / {{ asArray(alerts).length }}
+        {{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(alerts).length) }}
       </span>
     </div>
     <div class="table-wrap">
@@ -45,27 +45,24 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(a,i) in asArray(filtered)" :key="i">
-            <td class="mono col-hide-m">{{ fmt(asRecord(a).t) }}</td>
+          <tr v-for="(a,i) in asArray(filtered)" :key="finiteText(recGet(a, 'name')) + ':' + finiteText(recGet(a, 'event')) + ':' + i">
+            <td class="mono col-hide-m">{{ fmt(recGet(a, 't')) }}</td>
             <!-- Keyed on `level` alone, deliberately: a disk that is dying has to
                  read as urgently as a service that is down, so `smart` + `down`
                  lands on the same red .badge.down as a service down. The kind tag
                  below says what broke without competing with that. -->
-            <td><span class="badge" :class="asRecord(a).level === 'ok' ? 'ok' : asRecord(a).level">{{ finiteText(asRecord(a).level) }}</span></td>
+            <td><span class="badge" :class="recGet(a, 'level') === 'ok' ? 'ok' : recGet(a, 'level')">{{ finiteText(recGet(a, 'level')) }}</span></td>
             <td>
               <span v-if="kindLabel(a)" class="badge" style="margin-right:4px">{{ kindLabel(a) }}</span>
-              <strong>{{ finiteText(asRecord(a).name) }}</strong>
-              <div class="show-m sub">{{ fmt(asRecord(a).t) }}</div>
-              <div v-if="asRecord(a).event" class="show-m sub">{{ finiteText(asRecord(a).event) }}</div>
-              <div v-if="asRecord(a).message" class="show-m sub">{{ finiteText(asRecord(a).message) }}</div>
+              <strong>{{ finiteText(recGet(a, 'name')) }}</strong>
+              <div class="show-m sub">{{ fmt(recGet(a, 't')) }}</div>
+              <div v-if="recGet(a, 'event')" class="show-m sub">{{ finiteText(recGet(a, 'event')) }}</div>
+              <div v-if="recGet(a, 'message')" class="show-m sub">{{ finiteText(recGet(a, 'message')) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(a).event) }}</td>
-            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(asRecord(a).message) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(a, 'event')) }}</td>
+            <td class="col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(recGet(a, 'message')) }}</td>
           </tr>
           <tr v-if="!asArray(filtered).length">
-            <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
-          </tr>
-          <tr v-if="!filtered.length">
             <td colspan="5" class="empty-row">{{ t('alerts.filter_empty') }}</td>
           </tr>
         </tbody>
@@ -79,7 +76,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, recGet, finiteN, finiteText, fmtTs } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -97,9 +94,9 @@ const loadError = ref('')
 const filter = ref('all')
 const filtered = computed(() => {
   const rows = asArray(alerts.value).map((a) => asRecord(a))
-  if (filter.value === 'issues') return rows.filter((a) => a.level !== 'ok')
+  if (filter.value === 'issues') return rows.filter((a) => recGet(a, 'level') !== 'ok')
   if (filter.value === 'down' || filter.value === 'warn') {
-    return rows.filter((a) => a.level === filter.value)
+    return rows.filter((a) => recGet(a, 'level') === filter.value)
   }
   return rows
 })
@@ -118,7 +115,7 @@ function fmt(t) {
 const KIND_LABELS = { service: 'kind_service', resource: 'kind_resource', smart: 'kind_smart' }
 
 function kindLabel(a) {
-  const leaf = KIND_LABELS[asRecord(a).kind]
+  const leaf = KIND_LABELS[recGet(a, 'kind')]
   return leaf ? t(`alerts.${leaf}`) : ''
 }
 
@@ -127,13 +124,13 @@ async function refresh(manual = false) {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const d = await getAlerts(100)
+    const d = asRecord(await getAlerts(100))
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
+    alerts.value = asArray(recGet(d, 'alerts')).map((a) => asRecord(a))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     // A background tick that fails must not re-toast every interval while the
     // panel is unreachable — LoadFailure already marks the state on screen.
     // The `false` return is lib/poll's opt-in sentinel for backoff.
@@ -154,10 +151,10 @@ async function check() {
   try {
     const r = asRecord(await forceAlertCheck())
     if (generation !== loadGeneration || !pageAlive) return
-    toast(t('alerts.inspect_done', { n: asArray(r.emitted).length }))
-    const d = await getAlerts(100)
+    toast(t('alerts.inspect_done', { n: asArray(recGet(r, 'emitted')).length }))
+    const d = asRecord(await getAlerts(100))
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
+    alerts.value = asArray(recGet(d, 'alerts')).map((a) => asRecord(a))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -171,9 +168,9 @@ async function test() {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const r = await testNotify()
+    const r = asRecord(await testNotify())
     if (generation !== loadGeneration || !pageAlive) return
-    toast(r.ok ? '✅ ' + t('common.sent') : '❌ ' + finiteText(r.message, ''))
+    toast(recGet(r, 'ok') ? '✅ ' + t('common.sent') : '❌ ' + finiteText(recGet(r, 'message'), ''))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

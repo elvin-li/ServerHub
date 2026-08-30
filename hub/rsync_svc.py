@@ -49,6 +49,25 @@ DIRECTIONS = ("push", "pull")
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in :func:`_local_path_ok`,
+    :func:`_remote_ok`, :func:`validated` and the capability dict walk —
+    POST rsync preview / scheduled backup argv answered HTTP 500 instead
+    of a coded ``rsync.bad_params``.  Fail-closed.  Bool leftovers stay
+    ``type(x) is bool``.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _REMOTE_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}@[A-Za-z0-9][A-Za-z0-9._-]{0,252}:(.+)\Z",
     re.DOTALL,
@@ -167,7 +186,7 @@ def invalidate() -> None:
 
 def _local_path_ok(value: object) -> bool:
     """An absolute local path that cannot be read as an option."""
-    if not isinstance(value, str):
+    if not _isinst(value, str):
         return False
     text = value
     if not text or text != text.strip() or _has_control_chars(text):
@@ -176,7 +195,7 @@ def _local_path_ok(value: object) -> bool:
 
 
 def _remote_ok(value: object) -> bool:
-    if not isinstance(value, str) or _has_control_chars(value) or len(value) > 1024:
+    if not _isinst(value, str) or _has_control_chars(value) or len(value) > 1024:
         return False
     m = _REMOTE_RE.match(value)
     if not m:
@@ -194,7 +213,7 @@ def validated(params: dict) -> dict:
     """
     if params is None:
         params = {}
-    elif not isinstance(params, dict):
+    elif not _isinst(params, dict):
         raise api_error("rsync.bad_params", field="params")
     direction = str(params.get("direction") or "push").strip().lower()
     if direction not in DIRECTIONS:
@@ -218,7 +237,7 @@ def validated(params: dict) -> dict:
 
     exclude: list[str] = []
     raw_ex = params.get("exclude")
-    if not isinstance(raw_ex, list):
+    if not _isinst(raw_ex, list):
         raw_ex = []
     for raw in raw_ex:
         pat = str(raw).strip()
@@ -258,7 +277,7 @@ def build_argv(params: dict, *, dry_run: bool = False, info: dict | None = None)
         raise api_error("rsync.unavailable")
     p = validated(params)
     supports = info.get("supports")
-    supports = supports if isinstance(supports, dict) else {}
+    supports = supports if _isinst(supports, dict) else {}
     argv = [info["path"], "-a"]
     if dry_run:
         argv.append("-n")
@@ -505,7 +524,7 @@ def preview(params: dict, *, timeout: int = PREVIEW_TIMEOUT) -> dict:
     concurrent preview of the same job is refused with ``rsync.preview_busy``,
     and the deadline kills the rsync process group rather than abandoning it.
     """
-    if isinstance(timeout, bool) or timeout is None:
+    if type(timeout) is bool or timeout is None:
         timeout = PREVIEW_TIMEOUT
     else:
         try:
@@ -524,7 +543,7 @@ def preview(params: dict, *, timeout: int = PREVIEW_TIMEOUT) -> dict:
         summary = _run_preview(
             argv,
             itemize=bool(
-                (info.get("supports") if isinstance(info.get("supports"), dict) else {})
+                (info.get("supports") if _isinst(info.get("supports"), dict) else {})
                 .get("itemize")
             ),
             timeout=timeout,
@@ -578,7 +597,7 @@ def run_job(params: dict, *, log: list[str], timeout: int = 3600,
         raise
     except BaseException as e:
         detail = getattr(e, "detail", None)
-        message = detail.get("message") if isinstance(detail, dict) else _as_text(e)
+        message = detail.get("message") if _isinst(detail, dict) else _as_text(e)
         log.append(f"!! {message}")
         return -1
     p = validated(params)

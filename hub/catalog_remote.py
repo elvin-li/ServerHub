@@ -380,7 +380,7 @@ def _jsonable(value, depth: int = 0):
         return None
     if value is None:
         return value
-    if _isinst(value, bool):
+    if type(value) is bool:
         # ``bool`` is final, so a value that answers this gate while its real
         # type is not ``bool`` is a *lying* ``__class__`` impostor.  The old
         # arm returned it raw, handing Starlette's ``allow_nan=False`` encoder
@@ -572,13 +572,13 @@ def _load_state() -> dict:
         # RecursionError: leftover deeply-nested state is not ValueError.
         return {}
     data = _jsonable(data)
-    return data if isinstance(data, dict) else {}
+    return data if _isinst(data, dict) else {}
 
 
 def _save_state(state: dict) -> None:
     _ensure_dir()
     payload = _jsonable(state)
-    if not isinstance(payload, dict):
+    if not _isinst(payload, dict):
         payload = {}
     try:
         secure_io.replace_secret_text(
@@ -618,11 +618,11 @@ def remote_template_path(template_id: str) -> Path | None:
 def remote_versions() -> dict[str, str]:
     """id -> manifest version for every synced override."""
     templates = _load_state().get("templates")
-    if not isinstance(templates, dict):
+    if not _isinst(templates, dict):
         return {}
     out: dict[str, str] = {}
     for tid, info in templates.items():
-        if isinstance(info, dict):
+        if _isinst(info, dict):
             out[str(tid)] = str(info.get("version") or "")
     return out
 
@@ -651,8 +651,8 @@ def status() -> dict:
     payload = {
         "url": source_url(),
         "configured": bool(source_url()),
-        "last_check": last_check if isinstance(last_check, str) else "",
-        "last_result": last_result if isinstance(last_result, dict) else None,
+        "last_check": last_check if _isinst(last_check, str) else "",
+        "last_result": last_result if _isinst(last_result, dict) else None,
         "overrides": overrides,
         "count": len(overrides),
         "limits": {
@@ -669,7 +669,7 @@ def status() -> dict:
     # here while every synced field was clean — Starlette's UTF-8 encode
     # then 500'd GET /api/catalog/remote.
     cleaned = _jsonable(payload)
-    return cleaned if isinstance(cleaned, dict) else {"configured": False, "overrides": []}
+    return cleaned if _isinst(cleaned, dict) else {"configured": False, "overrides": []}
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -703,7 +703,7 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
         # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
         # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         return "front matter is not valid YAML: " + _as_text(exc)
-    if not isinstance(meta, dict):
+    if not _isinst(meta, dict):
         return "front matter is not a mapping"
     # _as_text, not bare str(): YAML's hex/octal int forms dodge CPython's
     # decimal digit cap, so a leftover ``name: 0xfff…`` (4000 hex digits)
@@ -711,7 +711,7 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
     # after the YAML try/except had already passed, and 500'd the whole
     # POST /api/catalog/remote/check instead of rejecting one template.
     # A *sane* numeric name/desc/id still renders (str() probe, not an
-    # isinstance(str) gate that would silently drop numeric YAML ids).
+    # _isinst(str) gate that would silently drop numeric YAML ids).
     if not _as_text(meta.get("name") or "").strip():
         return "front matter lacks a name"
     if not _as_text(meta.get("desc") or "").strip():
@@ -743,7 +743,7 @@ def _validate_template_text(text: str, expected_id: str = "") -> str:
         # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
         # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         return "compose body is not valid YAML: " + _as_text(exc)
-    if not isinstance(doc, dict) or not isinstance(doc.get("services"), dict) or not doc["services"]:
+    if not _isinst(doc, dict) or not _isinst(doc.get("services"), dict) or not doc["services"]:
         return "compose body has no services mapping"
     return ""
 
@@ -781,12 +781,12 @@ def scan_compose_directives(text: str) -> list[str]:
         # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
         # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         return []
-    services = doc.get("services") if isinstance(doc, dict) else None
-    if not isinstance(services, dict):
+    services = doc.get("services") if _isinst(doc, dict) else None
+    if not _isinst(services, dict):
         return []
     hits: set[str] = set()
     for service in services.values():
-        if not isinstance(service, dict):
+        if not _isinst(service, dict):
             continue
         if service.get("privileged"):
             hits.add(WARN_PRIVILEGED)
@@ -801,11 +801,11 @@ def scan_compose_directives(text: str) -> list[str]:
         if _as_text(service.get("network_mode") or "").strip().lower() == "host":
             hits.add(WARN_HOST_NETWORK)
         volumes = service.get("volumes")
-        if not isinstance(volumes, list):
+        if not _isinst(volumes, list):
             continue
         for volume in volumes:
             # Both list forms: "sock:/sock" strings and {source: ...} maps.
-            source = volume.get("source") if isinstance(volume, dict) else volume
+            source = volume.get("source") if _isinst(volume, dict) else volume
             if "docker.sock" in _as_text(source or ""):
                 hits.add(WARN_DOCKER_SOCKET)
     return sorted(hits)
@@ -818,19 +818,19 @@ def remote_warnings() -> dict[str, list[str]]:
     field existed simply reports no warnings until its next sync.
     """
     templates = _load_state().get("templates")
-    if not isinstance(templates, dict):
+    if not _isinst(templates, dict):
         return {}
     out: dict[str, list[str]] = {}
     for tid, info in templates.items():
-        if isinstance(info, dict):
+        if _isinst(info, dict):
             warnings = info.get("warnings")
-            out[str(tid)] = [str(w) for w in warnings] if isinstance(warnings, list) else []
+            out[str(tid)] = [str(w) for w in warnings] if _isinst(warnings, list) else []
     return out
 
 
 def _validate_entry(entry: Any) -> str:
     """"" when a manifest entry is well-formed, else a short reason."""
-    if not isinstance(entry, dict):
+    if not _isinst(entry, dict):
         return "entry is not an object"
     if not _ID_RE.match(str(entry.get("id") or "")):
         return "bad id"
@@ -901,7 +901,7 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
         raise api_error(
             "catalog_remote.bad_manifest", reason="not JSON: " + _as_text(exc)
         )
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("templates"), list):
+    if not _isinst(manifest, dict) or not _isinst(manifest.get("templates"), list):
         raise api_error("catalog_remote.bad_manifest", reason="missing templates list")
     entries = manifest["templates"]
     if len(entries) > MAX_TEMPLATES:
@@ -911,7 +911,7 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
 
     _ensure_dir()
     state = _load_state()
-    known = state.get("templates") if isinstance(state.get("templates"), dict) else {}
+    known = state.get("templates") if _isinst(state.get("templates"), dict) else {}
 
     added: list[str] = []
     updated: list[str] = []
@@ -934,7 +934,7 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
     try:
         for entry in entries:
             reason = _validate_entry(entry)
-            tid = str(entry.get("id") or "?") if isinstance(entry, dict) else "?"
+            tid = str(entry.get("id") or "?") if _isinst(entry, dict) else "?"
             if reason:
                 code = REJECT_BAD_ID if reason == "bad id" else REJECT_BAD_ENTRY
                 rejected.append({"id": tid, "reason": code, "detail": reason})
@@ -948,7 +948,7 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
             sha = str(entry["sha256"]).lower()
             version = str(entry.get("version") or "")
 
-            current = known.get(tid) if isinstance(known.get(tid), dict) else {}
+            current = known.get(tid) if _isinst(known.get(tid), dict) else {}
             final = REMOTE_DIR / f"{tid}.yml"
             if current.get("sha256") == sha and _is_file(final):
                 unchanged.append(tid)
@@ -1044,7 +1044,7 @@ def check_updates(url: str | None = None, operator: str = "", client: str = "") 
     # Leftover JSON ``\ud800`` in a rejected manifest id used to UnicodeEncodeError
     # POST /api/catalog/remote/check (Starlette allow_nan=False + UTF-8).
     cleaned = _jsonable(summary)
-    return cleaned if isinstance(cleaned, dict) else {"ok": False, "rejected": []}
+    return cleaned if _isinst(cleaned, dict) else {"ok": False, "rejected": []}
 
 
 def restore_builtin(template_id: str, operator: str = "", client: str = "") -> dict:
@@ -1065,7 +1065,7 @@ def restore_builtin(template_id: str, operator: str = "", client: str = "") -> d
         raise api_error("catalog_remote.not_remote", id=tid)
     state = _load_state()
     templates = state.get("templates")
-    if isinstance(templates, dict):
+    if _isinst(templates, dict):
         templates.pop(tid, None)
         _save_state(state)
     _invalidate_catalog_cache()

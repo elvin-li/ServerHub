@@ -15,6 +15,22 @@ from hub.routers.nas_common import (
     require_admin_browser,
 )
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 router = APIRouter(tags=["ups"])
 
 #: Stack / service ids that may enter the policy config.  They end up in a
@@ -76,7 +92,7 @@ def put_ups_settings(body: UpsSettingsPatch, request: Request):
     patch = body.model_dump(exclude_unset=True)
     shutdown = patch.get("shutdown")
     if shutdown is not None:
-        if isinstance(shutdown.get("stacks"), list):
+        if _isinst(shutdown.get("stacks"), list):
             _checked_targets(shutdown["stacks"])
         if shutdown.get("stop_scripts") is not None:
             _checked_targets(shutdown["stop_scripts"])

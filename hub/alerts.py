@@ -68,7 +68,7 @@ def _load_state() -> dict:
     # A list/string leftover from a torn write used to raise
     # ``prev.get(...)`` on every sweep and silence the alerter,
     # UPS policy, and stale-runtime kickstarts for good.
-    if not isinstance(data, dict):
+    if not _isa(data, dict):
         return {}
     # Scrub keys on load, before they become the sweep's lookup keys.
     # ``json.loads`` produces lone-surrogate keys from escaped ``"\ud800…"``
@@ -76,7 +76,7 @@ def _load_state() -> dict:
     # matched what the next save wrote — the state "changed" on every sweep
     # (an SSD rewrite each pass) while the surrogate sat on disk.
     cleaned = _jsonable_alert(data)
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 def _save_state(st: dict):
@@ -90,7 +90,7 @@ def _save_state(st: dict):
     STATE_FILE.parent.mkdir(exist_ok=True)
     try:
         payload = json.dumps(
-            _jsonable_alert(st) if isinstance(st, dict) else {},
+            _jsonable_alert(st) if _isa(st, dict) else {},
             ensure_ascii=False, indent=2, allow_nan=False,
         )
     except (TypeError, ValueError, OverflowError, RecursionError):
@@ -114,10 +114,10 @@ def _save_state(st: dict):
 
 def _append_alert(alert: dict):
     global _appends_since_trim
-    if not isinstance(alert, dict):
+    if not _isa(alert, dict):
         return
     alert = _jsonable_alert(alert)
-    if not isinstance(alert, dict):
+    if not _isa(alert, dict):
         return
     alert["t"] = _alert_ts(alert.get("t"))
     ALERTS_FILE.parent.mkdir(exist_ok=True)
@@ -163,9 +163,9 @@ def _alert_ts(raw) -> int | None:
     """Epoch for the Alerts page.  Leftover ``t: 2026-08-19`` / ``.inf``
     used to stringify and render as Invalid Date; ``t: null`` is dropped.
     """
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None
-    if isinstance(raw, int):
+    if _isa(raw, int):
         if type(raw) is not int:
             try:
                 # Base coercion to an exact int: an int-subclass leftover with
@@ -176,7 +176,7 @@ def _alert_ts(raw) -> int | None:
             except BaseException:
                 return None
         return raw
-    if isinstance(raw, float):
+    if _isa(raw, float):
         if type(raw) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__`` bomb
@@ -192,7 +192,7 @@ def _alert_ts(raw) -> int | None:
             return int(raw)
         except OverflowError:
             return None
-    if isinstance(raw, str):
+    if _isa(raw, str):
         if type(raw) is not str:
             try:
                 # Exact-str copy so a subclass ``strip``/``__eq__`` bomb
@@ -248,7 +248,7 @@ def _mapping_get(mapping, key, default=None):
     seams never got: ``ups_svc.ups_status()``, ``metrics.latest_sample()``,
     ``system_settings_svc.get_thresholds()`` and
     ``storage_svc.smart_devices()`` hand back whatever an in-process caller
-    last cached, and ``isinstance(x, dict)`` passes a subclass whose bound
+    last cached, and ``_isa(x, dict)`` passes a subclass whose bound
     ``get`` raises.  One such wrapper used to raise out of its whole check —
     check_once's containment turned that into a *silently dead pass* (every
     disk unwatched, the UPS countdown unannounced) rather than a 500, which
@@ -301,7 +301,7 @@ def _pick(value, fallback):
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         # Unbound base decode: a bytes-subclass ``.decode`` bomb riding a
         # poisoned check row used to raise straight out of the sanitizer
         # and 500 POST /api/alerts/check.
@@ -353,9 +353,9 @@ def _jsonable_alert(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return value
-    if isinstance(value, float):
+    if _isa(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -368,12 +368,12 @@ def _jsonable_alert(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, dict):
+    if _isa(value, dict):
         out = {}
         # Unbound base view: a dict-subclass ``items()`` bomb cannot 500,
         # and the real entries in its C-level storage still walk.
         for k, v in dict.items(value):
-            if not isinstance(k, str):
+            if not _isa(k, str):
                 # str() probe, not an isinstance gate: the gate silently
                 # dropped every numeric YAML/plist key (``123: …``) from the
                 # journal and the saved state.  An over-cap hex/octal int key
@@ -387,15 +387,15 @@ def _jsonable_alert(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _jsonable_alert(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isa(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot 500 and the real elements still survive.
                 return [_jsonable_alert(v, depth + 1) for v in base.__iter__(value)]
-    if isinstance(value, str):
+    if _isa(value, str):
         return _utf8_text(value)
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -413,7 +413,7 @@ def _jsonable_alert(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, (bytes, bytearray)):
+    if _isa(value, (bytes, bytearray)):
         return _decode_bytes(value)
     try:
         iso = getattr(value, "isoformat", None)
@@ -444,7 +444,7 @@ def _service_id(raw) -> str:
     """Service id for the sweep, via the str() probe.
 
     services.yaml is hand-editable, so ``id: 123`` arrives as an *int*.  The
-    strict ``isinstance(id, str)`` gate this replaces silently dropped the
+    strict ``_isa(id, str)`` gate this replaces silently dropped the
     row from the sweep: the service could go down without ever alerting, and
     its saved per-service history vanished from alert_state.json.  YAML hex
     (``id: 0xFF…``) loads uncapped (``int(x, 16)`` is exempt from CPython's
@@ -453,7 +453,7 @@ def _service_id(raw) -> str:
     not the sweep.  Lists/None/bool stay dropped: an unhashable leftover
     ``id: [foo]`` used to TypeError ``services[sid]``.
     """
-    if isinstance(raw, str):
+    if _isa(raw, str):
         if type(raw) is str:
             return raw
         try:
@@ -464,7 +464,7 @@ def _service_id(raw) -> str:
             raise
         except BaseException:
             return ""
-    if isinstance(raw, bool) or not isinstance(raw, int):
+    if type(raw) is bool or not _isa(raw, int):
         return ""
     if type(raw) is not int:
         try:
@@ -503,9 +503,9 @@ def list_alerts(limit: int = 50) -> list:
             # number raises CPython's str->int digit-cap ValueError out of
             # json.loads, which used to 500 GET /api/alerts on that line.
             continue
-        if isinstance(parsed, dict):
+        if _isa(parsed, dict):
             row = _jsonable_alert(parsed)
-            if isinstance(row, dict):
+            if _isa(row, dict):
                 row["t"] = _alert_ts(row.get("t"))
                 out.append(row)
     out.reverse()
@@ -535,7 +535,7 @@ def notify_settings() -> dict:
         raise
     except BaseException:
         raw = {}
-    if not isinstance(raw, dict):
+    if not _isa(raw, dict):
         raw = {}
     try:
         from hub import notify_channels
@@ -654,7 +654,7 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
         raise
     except BaseException:
         latest = None
-    if not isinstance(latest, dict):
+    if not _isa(latest, dict):
         return []
     # _mapping_get: the cached sample is whatever the metrics thread last
     # stored, and a dict-subclass ``.get`` bomb wrapper used to kill the
@@ -672,7 +672,7 @@ def _check_resource_thresholds(prev: dict, new_state: dict, now: int) -> list:
     # ``__bool__`` bomb under the ``or`` — escaped the old enumerated net.
     cooldown = _as_epoch(_pick(_mapping_get(th, "cooldown_sec"), 1800), 1800)
     last_fire = prev.get("_resource_last") or {}
-    if not isinstance(last_fire, dict):
+    if not _isa(last_fire, dict):
         last_fire = {}
     new_last = dict(last_fire)
     n = notify_settings()
@@ -861,9 +861,9 @@ def _smart_reason(kind: str, **kw) -> tuple[str, str]:
 
 def _as_epoch(raw, default: int = 0) -> int:
     """Cooldown stamps from alert_state.json; garbage must not raise."""
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return default
-    if isinstance(raw, int):
+    if _isa(raw, int):
         if type(raw) is not int:
             try:
                 # Base coercion to an exact int: a subclass arithmetic/compare
@@ -874,7 +874,7 @@ def _as_epoch(raw, default: int = 0) -> int:
             except BaseException:
                 return default
         return raw
-    if isinstance(raw, float):
+    if _isa(raw, float):
         if type(raw) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__`` bomb
@@ -891,7 +891,7 @@ def _as_epoch(raw, default: int = 0) -> int:
             return int(raw)
         except (OverflowError, ValueError):
             return default
-    if isinstance(raw, str):
+    if _isa(raw, str):
         if type(raw) is not str:
             try:
                 raw = str.__str__(raw)
@@ -944,10 +944,10 @@ def _smart_num(raw) -> float | None:
     """
     if raw is None:
         return None
-    if isinstance(raw, bool):
+    if type(raw) is bool:
         return None
-    if isinstance(raw, (int, float)):
-        if isinstance(raw, int) and type(raw) is not int:
+    if _isa(raw, (int, float)):
+        if _isa(raw, int) and type(raw) is not int:
             try:
                 # Base coercion first: an int-subclass ``__float__``/``__index__``
                 # bomb riding a cached smart row used to raise out of float()
@@ -957,7 +957,7 @@ def _smart_num(raw) -> float | None:
                 raise
             except BaseException:
                 return None
-        elif isinstance(raw, float) and type(raw) is not float:
+        elif _isa(raw, float) and type(raw) is not float:
             try:
                 raw = float.__float__(raw)
             except _CONTROL_FLOW:
@@ -1015,7 +1015,7 @@ def _smart_key(dev: dict) -> str:
     # dict) that is a dict subclass with a bombing ``get`` — or a field whose
     # ``__bool__`` raises under the ``or`` — used to abort the SMART pass.
     smart = _pick(_mapping_get(dev, "smart"), {})
-    if not isinstance(smart, dict):
+    if not _isa(smart, dict):
         smart = {}
     # _utf8_text, not bare str(): a leftover over-cap plist/YAML-hex int
     # serial/model/size (uncapped ``int(x, 16)`` load) made str() raise the
@@ -1088,14 +1088,14 @@ def _smart_reasons(smart: dict, th: dict) -> tuple[list[tuple[str, str]], list[t
     # than having none.  So "raw count is non-zero" is a warn below, and *crossing
     # the vendor's own threshold* is what counts as fatal.
     attrs = _mapping_get(smart, "attrs")
-    if not isinstance(attrs, list):
+    if not _isa(attrs, list):
         attrs = []
     # Unbound base iteration: a list-subclass ``__iter__`` bomb attrs table
     # cannot abort the pass, and its real rows still walk.
     for attr in list.__iter__(attrs):
         # _utf8_text, not bare str(): a subclass ``__str__`` bomb type — and
         # the exact-str copy keeps a subclass ``__eq__`` bomb off the compare.
-        if not isinstance(attr, dict) or _utf8_text(
+        if not _isa(attr, dict) or _utf8_text(
                 _pick(_mapping_get(attr, "type"), "")) != "Pre-fail":
             continue
         value = _smart_num(_mapping_get(attr, "value"))
@@ -1179,16 +1179,16 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
         raise
     except BaseException:
         return []
-    if not isinstance(devices, list):
+    if not _isa(devices, list):
         devices = []
 
     cooldown = _as_epoch(_pick(_mapping_get(th, "cooldown_sec"), 1800), 1800)
     last_fire = prev.get("_smart_last")
-    if not isinstance(last_fire, dict):
+    if not _isa(last_fire, dict):
         last_fire = {}
     new_last = dict(last_fire)
     last_details = prev.get("_smart_detail")
-    if not isinstance(last_details, dict):
+    if not _isa(last_details, dict):
         last_details = {}
     new_details = dict(last_details)
     n = notify_settings()
@@ -1197,12 +1197,12 @@ def _check_smart_health(prev: dict, new_state: dict, now: int) -> list:
     # Unbound base iteration: a list-subclass ``__iter__``/``__bool__`` bomb
     # snapshot cannot kill the pass, and its real rows still walk.
     for dev in list.__iter__(devices):
-        if not isinstance(dev, dict):
+        if not _isa(dev, dict):
             continue
         smart = _mapping_get(dev, "smart")
         # dict.__len__ / _truthy: a smart dict whose ``__bool__`` raises, or
         # an ``error`` flag wearing one, used to abort the pass mid-loop.
-        if (not isinstance(smart, dict) or not dict.__len__(smart)
+        if (not _isa(smart, dict) or not dict.__len__(smart)
                 or _truthy(_mapping_get(dev, "error"))):
             # Unknown, not broken.  macOS gives userspace no ATA/SCSI passthrough
             # over USB or Thunderbolt bridges, so smartctl answers "not supported by
@@ -1363,10 +1363,10 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     # flag wearing a ``__bool__`` bomb — used to raise out of this pass into
     # check_once's containment: the power-loss countdown went unannounced
     # while the real readings sat intact in the C-level storage.
-    if not isinstance(st, dict) or not _truthy(_mapping_get(st, "present")):
+    if not _isa(st, dict) or not _truthy(_mapping_get(st, "present")):
         return []
     settings = _pick(_mapping_get(st, "settings"), {})
-    if not isinstance(settings, dict):
+    if not _isa(settings, dict):
         settings = {}
     if not _truthy(_mapping_get(settings, "alerts_enabled", True)):
         return []
@@ -1378,7 +1378,7 @@ def _check_ups(prev: dict, new_state: dict, now: int) -> list:
     name = _utf8_text(_pick(_mapping_get(st, "name"), "UPS")) or "UPS"
     pct = _mapping_get(st, "battery_percent")
     try:
-        pct_f = None if pct is None or isinstance(pct, bool) else float(pct)
+        pct_f = None if pct is None or _isa(pct, bool) else float(pct)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -1481,7 +1481,7 @@ def _service_transition_alerts(
     because we never announced the fault.
     """
     pending = new_state.get("_service_pending")
-    if not isinstance(pending, dict):
+    if not _isa(pending, dict):
         pending = {}
         new_state["_service_pending"] = pending
     emitted: list = []
@@ -1498,10 +1498,10 @@ def _service_transition_alerts(
                 notify_title, alert["message"], level=alert["level"], **extra,
             )
 
-    if not isinstance(services, dict):
+    if not _isa(services, dict):
         return emitted
     for sid, s in services.items():
-        if not isinstance(s, dict):
+        if not _isa(s, dict):
             continue
         state = s.get("state", "unknown")
         new_state[sid] = state
@@ -1572,7 +1572,7 @@ def _service_transition_alerts(
     # An *ok* job vanishing for one sweep is the KeepAlive flicker this
     # debounce exists for — do not call that recovery.
     for sid, old in list(prev.items()):
-        if not isinstance(sid, str) or sid.startswith("_"):
+        if not _isa(sid, str) or sid.startswith("_"):
             continue
         # resource:/smart:/freshness:/ups: live in alert_state but are not
         # service rows.  Treating them as vanished would "resolve" a still-
@@ -1610,23 +1610,23 @@ def check_once(force_status: bool = False) -> list:
     st = full_status(force=force_status)
     prev = _load_state()
     services = {}
-    groups = st.get("groups") if isinstance(st, dict) else None
-    if not isinstance(groups, list):
+    groups = st.get("groups") if _isa(st, dict) else None
+    if not _isa(groups, list):
         groups = []
     for g in groups:
-        if not isinstance(g, dict):
+        if not _isa(g, dict):
             continue
         rows = g.get("services")
-        if not isinstance(rows, list):
+        if not _isa(rows, list):
             continue
         for s in rows:
             # Status still groups a leftover ``id: [foo]`` / ``id: .inf``.
             # Using that as a dict key TypeError'd POST /api/alerts/check,
             # and an inf id leaked into the emitted JSON (allow_nan=False).
-            # _service_id, not an ``isinstance(sid, str)`` gate: a numeric
+            # _service_id, not an ``_isa(sid, str)`` gate: a numeric
             # YAML ``id: 123`` was silently dropped from the sweep — the
             # service could go down without ever alerting.
-            if not isinstance(s, dict):
+            if not _isa(s, dict):
                 continue
             sid = _service_id(s.get("id"))
             if sid:
@@ -1643,15 +1643,15 @@ def check_once(force_status: bool = False) -> list:
     # install) instead of once per cooldown.  The cooldown maps and the
     # service-pending set are carried before the checks run, so they also
     # survive a check raising halfway through.
-    if isinstance(prev.get("_resource_last"), dict):
+    if _isa(prev.get("_resource_last"), dict):
         new_state["_resource_last"] = prev["_resource_last"]
-    if isinstance(prev.get("_smart_last"), dict):
+    if _isa(prev.get("_smart_last"), dict):
         new_state["_smart_last"] = prev["_smart_last"]
-    if isinstance(prev.get("_smart_detail"), dict):
+    if _isa(prev.get("_smart_detail"), dict):
         new_state["_smart_detail"] = prev["_smart_detail"]
-    if isinstance(prev.get("_freshness_last"), dict):
+    if _isa(prev.get("_freshness_last"), dict):
         new_state["_freshness_last"] = prev["_freshness_last"]
-    if isinstance(prev.get("_service_pending"), dict):
+    if _isa(prev.get("_service_pending"), dict):
         new_state["_service_pending"] = dict(prev["_service_pending"])
     try:
         emitted.extend(_service_transition_alerts(prev, new_state, services, now))
@@ -1732,11 +1732,11 @@ def _loop(interval: int = 90):
     try:
         st = full_status(force=False)
         baseline = {}
-        for g in st.get("groups") or []:
-            if not isinstance(g, dict):
+        for g in st.get("groups") if _isa(st.get("groups"), list) else []:
+            if not _isa(g, dict):
                 continue
-            for s in g.get("services") or []:
-                if not isinstance(s, dict):
+            for s in g.get("services") if _isa(g.get("services"), list) else []:
+                if not _isa(s, dict):
                     continue
                 # Same str() probe as check_once: a numeric YAML ``id: 123``
                 # must seed the baseline under the key the sweep will use.

@@ -22,14 +22,14 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in asArray(rows)" :key="finiteText(asRecord(row).slug)">
+          <tr v-for="row in asArray(rows)" :key="finiteText(recGet(row, 'slug'))">
             <td>
-              <strong>{{ finiteText(asRecord(row).name) }}</strong>
-              <div class="mono sub-line">{{ finiteText(asRecord(row).slug) }}</div>
-              <div class="show-m sub">{{ finiteText(asRecord(row).category) }} · {{ fmtPorts(asRecord(row).ports) }}</div>
+              <strong>{{ finiteText(recGet(row, 'name')) }}</strong>
+              <div class="mono sub-line">{{ finiteText(recGet(row, 'slug')) }}</div>
+              <div class="show-m sub">{{ finiteText(recGet(row, 'category')) }} · {{ fmtPorts(recGet(row, 'ports')) }}</div>
             </td>
-            <td class="col-hide-m">{{ finiteText(asRecord(row).category) }}</td>
-            <td class="col-hide-m mono">{{ fmtPorts(asRecord(row).ports) }}</td>
+            <td class="col-hide-m">{{ finiteText(recGet(row, 'category')) }}</td>
+            <td class="col-hide-m mono">{{ fmtPorts(recGet(row, 'ports')) }}</td>
             <td class="row-btns">
               <button type="button" class="tiny" :disabled="busy" @click="startEdit(row)">{{ t('common.edit') }}</button>
               <button type="button" class="tiny danger" :disabled="busy" @click="removeRow(row)">{{ t('common.delete') }}</button>
@@ -87,7 +87,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { forgetServiceSignature, getServiceSignatures, upsertServiceSignature } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -114,19 +114,19 @@ function fmtPorts(ports) {
 }
 
 function parseList(raw) {
-  return String(raw || '')
+  return asTrimmed(raw)
     .split(/[\s,]+/)
-    .map((s) => s.trim())
+    .map((s) => asTrimmed(s))
     .filter(Boolean)
 }
 
 async function load() {
   const generation = ++loadGeneration
   try {
-    const data = await getServiceSignatures()
+    const data = asRecord(await getServiceSignatures())
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = asArray(data?.signatures).map((r) => asRecord(r))
-    builtinCount.value = finiteN(asRecord(data).builtin_count, 0)
+    rows.value = asArray(recGet(data, 'signatures')).map((r) => asRecord(r))
+    builtinCount.value = finiteN(recGet(data, 'builtin_count'), 0)
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -148,13 +148,13 @@ function startEdit(row) {
   const rec = asRecord(row)
   editing.value = {
     existing: true,
-    slug: rec.slug,
-    name: rec.name || '',
-    category: rec.category || '',
-    procs: asArray(rec.procs).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
-    ports: asArray(rec.ports).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
-    http: httpValue(rec.http),
-    brew: rec.brew || '',
+    slug: recGet(rec, 'slug'),
+    name: recGet(rec, 'name') || '',
+    category: recGet(rec, 'category') || '',
+    procs: asArray(recGet(rec, 'procs')).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    ports: asArray(recGet(rec, 'ports')).map((n) => finiteText(n, '')).filter(Boolean).join(', '),
+    http: httpValue(recGet(rec, 'http')),
+    brew: recGet(rec, 'brew') || '',
   }
 }
 
@@ -178,7 +178,7 @@ async function save() {
     if (e.http === 'true') body.http = true
     else if (e.http === 'false') body.http = false
     else body.http = null
-    await upsertServiceSignature(body)
+    const r = asRecord(await upsertServiceSignature(body))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.saved')}`)
     editing.value = null
@@ -192,14 +192,14 @@ async function save() {
 }
 
 async function removeRow(row) {
-  if (!confirm(t('svcsig.confirm_delete', { slug: finiteText(asRecord(row).slug) }))) return
+  if (!confirm(t('svcsig.confirm_delete', { slug: finiteText(recGet(row, 'slug')) }))) return
   const generation = loadGeneration
   busy.value = true
   try {
-    await forgetServiceSignature(asRecord(row).slug)
+    const r = asRecord(await forgetServiceSignature(recGet(row, 'slug')))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('svcsig.removed')}`)
-    if (asRecord(editing.value).slug === asRecord(row).slug) editing.value = null
+    if (recGet(editing.value, 'slug') === recGet(row, 'slug')) editing.value = null
     await load()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

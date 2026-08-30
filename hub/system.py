@@ -282,9 +282,9 @@ def _rc_int(rc) -> int:
     no honest exit status, so a bomb keeps the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
     except _CONTROL_FLOW:
@@ -592,4 +592,4 @@ def collect_system():
         "uptime_hours": round(uptime_h, 2),
         "smart": smart,
     })
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}

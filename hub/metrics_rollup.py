@@ -58,6 +58,24 @@ from hub.util import read_text_capped, safe_json_loads
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded rollup jsonl gates — GET
+    /api/metrics?range= answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 FILE_5M = DATA_DIR / "metrics-5m.jsonl"
 FILE_1H = DATA_DIR / "metrics-1h.jsonl"
 STATE_FILE = DATA_DIR / "metrics-rollup-state.json"
@@ -104,9 +122,9 @@ RAW_QUERY_SPAN = 48 * 3600
 
 def _sample_ts(raw) -> int | None:
     """Finite epoch seconds, or None.  Same rules as metrics.sample_ts."""
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         text = raw.strip()
         if not text:
             return None
@@ -117,14 +135,14 @@ def _sample_ts(raw) -> int | None:
                 raw = float(text)
             except ValueError:
                 return None
-    if not isinstance(raw, (int, float)):
+    if not _isinst(raw, (int, float)):
         return None
     # Base coercion first: ``float(raw)`` / ``int(raw)`` dispatch into a
     # subclass ``__float__`` / ``__int__`` / ``__trunc__``, whose modules5
     # bomb is none of the errors caught below and used to escape.
     if type(raw) not in (int, float):
         try:
-            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+            raw = int.__index__(raw) if _isinst(raw, int) else float.__float__(raw)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -145,9 +163,9 @@ def _sample_ts(raw) -> int | None:
 
 def _finite_num(raw):
     """Finite int/float, or None.  Bools and inf/nan are not numbers here."""
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None
-    if isinstance(raw, str):
+    if _isinst(raw, str):
         text = raw.strip()
         if not text:
             return None
@@ -155,14 +173,14 @@ def _finite_num(raw):
             raw = float(text)
         except ValueError:
             return None
-    if not isinstance(raw, (int, float)):
+    if not _isinst(raw, (int, float)):
         return None
     # Base coercion before the NaN/inf probes: ``raw != raw`` and the inf
     # tuple membership dispatch into a subclass ``__eq__``/``__ne__``,
     # whose modules5 bomb used to raise out of every aggregation pass.
     if type(raw) not in (int, float):
         try:
-            raw = int.__index__(raw) if isinstance(raw, int) else float.__float__(raw)
+            raw = int.__index__(raw) if _isinst(raw, int) else float.__float__(raw)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -225,7 +243,7 @@ def _utf8_text(value) -> str:
         raise
     except BaseException:
         return ""
-    if not isinstance(text, str):
+    if not _isinst(text, str):
         return ""
     try:
         text = str.encode(text, "utf-8", "replace").decode("utf-8")
@@ -252,9 +270,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__``
@@ -271,7 +289,7 @@ def _jsonable(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float: a subclass ``__eq__``
@@ -284,11 +302,11 @@ def _jsonable(value, depth: int = 0):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _utf8_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return _decode_bytes(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         if type(value) is not dict:
             # dict() copies through the C-level storage, ignoring overridden
             # items()/keys()/__iter__ — a leftover subclass method bomb
@@ -301,7 +319,7 @@ def _jsonable(value, depth: int = 0):
                 return None
         out = {}
         for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except _CONTROL_FLOW:
@@ -310,9 +328,9 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_utf8_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):
-            if isinstance(value, base):
+            if _isinst(value, base):
                 # Unbound base iteration: a subclass ``__iter__`` bomb
                 # cannot drop the real elements (``list(value)`` dispatched
                 # into the override and threw the payload away with it).
@@ -443,11 +461,11 @@ def _rows_since(path, since_ts: int) -> list[dict]:
                 # ValueError out of json.loads, which used to 500
                 # GET /api/metrics?range= on that line.
                 continue
-            t = _sample_ts(o.get("t") if isinstance(o, dict) else None)
+            t = _sample_ts(o.get("t") if _isinst(o, dict) else None)
             if t is None:
                 continue
-            o = _jsonable(o) if isinstance(o, dict) else None
-            if not isinstance(o, dict):
+            o = _jsonable(o) if _isinst(o, dict) else None
+            if not _isinst(o, dict):
                 continue
             o["t"] = t
             if t < since_ts:
@@ -498,7 +516,7 @@ def _aggregate_window(rows: list[dict], window_start: int) -> dict:
         w = int(w) if w is not None and w > 0 else 1
         total_n += w
         for key, val in row.items():
-            if not isinstance(key, str):
+            if not _isinst(key, str):
                 continue
             if type(key) is not str:
                 # Exact-str the key before the tuple membership below: a
@@ -542,7 +560,7 @@ def _load_state_locked() -> None:
     saved: dict = {}
     try:
         loaded = safe_json_loads(read_text_capped(STATE_FILE, _STATE_CAP))
-        if isinstance(loaded, dict):
+        if _isinst(loaded, dict):
             saved = loaded
     except (OSError, json.JSONDecodeError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested watermark is not ValueError.
@@ -667,7 +685,7 @@ def _maybe_trim_locked(tier: str, path, now: float) -> bool:
                     # digit-cap ValueError is not JSONDecodeError): dropped
                     # with the trim instead of aborting it.
                     continue
-                t = _sample_ts(parsed.get("t") if isinstance(parsed, dict) else None)
+                t = _sample_ts(parsed.get("t") if _isinst(parsed, dict) else None)
                 if t is not None and t >= cutoff:
                     kept.append(ln)
         _atomic_write(path, "\n".join(kept) + "\n" if kept else "")
@@ -700,7 +718,7 @@ def maybe_rollup(now: float | None = None) -> dict:
             raise
         except BaseException:
             now_f = time.time()
-        if isinstance(now, bool) or now_f != now_f or now_f in (float("inf"), float("-inf")) or abs(now_f) > 1e18:
+        if type(now) is bool or now_f != now_f or now_f in (float("inf"), float("-inf")) or abs(now_f) > 1e18:
             now_f = time.time()
         now = now_f
     done = {"w5": 0, "w1h": 0}
@@ -817,7 +835,7 @@ def _decimate(rows: list[dict], since: int, until: int, max_points: int) -> list
     bucket_sec = -(-span // max_points)  # ceil
     buckets: dict[int, list[dict]] = {}
     for row in rows:
-        t = _sample_ts(row.get("t") if isinstance(row, dict) else None)
+        t = _sample_ts(row.get("t") if _isinst(row, dict) else None)
         if t is None:
             continue
         idx = (t - since) // bucket_sec

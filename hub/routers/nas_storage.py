@@ -29,6 +29,19 @@ router = APIRouter(tags=["nas-storage"])
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 
 def _rendered(payload):
     """Read payload through the shared sanitizer before Starlette renders it.
@@ -325,7 +338,7 @@ def _known_mount(mount: str) -> str:
         rows = iter(())
     try:
         for row in rows:
-            if isinstance(row, str):
+            if _isinst(row, str):
                 known.add(row)
     except _CONTROL_FLOW:
         raise
@@ -554,14 +567,14 @@ def api_nfs_preview():
     # whose bound ``.get`` raises (both pass ``isinstance``), used to 500
     # the preview instead of rendering the salvageable lines.
     try:
-        rows = iter(entries) if isinstance(entries, list) else iter(())
+        rows = iter(entries) if _isinst(entries, list) else iter(())
     except _CONTROL_FLOW:
         raise
     except BaseException:
         rows = iter(())
     try:
         for e in rows:
-            if not isinstance(e, dict):
+            if not _isinst(e, dict):
                 continue
             raw = _utf8_text(dict.get(e, "raw"))
             if raw:

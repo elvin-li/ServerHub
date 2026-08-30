@@ -425,6 +425,16 @@ class AdaptiveLeftoverTests(unittest.TestCase):
             self.assertEqual(adaptive.lsof_listen_snapshot(), [])
             self.assertEqual(adaptive.ports_for_pid(1), [])
 
+    def test_class_bomb_plist_does_not_500(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertEqual(adaptive.ports_from_plist(ClassBomb()), [])
+        self.assertIsNone(adaptive.url_from_plist(ClassBomb()))
+        self.assertEqual(adaptive.guess_group(ClassBomb(), ClassBomb(), False), "Native Services")
+
     def test_enrich_junk_detail_and_meta_do_not_500(self):
         item = adaptive.enrich_service(
             {"detail": 8086, "state": "ok", "meta": "nope"},

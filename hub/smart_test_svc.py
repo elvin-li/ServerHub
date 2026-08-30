@@ -867,7 +867,7 @@ def _jsonable(value, depth: int = 0):
     # falls through to the final text probe like any other leftover.
     if value is None:
         return value
-    if _isa(value, bool):
+    if type(value) is bool:
         # ``bool`` is final, so a value that answers the bool gate while
         # its real type is not bool is a *lying* ``__class__`` impostor
         # (the modules9 rule).  The old arm returned it raw and Starlette's
@@ -999,22 +999,6 @@ def _capped_json_int(text):
         return None
 
 
-def _capped_json_int(text):
-    """``json.loads`` parse_int hook: an over-cap digit run drops to None.
-
-    ``int()`` of a >4300-digit number is ValueError (not JSONDecodeError) for
-    the *whole* document: one poisoned row made ``_load_history`` return
-    ``[]``, GET /api/smart/history went silently empty, and the next
-    ``_append_history`` rewrote the journal with only its own record — every
-    prior self-test result silently lost.  Dropping just the number matches
-    the ``_jsonable`` rule for an int the encoder cannot render.
-    """
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
 def _load_history() -> list[dict]:
     try:
         data = safe_json_loads(
@@ -1042,14 +1026,17 @@ def _append_history(record: dict) -> None:
     # a write from a stale snapshot dropped the row the other just recorded.
     with _history_lock, file_lock(HISTORY_PATH):
         history = _load_history()
-        history.append(_jsonable(record) if isinstance(record, dict) else {})
+        history.append(_jsonable(record) if _isa(record, dict) else {})
         # Bounded so a daily schedule cannot grow the file without limit.
         del history[:-500]
         try:
             HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
             replace_bytes(
                 HISTORY_PATH,
-                json.dumps(history, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+                json.dumps(
+                    _jsonable(history) if _isa(history, list) else [],
+                    indent=2, ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8"),
             )
         except (OSError, TypeError, ValueError, RecursionError):
             # RecursionError: leftover nested SMART history after _jsonable is
@@ -1164,7 +1151,7 @@ def _schedule_text(value) -> str:
     silently stopping every scheduled self-test.  An unrenderable value
     coerces to "" so the caller's own fallback ("off" / "short" / drop the
     device entry) answers instead; a renderable int still coerces via str()
-    rather than being hidden behind an isinstance(str) gate.
+    rather than being hidden behind an _isa(str) gate.
     """
     if value is None:
         return ""
@@ -1187,31 +1174,6 @@ def _schedule_text(value) -> str:
     # ``__str__`` answers *self* skips CPython's exact-str copy, so a bound
     # ``encode`` bomb here used to 500 GET /api/smart the same way.
     return str.encode(text, "utf-8", "replace").decode("utf-8")
-
-
-def _schedule_text(value) -> str:
-    """str() probe for hand-edited YAML schedule fields.
-
-    ``interval: 0xFFF…`` loads as an over-cap int (``int(x, 16)`` is a
-    power-of-two base, so the 4300-digit parse cap never applied) and a bare
-    ``str()`` here ValueError'd GET /api/smart through ``overview()`` — and
-    the same raise escaped ``schedule_due()`` inside the scheduler tick,
-    silently stopping every scheduled self-test.  An unrenderable value
-    coerces to "" so the caller's own fallback ("off" / "short" / drop the
-    device entry) answers instead; a renderable int still coerces via str()
-    rather than being hidden behind an isinstance(str) gate.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "replace")
-    try:
-        text = str(value)
-    except Exception:
-        return ""
-    # Lone surrogates (a mojibake hand-edit) must not reach Starlette's
-    # UTF-8 encode.
-    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _now() -> int:
@@ -1630,7 +1592,7 @@ def abort_test(device: str) -> dict:
         # _isa: same ``__class__``-bomb gate as start_test, on
         # POST /api/smart/abort.
         cleaned = _jsonable(result) if _isa(result, dict) else {}
-        return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+        return cleaned if _isa(cleaned, dict) else {"ok": False, "error": "failed"}
     invalidate()
     return {"ok": True, "message": (_as_text(out) or _as_text(err)).strip()[-300:]}
 

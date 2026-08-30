@@ -115,6 +115,12 @@ class _CatalogSandbox(unittest.TestCase):
             patched = mock.patch.object(module, name, value)
             patched.start()
             self.addCleanup(patched.stop)
+        patched = mock.patch.object(catalog, "DOCKER", "")
+        patched.start()
+        self.addCleanup(patched.stop)
+        patched = mock.patch.object(catalog.shutil, "which", return_value=None)
+        patched.start()
+        self.addCleanup(patched.stop)
         for patched in (
             mock.patch.object(catalog_router.auth, "browser_authenticated", return_value=True),
             mock.patch.object(catalog_router.auth, "request_username", return_value="admin"),

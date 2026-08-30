@@ -7,6 +7,21 @@ from pydantic import BaseModel
 from hub import audit, auth, power_svc, shares_svc
 from hub.errors import api_error
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 router = APIRouter(tags=["power"])
 
 
@@ -76,16 +91,16 @@ def _set_screen_sharing(request: Request, enabled: bool) -> dict:
         username=auth.request_username(request),
         client=auth.request_client_id(request),
         action="enable" if enabled else "disable",
-        outcome="success" if isinstance(result, dict) and result.get("ok") else "failure",
+        outcome="success" if _isinst(result, dict) and result.get("ok") else "failure",
         service="screen_sharing",
     )
     # Leftover None AttributeError'd enable/disable; leftover inf / ``\\ud800``
     # in an ok payload 500'd Starlette's allow_nan=False encoder.
-    if not isinstance(result, dict):
+    if not _isinst(result, dict):
         raise api_error("shares.operation_failed")
     if result.get("ok"):
         cleaned = power_svc._jsonable(result)
-        return cleaned if isinstance(cleaned, dict) else {"ok": True}
+        return cleaned if _isinst(cleaned, dict) else {"ok": True}
     # A bare str() still crashed this failure path: a leftover over-cap int
     # error raised CPython's int->str digit-cap ValueError and a recursive
     # ``__str__`` raised RecursionError — both answered a raw uncoded 500

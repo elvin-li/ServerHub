@@ -6,8 +6,8 @@
     </div>
     <div class="toolbar">
       <select v-model="sourceId" :aria-label="t('logs.source_label')" @change="load(true)">
-        <option v-for="s in asArray(sources)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">
-          {{ finiteText(asRecord(s).name) }}{{ asRecord(s).exists ? ' · ' + fmtSize(asRecord(s).size) : t('logs.missing') }}
+        <option v-for="s in asArray(sources)" :key="finiteText(recGet(s, 'id'))" :value="recGet(s, 'id')">
+          {{ finiteText(recGet(s, 'name')) }}{{ recGet(s, 'exists') ? ' · ' + fmtSize(recGet(s, 'size')) : t('logs.missing') }}
         </option>
       </select>
       <select v-model.number="lines" :aria-label="t('logs.lines_label')" @change="load(true)">
@@ -26,9 +26,9 @@
       <button class="tiny hide-m" @click="downloadLog">{{ t('logs.download') }}</button>
     </div>
     <div v-if="meta" class="detail" style="margin-bottom:8px;white-space:normal">
-      <span class="mono">{{ finiteText(asRecord(meta).path) }}</span>
-      · {{ fmtSize(asRecord(meta).size) }}
-      · {{ t('logs.lines_n', { n: fmtCount(asRecord(meta).lines) }) }}
+      <span class="mono">{{ finiteText(recGet(meta, 'path')) }}</span>
+      · {{ fmtSize(recGet(meta, 'size')) }}
+      · {{ t('logs.lines_n', { n: fmtCount(recGet(meta, 'lines')) }) }}
       <!-- Always-rendered live region, text gated inside: typing in the filter
            otherwise changes nothing a screen reader is told about, so there
            was no way to hear whether the filter matched anything at all. -->
@@ -49,7 +49,7 @@
     <!-- Filter-miss and empty-file are different answers: "(empty)" on a
          full log whose filter matched nothing told the operator the file
          has no lines. Same split Brew/Health pinned (common.no_match). -->
-    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ finiteText(filter, '').trim() && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
+    <pre v-else-if="!loadError" class="log-viewer" role="status">{{ asTrimmed(finiteText(filter, '')) && finiteText(text, '') ? t('common.no_match') : t('logs.empty') }}</pre>
   </div>
 </template>
 
@@ -58,7 +58,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getLogSources, getLogTail } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN, finiteText, jsonLoad, jsonText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, jsonLoad, jsonText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -91,8 +91,8 @@ function asLogLines(raw) {
   }
   if (raw != null && typeof raw === 'object') {
     const rec = asRecord(raw)
-    if (rec.lines !== undefined && rec.lines !== raw) return asLogLines(rec.lines)
-    if (rec.log !== undefined && rec.log !== raw) return asLogLines(rec.log)
+    if (recGet(rec, 'lines') !== undefined && recGet(rec, 'lines') !== raw) return asLogLines(recGet(rec, 'lines'))
+    if (recGet(rec, 'log') !== undefined && recGet(rec, 'log') !== raw) return asLogLines(recGet(rec, 'log'))
     const dumped = jsonText(raw, '')
     return dumped ? [dumped] : []
   }
@@ -106,7 +106,7 @@ function asLogLines(raw) {
 
 const displayLines = computed(() => {
   const rawFilter = filter.value
-  const f = typeof rawFilter === 'string' ? rawFilter.trim().toLowerCase() : ''
+  const f = asTrimmed(rawFilter).toLowerCase()
   const all = asArray(asLogLines(text.value))
   if (!f) return all
   return all.filter((l) => lineText(l).toLowerCase().includes(f))
@@ -117,14 +117,14 @@ function fmtSize(n) {
   if (n == null || n === 0) return '0 B'
   const u = ['B', 'KB', 'MB', 'GB']
   let i = 0
-  let v = Number(n)
-  if (!Number.isFinite(v) || v < 0) return '—'
+  let v = finiteN(n, null)
+  if (v == null || !Number.isFinite(v) || v < 0) return '—'
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
 }
 function fmtCount(n) {
-  const v = Number(n)
-  return Number.isFinite(v) && v >= 0 ? v : '—'
+  const v = finiteN(n, null)
+  return v != null && Number.isFinite(v) && v >= 0 ? v : '—'
 }
 
 async function loadSources() {
@@ -132,9 +132,9 @@ async function loadSources() {
   try {
     const d = asRecord(await getLogSources())
     if (generation !== loadGeneration || !pageAlive) return false
-    sources.value = asArray(d.sources).map((s) => asRecord(s))
+    sources.value = asArray(recGet(d, 'sources')).map((s) => asRecord(s))
     const first = asRecord(asArray(sources.value)[0])
-    if (!sourceId.value && asArray(sources.value).length && first.id) sourceId.value = first.id
+    if (!sourceId.value && asArray(sources.value).length && recGet(first, 'id')) sourceId.value = recGet(first, 'id')
     loadError.value = ''
     return true
   } catch (e) {
@@ -158,7 +158,7 @@ async function load(manual = false) {
     const d = asRecord(await getLogTail(requestedSource, requestedLines))
     if (generation !== loadGeneration || !pageAlive || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
     meta.value = asRecord(d)
-    text.value = asRecord(d).log
+    text.value = recGet(d, 'log')
     loadError.value = ''
     return true
   } catch (e) {

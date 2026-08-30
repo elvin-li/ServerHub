@@ -14,17 +14,17 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="6" />
     <div v-else-if="!Object.keys(asRecord(byCat)).length && !loadError" class="placeholder">{{ t('common.none') }}</div>
-    <div v-for="(list, cat) in asRecord(byCat)" :key="cat" style="margin-bottom:14px">
+    <div v-for="(list, cat) in asRecord(byCat)" :key="finiteText(cat)" style="margin-bottom:14px">
       <h2 class="section-title">{{ catLabel(cat) }}</h2>
       <div class="grid">
-        <div v-for="m in asArray(list)" :key="finiteText(asRecord(m).id)" class="tile">
+        <div v-for="m in asArray(list)" :key="finiteText(recGet(m, 'id'))" class="tile">
           <div class="row">
-            <span class="name">{{ finiteText(asRecord(m).name) }}</span>
-            <span class="badge ok" v-if="asRecord(m).enabled">{{ t('modules.enabled') }}</span>
+            <span class="name">{{ finiteText(recGet(m, 'name')) }}</span>
+            <span class="badge ok" v-if="recGet(m, 'enabled')">{{ t('modules.enabled') }}</span>
           </div>
-          <div class="detail" style="white-space:normal;min-height:36px">{{ finiteText(asRecord(m).description) }}</div>
+          <div class="detail" style="white-space:normal;min-height:36px">{{ finiteText(recGet(m, 'description')) }}</div>
           <div class="sub" style="margin-bottom:6px">
-            <span v-for="r in asArray(asRecord(m).ui_routes)" :key="finiteText(r)" style="margin-right:6px">
+            <span v-for="r in asArray(recGet(m, 'ui_routes'))" :key="finiteText(r)" style="margin-right:6px">
               <router-link v-if="typeof r === 'string' && r.startsWith('/')" :to="finiteText(r)" class="btn tiny">{{ finiteText(r) }}</router-link>
             </span>
           </div>
@@ -36,7 +36,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText, recGet } from '../lib/finite'
 import { getModules } from '../api/client'
 import { injectI18n } from '../i18n'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -89,7 +89,7 @@ async function load() {
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === loadGeneration && pageAlive) {

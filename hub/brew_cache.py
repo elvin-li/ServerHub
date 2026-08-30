@@ -512,7 +512,7 @@ def _copy_items(items) -> list[dict]:
         if not _isinstance(x, dict):
             continue
         row = _json_safe(x)
-        if isinstance(row, dict):
+        if _isinstance(row, dict):
             cleaned.append(row)
     return cleaned
 
@@ -583,9 +583,9 @@ def _read_disk_file() -> list[dict] | None:
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested cache is not ValueError.
         return None
-    if not isinstance(parsed, list):
+    if not _isinstance(parsed, list):
         return None
-    items = [x for x in parsed if isinstance(x, dict)]
+    items = [x for x in parsed if _isinstance(x, dict)]
     return items or None
 
 

@@ -276,7 +276,7 @@ _PROC_TTL = 5.0
 
 def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
     # JSON ``1e309`` is inf; ``int(inf)`` OverflowError.  Bool is an int.
-    # ``raw is True/False``, not ``isinstance(raw, bool)``, and ``_isinst``
+    # ``raw is True/False``, not ``_isinst(raw, bool)``, and ``_isinst``
     # below: a ``__class__``-property bomb raised out of the bare gates
     # before the try could catch anything — the same in-process
     # POST /api/tools/net/ping 500 the base coercions were added for.
@@ -313,7 +313,7 @@ def top_processes(limit: int = 25) -> list:
     # One shared `ps aux` (hub/proc_cache.py).  The row cache above stays: it holds
     # the *parsed and sorted* rows, which the shared table deliberately does not.
     lines = ps_lines()
-    if isinstance(lines, list):
+    if _isinst(lines, list):
         # Exact-list copy through the unbound base read: a leftover
         # list-subclass table whose bound ``__len__`` / ``__getitem__``
         # raises passes the isinstance gate, and the bomb used to blow
@@ -552,7 +552,7 @@ def docker_prune(what: str = "dangling", confirm: bool = False) -> dict:
         "volumes": ["volume", "prune", "-f"],
         "all_unused": ["system", "prune", "-f"],  # unused images/networks/stopped containers
     }
-    if not isinstance(what, str):
+    if not _isinst(what, str):
         out = soft_fail("tools.bad_prune", what="")
         out["allowed"] = list(cmds.keys())
         return out
@@ -756,7 +756,7 @@ def _finite_load(value) -> float:
 
 
 def _fmt_uptime(sec: int | None) -> str:
-    if isinstance(sec, bool) or sec is None:
+    if type(sec) is bool or sec is None:
         return "—"
     try:
         value = int(sec)
@@ -951,9 +951,9 @@ def _renderable_number(value):
     plist hex loads uncapped through ``int(x, 16)``) makes ``json.dumps`` itself
     raise the int->str digit-cap ValueError, so probe with ``str()``.
     """
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -969,7 +969,7 @@ def _renderable_number(value):
         except ValueError:
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 value = float.__float__(value)
@@ -1008,7 +1008,7 @@ def _power_disk_row(d) -> dict | None:
     escape into ``fan_out`` — which re-raises on iteration — and 500
     GET /api/tools/hardware.  Same for ``__bool__`` bombs on the two flags.
     """
-    if not isinstance(d, dict):
+    if not _isinst(d, dict):
         return None
     ssd = dict.get(d, "ssd")
     return {
@@ -1352,7 +1352,7 @@ def _github_empty(*, error: str = "", repo: str | None = None) -> dict:
 
 def _github_get_json(path: str):
     """GET ``https://api.github.com`` *path*.  Returns parsed JSON or raises."""
-    if not isinstance(path, str) or not path.startswith("/repos/"):
+    if not _isinst(path, str) or not path.startswith("/repos/"):
         raise ValueError("github path")
     url = f"https://{_GITHUB_HOST}{path}"
     req = urllib.request.Request(
@@ -1404,7 +1404,7 @@ def _github_get_json(path: str):
 
 
 def _release_from_payload(payload, *, repo: str, source: str) -> dict | None:
-    if not isinstance(payload, dict):
+    if not _isinst(payload, dict):
         return None
     tag = _as_text(payload.get("tag_name") or payload.get("name")).strip()
     if not tag or not _TAG_RE.fullmatch(tag):
@@ -1450,9 +1450,9 @@ def _github_latest_uncached() -> dict:
         tags = _github_get_json(f"/repos/{repo}/tags?per_page=5")
     except RuntimeError as exc:
         return _github_empty(error=_as_text(exc), repo=repo)
-    if not isinstance(tags, list) or not tags:
+    if not _isinst(tags, list) or not tags:
         return _github_empty(error="no github releases or tags", repo=repo)
-    first = tags[0] if isinstance(tags[0], dict) else {}
+    first = tags[0] if _isinst(tags[0], dict) else {}
     fake = {
         "tag_name": first.get("name"),
         "html_url": f"https://github.com/{repo}/releases/tag/{_as_text(first.get('name')).strip()}",
@@ -1493,11 +1493,11 @@ def github_update_status(*, fetch: bool = True, force: bool = False,
     """
     if not fetch:
         hit = _github_cache["v"]
-        gh = hit if isinstance(hit, dict) else _github_empty(error="")
+        gh = hit if _isinst(hit, dict) else _github_empty(error="")
     else:
         gh = _github_latest(force=force)
     if not checkout:
-        return gh if isinstance(gh, dict) else _github_empty()
+        return gh if _isinst(gh, dict) else _github_empty()
     return _with_checkout_state(gh)
 
 
@@ -1509,7 +1509,7 @@ def _checkout_is_git() -> bool:
 
 
 def _with_checkout_state(gh: dict) -> dict:
-    out = dict(gh) if isinstance(gh, dict) else _github_empty()
+    out = dict(gh) if _isinst(gh, dict) else _github_empty()
     git = _checkout_is_git()
     dirty = _git_dirty() if git else False
     out["git"] = git
@@ -1806,9 +1806,9 @@ def parse_lsof_listen_line(line: str) -> dict | None:
     only reliable way. NAME looks like "*:8086", "127.0.0.1:8086" or
     "[::1]:8086" — IPv6 literals contain colons, so split on the LAST one.
     """
-    if isinstance(line, (bytes, bytearray)):
+    if _isinst(line, (bytes, bytearray)):
         line = line.decode("utf-8", "replace")
-    elif not isinstance(line, str):
+    elif not _isinst(line, str):
         return None
     parts = line.split()
     if len(parts) < 9:
@@ -1906,7 +1906,7 @@ def _truthy(value) -> bool:
     """Guarded ``bool(...)``: a leftover ``__bool__``/``__len__`` bomb in a
     parsed plist value must degrade to False, never raise out of the
     launchd readers into a raw 500."""
-    if isinstance(value, bool):
+    if type(value) is bool:
         return value
     try:
         return bool(value)
@@ -1922,11 +1922,11 @@ def _plist_map(pl) -> dict | None:
     ``dict(subclass)`` copies through CPython's C-level storage, bypassing
     a leftover's overridden ``.get``/``items``/``keys`` (the host6 _as_map
     rule): a parser answer that is a dict *subclass* with a bombing bound
-    ``.get`` passed the old ``isinstance(pl, dict)`` gate and raised out of
+    ``.get`` passed the old ``_isinst(pl, dict)`` gate and raised out of
     the field reads — a raw 500 on GET /api/system/scheduler and
     GET /api/tools/agents.
     """
-    if not isinstance(pl, dict):
+    if not _isinst(pl, dict):
         return None
     try:
         return dict(pl)
@@ -1945,7 +1945,7 @@ def _args_text(args, cap: int) -> str:
     a raw 500 on both launchd views; the real elements sit readable in the
     C-level storage and survive.
     """
-    if not isinstance(args, list):
+    if not _isinst(args, list):
         return ""
     try:
         items = list.__getitem__(args, slice(None))
@@ -1957,9 +1957,9 @@ def _args_text(args, cap: int) -> str:
 
 
 def _plist_int(raw):
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return None
-    if isinstance(raw, int):
+    if _isinst(raw, int):
         try:
             # Base coercion to an exact int first: an int *subclass* whose
             # ``__int__``/``__index__`` bombs used to raise past the
@@ -2003,9 +2003,9 @@ def _plist_jsonable(value, depth: int = 0):
     """
     if depth > 8:
         return None
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         if type(value) is not int:
             try:
                 # Base coercion to an exact int: a subclass ``__str__`` bomb
@@ -2024,7 +2024,7 @@ def _plist_jsonable(value, depth: int = 0):
             # json.dumps.  Same drop as its inf float sibling below.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if type(value) is not float:
             try:
                 # Base coercion to an exact float, matching the int arm.
@@ -2034,9 +2034,9 @@ def _plist_jsonable(value, depth: int = 0):
             except BaseException:
                 return None
         return value if math.isfinite(value) else None
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _as_text(value)
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         # Unbound base view: ``dict.items`` reads the real C-level storage,
         # so the salvageable keys of an items()-bomb subclass survive.
         try:
@@ -2049,12 +2049,12 @@ def _plist_jsonable(value, depth: int = 0):
         for k, v in items:
             out[_as_text(k)] = _plist_jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
-        if isinstance(value, list):
+    if _isinst(value, (list, tuple, set, frozenset)):
+        if _isinst(value, list):
             base = list
-        elif isinstance(value, tuple):
+        elif _isinst(value, tuple):
             base = tuple
-        elif isinstance(value, set):
+        elif _isinst(value, set):
             base = set
         else:
             base = frozenset
@@ -2068,10 +2068,10 @@ def _plist_jsonable(value, depth: int = 0):
         except BaseException:
             return None
         return [_plist_jsonable(v, depth + 1) for v in items]
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         # Unbound base decode: a bytes subclass whose bound ``.decode``
         # bombs must not raise out of the sanitizer.
-        base = bytes if isinstance(value, bytes) else bytearray
+        base = bytes if _isinst(value, bytes) else bytearray
         return base.decode(value, "utf-8", "replace")[:200]
     try:
         iso = getattr(value, "isoformat", None)
@@ -2123,7 +2123,7 @@ def launchd_timers() -> list:
         label = pl.get("Label")
         # No bare ``or`` fallback: it dispatched into a leftover Label's own
         # ``__bool__``, and the bomb 500'd both launchd views.
-        if not isinstance(label, str) or not label:
+        if not _isinst(label, str) or not label:
             label = Path(path).stem
         label = _as_text(label)
         interval = _plist_int(pl.get("StartInterval"))
@@ -2179,7 +2179,7 @@ def launchd_agents_summary() -> dict:
             })
             continue
         label = pl.get("Label")
-        if not isinstance(label, str) or not label:
+        if not _isinst(label, str) or not label:
             label = path.stem
         run_at = _truthy(pl.get("RunAtLoad"))
         keep = pl.get("KeepAlive")
@@ -2190,7 +2190,7 @@ def launchd_agents_summary() -> dict:
             "label": _as_text(label),
             "path": _as_text(path),
             "run_at_load": run_at,
-            "keep_alive": _truthy(keep) if not isinstance(keep, dict) else True,
+            "keep_alive": _truthy(keep) if not _isinst(keep, dict) else True,
             "interval_sec": interval,
             "calendar": _truthy(calendar),
             "disabled": disabled,

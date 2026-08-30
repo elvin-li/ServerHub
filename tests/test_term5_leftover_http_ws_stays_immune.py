@@ -273,7 +273,7 @@ class PtyLeftoverFramePinTests(_PtySandbox):
             chunk = b":" * 60000
             ws.send_bytes(chunk)
             ws.send_bytes(chunk)  # crosses MAX_INPUT_BYTES (64KB)
-            self._drain_to_close(ws)
+            self._drain_to_close(ws, budget=200000)
 
 
 if __name__ == "__main__":

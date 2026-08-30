@@ -655,7 +655,7 @@ import {
   updateAliasAuto,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, jsonDump, jsonLoad, jsonText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -709,9 +709,48 @@ function stillOnNetwork(generation) {
   return pageAlive && generation === loadGeneration
 }
 
+function mapNetwork(raw) {
+  const row = asRecord(raw)
+  const failover = asRecord(row.network_failover)
+  const foState = asRecord(failover.state)
+  const foResult = asRecord(foState.last_result)
+  const alias = asRecord(row.alias_auto)
+  const aliasCfg = asRecord(alias.config)
+  return {
+    ...row,
+    listening: asArray(row.listening).map((p) => asRecord(p)),
+    docker_ports: asArray(row.docker_ports).map((p) => asRecord(p)),
+    docker_networks: asArray(row.docker_networks).map((n) => {
+      const net = asRecord(n)
+      return { ...net, containers: asArray(net.containers).map((c) => asRecord(c)) }
+    }),
+    interface_addresses: asArray(row.interface_addresses).map((iface) => {
+      const rec = asRecord(iface)
+      return { ...rec, addresses: asArray(rec.addresses).map((a) => asRecord(a)) }
+    }),
+    interfaces: asArray(row.interfaces).map((i) => {
+      const rec = asRecord(i)
+      return { ...rec, ipv4: asArray(rec.ipv4).map((a) => asRecord(a)) }
+    }),
+    services: asArray(row.services).map((s) => asRecord(s)),
+    routes: asArray(row.routes).map((r) => asRecord(r)),
+    default_route: asRecord(row.default_route),
+    network_failover: {
+      ...failover,
+      state: {
+        ...foState,
+        last_result: { ...foResult, wifi: asRecord(foResult.wifi) },
+      },
+    },
+    alias_auto: { ...alias, config: aliasCfg },
+    wstunnel: asRecord(row.wstunnel),
+    wifi_power: asRecord(row.wifi_power),
+  }
+}
+
 const filteredListen = computed(() => {
   const q = portQ.value.trim().toLowerCase()
-  const list = asArray(data.value?.listening)
+  const list = asArray(asRecord(data.value).listening).map((p) => asRecord(p))
   if (!q) return list
   return list.filter(p =>
     (p.process || '').toLowerCase().includes(q)
@@ -722,7 +761,7 @@ const filteredListen = computed(() => {
 
 const filteredDockerPorts = computed(() => {
   const q = dockerPortQ.value.trim().toLowerCase()
-  const list = asArray(data.value?.docker_ports)
+  const list = asArray(asRecord(data.value).docker_ports).map((p) => asRecord(p))
   if (!q) return list
   return list.filter(p =>
     (p.container || '').toLowerCase().includes(q)
@@ -733,11 +772,11 @@ const filteredDockerPorts = computed(() => {
 
 const containerNames = computed(() => {
   const s = new Set()
-  for (const p of asArray(data.value?.docker_ports)) {
+  for (const p of asArray(asRecord(data.value).docker_ports).map((p) => asRecord(p))) {
     if (p.container) s.add(p.container)
   }
-  for (const n of asArray(data.value?.docker_networks)) {
-    for (const c of asArray(n.containers)) {
+  for (const n of asArray(asRecord(data.value).docker_networks).map((n) => asRecord(n))) {
+    for (const c of asArray(n.containers).map((c) => asRecord(c))) {
       if (c.name) s.add(c.name)
     }
   }
@@ -745,54 +784,58 @@ const containerNames = computed(() => {
 })
 
 const deviceOptions = computed(() => {
-  return asArray(data.value?.interface_addresses).map(i => i.device)
+  return asArray(asRecord(data.value).interface_addresses).map((i) => asRecord(i).device)
 })
 
 const failoverModeLabel = computed(() => {
-  const mode = data.value?.network_failover?.state?.mode
+  const mode = asRecord(asRecord(asRecord(data.value).network_failover).state).mode
   return ({ wired: t('network.mode_wired'), wifi_backup: t('network.mode_wifi_backup'), waiting_for_failover: t('network.mode_waiting'), starting: t('network.mode_starting'), disabled: t('network.disabled_state') })[mode] || t('network.mode_pending')
 })
 
 const failoverWifiLabel = computed(() => {
-  const result = data.value?.network_failover?.state?.last_result
-  const on = result?.wifi?.on
+  const result = asRecord(asRecord(asRecord(data.value).network_failover).state).last_result
+  const on = asRecord(asRecord(result).wifi).on
   return on === true ? t('network.on') : (on === false ? t('network.off') : t('network.unknown'))
 })
 
 function isWifi(s) {
-  return /wi-?fi|airport|无线/i.test((s.name || '') + (s.hardware_port || '')) // cjk-input: networksetup port names are localized
+  const row = asRecord(s)
+  return /wi-?fi|airport|无线/i.test((row.name || '') + (row.hardware_port || '')) // cjk-input: networksetup port names are localized
 }
 function looksEthernet(s) {
   if (isWifi(s)) return false
-  const n = (s.name || '') + (s.hardware_port || '')
-  const d = s.device || ''
+  const row = asRecord(s)
+  const n = (row.name || '') + (row.hardware_port || '')
+  const d = row.device || ''
   return /ethernet|lan|usb.*lan|有线/i.test(n) || (d.startsWith('en') && d !== 'en0') // cjk-input: networksetup port names are localized
 }
 
 function serviceHasIpv4(s) {
-  const ip = String(s?.ip || '').trim()
+  const ip = String(asRecord(s).ip || '').trim()
   return Boolean(ip) && ip.toLowerCase() !== 'none'
 }
 
 function priorityStatusKey(s) {
-  if (s.disabled) return 'network.off'
-  if (isWifi(s)) {
+  const row = asRecord(s)
+  if (row.disabled) return 'network.off'
+  if (isWifi(row)) {
     // Live radio from overview, not the last failover tick.
-    if (data.value?.wifi_power?.on === false) return 'network.off'
-    if (!serviceHasIpv4(s)) return 'network.no_ipv4'
+    if (asRecord(asRecord(data.value).wifi_power).on === false) return 'network.off'
+    if (!serviceHasIpv4(row)) return 'network.no_ipv4'
   }
   return 'network.on'
 }
 
 function asServiceList(raw) {
-  return asArray(raw)
+  return asArray(raw).map((s) => asRecord(s))
 }
 
 function cloneServiceOrder(raw) {
-  if (!Array.isArray(raw)) return []
+  const list = asArray(raw).map((s) => asRecord(s))
+  if (!list.length) return []
   try {
-    const cloned = jsonLoad(jsonDump(raw) || 'null')
-    return Array.isArray(cloned) ? cloned : []
+    const cloned = jsonLoad(jsonDump(list) || 'null')
+    return asArray(cloned).map((s) => asRecord(s))
   } catch {
     return []
   }
@@ -821,9 +864,9 @@ async function refresh(force = false) {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getSystemNetwork(force)
+    const next = asRecord(await getSystemNetwork(force))
     if (generation !== loadGeneration) return
-    data.value = next
+    data.value = mapNetwork(next)
     loadError.value = ''
     syncOrderFromData()
     if (asArray(deviceOptions.value).length && !asArray(deviceOptions.value).includes(aliasForm.value.device)) {
@@ -851,7 +894,7 @@ async function runAutoBind() {
   busy.value = true
   autoBindLog.value = t('network.running')
   try {
-    const j = await runAliasAutoBind()
+    const j = asRecord(await runAliasAutoBind())
     if (!stillOnNetwork(generation)) return
     autoBindLog.value = jsonText(j.actions || j, finiteText(j.message, '') || t('network.failed'))
     toast(j.ok ? `✅ ${finiteText(j.message, '') || t('network.aligned')}` : `❌ ${finiteText(j.message, '') || t('network.failed')}`)
@@ -870,7 +913,7 @@ async function runFailover() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await runNetworkFailover()
+    const j = asRecord(await runNetworkFailover())
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${j.mode === 'wired' ? t('network.wired_ok') : t('network.wifi_engaged')}` : `❌ ${t('network.switch_failed')}`)
     await refresh(true)
@@ -886,7 +929,7 @@ async function saveAutoBind() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await updateAliasAuto({ auto_bind: autoBindOn.value })
+    const j = asRecord(await updateAliasAuto({ auto_bind: autoBindOn.value }))
     if (!stillOnNetwork(generation)) return
     toast(`✅ ${autoBindOn.value ? t('network.autobind_enabled') : t('network.autobind_disabled')}`)
     data.value = { ...data.value, alias_auto: j }
@@ -908,7 +951,7 @@ async function saveAutoIps() {
   busy.value = true
   try {
     const ips = autoIpsText.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-    const j = await updateAliasAuto({ ips })
+    const j = asRecord(await updateAliasAuto({ ips }))
     if (!stillOnNetwork(generation)) return
     toast(`✅ ${t('network.alias_list_saved')}`)
     data.value = { ...data.value, alias_auto: j }
@@ -927,7 +970,7 @@ async function applyProfile(profile) {
   busy.value = true
   msg.value = t('network.switching')
   try {
-    const j = await switchNetworkProfile(profile)
+    const j = asRecord(await switchNetworkProfile(profile))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.switched')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -950,7 +993,7 @@ async function saveOrder() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name))
+    const j = asRecord(await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name)))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -969,7 +1012,7 @@ async function toggleService(s) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceEnabled(s.name, en)
+    const j = asRecord(await setNetworkServiceEnabled(s.name, en))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('common.ok') : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1200)
@@ -989,7 +1032,7 @@ async function addAlias() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await addNetworkAlias(aliasForm.value)
+    const j = asRecord(await addNetworkAlias(aliasForm.value))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.ip_added')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1008,7 +1051,7 @@ async function removeAlias(device, ip) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' })
+    const j = asRecord(await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' }))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.alias_deleted')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1043,7 +1086,7 @@ async function setDhcp(s) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkDhcp(s.name)
+    const j = asRecord(await setNetworkDhcp(s.name))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('network.dhcp_applied') : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1072,7 +1115,7 @@ async function applyManual() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkManual(manualSvc.value.name, manualForm.value)
+    const j = asRecord(await setNetworkManual(manualSvc.value.name, manualForm.value))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.static_applied')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1105,7 +1148,7 @@ async function applyDns() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkDns(dnsSvc.value.name, servers)
+    const j = asRecord(await setNetworkDns(dnsSvc.value.name, servers))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.dns_updated')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1128,7 +1171,7 @@ async function wifi(state) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setWifiPower(state)
+    const j = asRecord(await setWifiPower(state))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('network.wifi_set', { state: label }) : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1500)
@@ -1144,7 +1187,7 @@ async function doLookup() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const next = await lookupNetworkDns(lookupHost.value.trim())
+    const next = asRecord(await lookupNetworkDns(lookupHost.value.trim()))
     if (!stillOnNetwork(generation)) return
     lookupResult.value = next
   } catch (e) {
@@ -1181,7 +1224,7 @@ async function applyPorts() {
   busy.value = true
   msg.value = '…'
   try {
-    const j = await setContainerPorts(portEdit.value, ports)
+    const j = asRecord(await setContainerPorts(portEdit.value, ports))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.port_updated')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1222,7 +1265,7 @@ async function applyConnect() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await connectContainerNetwork(connectMode.value, connectNet.value.name, container)
+    const j = asRecord(await connectContainerNetwork(connectMode.value, connectNet.value.name, container))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.done')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')

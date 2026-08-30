@@ -12,6 +12,23 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded docker-info JSON gates — GET
+    /api/docker/info answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     if value is None:
         return ""
@@ -60,7 +77,7 @@ def _as_text(value) -> str:
 
 def _payload(value) -> dict:
     cleaned = _jsonable(value)
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isinst(cleaned, dict) else {}
 
 
 def _slim_info() -> dict:
@@ -76,7 +93,7 @@ def _slim_info() -> dict:
             # RecursionError: leftover deeply-nested ``{{json .}}`` is not ValueError.
             info = {"raw": text[:2000]}
         else:
-            info = parsed if isinstance(parsed, dict) else {"raw": text[:2000]}
+            info = parsed if _isinst(parsed, dict) else {"raw": text[:2000]}
     # slim fields like Unraid docker settings summary
     slim = {
         "ServerVersion": info.get("ServerVersion"),
@@ -111,7 +128,7 @@ def _version() -> dict:
             parsed = safe_json_loads(text, parse_int=parse_int_capped)
         except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}
-        return parsed if isinstance(parsed, dict) else {}
+        return parsed if _isinst(parsed, dict) else {}
     return {}
 
 

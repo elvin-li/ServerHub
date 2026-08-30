@@ -32,6 +32,22 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded ``ps`` needle gates — GET /api/status
+    answered HTTP 500 instead of dropping the junk cell.  Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``ps`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 sensors/Tools JSON."""
     if value is None:
@@ -159,7 +175,7 @@ def process_matches(needle: str, *, force: bool = False) -> bool:
     predicate did: a `ps aux` row for `ps aux` itself would otherwise answer yes
     to a needle that happens to appear in the panel's own argv.
     """
-    if not isinstance(needle, str) or not needle:
+    if not _isinst(needle, str) or not needle:
         return False
     needle = needle.lower()
     for line in ps_lines(force=force):

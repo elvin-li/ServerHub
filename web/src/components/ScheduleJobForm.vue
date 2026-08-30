@@ -5,7 +5,7 @@
       <input v-model="name" type="text" :placeholder="t('sched.name_ph')" :aria-label="t('sched.name')" />
       <div class="k">{{ t('sched.type') }}</div>
       <select v-model="type" :disabled="lockType" :aria-label="t('sched.type')">
-        <option v-for="ty in allowedTypes" :key="ty" :value="ty">{{ t(`sched.type_${ty}`) }}</option>
+        <option v-for="ty in asArray(allowedTypes)" :key="finiteText(ty)" :value="finiteText(ty)">{{ t(`sched.type_${ty}`) }}</option>
       </select>
       <div class="k">{{ t('sched.cron') }}</div>
       <div>
@@ -82,13 +82,13 @@
       <div v-else-if="preview" role="status" aria-live="polite"
            style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px;font-size:12px">
         <div style="margin-bottom:6px">
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(asRecord(preview).creates) }) }}</span>
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(asRecord(preview).updates) }) }}</span>
-          <span class="badge" :class="asRecord(preview).deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(asRecord(preview).deletes) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(recGet(preview, 'creates')) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(recGet(preview, 'updates')) }) }}</span>
+          <span class="badge" :class="recGet(preview, 'deletes') ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(recGet(preview, 'deletes')) }) }}</span>
         </div>
-        <div v-if="!asRecord(preview).total" class="meta">{{ t('sched.preview_empty') }}</div>
+        <div v-if="!recGet(preview, 'total')" class="meta">{{ t('sched.preview_empty') }}</div>
         <div v-else style="max-height:140px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-          <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="i">{{ finiteText(line) }}</div>
+          <div v-for="(line, i) in asArray(recGet(preview, 'samples'))" :key="finiteText(line) + ':' + i">{{ finiteText(line) }}</div>
         </div>
       </div>
     </template>
@@ -98,7 +98,7 @@
       <div class="kv" style="margin-bottom:8px">
         <div class="k">{{ t('sched.stack') }}</div>
         <select v-model="stackId" :aria-label="t('sched.stack')">
-          <option v-for="s in asArray(stacks)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">{{ finiteText(asRecord(s).name, '') || finiteText(asRecord(s).id) }}</option>
+          <option v-for="s in asArray(stacks)" :key="finiteText(recGet(s, 'id'))" :value="recGet(s, 'id')">{{ finiteText(recGet(s, 'name'), '') || finiteText(recGet(s, 'id')) }}</option>
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -138,12 +138,12 @@ const props = defineProps({
 const emit = defineEmits(['save', 'cancel'])
 const { t } = injectI18n()
 
-const lockType = computed(() => Boolean(props.job) || props.allowedTypes.length === 1)
-const allowedTypes = computed(() => props.allowedTypes)
+const lockType = computed(() => Boolean(props.job) || asArray(props.allowedTypes).length === 1)
+const allowedTypes = computed(() => asArray(props.allowedTypes))
 
 const p = asRecord(props.job?.params)
 const name = ref(props.job?.name || '')
-const type = ref(props.job?.type || props.allowedTypes[0])
+const type = ref(props.job?.type || asArray(props.allowedTypes)[0])
 const cron = ref(props.job?.cron || '30 3 * * *')
 const enabled = ref(props.job ? Boolean(props.job.enabled) : true)
 const timeout = ref(props.job?.timeout || null)
@@ -154,7 +154,7 @@ const command = ref(p.command || '')
 const direction = ref(p.direction || 'push')
 const src = ref(p.src || '')
 const dest = ref(p.dest || '')
-const excludeText = ref(asArray(p.exclude).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
+const excludeText = ref(asArray(recGet(p, 'exclude')).map((n) => finiteText(n, '')).filter(Boolean).join('\n'))
 const del = ref(Boolean(p.delete))
 const compress = ref(Boolean(p.compress))
 const bwlimit = ref(p.bwlimit_kbps || null)
@@ -184,10 +184,10 @@ function applyPreset() {
 
 /** Plain-language reading of the common cron shapes; raw stays authoritative. */
 const cronText = computed(() => {
-  const fields = cron.value.trim().split(/\s+/)
+  const fields = asTrimmed(cron.value).split(/\s+/)
   if (fields.length !== 5) return t('sched.cron_invalid')
   const [min, hour, dom, mon, dow] = fields
-  const num = (s) => (/^\d{1,2}$/.test(s) ? Number(s) : null)
+  const num = (s) => (/^\d{1,2}$/.test(s) ? finiteN(s, null) : null)
   const hhmm = () => `${String(num(hour)).padStart(2, '0')}:${String(num(min)).padStart(2, '0')}`
   if (fields.every((f) => f === '*')) return t('sched.cron_every_minute')
   const step = min.match(/^\*\/(\d+)$/)
@@ -201,7 +201,7 @@ const cronText = computed(() => {
     return t('sched.cron_daily_at', { time: hhmm() })
   }
   if (num(min) !== null && num(hour) !== null && dom === '*' && mon === '*' && /^[0-7]$/.test(dow)) {
-    return t('sched.cron_weekly_at', { day: t(`sched.day_${Number(dow) % 7}`), time: hhmm() })
+    return t('sched.cron_weekly_at', { day: t(`sched.day_${finiteN(dow, 0) % 7}`), time: hhmm() })
   }
   if (num(min) !== null && num(hour) !== null && num(dom) !== null && mon === '*' && dow === '*') {
     return t('sched.cron_monthly_at', { day: num(dom), time: hhmm() })
@@ -210,9 +210,9 @@ const cronText = computed(() => {
 })
 
 const canSave = computed(() => {
-  if (!name.value.trim() || cron.value.trim().split(/\s+/).length !== 5) return false
-  if (type.value === 'command') return Boolean(command.value.trim())
-  if (type.value === 'rsync') return Boolean(src.value.trim() && dest.value.trim())
+  if (!asTrimmed(name.value) || asTrimmed(cron.value).split(/\s+/).length !== 5) return false
+  if (type.value === 'command') return Boolean(asTrimmed(command.value))
+  if (type.value === 'rsync') return Boolean(asTrimmed(src.value) && asTrimmed(dest.value))
   if (type.value === 'stack_backup') return Boolean(stackId.value)
   return true
 })
@@ -220,9 +220,9 @@ const canSave = computed(() => {
 function rsyncParams() {
   return {
     direction: direction.value,
-    src: src.value.trim(),
-    dest: dest.value.trim(),
-    exclude: excludeText.value.split('\n').map((s) => s.trim()).filter(Boolean),
+    src: asTrimmed(src.value),
+    dest: asTrimmed(dest.value),
+    exclude: asTrimmed(excludeText.value).split('\n').map((s) => asTrimmed(s)).filter(Boolean),
     delete: del.value,
     compress: compress.value,
     bwlimit_kbps: bwlimit.value || null,
@@ -230,7 +230,7 @@ function rsyncParams() {
 }
 
 function buildParams() {
-  if (type.value === 'command') return { command: command.value.trim() }
+  if (type.value === 'command') return { command: asTrimmed(command.value) }
   if (type.value === 'rsync') return rsyncParams()
   if (type.value === 'stack_backup') return { stack_id: stackId.value, retain: retain.value || 14 }
   return {}
@@ -242,11 +242,11 @@ async function doPreview() {
   previewError.value = ''
   preview.value = null
   try {
-    const next = await rsyncPreview(rsyncParams())
+    const next = asRecord(await rsyncPreview(rsyncParams()))
     if (generation !== previewGeneration || !pageAlive) return
     preview.value = {
       ...asRecord(next),
-      samples: asArray(asRecord(next).samples),
+      samples: asArray(recGet(next, 'samples')),
     }
   } catch (e) {
     if (generation !== previewGeneration || !pageAlive) return
@@ -260,9 +260,9 @@ async function doPreview() {
 
 function save() {
   emit('save', {
-    name: name.value.trim(),
+    name: asTrimmed(name.value),
     type: type.value,
-    cron: cron.value.trim(),
+    cron: asTrimmed(cron.value),
     enabled: enabled.value,
     timeout: timeout.value || null,
     params: buildParams(),
@@ -271,12 +271,12 @@ function save() {
 
 onMounted(async () => {
   pageAlive = true
-  if (!props.allowedTypes.includes('stack_backup')) return
+  if (!asArray(props.allowedTypes).includes('stack_backup')) return
   const generation = ++stacksGeneration
   try {
-    const d = await getStacks()
+    const d = asRecord(await getStacks())
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = asArray(d?.stacks).map((s) => asRecord(s))
+    stacks.value = asArray(recGet(d, 'stacks')).map((s) => asRecord(s))
     stacksError.value = ''
     if (!stackId.value && asArray(stacks.value).length) stackId.value = asRecord(asArray(stacks.value)[0]).id
   } catch (e) {

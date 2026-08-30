@@ -15,6 +15,19 @@ from hub.errors import api_error
 from hub.paths import DOCKER
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
@@ -31,7 +44,7 @@ def _as_text(value) -> str:
             continue
     if type(value) is not bool:
         try:
-            if isinstance(value, float):
+            if _isinst(value, float):
                 finite = float.__float__(value)
                 if finite != finite or finite in (float("inf"), float("-inf")):
                     return ""
@@ -329,7 +342,7 @@ def container_exec(name: str, body: ExecBody, request: Request = None):
         audit.CONTAINER_EXEC, request,
         container=name, shell=body.shell,
         command=(body.command or "")[:300],
-        ok=bool(result.get("ok")) if isinstance(result, dict) else None,
+        ok=bool(result.get("ok")) if _isinst(result, dict) else None,
     )
     return result
 

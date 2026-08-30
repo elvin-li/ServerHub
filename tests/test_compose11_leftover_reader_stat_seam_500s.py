@@ -465,6 +465,20 @@ class RunnerRcHttpTests(_Compose11Sandbox):
         self.assertEqual(resp.status_code, 503, resp.text)
         self.assertEqual(resp.json()["detail"]["code"], "container.engine_down")
 
+    def test_vanished_cli_with_docker_still_on_disk_is_engine_down_503(self):
+        # GitHub runners keep a docker binary; leftover HTTP used to skip
+        # the keep-the-stack path (catalog install/uninstall).
+        with self._with_run((-1, "not found")), \
+                mock.patch.object(compose_svc, "cli_on_disk", return_value=True), \
+                mock.patch.object(compose_svc, "engine_up", return_value=False):
+            resp = self.client.put(
+                "/api/compose/app-7e2b",
+                content=json.dumps({"content": VALID_COMPOSE, "check": True}),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 503, resp.text)
+        self.assertEqual(resp.json()["detail"]["code"], "container.engine_down")
+
     def test_junk_rc_shapes_never_500_validate_save_create(self):
         shapes = (
             ("class-bomb", ClassBomb()),
@@ -501,6 +515,14 @@ class ValidateEntryGateTests(_Compose11Sandbox):
     def test_lying_str_impostor_content_is_a_verdict(self):
         out = compose_svc.validate_compose_text(_liar(str))
         self.assertFalse(out.get("ok"))
+
+    def test_class_bomb_yaml_doc_is_a_verdict_not_a_raise(self):
+        """yaml.safe_load answering a leftover whose ``__class__`` raises
+        used to 500 at the bare ``isinstance(doc, dict)`` gate."""
+        with mock.patch.object(compose_svc.yaml, "safe_load", return_value=ClassBomb()):
+            out = compose_svc.validate_compose_text(VALID_COMPOSE)
+        self.assertFalse(out.get("ok"))
+        self.assertIsInstance(out.get("message"), str)
 
     def test_stays_immune_stack_sweep_still_clean(self):
         # The whole compose surface stays sub-500 with the fixes in place.

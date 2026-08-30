@@ -15,6 +15,19 @@ from hub.status import cached_status, filter_status_for_resources, full_status, 
 router = APIRouter()
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
@@ -41,7 +54,7 @@ def _message_text(value) -> str:
             continue
     if type(value) is not bool:
         try:
-            if isinstance(value, float):
+            if _isinst(value, float):
                 finite = float.__float__(value)
                 if finite != finite or finite in (float("inf"), float("-inf")):
                     return ""
@@ -155,16 +168,16 @@ def _local_client_action_allowed(target: str, action: str) -> bool:
     if action not in _LOCAL_CLIENT_ACTIONS:
         return False
     groups = full_status().get("groups")
-    for group in groups if isinstance(groups, list) else []:
-        if not isinstance(group, dict):
+    for group in groups if _isinst(groups, list) else []:
+        if not _isinst(group, dict):
             continue
         rows = group.get("services")
-        for service in rows if isinstance(rows, list) else []:
-            if not isinstance(service, dict):
+        for service in rows if _isinst(rows, list) else []:
+            if not _isinst(service, dict):
                 continue
             if service.get("id") == target:
                 acts = service.get("actions")
-                return action in set(acts if isinstance(acts, list) else [])
+                return action in set(acts if _isinst(acts, list) else [])
     return False
 
 

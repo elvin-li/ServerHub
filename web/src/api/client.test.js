@@ -688,4 +688,16 @@ describe('api client', () => {
       expect(onChunk).not.toHaveBeenCalled()
     })
   })
+
+  describe('leftover JSON bodies', () => {
+    it('fail-closes a primitive success payload', async () => {
+      fetchMock.mockResolvedValue(res(200, 'nope'))
+      await expect(getStatus()).resolves.toEqual({})
+    })
+
+    it('keeps a leftover list body as an array', async () => {
+      fetchMock.mockResolvedValue(res(200, [{ id: 1 }]))
+      await expect(getStatus()).resolves.toEqual([{ id: 1 }])
+    })
+  })
 })

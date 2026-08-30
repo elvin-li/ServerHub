@@ -5,10 +5,11 @@
  * and network-quality awareness via navigator.connection.
  */
 
+import { asRecord } from './finite.js'
+
 /** Returns a multiplier based on connection quality (1 = normal, higher = slower). */
 function networkMultiplier() {
-  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection
-  if (!c) return 1
+  const c = asRecord(navigator.connection || navigator.mozConnection || navigator.webkitConnection)
   if (c.saveData) return 3 // Data-saver mode: poll 3x less
   const type = c.effectiveType
   if (type === 'slow-2g' || type === '2g') return 3

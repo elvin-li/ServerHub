@@ -334,7 +334,7 @@ def scan_roots() -> list[dict]:
             # healthy sibling root was droppable collateral.  The hostile row
             # drops alone; its siblings keep contributing.
             path = entry.get("path")
-            if not isinstance(path, str) or not path:
+            if not _isa(path, str) or not path:
                 continue
             # _as_text is a str() probe, not a bare str(): a leftover root id
             # or name that is *already* a >4300-digit int (YAML/plist hex
@@ -399,7 +399,7 @@ def scan_roots() -> list[dict]:
             # sibling shares keep contributing.
             path = share.get("path")
             # Path() TypeError'd a non-str share path and 500'd the usage page.
-            if not isinstance(path, str) or not path.startswith("/"):
+            if not _isa(path, str) or not path.startswith("/"):
                 continue
             # _as_text is a str() probe, not an isinstance gate: a numeric
             # leftover name keeps behaving as its string form, while a
@@ -1089,7 +1089,7 @@ def _spotlight_query(volume: str) -> tuple[int, str]:
         # now happens under the guard, and rc is base-coerced so an odd
         # int subclass cannot bomb the ``rc == 0`` reads downstream.
         blob = (_as_text(text) or _as_text(err)).strip()
-        return (int.__index__(rc) if isinstance(rc, int) else 1), blob
+        return (int.__index__(rc) if _isa(rc, int) else 1), blob
     except _CONTROL_FLOW:
         raise
     except BaseException as exc:  # noqa: BLE001

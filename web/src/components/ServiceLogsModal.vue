@@ -10,8 +10,8 @@
     <div ref="panel" class="modal log-modal" role="dialog" aria-modal="true" aria-labelledby="svc-log-title">
       <div class="drawer-head">
         <div>
-          <h2 id="svc-log-title" class="drawer-title">{{ finiteText(asRecord(entry).name, '') || finiteText(asRecord(entry).id) }} — {{ t('services.logs') }}</h2>
-          <div class="mono sub-id">{{ finiteText(asRecord(entry).source) }}</div>
+          <h2 id="svc-log-title" class="drawer-title">{{ finiteText(recGet(entry, 'name'), '') || finiteText(recGet(entry, 'id')) }} — {{ t('services.logs') }}</h2>
+          <div class="mono sub-id">{{ finiteText(recGet(entry, 'source')) }}</div>
         </div>
         <div class="drawer-actions">
           <button type="button" class="tiny" @click="emit('refresh')">{{ t('common.refresh') }}</button>
@@ -22,7 +22,7 @@
       <!-- tabindex=0: the pane scrolls inside a fixed-height modal, and a
            scrollable region the keyboard cannot reach cannot be scrolled by
            one (WCAG 2.1.1). -->
-      <pre class="log" tabindex="0" role="region" :aria-label="t('services.logs')">{{ finiteText(asRecord(entry).log, '') || t('services.log_empty') }}</pre>
+      <pre class="log" tabindex="0" role="region" :aria-label="t('services.logs')">{{ finiteText(recGet(entry, 'log'), '') || t('services.log_empty') }}</pre>
     </div>
   </div>
 </template>
@@ -30,7 +30,7 @@
 <script setup>
 import { inject, onUnmounted, ref } from 'vue'
 import { injectI18n } from '../i18n'
-import { asRecord, finiteText } from '../lib/finite'
+import { finiteText, recGet } from '../lib/finite'
 import { copyToClipboard } from '../lib/clipboard'
 import { useDismissable } from '../composables/useDismissable'
 
@@ -50,7 +50,7 @@ let pageAlive = true
 onUnmounted(() => { pageAlive = false })
 
 async function copyLog() {
-  const ok = await copyToClipboard(asRecord(props.entry).log)
+  const ok = await copyToClipboard(recGet(props.entry, 'log'))
   if (!pageAlive) return
   toast(ok ? '✅' : '❌')
 }

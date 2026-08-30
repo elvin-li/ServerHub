@@ -84,6 +84,20 @@ class NumericYamlIdRegistryTests(unittest.TestCase):
         self.assertNotIn("True", reg)
         self.assertNotIn(True, reg)
 
+    def test_class_bomb_app_row_does_not_500_registry(self):
+        """A leftover whose ``__class__`` raises used to 500 registry() at
+        the bare ``isinstance(a, dict)`` gate and drop the neighbour too."""
+        class _ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        reg = _registry_with_cfg({
+            "apps": [_ClassBomb(), {"id": "plex", "process": "plexproc"}],
+        })
+        self.assertIn("plex", reg)
+        self.assertEqual(reg["plex"][0], "app")
+
     def test_run_action_reaches_a_numeric_id_app(self):
         """The dashboard Attention tile offers stop on this row; the action
         must reach the app branch instead of falling through to the VM

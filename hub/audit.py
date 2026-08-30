@@ -756,7 +756,7 @@ def record(event: str, /, **fields: Any) -> dict:
         # pre pass stays because dropping a secret subtree before any
         # rendering hook runs is the stronger order.
         extra = redact(_jsonable(redact(fields)))
-        if not isinstance(extra, dict):
+        if not _isa(extra, dict):
             extra = {}
         # Callers pass **kwargs; a leftover ``ts=`` / ``event=`` must not
         # clobber the stamp or the event name the trail is queried by.
@@ -781,7 +781,7 @@ def record(event: str, /, **fields: Any) -> dict:
         # and this module's first guarantee is that logging never breaks
         # the request.  Genuine control flow re-raises above.
         entry = None
-    if not isinstance(entry, dict):
+    if not _isa(entry, dict):
         # This fallback runs *outside* both nets, so everything here must be
         # total.  _utf8_text used to open with a bare isinstance: an event
         # whose ``__class__`` property raised blew the shaping try above,
@@ -899,6 +899,6 @@ def recent(limit: int = 100) -> list[dict]:
             parsed = safe_json_loads(raw, parse_int=_capped_json_int)
         except (ValueError, RecursionError):
             continue
-        if isinstance(parsed, dict):
+        if _isa(parsed, dict):
             out.append(_jsonable(parsed))
     return out

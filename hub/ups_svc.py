@@ -641,7 +641,7 @@ def ups_settings() -> dict:
 def save_ups_settings(patch: dict) -> dict:
     clean = {k: v for k, v in patch.items() if k in UPS_DEFAULTS and k != "shutdown"}
     shutdown = patch.get("shutdown")
-    if isinstance(shutdown, dict):
+    if _isa(shutdown, dict):
         # Partial patch: update_settings deep-merges dicts, so only the keys
         # provided here move; lists (stacks order) are replaced wholesale.
         clean["shutdown"] = {k: v for k, v in shutdown.items() if k in SHUTDOWN_DEFAULTS}

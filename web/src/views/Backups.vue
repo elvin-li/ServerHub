@@ -26,9 +26,9 @@
       <div class="dash-grid">
         <div class="tile span-4">
           <h3>{{ t('backups.layer_db') }}</h3>
-          <div class="v" style="font-size:15px">{{ finiteText(layers.db?.last?.name, '') || t('photoshub.never') }}</div>
+          <div class="v" style="font-size:15px">{{ finiteText(recGet(recGet(recGet(layers, 'db'), 'last'), 'name'), '') || t('photoshub.never') }}</div>
           <div class="meta">
-            <template v-if="layers.db?.last">{{ sizeMb(layers.db.last.size_mb) }} · :{{ finiteN(layers.db.port) }}</template>
+            <template v-if="recGet(recGet(layers, 'db'), 'last')">{{ sizeMb(recGet(recGet(recGet(layers, 'db'), 'last'), 'size_mb')) }} · :{{ finiteN(recGet(recGet(layers, 'db'), 'port')) }}</template>
             <template v-else>{{ t('backups.layer_db_hint') }}</template>
           </div>
         </div>
@@ -40,13 +40,13 @@
         </div>
         <div class="tile span-4">
           <h3>{{ t('backups.layer_bridge') }}</h3>
-          <div class="v" style="font-size:15px">{{ layerPresent(layers.bridge) }}</div>
-          <div class="meta">{{ finiteText(layers.bridge?.last_success, '') || finiteText(layers.bridge?.path) }}</div>
-          <div v-if="finiteN(layers.bridge?.exported_files, null) != null" class="meta">{{ t('backups.layer_bridge_files', { n: finiteN(layers.bridge.exported_files) }) }}</div>
+          <div class="v" style="font-size:15px">{{ layerPresent(recGet(layers, 'bridge')) }}</div>
+          <div class="meta">{{ finiteText(recGet(recGet(layers, 'bridge'), 'last_success'), '') || finiteText(recGet(recGet(layers, 'bridge'), 'path')) }}</div>
+          <div v-if="finiteN(recGet(recGet(layers, 'bridge'), 'exported_files'), null) != null" class="meta">{{ t('backups.layer_bridge_files', { n: finiteN(recGet(recGet(layers, 'bridge'), 'exported_files')) }) }}</div>
         </div>
         <div class="tile span-4">
           <h3>{{ t('backups.layer_generated') }}</h3>
-          <div class="v" style="font-size:15px">{{ layerPresent(layers.generated) }}</div>
+          <div class="v" style="font-size:15px">{{ layerPresent(recGet(layers, 'generated')) }}</div>
           <div class="meta">{{ generatedSummary }}</div>
         </div>
         <div class="tile span-4">
@@ -96,26 +96,26 @@
       <div v-else class="table-wrap">
       <table class="dense fit-m">
         <tbody>
-          <tr v-for="job in asArray(rsyncJobs)" :key="finiteText(asRecord(job).id)">
+          <tr v-for="job in asArray(rsyncJobs)" :key="finiteText(recGet(job, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(job).name) }}</strong>
-              <div class="show-m sub mono">{{ finiteText(asRecord(asRecord(job).params).src) }} → {{ finiteText(asRecord(asRecord(job).params).dest) }}</div>
-              <div class="show-m sub mono">{{ finiteText(asRecord(job).cron) }}</div>
+              <strong>{{ finiteText(recGet(job, 'name')) }}</strong>
+              <div class="show-m sub mono">{{ finiteText(recGet(recGet(job, 'params'), 'src')) }} → {{ finiteText(recGet(recGet(job, 'params'), 'dest')) }}</div>
+              <div class="show-m sub mono">{{ finiteText(recGet(job, 'cron')) }}</div>
             </td>
             <td class="mono col-hide-m" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis"
-                :title="finiteText(asRecord(asRecord(job).params).src) + ' → ' + finiteText(asRecord(asRecord(job).params).dest)">
-              {{ finiteText(asRecord(asRecord(job).params).src) }} → {{ finiteText(asRecord(asRecord(job).params).dest) }}
+                :title="finiteText(recGet(recGet(job, 'params'), 'src')) + ' → ' + finiteText(recGet(recGet(job, 'params'), 'dest'))">
+              {{ finiteText(recGet(recGet(job, 'params'), 'src')) }} → {{ finiteText(recGet(recGet(job, 'params'), 'dest')) }}
             </td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(asRecord(job).cron) }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(recGet(job, 'cron')) }}</td>
             <td>
-              <span v-if="asRecord(job).running" class="badge warn">{{ t('sched.running') }}</span>
-              <span v-else-if="asRecord(job).last" class="badge" :class="asRecord(asRecord(job).last).status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${asRecord(asRecord(job).last).status}`) }}</span>
+              <span v-if="recGet(job, 'running')" class="badge warn">{{ t('sched.running') }}</span>
+              <span v-else-if="recGet(job, 'last')" class="badge" :class="recGet(recGet(job, 'last'), 'status') === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${recGet(recGet(job, 'last'), 'status')}`) }}</span>
               <span v-else class="meta">{{ t('sched.never') }}</span>
             </td>
             <td>
               <div class="btns" style="gap:4px">
                 <button class="tiny hide-m" @click="openPreview(job)">{{ t('backups.dry_run') }}</button>
-                <button class="tiny" :disabled="asRecord(job).running" @click="runJob(job)">{{ t('sched.run_now') }}</button>
+                <button class="tiny" :disabled="recGet(job, 'running')" @click="runJob(job)">{{ t('sched.run_now') }}</button>
                 <button class="tiny" @click="openJobEditor('rsync', job)">{{ t('common.edit') }}</button>
                 <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
               </div>
@@ -140,20 +140,20 @@
       <div v-else class="table-wrap">
       <table class="dense fit-m">
         <tbody>
-          <tr v-for="job in asArray(stackJobs)" :key="finiteText(asRecord(job).id)">
+          <tr v-for="job in asArray(stackJobs)" :key="finiteText(recGet(job, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(job).name) }}</strong>
-              <div class="show-m sub mono">{{ finiteText(asRecord(asRecord(job).params).stack_id) }}</div>
-              <div class="show-m sub">{{ t('backups.retain_n', { n: finiteN(asRecord(asRecord(job).params).retain, 14) }) }} · {{ finiteText(asRecord(job).cron) }}</div>
+              <strong>{{ finiteText(recGet(job, 'name')) }}</strong>
+              <div class="show-m sub mono">{{ finiteText(recGet(recGet(job, 'params'), 'stack_id')) }}</div>
+              <div class="show-m sub">{{ t('backups.retain_n', { n: finiteN(recGet(recGet(job, 'params'), 'retain'), 14) }) }} · {{ finiteText(recGet(job, 'cron')) }}</div>
             </td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(asRecord(asRecord(job).params).stack_id) }}</td>
-            <td class="col-hide-m" style="font-size:11px">{{ t('backups.retain_n', { n: finiteN(asRecord(asRecord(job).params).retain, 14) }) }}</td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(asRecord(job).cron) }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(recGet(recGet(job, 'params'), 'stack_id')) }}</td>
+            <td class="col-hide-m" style="font-size:11px">{{ t('backups.retain_n', { n: finiteN(recGet(recGet(job, 'params'), 'retain'), 14) }) }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(recGet(job, 'cron')) }}</td>
             <td>
               <div class="btns" style="gap:4px">
-                <span v-if="asRecord(job).running" class="badge warn">{{ t('sched.running') }}</span>
-                <span v-else-if="asRecord(job).last" class="badge" :class="asRecord(asRecord(job).last).status === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${asRecord(asRecord(job).last).status}`) }}</span>
-                <button class="tiny" :disabled="asRecord(job).running" @click="runJob(job)">{{ t('sched.run_now') }}</button>
+                <span v-if="recGet(job, 'running')" class="badge warn">{{ t('sched.running') }}</span>
+                <span v-else-if="recGet(job, 'last')" class="badge" :class="recGet(recGet(job, 'last'), 'status') === 'ok' ? 'ok' : 'warn'">{{ t(`sched.status_${recGet(recGet(job, 'last'), 'status')}`) }}</span>
+                <button class="tiny" :disabled="recGet(job, 'running')" @click="runJob(job)">{{ t('sched.run_now') }}</button>
                 <button class="tiny" @click="openJobEditor('stack_backup', job)">{{ t('common.edit') }}</button>
                 <button class="tiny" @click="removeJob(job)">{{ t('common.delete') }}</button>
               </div>
@@ -188,21 +188,21 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="b in asArray(backups)" :key="finiteText(asRecord(b).path)">
+          <tr v-for="b in asArray(backups)" :key="finiteText(recGet(b, 'path'))">
             <td class="mono">
-              {{ finiteText(asRecord(b).name) }}
-              <div v-if="finiteText(asRecord(b).dir, '')" class="show-m sub">{{ finiteText(asRecord(b).dir) }}</div>
-              <div v-if="asRecord(b).restore" class="show-m sub">
-                <button class="tiny" type="button" @click="copyRestore(asRecord(b).restore)">{{ t('common.copy') }}</button>
+              {{ finiteText(recGet(b, 'name')) }}
+              <div v-if="finiteText(recGet(b, 'dir'), '')" class="show-m sub">{{ finiteText(recGet(b, 'dir')) }}</div>
+              <div v-if="recGet(b, 'restore')" class="show-m sub">
+                <button class="tiny" type="button" @click="copyRestore(recGet(b, 'restore'))">{{ t('common.copy') }}</button>
                 {{ t('backups.restore') }}
               </div>
             </td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(asRecord(b).dir) }}</td>
-            <td>{{ sizeMb(asRecord(b).size_mb) }}</td>
-            <td>{{ fmt(asRecord(b).mtime) }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ finiteText(recGet(b, 'dir')) }}</td>
+            <td>{{ sizeMb(recGet(b, 'size_mb')) }}</td>
+            <td>{{ fmt(recGet(b, 'mtime')) }}</td>
             <td class="col-hide-m" style="font-size:11px;max-width:280px">
-              <button v-if="asRecord(b).restore" class="tiny" type="button" :title="t('backups.restore_copy')" @click="copyRestore(asRecord(b).restore)">{{ t('common.copy') }}</button>
-              <span v-if="asRecord(b).restore" class="mono sub" :title="finiteText(asRecord(b).restore)">{{ finiteText(asRecord(b).restore) }}</span>
+              <button v-if="recGet(b, 'restore')" class="tiny" type="button" :title="t('backups.restore_copy')" @click="copyRestore(recGet(b, 'restore'))">{{ t('common.copy') }}</button>
+              <span v-if="recGet(b, 'restore')" class="mono sub" :title="finiteText(recGet(b, 'restore'))">{{ finiteText(recGet(b, 'restore')) }}</span>
             </td>
           </tr>
           <tr v-if="!asArray(backups).length && !loadError">
@@ -227,11 +227,11 @@
       <div class="modal" style="max-width:560px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="backups-job-title">
         <div class="row" style="margin-bottom:10px">
           <span id="backups-job-title" class="name">
-            {{ asRecord(jobEditor).job ? t('sched.edit_job') : t('backups.new_task') }}
+            {{ recGet(jobEditor, 'job') ? t('sched.edit_job') : t('backups.new_task') }}
           </span>
           <button class="tiny" @click="jobEditor = null">{{ t('common.close') }}</button>
         </div>
-        <ScheduleJobForm :job="asRecord(jobEditor).job" :allowed-types="[asRecord(jobEditor).type]" :busy="busy"
+        <ScheduleJobForm :job="recGet(jobEditor, 'job')" :allowed-types="[recGet(jobEditor, 'type')]" :busy="busy"
                          @save="saveJob" @cancel="jobEditor = null" />
       </div>
     </div>
@@ -240,7 +240,7 @@
     <div ref="previewPanel" v-if="previewFor" class="modal-bg" @click.self="previewFor = null" role="presentation">
       <div class="modal" style="max-width:640px;max-height:90vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="backups-preview-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="backups-preview-title" class="name">{{ t('backups.preview_title', { name: finiteText(asRecord(previewFor).name) }) }}</span>
+          <span id="backups-preview-title" class="name">{{ t('backups.preview_title', { name: finiteText(recGet(previewFor, 'name')) }) }}</span>
           <button class="tiny" @click="previewFor = null">{{ t('common.close') }}</button>
         </div>
         <div v-if="previewBusy" class="meta">{{ t('common.loading') }}</div>
@@ -250,14 +250,14 @@
         <div v-else-if="previewError" class="meta" style="color:var(--down-text)" role="alert">{{ finiteText(previewError) }}</div>
         <template v-else-if="preview">
           <div style="margin-bottom:8px;font-size:12px">
-            <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(asRecord(preview).creates) }) }}</span>
-            <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(asRecord(preview).updates) }) }}</span>
-            <span class="badge" :class="asRecord(preview).deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(asRecord(preview).deletes) }) }}</span>
-            <span class="meta mono" style="margin-left:8px" v-if="asRecord(preview).binary">{{ finiteText(asRecord(asRecord(preview).binary).variant) }} {{ finiteText(asRecord(asRecord(preview).binary).version) }}</span>
+            <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(recGet(preview, 'creates')) }) }}</span>
+            <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(recGet(preview, 'updates')) }) }}</span>
+            <span class="badge" :class="recGet(preview, 'deletes') ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(recGet(preview, 'deletes')) }) }}</span>
+            <span class="meta mono" style="margin-left:8px" v-if="recGet(preview, 'binary')">{{ finiteText(recGet(recGet(preview, 'binary'), 'variant')) }} {{ finiteText(recGet(recGet(preview, 'binary'), 'version')) }}</span>
           </div>
-          <div v-if="!asRecord(preview).total" class="meta">{{ t('sched.preview_empty') }}</div>
+          <div v-if="!recGet(preview, 'total')" class="meta">{{ t('sched.preview_empty') }}</div>
           <div v-else style="max-height:300px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-            <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="i">{{ finiteText(line) }}</div>
+            <div v-for="(line, i) in asArray(recGet(preview, 'samples'))" :key="finiteText(line) + ':' + i">{{ finiteText(line) }}</div>
           </div>
         </template>
       </div>
@@ -282,7 +282,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -304,20 +304,24 @@ const total = ref(0)
 const hiddenCount = computed(() => Math.max(0, total.value - asArray(backups.value).length))
 const postgresTargets = ref([])
 const immich = ref({ available: false, last: null, layers: null })
-const layers = computed(() => immich.value.layers || null)
+const layers = computed(() => {
+  const raw = recGet(immich.value, 'layers')
+  return raw != null && typeof raw === 'object' && !Array.isArray(raw) ? asRecord(raw) : null
+})
 const generatedSummary = computed(() => {
-  const dirs = asArray(layers.value?.generated?.dirs)
-  if (!dirs.length) return finiteText(layers.value?.generated?.path)
-  return dirs.map((d) => `${finiteText(d.name)}${d.present ? '' : '?'}`).join(' · ')
+  const dirs = asArray(recGet(layers.value, 'generated')?.dirs)
+  if (!dirs.length) return finiteText(recGet(recGet(layers.value, 'generated'), 'path'))
+  return dirs.map((d) => `${finiteText(recGet(d, 'name'))}${recGet(d, 'present') ? '' : '?'}`).join(' · ')
 })
 const originalsHeadline = computed(() => {
-  const layer = layers.value?.originals
-  if (!layer) return '—'
-  if (layer.pct != null) return t('backups.layer_originals_pct', { n: finiteN(layer.pct) })
+  const raw = recGet(layers.value, 'originals')
+  if (raw == null) return '—'
+  const layer = asRecord(raw)
+  if (recGet(layer, 'pct') != null) return t('backups.layer_originals_pct', { n: finiteN(recGet(layer, 'pct')) })
   return layerPresent(layer)
 })
 const pgLabel = computed(() => {
-  const names = asArray(postgresTargets.value).map((t) => t.id).filter(Boolean)
+  const names = asArray(postgresTargets.value).map((t) => finiteText(recGet(t, 'id'), '')).filter(Boolean)
   if (names.length === 1) return t('backups.pg_named', { name: finiteText(names[0]) })
   if (names.length > 1) return t('backups.pg')
   return t('backups.pg')
@@ -342,21 +346,21 @@ let pageAlive = true
 let backupsGeneration = 0
 let jobsGeneration = 0
 
-const rsyncJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => j.type === 'rsync'))
-const stackJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => j.type === 'stack_backup'))
+const rsyncJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => recGet(j, 'type') === 'rsync'))
+const stackJobs = computed(() => asArray(jobs.value).map((j) => asRecord(j)).filter((j) => recGet(j, 'type') === 'stack_backup'))
 
 function fmt(t) {
   return fmtTs(t, '')
 }
 
 function sizeMb(value) {
-  const n = Number(value)
-  return Number.isFinite(n) ? `${n} MB` : '—'
+  const n = finiteN(value, null)
+  return n != null && Number.isFinite(n) ? `${n} MB` : '—'
 }
 
 function layerPresent(layer) {
-  if (!layer) return '—'
-  return layer.present ? t('backups.layer_present') : t('backups.layer_missing')
+  if (layer == null) return '—'
+  return recGet(layer, 'present') ? t('backups.layer_present') : t('backups.layer_missing')
 }
 
 async function copyRestore(text) {
@@ -369,16 +373,16 @@ async function copyRestore(text) {
 async function refresh(manual = false) {
   const generation = ++backupsGeneration
   try {
-    const d = await getBackups()
+    const d = asRecord(await getBackups())
     if (generation !== backupsGeneration || !pageAlive) return
-    backups.value = asArray(d.backups).map((row) => asRecord(row))
-    root.value = d.root || ''
+    backups.value = asArray(recGet(d, 'backups')).map((row) => asRecord(row))
+    root.value = finiteText(recGet(d, 'root'), '')
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
-    const reported = finiteN(d.total, null)
-    total.value = reported == null ? asArray(d.backups).length : reported
-    postgresTargets.value = asArray(d.postgres_targets).map((row) => asRecord(row))
-    immich.value = d.immich || { available: false, last: null, layers: null }
+    const reported = finiteN(recGet(d, 'total'), null)
+    total.value = reported == null ? asArray(recGet(d, 'backups')).length : reported
+    postgresTargets.value = asArray(recGet(d, 'postgres_targets')).map((row) => asRecord(row))
+    immich.value = asRecord(recGet(d, 'immich'))
     loadError.value = ''
   } catch (e) {
     if (generation !== backupsGeneration || !pageAlive) return
@@ -395,16 +399,16 @@ async function refresh(manual = false) {
 
 async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
-  const wasRunning = asArray(jobs.value).some((j) => j.running)
+  const wasRunning = asArray(jobs.value).some((j) => recGet(j, 'running'))
   try {
-    const d = await getSchedulerJobs()
+    const d = asRecord(await getSchedulerJobs())
     if (generation !== jobsGeneration || !pageAlive) return
-    jobs.value = asArray(d?.jobs).map((row) => asRecord(row))
+    jobs.value = asArray(recGet(d, 'jobs')).map((row) => asRecord(row))
     jobsError.value = ''
     jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
     // the operator to press "Refresh list" to see the backup they just made.
-    if (wasRunning && !asArray(jobs.value).some((j) => j.running)) void refresh()
+    if (wasRunning && !asArray(jobs.value).some((j) => recGet(j, 'running'))) void refresh()
   } catch (e) {
     if (generation !== jobsGeneration || !pageAlive) return
     jobsError.value = finiteText(e.message || String(e), '')
@@ -435,7 +439,7 @@ function jobsPollDelay() {
 }
 function scheduleJobsPoll() {
   if (!pageAlive || jobsPollTimer) return
-  if (!asArray(jobs.value).some((j) => j.running)) return
+  if (!asArray(jobs.value).some((j) => recGet(j, 'running'))) return
   jobsPollTimer = setTimeout(() => {
     jobsPollTimer = null
     if (!pageAlive) return
@@ -446,9 +450,9 @@ function scheduleJobsPoll() {
 
 async function loadBinary() {
   try {
-    const info = await getRsyncBinary()
+    const info = asRecord(await getRsyncBinary())
     if (!pageAlive) return
-    rsyncBinary.value = typeof info?.available === 'boolean' ? info : null
+    rsyncBinary.value = typeof info.available === 'boolean' ? info : null
   } catch {
     if (!pageAlive) return
     rsyncBinary.value = null
@@ -462,9 +466,12 @@ function openJobEditor(type, job) {
 async function saveJob(body) {
   busy.value = true
   try {
-    const existing = asRecord(asRecord(jobEditor.value).job)
-    if (existing.id) await updateSchedulerJob(existing.id, body)
-    else await createSchedulerJob(body)
+    const existing = asRecord(recGet(jobEditor.value, 'job'))
+    if (finiteText(existing.id, '')) {
+      const r = asRecord(await updateSchedulerJob(finiteText(existing.id, ''), body))
+    } else {
+      const r = asRecord(await createSchedulerJob(body))
+    }
     if (!pageAlive) return
     toast('✅ ' + t('sched.saved'))
     jobEditor.value = null
@@ -479,14 +486,14 @@ async function saveJob(body) {
 
 async function runJob(job) {
   const row = asRecord(job)
-  const confirmKey = row.type === 'stack_backup'
+  const confirmKey = recGet(row, 'type') === 'stack_backup'
     ? 'backups.confirm_stack_run'
     : 'backups.confirm_rsync_run'
-  if (!confirm(t(confirmKey, { name: finiteText(row.name, '') || finiteText(row.id) }))) return
+  if (!confirm(t(confirmKey, { name: finiteText(recGet(row, 'name'), '') || finiteText(recGet(row, 'id')) }))) return
   try {
-    await runSchedulerJobNow(row.id)
+    const r = asRecord(await runSchedulerJobNow(finiteText(recGet(row, 'id'), '')))
     if (!pageAlive) return
-    toast('✅ ' + t('sched.started', { name: finiteText(row.name) }))
+    toast('✅ ' + t('sched.started', { name: finiteText(recGet(row, 'name')) }))
     await loadJobs()
   } catch (e) {
     if (!pageAlive) return
@@ -496,9 +503,9 @@ async function runJob(job) {
 
 async function removeJob(job) {
   const row = asRecord(job)
-  if (!confirm(t('sched.confirm_delete', { name: finiteText(row.name) }))) return
+  if (!confirm(t('sched.confirm_delete', { name: finiteText(recGet(row, 'name')) }))) return
   try {
-    await deleteSchedulerJob(row.id)
+    const r = asRecord(await deleteSchedulerJob(finiteText(recGet(row, 'id'), '')))
     if (!pageAlive) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()
@@ -515,7 +522,7 @@ async function openPreview(job) {
   previewError.value = ''
   previewBusy.value = true
   try {
-    const next = await rsyncPreview(asRecord(row.params))
+    const next = asRecord(await rsyncPreview(asRecord(row.params)))
     if (!pageAlive) return
     preview.value = asRecord(next)
   } catch (e) {
@@ -527,16 +534,16 @@ async function openPreview(job) {
 }
 
 async function doPg() {
-  const names = asArray(postgresTargets.value).map((t) => finiteText(asRecord(t).id, '')).filter(Boolean).join(', ') || 'PostgreSQL'
+  const names = asArray(postgresTargets.value).map((t) => finiteText(recGet(t, 'id'), '')).filter(Boolean).join(', ') || 'PostgreSQL'
   if (!confirm(t('backups.confirm_pg', { names }))) return
   busy.value = true
   msg.value = t('backups.backing_up')
   try {
-    const r = await backupPostgres()
+    const r = asRecord(await backupPostgres())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
-    toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))} (${sizeMb(recGet(r, 'size_mb'))})` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -551,11 +558,11 @@ async function doImmich() {
   busy.value = true
   msg.value = t('backups.backing_up')
   try {
-    const r = await backupImmich()
+    const r = asRecord(await backupImmich())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
-    toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))} (${sizeMb(recGet(r, 'size_mb'))})` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -570,11 +577,11 @@ async function doCfg() {
   busy.value = true
   msg.value = t('backups.packing')
   try {
-    const r = await backupConfigs()
+    const r = asRecord(await backupConfigs())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)}` : '')
-    toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))}` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))

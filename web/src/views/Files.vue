@@ -20,7 +20,7 @@
     <template v-else>
       <div class="toolbar files-toolbar">
         <select v-model="rootId" class="cat-select" @change="onRootChange" :aria-label="t('files.root')">
-          <option v-for="r in asArray(roots)" :key="finiteText(asRecord(r).id)" :value="asRecord(r).id">{{ finiteText(asRecord(r).name) }}</option>
+          <option v-for="r in asArray(roots)" :key="finiteText(recGet(r, 'id'))" :value="recGet(r, 'id')">{{ finiteText(recGet(r, 'name')) }}</option>
         </select>
         <button type="button" @click="loadList" :disabled="loading">{{ t('common.refresh') }}</button>
         <button type="button" :disabled="busy" @click="doMkdir">{{ t('files.mkdir') }}</button>
@@ -38,11 +38,11 @@
         </button>
         <!-- role=status: navigation, uploads and deletes change this count and
              it changed silently for a screen reader (Modules / Services). -->
-        <span class="meta-count" role="status" v-if="listing">{{ finiteN(asRecord(listing).count) }} {{ t('files.items') }}</span>
+        <span class="meta-count" role="status" v-if="listing">{{ finiteN(recGet(listing, 'count')) }} {{ t('files.items') }}</span>
         <div class="toolbar-spacer"></div>
         <button type="button" :disabled="busy" @click="openFullFB">{{ t('files.open_full') }}</button>
         <button
-          v-if="asRecord(fb).running"
+          v-if="recGet(fb, 'running')"
           type="button"
           class="danger"
           :disabled="busy"
@@ -55,11 +55,11 @@
       <!-- App.vue already owns two labelled navigation landmarks; a third one
            with no name is announced as an anonymous "navigation". -->
       <nav class="crumbs" v-if="listing" :aria-label="t('files.breadcrumbs')">
-        <button type="button" class="crumb" @click="goPath(asRecord(listing).root)">{{ finiteText(asRecord(listing).root_id, 'root') }}</button>
-        <template v-for="(c, i) in asArray(asRecord(listing).crumbs)" :key="finiteText(asRecord(c).path)">
+        <button type="button" class="crumb" @click="goPath(recGet(listing, 'root'))">{{ finiteText(recGet(listing, 'root_id'), 'root') }}</button>
+        <template v-for="(c, i) in asArray(recGet(listing, 'crumbs'))" :key="finiteText(recGet(c, 'path'))">
           <span class="sep">/</span>
-          <button type="button" class="crumb" :class="{ current: i === asArray(asRecord(listing).crumbs).length - 1 }" @click="goPath(asRecord(c).path)">
-            {{ finiteText(asRecord(c).name, '/') }}
+          <button type="button" class="crumb" :class="{ current: i === asArray(recGet(listing, 'crumbs')).length - 1 }" @click="goPath(recGet(c, 'path'))">
+            {{ finiteText(recGet(c, 'name'), '/') }}
           </button>
         </template>
       </nav>
@@ -84,27 +84,27 @@
               <td colspan="5"><strong>..</strong> <span class="sub">{{ t('files.parent') }}</span></td>
             </tr>
             <tr
-              v-for="it in asArray(asRecord(listing).items)"
-              :key="finiteText(asRecord(it).path)"
-              :class="{ selected: asArray(selected).includes(asRecord(it).path), dir: asRecord(it).is_dir }"
+              v-for="it in asArray(recGet(listing, 'items'))"
+              :key="finiteText(recGet(it, 'path'))"
+              :class="{ selected: asArray(selected).includes(recGet(it, 'path')), dir: recGet(it, 'is_dir') }"
               @dblclick="openItem(it)"
             >
               <td class="col-check" @click.stop>
-                <input type="checkbox" :checked="asArray(selected).includes(asRecord(it).path)" @change="toggleSel(asRecord(it).path)" :aria-label="t('files.select_item', { name: finiteText(asRecord(it).name) })" />
+                <input type="checkbox" :checked="asArray(selected).includes(recGet(it, 'path'))" @change="toggleSel(recGet(it, 'path'))" :aria-label="t('files.select_item', { name: finiteText(recGet(it, 'name')) })" />
               </td>
               <td class="name-cell" @click="openItem(it)" tabindex="0" role="button" @keydown.enter.prevent="openItem(it)" @keydown.space.prevent="openItem(it)">
                 <span class="name-inner">
-                  <span class="ico" aria-hidden="true">{{ asRecord(it).is_dir ? '📁' : (asRecord(it).is_link ? '🔗' : '📄') }}</span>
-                  <span class="name-text">{{ finiteText(asRecord(it).name) }}</span>
+                  <span class="ico" aria-hidden="true">{{ recGet(it, 'is_dir') ? '📁' : (recGet(it, 'is_link') ? '🔗' : '📄') }}</span>
+                  <span class="name-text">{{ finiteText(recGet(it, 'name')) }}</span>
                 </span>
-                <div class="show-m sub">{{ fmtTime(asRecord(it).mtime) }}{{ finiteText(asRecord(it).mode, '') ? ' · ' + finiteText(asRecord(it).mode) : '' }}</div>
+                <div class="show-m sub">{{ fmtTime(recGet(it, 'mtime')) }}{{ finiteText(recGet(it, 'mode'), '') ? ' · ' + finiteText(recGet(it, 'mode')) : '' }}</div>
               </td>
-              <td class="mono size-cell">{{ asRecord(it).is_dir ? '—' : fmtSize(asRecord(it).size) }}</td>
-              <td class="mono sub time-cell col-hide-m">{{ fmtTime(asRecord(it).mtime) }}</td>
-              <td class="mono sub mode-cell col-hide-m">{{ finiteText(asRecord(it).mode) }}</td>
+              <td class="mono size-cell">{{ recGet(it, 'is_dir') ? '—' : fmtSize(recGet(it, 'size')) }}</td>
+              <td class="mono sub time-cell col-hide-m">{{ fmtTime(recGet(it, 'mtime')) }}</td>
+              <td class="mono sub mode-cell col-hide-m">{{ finiteText(recGet(it, 'mode')) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
-                  <button v-if="asRecord(it).is_file" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
+                  <button v-if="recGet(it, 'is_file')" type="button" class="act-btn" @click="download(it)">{{ t('files.download') }}</button>
                   <!-- Bound to busy like the toolbar buttons: without it a second
                        click during an in-flight delete issued a second request for
                        the same path and then reported its failure. -->
@@ -116,7 +116,7 @@
             <!-- A failed reload keeps the previous listing on screen; the row
                  must not claim the folder is empty when the read that would
                  prove it just failed (the banner above carries the reason). -->
-            <tr v-if="!asArray(asRecord(listing).items).length">
+            <tr v-if="!asArray(recGet(listing, 'items')).length">
               <td colspan="6" class="empty-row">{{ error ? t('common.load_failed') : t('files.empty') }}</td>
             </tr>
           </tbody>
@@ -136,7 +136,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
-import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, fmtTs, recGet } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -166,15 +166,15 @@ let listRequest = 0
 let pageAlive = true
 
 const allSelected = computed(() => {
-  const items = asArray(asRecord(listing.value).items)
-  return items.length > 0 && items.every(i => asArray(selected.value).includes(asRecord(i).path))
+  const items = asArray(recGet(listing.value, 'items'))
+  return items.length > 0 && items.every((i) => asArray(selected.value).includes(recGet(i, 'path')))
 })
 
 const parentPath = computed(() => {
   const row = asRecord(listing.value)
   if (!listing.value) return null
-  const p = finiteText(row.path, '')
-  const root = finiteText(row.root, '')
+  const p = finiteText(recGet(row, 'path'), '')
+  const root = finiteText(recGet(row, 'root'), '')
   if (p === root) return null
   const parts = p.replace(/\/$/, '').split('/')
   parts.pop()
@@ -188,8 +188,8 @@ function fmtSize(n) {
   if (n == null || n === 0) return '0 B'
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   let i = 0
-  let v = Number(n)
-  if (!Number.isFinite(v) || v < 0) return '—'
+  let v = finiteN(n, null)
+  if (v == null || !Number.isFinite(v) || v < 0) return '—'
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
 }
@@ -227,12 +227,12 @@ async function loadOverview() {
   try {
     const j = asRecord(await getFilesOverview())
     if (request !== listRequest) return false
-    roots.value = asArray(j.roots).map((row) => asRecord(row))
-    fb.value = asRecord(j.filebrowser)
+    roots.value = asArray(recGet(j, 'roots')).map((row) => asRecord(row))
+    fb.value = asRecord(recGet(j, 'filebrowser'))
     if (!rootId.value && asArray(roots.value).length) {
       const first = asRecord(asArray(roots.value)[0])
-      rootId.value = first.id
-      currentPath.value = first.path
+      rootId.value = recGet(first, 'id')
+      currentPath.value = recGet(first, 'path')
     }
     return true
   } catch (e) {
@@ -255,10 +255,10 @@ async function loadList() {
     if (request !== listRequest || !activated.value) return
     listing.value = {
       ...j,
-      items: asArray(j.items).map((row) => asRecord(row)),
-      crumbs: asArray(j.crumbs).map((row) => asRecord(row)),
+      items: asArray(recGet(j, 'items')).map((row) => asRecord(row)),
+      crumbs: asArray(recGet(j, 'crumbs')).map((row) => asRecord(row)),
     }
-    currentPath.value = j.path
+    currentPath.value = recGet(j, 'path')
   } catch (e) {
     if (request !== listRequest || !activated.value) return
     error.value = finiteText(e.message || String(e), '')
@@ -268,8 +268,8 @@ async function loadList() {
 }
 
 function onRootChange() {
-  const r = asRecord(asArray(roots.value).find(x => asRecord(x).id === rootId.value))
-  currentPath.value = r.path || ''
+  const r = asRecord(asArray(roots.value).find(x => recGet(x, 'id') === rootId.value))
+  currentPath.value = recGet(r, 'path') || ''
   loadList()
 }
 
@@ -280,8 +280,8 @@ function goPath(path) {
 
 function openItem(it) {
   const row = asRecord(it)
-  if (row.is_dir) {
-    currentPath.value = row.path
+  if (recGet(row, 'is_dir')) {
+    currentPath.value = recGet(row, 'path')
     loadList()
   } else {
     download(it)
@@ -298,7 +298,7 @@ function toggleSel(path) {
 
 function toggleAll(e) {
   if (e.target.checked) {
-    selected.value = asArray(asRecord(listing.value).items).map(i => asRecord(i).path)
+    selected.value = asArray(recGet(listing.value, 'items')).map((i) => recGet(i, 'path'))
   } else {
     selected.value = []
   }
@@ -310,7 +310,7 @@ async function doMkdir() {
   const request = listRequest
   busy.value = true
   try {
-    await makeDirectory(currentPath.value, name, rootId.value)
+    const r = asRecord(await makeDirectory(currentPath.value, name, rootId.value))
     if (request !== listRequest) return
     toast(`✅ ${t('files.mkdir')}`)
     await loadList()
@@ -327,12 +327,12 @@ async function doMkdir() {
 async function doRename(it) {
   if (busy.value) return
   const row = asRecord(it)
-  const name = prompt(t('files.rename_ph'), row.name)
-  if (!name || name === row.name) return
+  const name = prompt(t('files.rename_ph'), recGet(row, 'name'))
+  if (!name || name === recGet(row, 'name')) return
   const request = listRequest
   busy.value = true
   try {
-    await renameFile(row.path, name, rootId.value)
+    const r = asRecord(await renameFile(recGet(row, 'path'), name, rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -349,12 +349,12 @@ async function doRename(it) {
 async function doDeleteOne(it) {
   if (busy.value) return
   const row = asRecord(it)
-  const key = row.is_dir ? 'files.confirm_delete_dir' : 'files.confirm_delete'
-  if (!confirm(t(key, { name: finiteText(row.name) }))) return
+  const key = recGet(row, 'is_dir') ? 'files.confirm_delete_dir' : 'files.confirm_delete'
+  if (!confirm(t(key, { name: finiteText(recGet(row, 'name')) }))) return
   const request = listRequest
   busy.value = true
   try {
-    await deleteFile(row.path, rootId.value)
+    const r = asRecord(await deleteFile(recGet(row, 'path'), rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -370,8 +370,8 @@ async function doDeleteOne(it) {
 
 async function doDeleteSelected() {
   if (!asArray(selected.value).length) return
-  const items = asArray(asRecord(listing.value).items)
-  const hasDir = asArray(selected.value).some((path) => asRecord(items.find((it) => asRecord(it).path === path)).is_dir)
+  const items = asArray(recGet(listing.value, 'items'))
+  const hasDir = asArray(selected.value).some((path) => recGet(items.find((it) => recGet(it, 'path') === path), 'is_dir'))
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
   if (!confirm(t(key, { n: asArray(selected.value).length }))) return
   const paths = [...asArray(selected.value)]
@@ -382,7 +382,7 @@ async function doDeleteSelected() {
   try {
     for (const path of paths) {
       try {
-        await deleteFile(path, rootId.value)
+        const r = asRecord(await deleteFile(path, rootId.value))
         if (request !== listRequest) return
         ok++
       } catch (e) {
@@ -392,7 +392,7 @@ async function doDeleteSelected() {
       }
     }
     if (request !== listRequest) return
-    toast(`${failed ? '❌' : '✅'} ${ok}/${paths.length}`)
+    toast(`${failed ? '❌' : '✅'} ${finiteN(ok, 0)}/${finiteN(asArray(paths).length, 0)}`)
     await loadList()
   } finally {
     // loadList() bumps listRequest, so a request match would leave the
@@ -403,7 +403,7 @@ async function doDeleteSelected() {
 
 function download(it) {
   const row = asRecord(it)
-  const q = new URLSearchParams({ path: finiteText(row.path, '') })
+  const q = new URLSearchParams({ path: finiteText(recGet(row, 'path'), '') })
   if (rootId.value) q.set('root_id', rootId.value)
   // An <a> with rel=noopener, not window.open: the download endpoint can
   // 302 through a content-type the browser will render, and a tab opened
@@ -412,7 +412,7 @@ function download(it) {
   a.href = `/api/files/download?${q}`
   a.target = '_blank'
   a.rel = 'noopener'
-  a.download = finiteText(row.name, 'download')
+  a.download = finiteText(recGet(row, 'name'), 'download')
   document.body.appendChild(a)
   a.click()
   a.remove()
@@ -429,10 +429,10 @@ async function uploadFiles(fileList) {
     for (const file of files) {
       try {
         const fd = new FormData()
-        fd.append('path', currentPath.value)
-        if (rootId.value) fd.append('root_id', rootId.value)
+        fd.append('path', asTrimmed(currentPath.value))
+        if (rootId.value) fd.append('root_id', asTrimmed(rootId.value))
         fd.append('file', file)
-        await uploadFile(fd)
+        const r = asRecord(await uploadFile(fd))
         if (request !== listRequest) return
         ok++
       } catch (e) {
@@ -442,7 +442,7 @@ async function uploadFiles(fileList) {
       }
     }
     if (request !== listRequest) return
-    toast(`${failed ? '❌' : '✅'} ${ok}/${files.length}`)
+    toast(`${failed ? '❌' : '✅'} ${finiteN(ok, 0)}/${finiteN(files.length, 0)}`)
     await loadList()
   } finally {
     // loadList() bumps listRequest, so a request match would leave Upload
@@ -474,13 +474,13 @@ async function openFullFB() {
     if (!activated.value) {
       // still only start FB — don't force builtin list
     }
-    const j = await ensureFileBrowser()
+    const j = asRecord(await ensureFileBrowser())
     if (request !== listRequest) return
-    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
+    if (!recGet(j, 'ok')) throw new Error(finiteText(recGet(j, 'message'), '') || t('common.failed'))
     fb.value = j
-    const url = j.url || 'http://localhost:8125'
+    const url = finiteText(recGet(j, 'url'), '') || 'http://localhost:8125'
     window.open(url, '_blank', 'noopener')
-    toast(j.started ? t('files.fb_started') : t('files.fb_running'))
+    toast(recGet(j, 'started') ? t('files.fb_started') : t('files.fb_running'))
     // optional: enable on-demand mode so it won't auto-start at boot next time
   } catch (e) {
     if (request !== listRequest) return
@@ -497,11 +497,11 @@ async function stopFB() {
   const request = listRequest
   busy.value = true
   try {
-    const j = await stopFileBrowser()
+    const j = asRecord(await stopFileBrowser())
     if (request !== listRequest) return
-    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
+    if (!recGet(j, 'ok')) throw new Error(finiteText(recGet(j, 'message'), '') || t('common.failed'))
     fb.value = j
-    toast(finiteText(j.message, '') || '✅ ' + t('common.ok'))
+    toast(finiteText(recGet(j, 'message'), '') || '✅ ' + t('common.ok'))
   } catch (e) {
     if (request !== listRequest) return
     toast(`❌ ${finiteText(e.message)}`)

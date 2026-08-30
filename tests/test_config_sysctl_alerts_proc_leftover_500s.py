@@ -53,6 +53,11 @@ class ConfigSysctlAlertsProcLeftoverTests(unittest.TestCase):
         self.assertEqual(proc_utils._as_text(_LyingBytesStr("ok")), "ok")
         self.assertEqual(alerts._utf8_text(_LyingBytesStr("ok")), "ok")
 
+    def test_proc_utils_class_bomb_argv_does_not_raise(self):
+        self.assertEqual(proc_utils.pids_for_argv(_ClassBaseBomb()), [])
+        self.assertEqual(proc_utils.pids_for_exe(_ClassBaseBomb()), [])
+        self.assertEqual(proc_utils._program_arguments(_ClassBaseBomb()), [])
+
     def test_parse_int_recovers_lying_bytes_digits(self):
         self.assertEqual(macos_sysctl.parse_int(_LyingBytesStr("8")), 8)
 

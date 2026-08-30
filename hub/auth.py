@@ -403,38 +403,6 @@ def _renderable(value, depth: int = 0):
     return value
 
 
-def _renderable(value) -> bool:
-    """False for an int past CPython's int->str digit cap (YAML ``0x…``
-    loads it fine; ``yaml.safe_dump`` then ValueError'd the whole write)."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        try:
-            str(value)
-        except ValueError:
-            return False
-    return True
-
-
-def _clean_epochs(raw) -> dict:
-    """``session_epochs`` rows that YAML can re-dump.
-
-    A leftover unrenderable-int epoch (or key) rode along untouched in every
-    auth write and ValueError'd ``yaml.safe_dump`` inside ``config.mutate`` --
-    setup, password changes and the TOTP epoch bump all 500'd on it.
-
-    An unrenderable *value* is pinned to 1, not dropped: ``_session_epoch``
-    reads the leftover as 1, so persisting the same number keeps that
-    account's pre-logout tokens revoked instead of resetting its counter.
-    """
-    if not isinstance(raw, dict):
-        return {}
-    out = {}
-    for k, v in raw.items():
-        if not _renderable(k):
-            continue
-        out[k] = v if _renderable(v) else 1
-    return out
-
-
 def _auth_block(data: dict) -> tuple[dict, dict]:
     """Ensure ``data['settings']['auth']`` are mappings before a mutate.
 
@@ -621,21 +589,6 @@ def _cfg_text(raw) -> str:
         # the stored hash slot 500'd status/login/cookie checks at once.
         return ""
     return "" if _ADDR_REPR_RE.search(text) else text
-
-
-def _cfg_text(raw) -> str:
-    """``str()`` of a config value that cannot 500 login / status / setup.
-
-    YAML hex (``0x…``) parses through ``int(x, 16)``, which CPython's
-    str↔int digit cap does not bound, so a leftover >4300-digit integer in
-    ``settings.auth`` loads fine and then ValueError'd ``str()`` — every
-    login attempt (``accounts()``), the unclaimed GET /api/auth/status
-    (``suggested_setup_username``) and ``setup_token_mode`` returned 500.
-    """
-    try:
-        return str(raw)
-    except ValueError:
-        return ""
 
 
 def _utf8_ok(text: str) -> bool:

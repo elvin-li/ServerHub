@@ -37,6 +37,23 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded plist / pid gates — GET
+    /api/health/checks answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
     if value is None:
@@ -176,7 +193,7 @@ def pid_exe_path(pid) -> str | None:
     ``txt`` is the last resort — without it Gravity Next stayed green on
     a deleted Homebrew ``node``.
     """
-    if isinstance(pid, bool):
+    if type(pid) is bool:
         # ``int(True)`` is 1: a leftover bool pid used to probe launchd
         # itself and answer /sbin/launchd for a process that never existed.
         # ``isinstance``, deliberately: a real bool always matches the
@@ -270,7 +287,7 @@ def scan() -> list[dict]:
             raise
         except BaseException:
             continue
-        if not isinstance(pl, dict):
+        if not _isinst(pl, dict):
             continue
         if pl.get("Disabled"):
             continue
@@ -290,7 +307,7 @@ def scan() -> list[dict]:
             # used to raise out of the whole scan, costing every healthy
             # agent's row instead of the one poisoned entry.
             pid = listing.pid_for(label)
-            if not pid or isinstance(pid, bool):
+            if not pid or type(pid) is bool:
                 continue
         except _CONTROL_FLOW:
             raise

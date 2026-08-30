@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { asArray, asRecord, finiteText } from './finite'
 
 /**
  * Session identity shared across the SPA.
@@ -21,12 +22,13 @@ export const authState = reactive({
 /** Fold one /api/auth/status (or login) response into the shared state. */
 export function applyAuthStatus(status) {
   if (!status || typeof status !== 'object') return
+  const row = asRecord(status)
   authState.known = true
-  authState.authenticated = !!status.authenticated
-  authState.username = status.authenticated ? String(status.username || '') : ''
-  authState.role = status.authenticated ? (status.role || null) : null
-  authState.resources = Array.isArray(status.resources) ? status.resources : []
-  authState.canManage = !!status.can_manage
+  authState.authenticated = !!row.authenticated
+  authState.username = row.authenticated ? finiteText(row.username, '') : ''
+  authState.role = row.authenticated ? (row.role || null) : null
+  authState.resources = asArray(row.resources)
+  authState.canManage = !!row.can_manage
 }
 
 /** Drop the last session so a later failed status probe cannot keep admin chrome. */

@@ -31,6 +31,23 @@ from hub.errors import api_error
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded argv gates — a spawn 500'd instead of
+    refusing the junk cell.  Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 # A positional must start with an alphanumeric.  That single anchor is what
 # makes an option-like value unrepresentable, regardless of what the rest of the
 # name contains.
@@ -50,7 +67,7 @@ def as_argv(cmd: object) -> list[str] | None:
     the same class: they must not be stringified into a positional.
     """
     try:
-        is_seq = isinstance(cmd, (list, tuple))
+        is_seq = _isinst(cmd, (list, tuple))
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -66,9 +83,9 @@ def as_argv(cmd: object) -> list[str] | None:
         return None
     for part in parts:
         try:
-            is_bytes = isinstance(part, (bytes, bytearray))
-            is_str = isinstance(part, str)
-            is_path = isinstance(part, os.PathLike)
+            is_bytes = _isinst(part, (bytes, bytearray))
+            is_str = _isinst(part, str)
+            is_path = _isinst(part, os.PathLike)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -84,7 +101,7 @@ def as_argv(cmd: object) -> list[str] | None:
                 raise
             except BaseException:
                 return None
-            if not isinstance(text, str):
+            if not _isinst(text, str):
                 return None
         else:
             return None
@@ -115,7 +132,7 @@ def _normalise(value: object) -> str | None:
     put the newline in the argv.
     """
     try:
-        if not isinstance(value, str):
+        if not _isinst(value, str):
             return None
         # Unbound ``str.strip`` (the modules6 encode-bomb rule at strip rank): a
         # str *subclass* whose bound ``.strip`` raises passed the isinstance gate

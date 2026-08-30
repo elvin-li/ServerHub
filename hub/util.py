@@ -23,6 +23,19 @@ from hub.cli_args import as_argv
 log = logging.getLogger("serverhub.util")
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 T = TypeVar("T")
@@ -370,7 +383,7 @@ def iter_capped_lines(stream, cap):
     readline = getattr(stream, "readline", None)
     if readline is None:
         for line in stream:
-            text = line.rstrip() if isinstance(line, str) else str(line).rstrip()
+            text = line.rstrip() if _isinst(line, str) else str(line).rstrip()
             if len(text) >= cap:
                 yield text[:cap] + " …[line truncated]"
             elif text:
@@ -457,14 +470,14 @@ def read_text_capped(
     """
     cap = max(1, int(max_bytes))
     try:
-        p = path if isinstance(path, Path) else Path(path)
+        p = path if _isinst(path, Path) else Path(path)
         fd = os.open(p, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except UnicodeEncodeError as exc:
         # Leftover ``\\ud800`` in the name is not OSError; open() used to
         # 500 callers that only catch OSError.
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
     except ValueError as exc:
-        if isinstance(exc, UnicodeError):
+        if _isinst(exc, UnicodeError):
             raise
         # Leftover NUL in the name.
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
@@ -506,12 +519,12 @@ def json_nesting_exceeds(raw, max_depth: int = JSON_MAX_DEPTH) -> bool:
         limit = JSON_MAX_DEPTH
     if limit < 1:
         return True
-    if isinstance(raw, (bytes, bytearray, memoryview)):
-        data = raw if not isinstance(raw, memoryview) else raw.tobytes()
+    if _isinst(raw, (bytes, bytearray, memoryview)):
+        data = raw if not _isinst(raw, memoryview) else raw.tobytes()
         quote, slash, openers, closers = (
             _BYTE_QUOTE, _BYTE_SLASH, _BYTE_OPEN, _BYTE_CLOSE,
         )
-    elif isinstance(raw, str):
+    elif _isinst(raw, str):
         data = raw
         quote, slash, openers, closers = (
             _STR_QUOTE, _STR_SLASH, _STR_OPEN, _STR_CLOSE,
@@ -572,12 +585,12 @@ def read_bytes_capped(path, max_bytes: int) -> bytes:
     """
     cap = max(1, int(max_bytes))
     try:
-        p = path if isinstance(path, Path) else Path(path)
+        p = path if _isinst(path, Path) else Path(path)
         fd = os.open(p, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except UnicodeEncodeError as exc:
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
     except ValueError as exc:
-        if isinstance(exc, UnicodeError):
+        if _isinst(exc, UnicodeError):
             raise
         raise OSError(errno.EINVAL, str(exc), str(path)) from exc
     try:
@@ -609,7 +622,7 @@ _NOISY_SWEEP_AT = 256
 
 
 def _cmd_key(cmd) -> tuple[str, ...]:
-    if isinstance(cmd, (list, tuple)):
+    if _isinst(cmd, (list, tuple)):
         return tuple(str(part) for part in cmd)
     return (str(cmd),)
 
@@ -679,7 +692,7 @@ def _exc_text(exc, cap: int = 200) -> str:
                     raise
                 except BaseException:
                     text = "error"
-    if not isinstance(text, str):
+    if not _isinst(text, str):
         text = "error"
     try:
         text = str.encode(text, "utf-8", "replace").decode("utf-8")
@@ -727,17 +740,17 @@ def utf8_env(env=None) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for key, value in items:
-        if isinstance(key, (bytes, bytearray)):
+        if _isinst(key, (bytes, bytearray)):
             try:
                 key = key.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-        if isinstance(value, (bytes, bytearray)):
+        if _isinst(value, (bytes, bytearray)):
             try:
                 value = value.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-        if not isinstance(key, str) or not isinstance(value, str):
+        if not _isinst(key, str) or not _isinst(value, str):
             continue
         if "\x00" in key or "\x00" in value:
             continue
@@ -760,14 +773,14 @@ _SPAWN_TOKEN_MAX = 64
 
 def _spawn_tokens(cmd, *, shell: bool = False) -> list[str]:
     """Executable + args as str tokens.  Never returns leftover non-str argv."""
-    if shell and isinstance(cmd, str):
+    if shell and _isinst(cmd, str):
         parts = cmd.split()
         return parts[:2] if parts else []
-    if not isinstance(cmd, (list, tuple)):
+    if not _isinst(cmd, (list, tuple)):
         return []
     out: list[str] = []
     for part in cmd:
-        if not isinstance(part, str):
+        if not _isinst(part, str):
             return []
         out.append(part)
         if len(out) >= 8:
@@ -962,9 +975,9 @@ def run_bytes(cmd, timeout=10, cap=_BYTES_CAP, runner=None):
             # the pipes into *out*/*err*, so ``r.stdout`` is None.
             captured = getattr(r, "stdout", None)
             if captured is not None:
-                if isinstance(captured, str):
+                if _isinst(captured, str):
                     captured = captured.encode("utf-8", "replace")
-                elif not isinstance(captured, (bytes, bytearray)):
+                elif not _isinst(captured, (bytes, bytearray)):
                     captured = bytes(captured)
                 return rc, bytes(captured)[:cap], b""
 

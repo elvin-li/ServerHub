@@ -21,10 +21,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in asArray(rows)" :key="finiteText(asRecord(row).id)">
+          <tr v-for="row in asArray(rows)" :key="finiteText(recGet(row, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(row).group) }}</strong>
-              <div class="mono sub-line">{{ finiteText(asRecord(row).id) }}</div>
+              <strong>{{ finiteText(recGet(row, 'group')) }}</strong>
+              <div class="mono sub-line">{{ finiteText(recGet(row, 'id')) }}</div>
               <div class="show-m sub">{{ matchSummary(row) }}</div>
             </td>
             <td class="col-hide-m mono">{{ matchSummary(row) }}</td>
@@ -74,7 +74,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { deleteGroupRule, getGroupRules, saveGroupRules } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteText, recGet } from '../lib/finite'
 import LoadFailure from './LoadFailure.vue'
 
 const toast = inject('toast')
@@ -112,19 +112,19 @@ function matchSummary(row) {
 }
 
 function parseList(raw) {
-  return String(raw || '')
+  return asTrimmed(raw)
     .split(/[\s,]+/)
-    .map((s) => s.trim())
+    .map((s) => asTrimmed(s))
     .filter(Boolean)
 }
 
 async function load() {
   const generation = ++loadGeneration
   try {
-    const data = await getGroupRules()
+    const data = asRecord(await getGroupRules())
     if (generation !== loadGeneration || !pageAlive) return
-    rows.value = asArray(data?.rules).map((r) => asRecord(r))
-    source.value = data?.source === 'yaml' ? 'yaml' : 'seed'
+    rows.value = asArray(recGet(data, 'rules')).map((r) => asRecord(r))
+    source.value = recGet(data, 'source') === 'yaml' ? 'yaml' : 'seed'
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -162,7 +162,7 @@ async function save() {
     if (image.length) body.image = image
     if (prefix.length) body.launchd_prefix = prefix
     if (ports.length) body.ports = ports
-    await saveGroupRules(body)
+    const r = asRecord(await saveGroupRules(body))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.saved')}`)
     editing.value = null
@@ -176,11 +176,11 @@ async function save() {
 }
 
 async function removeRow(row) {
-  if (!confirm(t('grules.confirm_delete', { id: finiteText(asRecord(row).id) }))) return
+  if (!confirm(t('grules.confirm_delete', { id: finiteText(recGet(row, 'id')) }))) return
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteGroupRule(asRecord(row).id)
+    const r = asRecord(await deleteGroupRule(recGet(row, 'id')))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('grules.removed')}`)
     await load()

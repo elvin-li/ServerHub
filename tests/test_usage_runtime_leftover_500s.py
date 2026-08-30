@@ -244,6 +244,22 @@ class FreshnessLeftoverTests(unittest.TestCase):
         ])
         self.assertEqual([t.id for t in parsed], ["good", "ok"])
 
+    def test_class_bomb_list_and_entry_do_not_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertEqual(configured_targets(ClassBomb()), ())
+        parsed = configured_targets([
+            ClassBomb(),
+            {"id": "ok", "pattern": "/x/*.log", "max_age_hours": 26},
+        ])
+        self.assertEqual([t.id for t in parsed], ["ok"])
+        emitted = self._sweep(prev=ClassBomb(), new_state=ClassBomb(), now=1)
+        _json(emitted)
+        self.assertEqual(emitted, [])
+
     def _sweep(self, **kwargs):
         target = Target(
             id="t1", label="local.x", pattern="/no/such/*.tgz", max_age_hours=25,

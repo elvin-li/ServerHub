@@ -46,8 +46,8 @@
         </button>
         <div class="top-status-m" v-if="counts">
           <span class="pill" :class="engineClass">{{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
-          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
+          <span class="pill down" v-if="finiteN(recGet(counts, 'down'), 0)"><b>{{ finiteN(recGet(counts, 'down')) }}</b></span>
+          <span class="pill warn" v-if="finiteN(recGet(counts, 'warn'), 0)"><b>{{ finiteN(recGet(counts, 'warn')) }}</b></span>
         </div>
         <nav
           id="app-nav"
@@ -60,21 +60,21 @@
         >
           <div class="nav-drawer-title">{{ t('brand') }}</div>
           <router-link
-            v-for="item in nav"
-            :key="item.to"
-            :to="item.to"
+            v-for="item in asArray(nav)"
+            :key="finiteText(recGet(item, 'to'))"
+            :to="recGet(item, 'to')"
             :class="{ active: isActive(item) }"
             :aria-current="navCurrent(item)"
             @click="menuOpen = false"
           >
-            <component :is="item.icon" :size="15" />
-            <span>{{ t(item.labelKey) }}</span>
+            <component :is="recGet(item, 'icon')" :size="15" />
+            <span>{{ t(recGet(item, 'labelKey')) }}</span>
           </router-link>
           <div class="top-controls">
             <label class="nav-tool">
               <span class="nav-tool-label">{{ t('appearance.language') }}</span>
               <select :value="locale" @change="onLocale($event)" :title="t('appearance.language')">
-                <option v-for="l in asArray(locales)" :key="finiteText(asRecord(l).id)" :value="asRecord(l).id">{{ finiteText(asRecord(l).native) }}</option>
+                <option v-for="l in asArray(locales)" :key="finiteText(recGet(l, 'id'))" :value="recGet(l, 'id')">{{ finiteText(recGet(l, 'native')) }}</option>
               </select>
             </label>
             <label class="nav-tool">
@@ -86,7 +86,7 @@
                 data-test="nav-theme"
               >
                 <option value="system">{{ t('theme.system') }}</option>
-                <option v-for="th in themes" :key="th.id" :value="th.id">{{ t(th.labelKey) }}</option>
+                <option v-for="th in asArray(themes)" :key="finiteText(recGet(th, 'id'))" :value="recGet(th, 'id')">{{ t(recGet(th, 'labelKey')) }}</option>
               </select>
             </label>
             <button class="logout-btn" type="button" @click="logout">{{ t('auth.logout') }}</button>
@@ -94,10 +94,10 @@
         </nav>
         <div class="top-status" v-if="counts">
           <span class="pill" :class="engineClass">{{ t('top.orbstack') }} {{ engineUp ? t('common.on') : t('common.off') }}</span>
-          <span class="pill ok"><b>{{ finiteN(counts.ok) }}</b></span>
-          <span class="pill warn" v-if="finiteN(counts.warn, 0)"><b>{{ finiteN(counts.warn) }}</b></span>
-          <span class="pill" v-if="finiteN(counts.stopped, 0)" style="opacity:.75"><b>{{ finiteN(counts.stopped) }}</b></span>
-          <span class="pill down" v-if="finiteN(counts.down, 0)"><b>{{ finiteN(counts.down) }}</b></span>
+          <span class="pill ok"><b>{{ finiteN(recGet(counts, 'ok')) }}</b></span>
+          <span class="pill warn" v-if="finiteN(recGet(counts, 'warn'), 0)"><b>{{ finiteN(recGet(counts, 'warn')) }}</b></span>
+          <span class="pill" v-if="finiteN(recGet(counts, 'stopped'), 0)" style="opacity:.75"><b>{{ finiteN(recGet(counts, 'stopped')) }}</b></span>
+          <span class="pill down" v-if="finiteN(recGet(counts, 'down'), 0)"><b>{{ finiteN(recGet(counts, 'down')) }}</b></span>
           <span class="pill" v-if="status?.system">{{ fmtLoad(status.system.load1) }}</span>
           <router-link v-if="counts.down || counts.warn" class="pill down" to="/services" :aria-label="t('common.issues')">!</router-link>
           <router-link
@@ -188,16 +188,16 @@
         <ul id="cmd-list" class="cmd-list" role="listbox" :aria-label="t('common.cmd_title')">
           <li
             v-for="(item, i) in asArray(cmdFlat)"
-            :key="finiteText(asRecord(item).to)"
+            :key="finiteText(recGet(item, 'to'))"
             :id="`cmd-opt-${i}`"
             role="option"
             :aria-selected="i === cmdIdx"
-            :class="{ active: i === cmdIdx, 'cmd-ai': asRecord(item).type === 'ai' }"
+            :class="{ active: i === cmdIdx, 'cmd-ai': recGet(item, 'type') === 'ai' }"
             @click="cmdGo(i)"
             @mouseenter="cmdIdx = i"
           >
-            <span>{{ asRecord(item).type === 'ai' ? t('assistant.ask_cmd', { q: finiteText(asRecord(item).query) }) : (finiteText(asRecord(item).title, '') || t(asRecord(item).labelKey)) }}</span>
-            <kbd>{{ asRecord(item).type === 'ai' ? t('assistant.short') : finiteText(asRecord(item).to) }}</kbd>
+            <span>{{ recGet(item, 'type') === 'ai' ? t('assistant.ask_cmd', { q: finiteText(recGet(item, 'query')) }) : (finiteText(recGet(item, 'title'), '') || t(recGet(item, 'labelKey'))) }}</span>
+            <kbd>{{ recGet(item, 'type') === 'ai' ? t('assistant.short') : finiteText(recGet(item, 'to')) }}</kbd>
           </li>
           <!-- role=presentation: a listbox may only own options, and "no
                matches" is a message about the list, not a choice in it. -->
@@ -240,7 +240,7 @@ import { injectI18n } from './i18n'
 import { injectTheme } from './theme'
 import { useDismissable } from './composables/useDismissable'
 import { installTableWrapFocus } from './lib/tableWrapFocus'
-import { asArray, asRecord, finiteN, finiteText } from './lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from './lib/finite'
 
 const route = useRoute()
 const router = useRouter()
@@ -379,8 +379,8 @@ const toastIsError = computed(() => /^\s*(?:\u274c|\u26a0)/.test(toast.value))
 provide('toast', showToast)
 provide('t', t)
 
-const counts = computed(() => status.value?.counts)
-const engineUp = computed(() => status.value?.engine_up)
+const counts = computed(() => asRecord(recGet(status.value, 'counts')))
+const engineUp = computed(() => recGet(status.value, 'engine_up'))
 const engineClass = computed(() => (engineUp.value ? 'ok' : 'down'))
 
 /**
@@ -494,11 +494,12 @@ const NAV_MEMBER = [
 const nav = computed(() => {
   const groups = authState.authenticated && authState.role === 'member' ? NAV_MEMBER : NAV_ADMIN
   if (photoHubOk.value) return groups
-  return groups.map((item) => {
-    if (!item.children?.some((c) => c.to === '/photoshub')) return item
+  return asArray(groups).map((item) => {
+    const row = asRecord(item)
+    if (!asArray(recGet(row, 'children')).some((c) => recGet(c, 'to') === '/photoshub')) return item
     return {
-      ...item,
-      children: item.children.filter((c) => c.to !== '/photoshub'),
+      ...row,
+      children: asArray(recGet(row, 'children')).filter((c) => recGet(c, 'to') !== '/photoshub'),
     }
   })
 })
@@ -506,20 +507,20 @@ const nav = computed(() => {
 const activeGroup = computed(() => {
   const path = route.path
   for (const item of asArray(nav.value)) {
-    if (item.exact && path === item.to) return item
-    if (item.match && item.match.some(m => path === m || path.startsWith(m + '/'))) return item
-    if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
+    if (recGet(item, 'exact') && path === recGet(item, 'to')) return item
+    if (recGet(item, 'match') && asArray(recGet(item, 'match')).some(m => path === m || path.startsWith(m + '/'))) return item
+    if (!recGet(item, 'exact') && !recGet(item, 'match') && (path === recGet(item, 'to') || path.startsWith(recGet(item, 'to') + '/'))) return item
   }
   return null
 })
 
-const activeChildren = computed(() => asArray(activeGroup.value?.children))
+const activeChildren = computed(() => asArray(recGet(activeGroup.value, 'children')))
 
 function isActive(item) {
   const path = route.path
-  if (item.exact) return path === item.to
-  if (item.match) return item.match.some(m => path === m || path.startsWith(m + '/'))
-  return path === item.to || path.startsWith(item.to + '/')
+  if (recGet(item, 'exact')) return path === recGet(item, 'to')
+  if (recGet(item, 'match')) return asArray(recGet(item, 'match')).some(m => path === m || path.startsWith(m + '/'))
+  return path === recGet(item, 'to') || path.startsWith(recGet(item, 'to') + '/')
 }
 
 function navCurrent(item) {
@@ -532,7 +533,7 @@ function navCurrent(item) {
   // an *ancestor* of the open page, so it takes `true` and leaves `page` to
   // the child.
   if (!isActive(item)) return undefined
-  return asArray(item.children).some(isChildActive) ? 'true' : 'page'
+  return asArray(recGet(item, 'children')).some(isChildActive) ? 'true' : 'page'
 }
 
 function childPathAndTab(c) {
@@ -561,7 +562,7 @@ function isChildActive(c) {
   if (c.exact) return path === c.to
   // A child may own several routes (e.g. Array covers /main and /storage), so
   // honour `match` here too — otherwise /storage highlights nothing.
-  if (c.match) return c.match.some(m => path === m || path.startsWith(m + '/'))
+  if (recGet(c, 'match')) return asArray(recGet(c, 'match')).some(m => path === m || path.startsWith(m + '/'))
   return path === c.to || path.startsWith(c.to + '/')
 }
 
@@ -630,7 +631,7 @@ async function refresh() {
   // hammering a host that is not answering.
   const generation = loadGeneration
   try {
-    const next = await getStatus()
+    const next = asRecord(await getStatus())
     if (!stillOnShell(generation)) return
     status.value = next
   } catch { return false }
@@ -648,7 +649,7 @@ function probePhotoHub() {
   getPhotosHubStatus()
     .then((j) => {
       if (!stillOnShell(generation)) return
-      photoHubOk.value = Boolean(j?.photoshub_ok)
+      photoHubOk.value = Boolean(recGet(j, 'photoshub_ok'))
     })
     .catch(() => { /* keep last answer: a 502 is not "not installed" */ })
 }
@@ -658,7 +659,7 @@ function probePhotoHub() {
 // `poll` made `poll != null` look like "already polling", so the badge stayed
 // frozen until a manual reload.
 function statusPollMs() {
-  return status.value?.resource_mode === 'high' ? 15000 : 30000
+  return recGet(status.value, 'resource_mode') === 'high' ? 15000 : 30000
 }
 
 function startPoll() {
@@ -680,7 +681,7 @@ watch(canAssist, (ok) => {
   else assistCatalog.value = []
 })
 watch(
-  () => status.value?.resource_mode,
+  () => recGet(status.value, 'resource_mode'),
   (mode, prev) => {
     if (!mode || mode === prev) return
     if (mode !== 'high' && prev !== 'high') return
@@ -851,8 +852,8 @@ function onCmdKey(e) {
   }
 }
 const cmdResults = computed(() => {
-  const q = cmdQuery.value.toLowerCase().trim()
-  const items = asArray(nav.value).flatMap(n => n.children ? [n, ...asArray(n.children)] : [n])
+  const q = asTrimmed(cmdQuery.value).toLowerCase()
+  const items = asArray(nav.value).flatMap(n => recGet(n, 'children') ? [n, ...asArray(recGet(n, 'children'))] : [n])
   const matched = q
     ? items.filter(n => t(n.labelKey).toLowerCase().includes(q) || n.to.includes(q))
     : items
@@ -871,7 +872,7 @@ const cmdResults = computed(() => {
   }
   if (!q) return fromNav.slice(0, 8)
   const fromCatalog = matchCatalog(assistCatalog.value, q, 8)
-    .filter((p) => !seen.has(asRecord(p).path))
+    .filter((p) => !seen.has(recGet(p, 'path')))
     .map((p) => {
       const row = asRecord(p)
       return { type: 'nav', to: row.path, title: row.title, labelKey: '' }
@@ -880,7 +881,7 @@ const cmdResults = computed(() => {
 })
 const cmdFlat = computed(() => {
   const items = asArray(cmdResults.value).map((n) => ({ type: 'nav', ...n }))
-  const q = cmdQuery.value.trim()
+  const q = asTrimmed(cmdQuery.value)
   if (authState.canManage && q) {
     items.push({ type: 'ai', query: q, to: '__ai__' })
   }
@@ -916,7 +917,7 @@ function loadAssistCatalog() {
   getAssistantCatalog(locale.value)
     .then((body) => {
       if (!stillOnShell(generation) || !authState.canManage) return
-      assistCatalog.value = asArray(asRecord(body).panels)
+      assistCatalog.value = asArray(recGet(body, 'panels'))
     })
     .catch(() => {
       if (!stillOnShell(generation)) return

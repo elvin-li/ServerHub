@@ -203,7 +203,7 @@ def _rc_int(rc) -> int:
     try:
         if type(rc) is bool:
             return int(rc)
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isinst(rc, int) else int(rc)
         str(value)
         return value
     except _CONTROL_FLOW:
@@ -918,7 +918,7 @@ def _is_installed(app: dict, brew_installed: set[str] | None = None) -> bool:
     """True if any check matches. For brew apps also fall back to `brew list` package."""
     check = app.get("check")
     specs: list[str] = []
-    if isinstance(check, (list, tuple)):
+    if _isinst(check, (list, tuple)):
         specs = [str(c) for c in check if c]
     elif check:
         specs = [str(check)]

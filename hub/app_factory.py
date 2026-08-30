@@ -41,68 +41,18 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 _REQUEST_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
-#: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
-_INLINE_SCRIPT_RE = re.compile(
-    r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
-)
-#: Cap on the shell we will hash.  A leftover multi-MB index.html is already
-#: refused elsewhere; refusing it here too keeps startup off that path.
-_INDEX_HASH_CAP = 2 * 1024 * 1024
-#: How long a computed policy is reused before the shell is read again.
-_CSP_TTL = 30.0
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
 
-
-def _inline_script_hashes() -> tuple[str, ...]:
-    """CSP source expressions for the shell's inline scripts.
-
-    ``index.html`` opens with a small block that reads the saved theme and
-    applies it to <html> before the first paint.  Under ``script-src 'self'``
-    the browser refuses to run it, so the panel painted the default light
-    theme and only switched once main.js booted -- a white flash on every
-    single load for anyone on a dark theme.  Hashing the block is what CSP
-    offers for exactly this case: it authorises those bytes and nothing else,
-    unlike ``'unsafe-inline'``, which would authorise anything injected.
-
-    A missing or unreadable shell yields no hashes and leaves the policy
-    exactly as it was, so the failure mode is the current behaviour rather
-    than a weaker policy.
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
     """
     try:
-        raw = (STATIC_DIR / "index.html").read_bytes()
-    except OSError:
-        return ()
-    if len(raw) > _INDEX_HASH_CAP:
-        return ()
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return ()
-    digests = []
-    for body in _INLINE_SCRIPT_RE.findall(text):
-        if not body.strip():
-            continue
-        digest = hashlib.sha256(body.encode("utf-8")).digest()
-        digests.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
-    return tuple(dict.fromkeys(digests))
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
 
-
-@ttl_memo(_CSP_TTL)
-def _csp_header() -> str:
-    """The policy, re-derived every so often rather than pinned at import.
-
-    ``static/`` is served straight off disk, so a rebuild lands live -- and a
-    policy computed once at startup would keep authorising the *previous*
-    shell's theme script until someone restarted the process.  Half a minute
-    of staleness costs one stat, and only ever means the pre-paint script is
-    skipped, which is what used to happen on every load.
-    """
-    script_src = " ".join(("'self'",) + _inline_script_hashes())
-    return (
-        "default-src 'self'; base-uri 'none'; object-src 'none'; "
-        "frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; "
-        f"style-src 'self' 'unsafe-inline'; script-src {script_src}; "
-        "connect-src 'self' ws: wss:"
-    )
 
 #: `<script>…</script>` with no `src`, i.e. the shell's own inline code.
 _INLINE_SCRIPT_RE = re.compile(
@@ -291,7 +241,7 @@ async def lifespan(app: FastAPI):
     def _interval(raw, default=90):
         if type(raw) is bool or raw is None:
             return default
-        if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        if _isinst(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
             return default
         try:
             n = int(raw)

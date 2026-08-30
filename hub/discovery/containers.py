@@ -11,6 +11,21 @@ from hub.paths import DOCKER
 from hub.service_signatures import configured_signatures, identify, image_basename
 from hub.util import sh
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 _TTL = 4.0
 _cache: dict = {"t": 0.0, "v": None}
 _lock = threading.Lock()
@@ -144,7 +159,7 @@ def _refresh():
                 continue
             name, st, status, image, project = p
             ov = resolve_value(override(name))
-            if not isinstance(ov, dict):
+            if not _isinst(ov, dict):
                 ov = {}
             if ov.get("hide"):
                 continue

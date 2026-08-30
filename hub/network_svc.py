@@ -138,7 +138,7 @@ def _truthy(value) -> bool:
     to False — a bomb flag is junk, not consent to rebind interfaces or to
     toggle the Wi-Fi radio.
 
-    Identity, not ``isinstance(value, bool)``: a ``__class__`` bomb raised
+    Identity, not ``_isinst(value, bool)``: a ``__class__`` bomb raised
     out of the old gate, and a *lying* ``__class__`` (claims bool, is not)
     passed it and rode a non-bool into the response JSON — both raw 500s on
     the same routes.  ``bool`` cannot be subclassed, so identity is exact.
@@ -905,14 +905,14 @@ def switch_profile(profile: str) -> dict:
         raise api_error("network.services_unreadable")
 
     def is_wifi(s: dict) -> bool:
-        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if isinstance(v, str) and v)
+        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if _isinst(v, str) and v)
         return bool(re.search(r"wi-?fi|airport|无线", n, re.I))  # cjk-input: networksetup port names are localized
 
     def is_ethernet(s: dict) -> bool:
         if is_wifi(s):
             return False
-        d = s.get("device") if isinstance(s.get("device"), str) else ""
-        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if isinstance(v, str) and v)
+        d = s.get("device") if _isinst(s.get("device"), str) else ""
+        n = " ".join(v for v in (s.get("name"), s.get("hardware_port")) if _isinst(v, str) and v)
         if d.startswith("en") and d != "en0":
             # en0 often Wi-Fi on MacBooks; other en* often dongles
             return True
@@ -924,8 +924,8 @@ def switch_profile(profile: str) -> dict:
         return False
 
     def is_junk(s: dict) -> bool:
-        n = s.get("name") if isinstance(s.get("name"), str) else ""
-        d = (s.get("device") if isinstance(s.get("device"), str) else "").lower()
+        n = s.get("name") if _isinst(s.get("name"), str) else ""
+        d = (s.get("device") if _isinst(s.get("device"), str) else "").lower()
         if "modem" in d or "Monitor" in n or "iPhone" in n:
             return True
         return False
@@ -1276,7 +1276,7 @@ def _is_junk_service(s: dict) -> bool:
     parts = []
     for key in ("name", "hardware_port", "port"):
         value = _mapping_get(s, key)
-        # Only real strings, like the original ``isinstance(v, str) and v``;
+        # Only real strings, like the original ``_isinst(v, str) and v``;
         # ``_as_text`` then scrubs a str-subclass bomb / surrogate to text.
         if _isinst(value, str):
             text = _as_text(value)
@@ -1782,7 +1782,7 @@ def network_failover_tick(force: bool = False) -> dict:
         if (
             not healthy
             and any(
-                isinstance(probe_result, dict)
+                _isinst(probe_result, dict)
                 and probe_result.get("reason") == "not found"
                 for probe_result in probes
             )
@@ -2276,14 +2276,14 @@ def docker_networks_detail() -> list:
                 # docker inspect is a list; a dict/string leftover used to
                 # AttributeError on ``.get`` inside this page collector.
                 n = inspect_object(jout) or {}
-                ipam_obj = n.get("IPAM") if isinstance(n.get("IPAM"), dict) else {}
-                ipam = ipam_obj.get("Config") if isinstance(ipam_obj.get("Config"), list) else []
-                first = ipam[0] if ipam and isinstance(ipam[0], dict) else {}
+                ipam_obj = n.get("IPAM") if _isinst(n.get("IPAM"), dict) else {}
+                ipam = ipam_obj.get("Config") if _isinst(ipam_obj.get("Config"), list) else []
+                first = ipam[0] if ipam and _isinst(ipam[0], dict) else {}
                 subnet = first.get("Subnet") or ""
                 gateway = first.get("Gateway") or ""
-                attached = n.get("Containers") if isinstance(n.get("Containers"), dict) else {}
+                attached = n.get("Containers") if _isinst(n.get("Containers"), dict) else {}
                 for cname, c in attached.items():
-                    if not isinstance(c, dict):
+                    if not _isinst(c, dict):
                         continue
                     containers.append({
                         "id": cname[:12],
@@ -2369,24 +2369,24 @@ def docker_update_ports(container: str, ports: list[str]) -> dict:
     data = inspect_object(out)
     if data is None:
         raise api_error("network.container_not_found", name=container)
-    cfg_ = data.get("Config") if isinstance(data.get("Config"), dict) else {}
+    cfg_ = data.get("Config") if _isinst(data.get("Config"), dict) else {}
     image = cfg_.get("Image") or ""
     if not image:
         raise api_error("network.image_unresolvable")
-    host = data.get("HostConfig") if isinstance(data.get("HostConfig"), dict) else {}
+    host = data.get("HostConfig") if _isinst(data.get("HostConfig"), dict) else {}
     # build run body
     env = []
-    for e in cfg_.get("Env") if isinstance(cfg_.get("Env"), list) else []:
-        if isinstance(e, str) and e.startswith("PATH="):
+    for e in cfg_.get("Env") if _isinst(cfg_.get("Env"), list) else []:
+        if _isinst(e, str) and e.startswith("PATH="):
             continue
-        if isinstance(e, str):
+        if _isinst(e, str):
             env.append(e)
     binds = host.get("Binds")
-    volumes = list(binds) if isinstance(binds, list) else []
+    volumes = list(binds) if _isinst(binds, list) else []
     network = host.get("NetworkMode") or "bridge"
-    if isinstance(network, str) and network.startswith("container:"):
+    if _isinst(network, str) and network.startswith("container:"):
         network = "bridge"
-    rp = host.get("RestartPolicy") if isinstance(host.get("RestartPolicy"), dict) else {}
+    rp = host.get("RestartPolicy") if _isinst(host.get("RestartPolicy"), dict) else {}
     restart = rp.get("Name") or "unless-stopped"
     # normalize ports
     port_list = []
@@ -2458,11 +2458,11 @@ def _with_wstunnel_listener(rows: list, snapshot: dict | None) -> list:
     extra = listener_row(snapshot)
     if not extra:
         return rows
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         rows = []
     port = str(extra.get("port") or "")
     if port and any(
-        isinstance(row, dict)
+        _isinst(row, dict)
         and str(row.get("port")) == port
         and "wstunnel" in str(row.get("process") or "").lower()
         for row in rows
@@ -2505,7 +2505,7 @@ def _build_overview(force_services: bool = False) -> dict:
     f_wifi = _overview_pool.submit(_safe, wifi_power_status, dict(_wifi_power_unknown))
 
     ifaces = _safe(f_ifaces.result, [])
-    if not isinstance(ifaces, list):
+    if not _isinst(ifaces, list):
         ifaces = []
     try:
         services = f_services.result()
@@ -2518,10 +2518,10 @@ def _build_overview(force_services: bool = False) -> dict:
 
     primary = None
     for i in ifaces:
-        if not isinstance(i, dict):
+        if not _isinst(i, dict):
             continue
         name = i.get("name")
-        if isinstance(name, str) and i.get("up") and i.get("ipv4") and name.startswith("en"):
+        if _isinst(name, str) and i.get("up") and i.get("ipv4") and name.startswith("en"):
             primary = i
             break
 

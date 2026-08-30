@@ -11,7 +11,7 @@
  * without binding this module to a component lifecycle.
  */
 
-import { asArray, finiteText, jsonText } from './finite'
+import { asArray, asRecord, finiteText, jsonText, recGet } from './finite'
 
 /** Verbs that mutate service state (as opposed to open/logs/detail). */
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
@@ -29,13 +29,16 @@ const ACT_ORDER = ['start', 'stop', 'restart', 'run', 'pause', 'unpause']
  * carry no action list at all (older servers).
  */
 export function canAct(s, act) {
+  const row = asRecord(s)
   if (!s) return false
-  if (s.actions != null && !Array.isArray(s.actions)) return false
-  if (asArray(s.actions).includes(act)) return true
-  if (Array.isArray(s.actions)) return false
-  if (act === 'start' && (s.state === 'down' || s.state === 'stopped')) return true
-  if (act === 'stop' && s.state === 'ok') return true
-  if (act === 'restart' && s.state === 'ok') return true
+  const actions = recGet(row, 'actions')
+  if (actions != null && !Array.isArray(actions)) return false
+  if (asArray(actions).includes(act)) return true
+  if (Array.isArray(actions)) return false
+  const state = recGet(row, 'state')
+  if (act === 'start' && (state === 'down' || state === 'stopped')) return true
+  if (act === 'stop' && state === 'ok') return true
+  if (act === 'restart' && state === 'ok') return true
   return false
 }
 
@@ -46,19 +49,22 @@ export function controlActs(s) {
 
 /** The card's compact subset: the server's own order, capped at three. */
 export function primaryActs(s) {
-  return asArray(s.actions).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
+  return asArray(recGet(s, 'actions')).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
 }
 
 export function canLogs(s) {
+  const row = asRecord(s)
   if (!s) return false
-  if (s.can_logs === false) return false
-  if (s.can_logs === true) return true
-  if (asArray(s.actions).includes('logs')) return true
+  const canLogsFlag = recGet(row, 'can_logs')
+  if (canLogsFlag === false) return false
+  if (canLogsFlag === true) return true
+  const actions = recGet(row, 'actions')
+  if (asArray(actions).includes('logs')) return true
   // A served action list without `logs` is authoritative. Member rows are
   // stripped to open/detail and omit can_logs; guessing from kind painted
   // Logs (and 403'd) for those accounts.
-  if (Array.isArray(s.actions) || (s.actions != null && typeof s.actions === 'object')) return false
-  return ['container', 'launchd', 'script'].includes(s.kind)
+  if (Array.isArray(actions) || (actions != null && typeof actions === 'object')) return false
+  return ['container', 'launchd', 'script'].includes(recGet(row, 'kind'))
 }
 
 export function ledOf(state) {
@@ -77,13 +83,14 @@ export function stateChipClass(state) {
 
 /** Compact port readout: explicit port, numeric ports[], first ports[] entry, or one scraped from the detail line. */
 export function portOf(s) {
+  const row = asRecord(s)
   const nums = []
   const push = (p) => {
     const n = typeof p === 'number' ? p : (typeof p === 'string' && /^\d+$/.test(p) ? Number(p) : null)
     if (n != null && Number.isFinite(n) && !nums.includes(n)) nums.push(n)
   }
-  if (s?.port != null) push(s.port)
-  const ports = asArray(s?.ports)
+  if (recGet(row, 'port') != null) push(recGet(row, 'port'))
+  const ports = asArray(recGet(row, 'ports'))
   if (ports.length) {
     for (const p of ports) push(p)
     if (!nums.length) {
@@ -94,13 +101,14 @@ export function portOf(s) {
     }
   }
   if (nums.length) return nums.map((p) => `:${p}`).join(' ')
-  const m = String(finiteText(s?.detail, '')).match(/:(\d{2,5})\b/)
+  const m = String(finiteText(recGet(row, 'detail'), '')).match(/:(\d{2,5})\b/)
   return m ? `:${m[1]}` : '—'
 }
 
 /** Recognition payload lives on the row or under meta, depending on the endpoint. */
 export function signatureOf(s) {
-  return s?.signature || s?.meta?.signature || null
+  const row = asRecord(s)
+  return recGet(row, 'signature') || recGet(recGet(row, 'meta'), 'signature') || null
 }
 
 const ACT_LABEL_KEYS = {

@@ -49,9 +49,9 @@ def _user_home() -> Path | None:
     except BaseException:
         return None
     try:
-        if isinstance(home, Path):
+        if _isinst(home, Path):
             return home
-        if isinstance(home, (str, bytes)):
+        if _isinst(home, (str, bytes)):
             return Path(os.fsdecode(home))
     except _CONTROL_FLOW:
         raise

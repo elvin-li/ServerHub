@@ -4,8 +4,8 @@
       <h1>{{ t('apps.title') }}</h1>
       <span class="meta">
         {{ t('apps.meta') }}
-        · {{ finiteN(asRecord(overview).total, asArray(catalog).length) }} {{ t('apps.templates') }}
-        · {{ finiteN(asRecord(overview).installed, 0) }} {{ t('apps.installed_n') }}
+        · {{ finiteN(recGet(overview, 'total'), asArray(catalog).length) }} {{ t('apps.templates') }}
+        · {{ finiteN(recGet(overview, 'installed'), 0) }} {{ t('apps.installed_n') }}
       </span>
     </div>
 
@@ -21,10 +21,10 @@
         <!-- role=status: the count is the only feedback the search box, category
              select and toggles give, and it changed silently for a screen
              reader. Same pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(catalog).length }}</span>
+        <span class="meta-count" role="status">{{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(catalog).length) }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
-          <option v-for="c in asArray(categories)" :key="finiteText(asRecord(c).id)" :value="asRecord(c).id">
-            {{ catLabel(asRecord(c).id) }}{{ countLabel(asRecord(c).id) }}
+          <option v-for="c in asArray(categories)" :key="finiteText(recGet(c, 'id'))" :value="recGet(c, 'id')">
+            {{ catLabel(recGet(c, 'id')) }}{{ countLabel(recGet(c, 'id')) }}
           </option>
         </select>
         <label class="chk"><input type="checkbox" v-model="onlyFeatured" /> {{ t('apps.featured_only') }}</label>
@@ -41,13 +41,13 @@
       <div class="cat-pills">
         <button
           v-for="c in asArray(quickCats)"
-          :key="finiteText(asRecord(c).id)"
+          :key="finiteText(recGet(c, 'id'))"
           type="button"
           class="cat-pill"
-          :class="{ active: cat === asRecord(c).id }"
-          :aria-pressed="cat === asRecord(c).id"
-          @click="cat = asRecord(c).id"
-        >{{ catLabel(asRecord(c).id) }}{{ countLabel(asRecord(c).id) }}</button>
+          :class="{ active: cat === recGet(c, 'id') }"
+          :aria-pressed="cat === recGet(c, 'id')"
+          @click="cat = recGet(c, 'id')"
+        >{{ catLabel(recGet(c, 'id')) }}{{ countLabel(recGet(c, 'id')) }}</button>
       </div>
 
       <!-- Above the grid: on a failed refresh the cards below are the *stale*
@@ -65,56 +65,56 @@
       <div class="app-grid">
         <article
           v-for="tpl in asArray(filtered)"
-          :key="finiteText(asRecord(tpl).id)"
+          :key="finiteText(recGet(tpl, 'id'))"
           class="app-card"
           :class="{
-            featured: asRecord(tpl).featured,
-            installed: asRecord(tpl).installed,
-            native: asRecord(tpl).kind === 'native',
+            featured: recGet(tpl, 'featured'),
+            installed: recGet(tpl, 'installed'),
+            native: recGet(tpl, 'kind') === 'native',
           }"
         >
           <header class="app-head">
-            <h3 class="app-title" :title="finiteText(asRecord(tpl).name)">{{ finiteText(asRecord(tpl).name) }}</h3>
+            <h3 class="app-title" :title="finiteText(recGet(tpl, 'name'))">{{ finiteText(recGet(tpl, 'name')) }}</h3>
             <div class="app-badges">
-              <span class="chip" :class="asRecord(tpl).kind === 'native' ? 'chip-native' : 'chip-docker'">
-                {{ asRecord(tpl).kind === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
+              <span class="chip" :class="recGet(tpl, 'kind') === 'native' ? 'chip-native' : 'chip-docker'">
+                {{ recGet(tpl, 'kind') === 'native' ? t('apps.kind_native') : t('apps.kind_docker') }}
               </span>
               <span
-                v-if="asRecord(tpl).source === 'remote'"
+                v-if="recGet(tpl, 'source') === 'remote'"
                 class="chip chip-remote"
                 :title="t('catalog_remote.badge_title')"
-              >{{ t('catalog_remote.badge') }}{{ finiteText(asRecord(tpl).remote_version, '') ? ` ${finiteText(asRecord(tpl).remote_version)}` : '' }}</span>
-              <span v-if="asRecord(tpl).featured" class="chip chip-feat">{{ t('apps.featured') }}</span>
-              <span v-if="asRecord(tpl).installed" class="chip chip-ok">{{ t('apps.installed') }}</span>
-              <span v-if="asRecord(tpl).running" class="chip chip-ok">{{ t('common.running') }}</span>
+              >{{ t('catalog_remote.badge') }}{{ finiteText(recGet(tpl, 'remote_version'), '') ? ` ${finiteText(recGet(tpl, 'remote_version'))}` : '' }}</span>
+              <span v-if="recGet(tpl, 'featured')" class="chip chip-feat">{{ t('apps.featured') }}</span>
+              <span v-if="recGet(tpl, 'installed')" class="chip chip-ok">{{ t('apps.installed') }}</span>
+              <span v-if="recGet(tpl, 'running')" class="chip chip-ok">{{ t('common.running') }}</span>
             </div>
           </header>
 
           <div class="app-meta">
-            <span class="cat-tag">{{ catLabel(asRecord(tpl).category) }}</span>
-            <span v-for="tg in asArray(asRecord(tpl).tags).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
+            <span class="cat-tag">{{ catLabel(recGet(tpl, 'category')) }}</span>
+            <span v-for="tg in asArray(recGet(tpl, 'tags')).slice(0, 3)" :key="finiteText(tg)" class="tag">{{ finiteText(tg) }}</span>
           </div>
 
-          <p class="app-desc">{{ finiteText(asRecord(tpl).desc) }}</p>
+          <p class="app-desc">{{ finiteText(recGet(tpl, 'desc')) }}</p>
 
-          <div v-if="asArray(asRecord(tpl).ports).length" class="app-ports mono">
-            ports: {{ asArray(asRecord(tpl).ports).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
+          <div v-if="asArray(recGet(tpl, 'ports')).length" class="app-ports mono">
+            ports: {{ asArray(recGet(tpl, 'ports')).map(p => finiteText(p, '')).filter(Boolean).join(', ') }}
           </div>
-          <div v-if="asArray(asRecord(tpl).images).length" class="app-images mono" :title="asArray(asRecord(tpl).images).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
-            {{ asArray(asRecord(tpl).images).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ asArray(asRecord(tpl).images).length > 2 ? '…' : '' }}
+          <div v-if="asArray(recGet(tpl, 'images')).length" class="app-images mono" :title="asArray(recGet(tpl, 'images')).map(im => finiteText(im, '')).filter(Boolean).join(', ')">
+            {{ asArray(recGet(tpl, 'images')).map(im => finiteText(im, '')).filter(Boolean).slice(0, 2).join(', ') }}{{ asArray(recGet(tpl, 'images')).length > 2 ? '…' : '' }}
           </div>
-          <div v-if="asRecord(tpl).package" class="app-ports mono">brew: {{ finiteText(asRecord(tpl).package) }}</div>
+          <div v-if="recGet(tpl, 'package')" class="app-ports mono">brew: {{ finiteText(recGet(tpl, 'package')) }}</div>
           <div v-if="catalogOpenUrl(tpl)" class="app-ports mono">{{ catalogOpenUrl(tpl) }}</div>
 
           <footer class="app-actions">
             <button
-              v-if="!asRecord(tpl).installed"
+              v-if="!recGet(tpl, 'installed')"
               type="button"
               class="primary"
               :disabled="busy"
               @click="openInstall(tpl)"
             >
-              {{ asRecord(tpl).kind === 'native' ? t('apps.deploy_native') : t('apps.deploy') }}
+              {{ recGet(tpl, 'kind') === 'native' ? t('apps.deploy_native') : t('apps.deploy') }}
             </button>
             <template v-else>
               <button
@@ -124,13 +124,13 @@
                 @click="doUninstall(tpl)"
               >{{ t('apps.uninstall') }}</button>
               <button
-                v-if="asRecord(tpl).kind === 'docker' || (asRecord(tpl).kind === 'native' && asRecord(tpl).running != null)"
+                v-if="recGet(tpl, 'kind') === 'docker' || (recGet(tpl, 'kind') === 'native' && recGet(tpl, 'running') != null)"
                 type="button"
                 :disabled="busy"
                 @click="goManage(tpl)"
               >{{ t('apps.manage') }}</button>
               <button
-                v-if="asRecord(tpl).path && asRecord(tpl).kind !== 'native'"
+                v-if="recGet(tpl, 'path') && recGet(tpl, 'kind') !== 'native'"
                 type="button"
                 @click="openPath(tpl)"
               >{{ t('apps.open_stack') }}</button>
@@ -143,7 +143,7 @@
               >{{ t('apps.open_url') }}</button>
             </template>
             <button
-              v-if="asRecord(tpl).source === 'remote'"
+              v-if="recGet(tpl, 'source') === 'remote'"
               type="button"
               :disabled="busy || remoteBusy"
               @click="restoreBuiltin(tpl)"
@@ -160,7 +160,7 @@
         <!-- role=status: the count is the only feedback the search box and kind
              select give, and it changed silently for a screen reader. Same
              pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ asArray(filteredManaged).length }} / {{ asArray(asRecord(managed).items).length }}</span>
+        <span class="meta-count" role="status">{{ finiteN(asArray(filteredManaged).length) }} / {{ finiteN(asArray(recGet(managed, 'items')).length) }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>
@@ -173,13 +173,13 @@
         <!-- role=status: the breakdown is Refresh's only answer and it changed
              silently for a screen reader — the same treatment the filter count
              beside it (and every sibling .meta-count) already carries. -->
-        <span class="meta-count" role="status" v-if="asRecord(managed).counts">
-          {{ finiteN(asRecord(asRecord(managed).counts).total) }} ·
-          {{ t('apps.kind_native') }} {{ finiteN(asRecord(asRecord(managed).counts).native) }} ·
-          Docker {{ finiteN(asRecord(asRecord(managed).counts).docker) }} ·
-          {{ t('apps.kind_launchd') }} {{ finiteN(asRecord(asRecord(managed).counts).launchd, 0) }} ·
-          VM {{ finiteN(asRecord(asRecord(managed).counts).vm) }} ·
-          {{ t('common.running') }} {{ finiteN(asRecord(asRecord(managed).counts).running) }}
+        <span class="meta-count" role="status" v-if="recGet(managed, 'counts')">
+          {{ finiteN(recGet(recGet(managed, 'counts'), 'total')) }} ·
+          {{ t('apps.kind_native') }} {{ finiteN(recGet(recGet(managed, 'counts'), 'native')) }} ·
+          Docker {{ finiteN(recGet(recGet(managed, 'counts'), 'docker')) }} ·
+          {{ t('apps.kind_launchd') }} {{ finiteN(recGet(recGet(managed, 'counts'), 'launchd'), 0) }} ·
+          VM {{ finiteN(recGet(recGet(managed, 'counts'), 'vm')) }} ·
+          {{ t('common.running') }} {{ finiteN(recGet(recGet(managed, 'counts'), 'running')) }}
         </span>
       </div>
 
@@ -213,50 +213,50 @@
                  It also duplicated the tab stop the "Detail" button in the actions
                  cell already provides, which is the keyboard path to the same
                  openDetail(it). -->
-            <tr v-for="it in asArray(filteredManaged)" :key="finiteText(asRecord(it).id)" @click="openDetail(it)">
+            <tr v-for="it in asArray(filteredManaged)" :key="finiteText(recGet(it, 'id'))" @click="openDetail(it)">
               <td>
-                <strong>{{ finiteText(asRecord(it).name) }}</strong>
-                <div class="sub-line" v-if="asRecord(it).status_text">{{ finiteText(asRecord(it).status_text) }}</div>
-                <div class="show-m sub-line">{{ kindLabel(asRecord(it).kind) }}</div>
-                <div v-if="finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-                <div class="show-m sub-line mono">{{ finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '') || finiteText(asRecord(it).backend, '') }}</div>
+                <strong>{{ finiteText(recGet(it, 'name')) }}</strong>
+                <div class="sub-line" v-if="recGet(it, 'status_text')">{{ finiteText(recGet(it, 'status_text')) }}</div>
+                <div class="show-m sub-line">{{ kindLabel(recGet(it, 'kind')) }}</div>
+                <div v-if="finiteText(recGet(it, 'ports_summary'), '') || asArray(recGet(it, 'ips')).map(n => finiteText(n, '')).filter(Boolean).join(', ')" class="show-m sub-line mono">{{ finiteText(recGet(it, 'ports_summary'), '') || asArray(recGet(it, 'ips')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+                <div class="show-m sub-line mono">{{ finiteText(recGet(it, 'path'), '') || finiteText(recGet(it, 'package'), '') || finiteText(recGet(it, 'backend'), '') }}</div>
                 <div class="show-m" @click.stop>
                   <!-- Named after the app: a column of switches all announced as
                        "Autostart" cannot be told apart in a form-controls
                        listing — same fix as the Scheduler enable toggles. -->
                   <MacSwitch
-                    v-if="asRecord(it).autostart != null || asRecord(it).kind === 'docker' || asRecord(it).autostart_id"
-                    :checked="!!asRecord(it).autostart"
-                    :disabled="busy || asRecord(it).kind === 'vm'"
-                    :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
-                    :title="finiteText(asRecord(it).autostart_detail, '')"
+                    v-if="recGet(it, 'autostart') != null || recGet(it, 'kind') === 'docker' || recGet(it, 'autostart_id')"
+                    :checked="!!recGet(it, 'autostart')"
+                    :disabled="busy || recGet(it, 'kind') === 'vm'"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')) })"
+                    :title="finiteText(recGet(it, 'autostart_detail'), '')"
                     @click.stop
                     @change="toggleManagedAutostart(it, $event)"
                   />
                 </div>
               </td>
               <td class="col-hide-m">
-                <span class="chip" :class="kindChip(asRecord(it).kind)">{{ kindLabel(asRecord(it).kind) }}</span>
+                <span class="chip" :class="kindChip(recGet(it, 'kind'))">{{ kindLabel(recGet(it, 'kind')) }}</span>
               </td>
               <td>
-                <span class="chip" :class="asRecord(it).state === 'ok' ? 'chip-ok' : (asRecord(it).state === 'warn' ? 'chip-feat' : 'chip-muted')">
-                  {{ stateLabel(asRecord(it).state) }}
+                <span class="chip" :class="recGet(it, 'state') === 'ok' ? 'chip-ok' : (recGet(it, 'state') === 'warn' ? 'chip-feat' : 'chip-muted')">
+                  {{ stateLabel(recGet(it, 'state')) }}
                 </span>
               </td>
-              <td class="mono ports-cell col-hide-m">{{ finiteText(asRecord(it).ports_summary, '') || asArray(asRecord(it).ips).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+              <td class="mono ports-cell col-hide-m">{{ finiteText(recGet(it, 'ports_summary'), '') || asArray(recGet(it, 'ips')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
               <td class="col-hide-m" @click.stop>
                 <MacSwitch
-                  v-if="asRecord(it).autostart != null || asRecord(it).kind === 'docker' || asRecord(it).autostart_id"
-                  :checked="!!asRecord(it).autostart"
-                  :disabled="busy || asRecord(it).kind === 'vm'"
-                  :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
-                  :title="finiteText(asRecord(it).autostart_detail, '')"
+                  v-if="recGet(it, 'autostart') != null || recGet(it, 'kind') === 'docker' || recGet(it, 'autostart_id')"
+                  :checked="!!recGet(it, 'autostart')"
+                  :disabled="busy || recGet(it, 'kind') === 'vm'"
+                  :aria-label="t('apps.autostart_name', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')) })"
+                  :title="finiteText(recGet(it, 'autostart_detail'), '')"
                   @click.stop
                   @change="toggleManagedAutostart(it, $event)"
                 />
                 <span v-else class="sub-line">—</span>
               </td>
-              <td class="mono path-cell col-hide-m" :title="finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '')">{{ finiteText(asRecord(it).path, '') || finiteText(asRecord(it).package, '') || finiteText(asRecord(it).backend) }}</td>
+              <td class="mono path-cell col-hide-m" :title="finiteText(recGet(it, 'path'), '') || finiteText(recGet(it, 'package'), '')">{{ finiteText(recGet(it, 'path'), '') || finiteText(recGet(it, 'package'), '') || finiteText(recGet(it, 'backend')) }}</td>
               <td class="actions-cell" @click.stop>
                 <div class="act-row">
                   <!-- A native <button> activates on Enter/Space and sits in the
@@ -267,7 +267,7 @@
                   <button v-if="canAct(it, 'start')" type="button" class="act-btn primary" :disabled="busy" @click="doManagedAction(it, 'start')">{{ t('apps.act_start') }}</button>
                   <button v-if="canAct(it, 'stop')" type="button" class="act-btn" :disabled="busy" @click="doManagedAction(it, 'stop')">{{ t('apps.act_stop') }}</button>
                   <button v-if="canAct(it, 'restart')" type="button" class="act-btn hide-m" :disabled="busy" @click="doManagedAction(it, 'restart')">{{ t('apps.act_restart') }}</button>
-                  <button v-if="canAct(it, 'logs') || asRecord(it).kind === 'docker' || asRecord(it).kind === 'native' || asRecord(it).kind === 'launchd'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
+                  <button v-if="canAct(it, 'logs') || recGet(it, 'kind') === 'docker' || recGet(it, 'kind') === 'native' || recGet(it, 'kind') === 'launchd'" type="button" class="act-btn" @click="openManagedLogs(it)">{{ t('apps.logs') }}</button>
                   <button
                     v-if="openUrl(it)"
                     type="button"
@@ -282,7 +282,7 @@
             <!-- Same split: a kind/search filter that matches nothing must not
                  claim the host has no managed apps. -->
             <tr v-if="!asArray(filteredManaged).length && !managedError">
-              <td colspan="7" class="empty-row">{{ asArray(asRecord(managed).items).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
+              <td colspan="7" class="empty-row">{{ asArray(recGet(managed, 'items')).length ? t('common.no_match') : t('apps.managed_empty') }}</td>
             </tr>
           </tbody>
         </table>
@@ -297,19 +297,19 @@
         <!-- role=status: these counts are Refresh's and Run-now's only answer
              and changed silently for a screen reader — same treatment as the
              managed-tab breakdown and every sibling .meta-count. -->
-        <span class="meta-count" role="status" v-if="autostart.counts">
-          {{ t('apps.auto_on') }} {{ finiteN(autostart.counts.autostart_on) }} ·
-          {{ t('apps.auto_off') }} {{ finiteN(autostart.counts.autostart_off) }} ·
-          brew {{ finiteN(autostart.counts.brew) }} ·
-          Docker {{ finiteN(autostart.counts.docker) }} ·
-          LaunchAgent {{ finiteN(autostart.counts.launchd) }}
+        <span class="meta-count" role="status" v-if="recGet(autostart, 'counts')">
+          {{ t('apps.auto_on') }} {{ finiteN(recGet(recGet(autostart, 'counts'), 'autostart_on')) }} ·
+          {{ t('apps.auto_off') }} {{ finiteN(recGet(recGet(autostart, 'counts'), 'autostart_off')) }} ·
+          brew {{ finiteN(recGet(recGet(autostart, 'counts'), 'brew')) }} ·
+          Docker {{ finiteN(recGet(recGet(autostart, 'counts'), 'docker')) }} ·
+          LaunchAgent {{ finiteN(recGet(recGet(autostart, 'counts'), 'launchd')) }}
         </span>
       </div>
       <p class="hint-line">{{ t('apps.autostart_hint') }}</p>
       <LoadFailure v-if="autostartError" :detail="autostartError" :retry="() => loadAutostart(true)" :busy="loading" />
       <div v-else-if="!autostartLoaded" class="hint-line">{{ t('common.loading') }}</div>
       <template v-else>
-      <div v-for="grp in asArray(autostartGroups)" :key="grp" class="auto-group">
+      <div v-for="grp in asArray(autostartGroups)" :key="finiteText(grp)" class="auto-group">
         <h2 class="section-title">{{ finiteText(grp) }}</h2>
         <div class="managed-table-wrap" style="margin-bottom:14px">
           <table class="managed-table">
@@ -323,37 +323,37 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="it in asArray(autostartByGroup[grp])" :key="finiteText(asRecord(it).id)">
+              <tr v-for="it in asArray(autostartByGroup[grp])" :key="finiteText(recGet(it, 'id'))">
                 <td>
-                  <strong>{{ finiteText(asRecord(it).name) }}</strong>
-                  <div class="sub-line mono" v-if="asRecord(it).program">{{ finiteText(asRecord(it).program) }}</div>
-                  <div class="show-m sub-line mono">{{ finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist, '') }}</div>
+                  <strong>{{ finiteText(recGet(it, 'name')) }}</strong>
+                  <div class="sub-line mono" v-if="recGet(it, 'program')">{{ finiteText(recGet(it, 'program')) }}</div>
+                  <div class="show-m sub-line mono">{{ finiteText(recGet(it, 'detail'), '') || finiteText(recGet(it, 'plist'), '') }}</div>
                   <div class="show-m sub-line">
-                    {{ asRecord(it).running ? t('common.running') : t('common.stopped') }}{{ finiteText(asRecord(it).policy, '') ? ' · ' + finiteText(asRecord(it).policy) : '' }}
+                    {{ recGet(it, 'running') ? t('common.running') : t('common.stopped') }}{{ finiteText(recGet(it, 'policy'), '') ? ' · ' + finiteText(recGet(it, 'policy')) : '' }}
                   </div>
                 </td>
                 <td class="col-hide-m">
-                  <span class="chip" :class="asRecord(it).running ? 'chip-ok' : 'chip-muted'">
-                    {{ asRecord(it).running ? t('common.running') : t('common.stopped') }}
+                  <span class="chip" :class="recGet(it, 'running') ? 'chip-ok' : 'chip-muted'">
+                    {{ recGet(it, 'running') ? t('common.running') : t('common.stopped') }}
                   </span>
-                  <span v-if="finiteText(asRecord(it).policy, '')" class="sub-line mono"> {{ finiteText(asRecord(it).policy) }}</span>
+                  <span v-if="finiteText(recGet(it, 'policy'), '')" class="sub-line mono"> {{ finiteText(recGet(it, 'policy')) }}</span>
                 </td>
                 <td>
                   <MacSwitch
-                    :checked="!!asRecord(it).autostart"
+                    :checked="!!recGet(it, 'autostart')"
                     :disabled="busy"
-                    :aria-label="t('apps.autostart_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
+                    :aria-label="t('apps.autostart_name', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')) })"
                     @change="setAutostartItem(it, $event)"
                   />
                 </td>
-                <td class="mono path-cell col-hide-m" :title="finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist)">{{ finiteText(asRecord(it).detail, '') || finiteText(asRecord(it).plist) }}</td>
+                <td class="mono path-cell col-hide-m" :title="finiteText(recGet(it, 'detail'), '') || finiteText(recGet(it, 'plist'))">{{ finiteText(recGet(it, 'detail'), '') || finiteText(recGet(it, 'plist')) }}</td>
                 <td class="actions-cell">
-                  <div class="act-row" v-if="asRecord(it).kind === 'docker'">
+                  <div class="act-row" v-if="recGet(it, 'kind') === 'docker'">
                     <select
                       class="policy-select"
-                      :value="finiteText(asRecord(it).policy, '') || 'no'"
+                      :value="finiteText(recGet(it, 'policy'), '') || 'no'"
                       :disabled="busy"
-                      :aria-label="t('apps.policy_name', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) })"
+                      :aria-label="t('apps.policy_name', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')) })"
                       @change="setDockerPolicy(it, $event.target.value)"
                     >
                       <option value="no">no</option>
@@ -362,7 +362,7 @@
                       <option value="on-failure">on-failure</option>
                     </select>
                   </div>
-                  <span v-else class="sub-line">{{ finiteText(asRecord(it).kind) }}</span>
+                  <span v-else class="sub-line">{{ finiteText(recGet(it, 'kind')) }}</span>
                 </td>
               </tr>
               <tr v-if="!asArray(autostartByGroup[grp]).length">
@@ -380,10 +380,10 @@
       <aside ref="detailPanel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="apps-detail-title" tabindex="-1">
         <div class="drawer-head">
           <div>
-            <h2 id="apps-detail-title" class="drawer-title">{{ finiteText(asRecord(detail).name) }}</h2>
+            <h2 id="apps-detail-title" class="drawer-title">{{ finiteText(recGet(detail, 'name')) }}</h2>
             <div class="app-badges" style="margin-top:6px">
-              <span class="chip" :class="kindChip(asRecord(detail).kind)">{{ kindLabel(asRecord(detail).kind) }}</span>
-              <span class="chip" :class="asRecord(detail).state === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(asRecord(detail).state) }}</span>
+              <span class="chip" :class="kindChip(recGet(detail, 'kind'))">{{ kindLabel(recGet(detail, 'kind')) }}</span>
+              <span class="chip" :class="recGet(detail, 'state') === 'ok' ? 'chip-ok' : 'chip-muted'">{{ stateLabel(recGet(detail, 'state')) }}</span>
             </div>
           </div>
           <button type="button" @click="closeDetail">{{ t('common.close') }}</button>
@@ -406,7 +406,7 @@
             <span v-else class="chip chip-muted">{{ t('apps.credential_not_saved') }}</span>
           </div>
           <p class="sub-line credential-hint">
-            {{ credential?.can_apply ? t('apps.credential_apply_hint') : t('apps.credential_store_hint') }}
+            {{ recGet(credential, 'can_apply') ? t('apps.credential_apply_hint') : t('apps.credential_store_hint') }}
           </p>
           <div class="credential-grid">
             <label>{{ t('settings.username') }}</label>
@@ -436,7 +436,7 @@
           </div>
           <div class="credential-actions">
             <button
-              v-if="credential?.can_apply"
+              v-if="recGet(credential, 'can_apply')"
               type="button"
               class="primary"
               :disabled="credentialBusy || !credentialLoaded"
@@ -456,7 +456,7 @@
         </section>
 
         <!-- Cloudflare Tunnel panel -->
-        <section class="drawer-sec" v-if="asRecord(detail).source_id === 'native-cloudflared' || asRecord(detail).cloudflared">
+        <section class="drawer-sec" v-if="recGet(detail, 'source_id') === 'native-cloudflared' || recGet(detail, 'cloudflared')">
           <h3>{{ t('apps.cf_title') }}</h3>
           <p class="sub-line" style="margin-bottom:10px">
             {{ t('apps.cf_hint') }}
@@ -464,19 +464,19 @@
             {{ t('apps.cf_hint_tail') }}
           </p>
           <div class="app-badges" style="margin-bottom:10px">
-            <span class="chip" :class="asRecord(cfStatus).logged_in ? 'chip-ok' : 'chip-muted'">
-              {{ asRecord(cfStatus).logged_in ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
+            <span class="chip" :class="recGet(cfStatus, 'logged_in') ? 'chip-ok' : 'chip-muted'">
+              {{ recGet(cfStatus, 'logged_in') ? t('apps.cf_signed_in') : t('apps.cf_signed_out') }}
             </span>
-            <span class="chip" :class="asRecord(cfStatus).running ? 'chip-ok' : 'chip-muted'">
-              {{ asRecord(cfStatus).running ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
+            <span class="chip" :class="recGet(cfStatus, 'running') ? 'chip-ok' : 'chip-muted'">
+              {{ recGet(cfStatus, 'running') ? t('apps.cf_tunnel_running') : t('apps.cf_tunnel_stopped') }}
             </span>
-            <span v-if="asRecord(cfStatus).has_token && asRecord(cfStatus).token_ok === false" class="chip chip-warn">
+            <span v-if="recGet(cfStatus, 'has_token') && recGet(cfStatus, 'token_ok') === false" class="chip chip-warn">
               {{ t('apps.cf_token_invalid') }}
             </span>
-            <span v-else-if="!asRecord(cfStatus).running && asRecord(cfStatus).crash_loop" class="chip chip-warn">
+            <span v-else-if="!recGet(cfStatus, 'running') && recGet(cfStatus, 'crash_loop')" class="chip chip-warn">
               {{ t('apps.cf_crash_loop') }}
             </span>
-            <span v-if="asRecord(cfStatus).active_tunnel" class="chip chip-muted mono">{{ finiteText(asRecord(cfStatus).active_tunnel) }}</span>
+            <span v-if="recGet(cfStatus, 'active_tunnel')" class="chip chip-muted mono">{{ finiteText(recGet(cfStatus, 'active_tunnel')) }}</span>
           </div>
 
           <div class="credential-actions" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -490,9 +490,9 @@
             <button type="button" :disabled="busy || cfBusy" @click="openManagedLogs(detail)">{{ t('apps.logs') }}</button>
           </div>
 
-          <div v-if="asRecord(cfStatus).login_url" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
+          <div v-if="recGet(cfStatus, 'login_url')" class="notes" role="status" style="margin-bottom:10px;word-break:break-all">
             {{ t('apps.cf_open_link') }}
-            <a :href="finiteText(asRecord(cfStatus).login_url, '')" target="_blank" rel="noopener">{{ finiteText(asRecord(cfStatus).login_url) }}</a>
+            <a :href="finiteText(recGet(cfStatus, 'login_url'), '')" target="_blank" rel="noopener">{{ finiteText(recGet(cfStatus, 'login_url')) }}</a>
             <div class="sub-line" style="margin-top:6px">{{ t('apps.cf_after_auth') }}</div>
           </div>
 
@@ -501,15 +501,15 @@
             <div class="form-field">
               <select v-model="cfSelectedTunnel" :disabled="cfBusy" style="width:100%;padding:8px;border-radius:8px" :aria-label="t('apps.cf_existing_tunnel')">
                 <option value="">{{ t('apps.cf_select_ph') }}</option>
-                <option v-for="tn in asArray(asRecord(cfStatus).tunnels)" :key="finiteText(asRecord(tn).id)" :value="asRecord(tn).name">
-                  {{ finiteText(asRecord(tn).name) }} ({{ String(finiteText(asRecord(tn).id)).slice(0, 8) }}…){{ asRecord(tn).active ? ` · ${t('apps.cf_connected')}` : '' }}
+                <option v-for="tn in asArray(recGet(cfStatus, 'tunnels'))" :key="finiteText(recGet(tn, 'id'))" :value="recGet(tn, 'name')">
+                  {{ finiteText(recGet(tn, 'name')) }} ({{ String(finiteText(recGet(tn, 'id'))).slice(0, 8) }}…){{ recGet(tn, 'active') ? ` · ${t('apps.cf_connected')}` : '' }}
                 </option>
               </select>
               <!-- Error vs empty: a failed tunnel-list fetch used to render as
                    "No tunnels found", silently hiding the failure. -->
-              <div class="field-help" v-if="!asArray(asRecord(cfStatus).tunnels).length" role="status">
-                <template v-if="asRecord(cfStatus).logged_in && finiteText(asRecord(cfStatus).tunnels_error, '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(asRecord(cfStatus).tunnels_error, '') }}</template>
-                <template v-else>{{ asRecord(cfStatus).logged_in ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
+              <div class="field-help" v-if="!asArray(recGet(cfStatus, 'tunnels')).length" role="status">
+                <template v-if="recGet(cfStatus, 'logged_in') && finiteText(recGet(cfStatus, 'tunnels_error'), '')">{{ t('apps.cf_tunnels_failed') }} {{ finiteText(recGet(cfStatus, 'tunnels_error'), '') }}</template>
+                <template v-else>{{ recGet(cfStatus, 'logged_in') ? t('apps.cf_no_tunnels') : t('apps.cf_login_to_list') }}</template>
               </div>
             </div>
             <label class="form-label">{{ t('apps.cf_new_tunnel') }}</label>
@@ -538,122 +538,122 @@
           <pre v-if="cfMsg" class="install-log" style="margin-top:12px;max-height:180px" role="log" aria-live="polite">{{ finiteText(cfMsg) }}</pre>
         </section>
 
-        <section class="drawer-sec" v-if="asRecord(detail).kind !== 'vm'">
+        <section class="drawer-sec" v-if="recGet(detail, 'kind') !== 'vm'">
           <h3>{{ t('apps.col_autostart') }}</h3>
           <div class="auto-toggle">
             <MacSwitch
-              :checked="!!asRecord(detail).autostart"
+              :checked="!!recGet(detail, 'autostart')"
               :disabled="busy"
               :aria-label="t('apps.col_autostart')"
-              @change="toggleManagedAutostart({ id: asRecord(detail).id, kind: asRecord(detail).kind, autostart_id: asRecord(detail).autostart_id, source_id: asRecord(detail).source_id }, $event)"
+              @change="toggleManagedAutostart({ id: recGet(detail, 'id'), kind: recGet(detail, 'kind'), autostart_id: recGet(detail, 'autostart_id'), source_id: recGet(detail, 'source_id') }, $event)"
             />
             <span>{{ t('apps.autostart_help') }}</span>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="asRecord(detail).path || asRecord(detail).compose_file || asRecord(detail).package || asRecord(detail).plist_hint">
+        <section class="drawer-sec" v-if="recGet(detail, 'path') || recGet(detail, 'compose_file') || recGet(detail, 'package') || recGet(detail, 'plist_hint')">
           <h3>{{ t('apps.sec_paths') }}</h3>
           <div class="kv-list mono">
-            <div v-if="finiteText(asRecord(detail).path, '')"><span class="k">path</span>{{ finiteText(asRecord(detail).path) }}</div>
-            <div v-if="finiteText(asRecord(detail).compose_file, '')"><span class="k">compose</span>{{ finiteText(asRecord(detail).compose_file) }}</div>
-            <div v-if="finiteText(asRecord(detail).package, '')"><span class="k">package</span>{{ finiteText(asRecord(detail).package) }}</div>
-            <div v-if="finiteText(asRecord(detail).plist_hint, '')"><span class="k">plist</span>{{ finiteText(asRecord(detail).plist_hint) }}</div>
-            <div v-if="finiteText(asRecord(detail).backend, '')"><span class="k">backend</span>{{ finiteText(asRecord(detail).backend) }}</div>
-            <div v-if="finiteText(asRecord(detail).uuid, '')"><span class="k">uuid</span>{{ finiteText(asRecord(detail).uuid) }}</div>
+            <div v-if="finiteText(recGet(detail, 'path'), '')"><span class="k">path</span>{{ finiteText(recGet(detail, 'path')) }}</div>
+            <div v-if="finiteText(recGet(detail, 'compose_file'), '')"><span class="k">compose</span>{{ finiteText(recGet(detail, 'compose_file')) }}</div>
+            <div v-if="finiteText(recGet(detail, 'package'), '')"><span class="k">package</span>{{ finiteText(recGet(detail, 'package')) }}</div>
+            <div v-if="finiteText(recGet(detail, 'plist_hint'), '')"><span class="k">plist</span>{{ finiteText(recGet(detail, 'plist_hint')) }}</div>
+            <div v-if="finiteText(recGet(detail, 'backend'), '')"><span class="k">backend</span>{{ finiteText(recGet(detail, 'backend')) }}</div>
+            <div v-if="finiteText(recGet(detail, 'uuid'), '')"><span class="k">uuid</span>{{ finiteText(recGet(detail, 'uuid')) }}</div>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).data_paths).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'data_paths')).length">
           <h3>{{ t('apps.sec_data') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(p,i) in asArray(asRecord(detail).data_paths)" :key="i">{{ finiteText(p) }}</li>
+            <li v-for="(p,i) in asArray(recGet(detail, 'data_paths'))" :key="finiteText(p) + ':' + i">{{ finiteText(p) }}</li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).databases).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'databases')).length">
           <h3>{{ t('apps.sec_db') }}</h3>
           <ul class="plain-list mono">
-            <li v-for="(d,i) in asArray(asRecord(detail).databases)" :key="i">{{ finiteText(asRecord(d).type) }} · {{ finiteText(asRecord(d).path) }} <span v-if="asRecord(d).mount">→ {{ finiteText(asRecord(d).mount) }}</span></li>
+            <li v-for="(d,i) in asArray(recGet(detail, 'databases'))" :key="finiteText(recGet(d, 'path')) + ':' + i">{{ finiteText(recGet(d, 'type')) }} · {{ finiteText(recGet(d, 'path')) }} <span v-if="recGet(d, 'mount')">→ {{ finiteText(recGet(d, 'mount')) }}</span></li>
           </ul>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).ports).length || asArray(asRecord(detail).listening).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'ports')).length || asArray(recGet(detail, 'listening')).length">
           <h3>{{ t('apps.sec_ports') }}</h3>
-          <table class="mini-table" v-if="asArray(asRecord(detail).ports).length">
+          <table class="mini-table" v-if="asArray(recGet(detail, 'ports')).length">
             <thead><tr><th>{{ t('apps.col_ports') }}</th><th>target</th><th>ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(p,i) in asArray(asRecord(detail).ports)" :key="i">
-                <td class="mono">{{ finiteText(asRecord(p).published) }}</td>
-                <td class="mono">{{ finiteText(asRecord(p).target) }}</td>
-                <td class="mono">{{ finiteText(asRecord(p).container, '') }}</td>
+              <tr v-for="(p,i) in asArray(recGet(detail, 'ports'))" :key="finiteText(recGet(p, 'published')) + ':' + finiteText(recGet(p, 'target')) + ':' + i">
+                <td class="mono">{{ finiteText(recGet(p, 'published')) }}</td>
+                <td class="mono">{{ finiteText(recGet(p, 'target')) }}</td>
+                <td class="mono">{{ finiteText(recGet(p, 'container'), '') }}</td>
               </tr>
             </tbody>
           </table>
-          <div v-if="asArray(asRecord(detail).listening).length" class="sub-line" style="margin-top:8px">
+          <div v-if="asArray(recGet(detail, 'listening')).length" class="sub-line" style="margin-top:8px">
             {{ t('apps.listening') }}:
-            <span v-for="(l,i) in asArray(asRecord(detail).listening)" :key="i" class="mono"> {{ finiteText(asRecord(l).name) }} </span>
+            <span v-for="(l,i) in asArray(recGet(detail, 'listening'))" :key="finiteText(recGet(l, 'name')) + ':' + i" class="mono"> {{ finiteText(recGet(l, 'name')) }} </span>
           </div>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).networks).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'networks')).length">
           <h3>{{ t('apps.sec_network') }}</h3>
           <table class="mini-table">
             <thead><tr><th>network</th><th>IP</th><th>gw / ctr</th></tr></thead>
             <tbody>
-              <tr v-for="(n,i) in asArray(asRecord(detail).networks)" :key="i">
-                <td class="mono">{{ finiteText(asRecord(n).network) }}</td>
-                <td class="mono">{{ finiteText(asRecord(n).ip) }}</td>
-                <td class="mono">{{ finiteText(asRecord(n).gateway, '') || finiteText(asRecord(n).container, '') }}</td>
+              <tr v-for="(n,i) in asArray(recGet(detail, 'networks'))" :key="finiteText(recGet(n, 'network')) + ':' + finiteText(recGet(n, 'ip')) + ':' + i">
+                <td class="mono">{{ finiteText(recGet(n, 'network')) }}</td>
+                <td class="mono">{{ finiteText(recGet(n, 'ip')) }}</td>
+                <td class="mono">{{ finiteText(recGet(n, 'gateway'), '') || finiteText(recGet(n, 'container'), '') }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).mounts).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'mounts')).length">
           <h3>{{ t('apps.sec_mounts') }}</h3>
           <table class="mini-table">
             <thead><tr><th>src</th><th>dst</th><th>type</th></tr></thead>
             <tbody>
-              <tr v-for="(m,i) in asArray(asRecord(detail).mounts)" :key="i">
-                <td class="mono path-cell" :title="finiteText(asRecord(m).source)">{{ finiteText(asRecord(m).source) }}</td>
-                <td class="mono">{{ finiteText(asRecord(m).destination) }}</td>
-                <td>{{ finiteText(asRecord(m).type) }}</td>
+              <tr v-for="(m,i) in asArray(recGet(detail, 'mounts'))" :key="finiteText(recGet(m, 'source')) + ':' + finiteText(recGet(m, 'destination')) + ':' + i">
+                <td class="mono path-cell" :title="finiteText(recGet(m, 'source'))">{{ finiteText(recGet(m, 'source')) }}</td>
+                <td class="mono">{{ finiteText(recGet(m, 'destination')) }}</td>
+                <td>{{ finiteText(recGet(m, 'type')) }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).containers).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'containers')).length">
           <h3>{{ t('apps.sec_containers') }}</h3>
           <table class="mini-table">
             <thead><tr><th>name</th><th>image</th><th>state</th><th>ports</th></tr></thead>
             <tbody>
-              <tr v-for="(c,i) in asArray(asRecord(detail).containers)" :key="i">
-                <td class="mono">{{ finiteText(asRecord(c).name) }}</td>
-                <td class="mono path-cell">{{ finiteText(asRecord(c).image) }}</td>
-                <td>{{ finiteText(asRecord(c).state) }}</td>
-                <td class="mono path-cell">{{ finiteText(asRecord(c).ports) }}</td>
+              <tr v-for="(c,i) in asArray(recGet(detail, 'containers'))" :key="finiteText(recGet(c, 'name')) + ':' + i">
+                <td class="mono">{{ finiteText(recGet(c, 'name')) }}</td>
+                <td class="mono path-cell">{{ finiteText(recGet(c, 'image')) }}</td>
+                <td>{{ finiteText(recGet(c, 'state')) }}</td>
+                <td class="mono path-cell">{{ finiteText(recGet(c, 'ports')) }}</td>
               </tr>
             </tbody>
           </table>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).ips).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'ips')).length">
           <h3>VM IP</h3>
-          <div class="mono">{{ asArray(asRecord(detail).ips).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
+          <div class="mono">{{ asArray(recGet(detail, 'ips')).map(ip => finiteText(ip, '')).filter(Boolean).join(', ') }}</div>
         </section>
 
-        <section class="drawer-sec" v-if="asArray(asRecord(detail).env_sample).length">
+        <section class="drawer-sec" v-if="asArray(recGet(detail, 'env_sample')).length">
           <h3>Env</h3>
-          <pre class="env-pre">{{ asArray(asRecord(detail).env_sample).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
+          <pre class="env-pre">{{ asArray(recGet(detail, 'env_sample')).map(n => finiteText(n, '')).filter(Boolean).join('\n') }}</pre>
         </section>
 
-        <section class="drawer-sec" v-if="asRecord(detail).notes">
+        <section class="drawer-sec" v-if="recGet(detail, 'notes')">
           <h3>{{ t('apps.sec_notes') }}</h3>
-          <p class="notes">{{ finiteText(asRecord(detail).notes) }}</p>
+          <p class="notes">{{ finiteText(recGet(detail, 'notes')) }}</p>
         </section>
 
-        <p class="sub-line" v-if="asRecord(detail).host_ip">Host IP: {{ finiteText(asRecord(detail).host_ip) }}</p>
+        <p class="sub-line" v-if="recGet(detail, 'host_ip')">Host IP: {{ finiteText(recGet(detail, 'host_ip')) }}</p>
       </aside>
     </div>
 
@@ -661,39 +661,39 @@
     <div ref="installPanel" v-if="installTpl" class="modal-bg" @click.self="installTpl = null" role="presentation">
       <div class="modal install-modal" role="dialog" aria-modal="true" aria-labelledby="apps-install-title">
         <div class="modal-head">
-          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ finiteText(asRecord(installTpl).name) }}</h3>
+          <h3 id="apps-install-title" class="modal-title">{{ t('apps.deploy') }} · {{ finiteText(recGet(installTpl, 'name')) }}</h3>
           <button type="button" @click="installTpl = null">{{ t('common.close') }}</button>
         </div>
-        <p class="modal-desc">{{ finiteText(asRecord(installTpl).desc) }}</p>
-        <p v-if="finiteText(asRecord(installTpl).notes, '')" class="notes">{{ finiteText(asRecord(installTpl).notes) }}</p>
+        <p class="modal-desc">{{ finiteText(recGet(installTpl, 'desc')) }}</p>
+        <p v-if="finiteText(recGet(installTpl, 'notes'), '')" class="notes">{{ finiteText(recGet(installTpl, 'notes')) }}</p>
         <!-- Elevated-access compose directives found when the remote template
              was synced: accepted (the admin's source choice is the trust
              root), but never silently. -->
-        <div v-if="asArray(asRecord(installTpl).compose_warnings).length" class="tpl-danger" role="alert">
+        <div v-if="asArray(recGet(installTpl, 'compose_warnings')).length" class="tpl-danger" role="alert">
           <strong>{{ t('catalog_remote.warn_title') }}</strong>
-          {{ asArray(asRecord(installTpl).compose_warnings).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
+          {{ asArray(recGet(installTpl, 'compose_warnings')).map((w) => finiteText(w, '')).filter(Boolean).map((w) => t(`catalog_remote.warn_${w}`)).join(' · ') }}
         </div>
-        <p v-if="asRecord(installTpl).source === 'remote' && asRecord(installTpl).builtin_available" class="tpl-danger" role="alert">
+        <p v-if="recGet(installTpl, 'source') === 'remote' && recGet(installTpl, 'builtin_available')" class="tpl-danger" role="alert">
           {{ t('catalog_remote.overrides_builtin_note') }}
         </p>
-        <p v-if="asRecord(installTpl).kind === 'native'" class="path-line mono">
-          → {{ t('apps.native_install') }} · {{ finiteText(asRecord(installTpl).method, '') || 'system' }}{{ finiteText(asRecord(installTpl).package, '') ? ` · ${finiteText(asRecord(installTpl).package)}` : '' }}
+        <p v-if="recGet(installTpl, 'kind') === 'native'" class="path-line mono">
+          → {{ t('apps.native_install') }} · {{ finiteText(recGet(installTpl, 'method'), '') || 'system' }}{{ finiteText(recGet(installTpl, 'package'), '') ? ` · ${finiteText(recGet(installTpl, 'package'))}` : '' }}
         </p>
-        <p v-else class="path-line mono">→ ~/Services/{{ finiteText(asRecord(installTpl).id) }}/docker-compose.yml</p>
+        <p v-else class="path-line mono">→ ~/Services/{{ finiteText(recGet(installTpl, 'id')) }}/docker-compose.yml</p>
 
-        <div v-if="asArray(asRecord(installTpl).vars).length" class="form-grid">
-          <template v-for="v in asArray(asRecord(installTpl).vars)" :key="finiteText(asRecord(v).name)">
-            <label class="form-label">{{ finiteText(asRecord(v).label, '') || finiteText(asRecord(v).name) }}</label>
+        <div v-if="asArray(recGet(installTpl, 'vars')).length" class="form-grid">
+          <template v-for="v in asArray(recGet(installTpl, 'vars'))" :key="finiteText(recGet(v, 'name'))">
+            <label class="form-label">{{ finiteText(recGet(v, 'label'), '') || finiteText(recGet(v, 'name')) }}</label>
             <div class="form-field">
 <!-- The form-label beside this grid cell is not associated (no for/id), so
                    the input had no accessible name; mirror the label's text. -->
               <input
-                v-model="installVars[asRecord(v).name]"
-                :type="asRecord(v).secret ? 'password' : 'text'"
-                :aria-label="finiteText(asRecord(v).label, '') || finiteText(asRecord(v).name)"
-                :placeholder="asRecord(v).default === '' && asRecord(v).secret ? t('apps.auto_password') : (asRecord(v).required === false ? t('apps.optional') : '')"
+                v-model="installVars[recGet(v, 'name')]"
+                :type="recGet(v, 'secret') ? 'password' : 'text'"
+                :aria-label="finiteText(recGet(v, 'label'), '') || finiteText(recGet(v, 'name'))"
+                :placeholder="recGet(v, 'default') === '' && recGet(v, 'secret') ? t('apps.auto_password') : (recGet(v, 'required') === false ? t('apps.optional') : '')"
               />
-              <div v-if="finiteText(asRecord(v).help, '')" class="field-help">{{ finiteText(asRecord(v).help) }}</div>
+              <div v-if="finiteText(recGet(v, 'help'), '')" class="field-help">{{ finiteText(recGet(v, 'help')) }}</div>
             </div>
           </template>
         </div>
@@ -757,20 +757,20 @@
           <div>{{ t('catalog_remote.load_failed') }}</div>
           <div class="sub mono" style="margin-top:4px">{{ finiteText(remoteError) }}</div>
         </div>
-        <p v-if="remoteInfo && !asRecord(remoteInfo).configured && !remoteUrl" class="sub-line">
+        <p v-if="remoteInfo && !recGet(remoteInfo, 'configured') && !remoteUrl" class="sub-line">
           {{ t('catalog_remote.not_configured') }}
         </p>
         <p v-if="finiteText(asRecord(remoteInfo)?.last_check, '')" class="sub-line">
-          {{ t('catalog_remote.last_check') }}: {{ finiteText(asRecord(remoteInfo).last_check) }}
-          <template v-if="asRecord(remoteInfo).last_result">
-            · {{ summaryLine(asRecord(remoteInfo).last_result) }}
+          {{ t('catalog_remote.last_check') }}: {{ finiteText(recGet(remoteInfo, 'last_check')) }}
+          <template v-if="recGet(remoteInfo, 'last_result')">
+            · {{ summaryLine(recGet(remoteInfo, 'last_result')) }}
           </template>
         </p>
         <div v-if="remoteResult" class="notes" role="status" style="margin-bottom:10px">
           {{ summaryLine(remoteResult) }}
-          <ul v-if="asArray(remoteResult.rejected).length" class="plain-list mono" style="margin-top:6px">
-            <li v-for="r in asArray(remoteResult.rejected)" :key="r.id">
-              {{ finiteText(r.id) }} — {{ t(`catalog_remote.reject_${r.reason}`) }}
+          <ul v-if="asArray(recGet(remoteResult, 'rejected')).length" class="plain-list mono" style="margin-top:6px">
+            <li v-for="r in asArray(recGet(remoteResult, 'rejected'))" :key="finiteText(recGet(r, 'id'))">
+              {{ finiteText(recGet(r, 'id')) }} — {{ t(`catalog_remote.reject_${recGet(r, 'reason')}`) }}
             </li>
           </ul>
         </div>
@@ -779,9 +779,9 @@
           <table class="mini-table">
             <thead><tr><th>id</th><th>{{ t('catalog_remote.col_version') }}</th><th><span class="sr-only">{{ t('common.actions') }}</span></th></tr></thead>
             <tbody>
-              <tr v-for="o in asArray(asRecord(remoteInfo).overrides)" :key="finiteText(asRecord(o).id)">
-                <td class="mono">{{ finiteText(asRecord(o).id) }}</td>
-                <td class="mono">{{ finiteText(asRecord(o).version) }}</td>
+              <tr v-for="o in asArray(recGet(remoteInfo, 'overrides'))" :key="finiteText(recGet(o, 'id'))">
+                <td class="mono">{{ finiteText(recGet(o, 'id')) }}</td>
+                <td class="mono">{{ finiteText(recGet(o, 'version')) }}</td>
                 <td>
                   <button type="button" class="act-btn" :disabled="remoteBusy" @click="restoreBuiltin(o)">
                     {{ t('catalog_remote.restore_builtin') }}
@@ -846,7 +846,7 @@ import {
   uninstallCatalog,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { finiteN, finiteText, asArray, asRecord, jsonText } from '../lib/finite'
+import { finiteN, finiteText, asArray, asRecord, asTrimmed, jsonText, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -967,7 +967,10 @@ const CAT_I18N = {
 
 const jobMap = computed(() => {
   const m = {}
-  for (const j of asArray(jobs.value)) if (j.stack_id) m[j.stack_id] = j.job_id
+  for (const j of asArray(jobs.value)) {
+    const stackId = recGet(j, 'stack_id')
+    if (stackId) m[stackId] = recGet(j, 'job_id')
+  }
   return m
 })
 
@@ -977,18 +980,17 @@ function fieldText(value) {
 }
 
 const filteredManaged = computed(() => {
-  let list = asArray(asRecord(managed.value).items)
-  if (mkind.value !== 'all') list = list.filter(x => asRecord(x).kind === mkind.value)
+  let list = asArray(recGet(managed.value, 'items'))
+  if (mkind.value !== 'all') list = list.filter((x) => recGet(x, 'kind') === mkind.value)
   const rawQ = mq.value
-  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
+  const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
-    list = list.filter(x => {
-      const rec = asRecord(x)
-      return fieldText(rec.name).toLowerCase().includes(s)
-        || fieldText(rec.id).toLowerCase().includes(s)
-        || fieldText(rec.path).toLowerCase().includes(s)
-        || fieldText(rec.package).toLowerCase().includes(s)
-        || fieldText(rec.ports_summary).toLowerCase().includes(s)
+    list = list.filter((x) => {
+      return fieldText(recGet(x, 'name')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'id')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'path')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'package')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'ports_summary')).toLowerCase().includes(s)
     })
   }
   return list
@@ -996,16 +998,16 @@ const filteredManaged = computed(() => {
 
 const autostartGroups = computed(() => {
   const bag = asRecord(autostart.value)
-  const g = asArray(bag.groups)
+  const g = asArray(recGet(bag, 'groups'))
   if (g.length) return g
-  const set = new Set(asArray(bag.items).map(i => asRecord(i).group || t('common.other')))
+  const set = new Set(asArray(recGet(bag, 'items')).map(i => recGet(i, 'group') || t('common.other')))
   return [...set]
 })
 
 const autostartByGroup = computed(() => {
   const m = {}
-  for (const it of asArray(asRecord(autostart.value).items)) {
-    const g = asRecord(it).group || t('common.other')
+  for (const it of asArray(recGet(autostart.value, 'items'))) {
+    const g = recGet(it, 'group') || t('common.other')
     ;(m[g] || (m[g] = [])).push(it)
   }
   return m
@@ -1020,7 +1022,7 @@ const autostartByGroup = computed(() => {
  * carrying it covers the page.
  */
 function firstLine(message) {
-  const text = String(finiteText(message, '') || '').trim()
+  const text = asTrimmed(finiteText(message, ''))
   if (!text) return t('common.fail')
   return text.split('\n')[0]
 }
@@ -1048,12 +1050,14 @@ function stateLabel(s) {
 function canAct(it, act) {
   if (!it) return false
   if (act === 'uninstall') return true
-  const acts = asArray(it.actions)
+  const acts = asArray(recGet(it, 'actions'))
   if (acts.includes(act)) return true
   // fallbacks when backend omits flags
-  if (act === 'logs' && (it.kind === 'docker' || it.kind === 'native' || it.kind === 'launchd')) return true
-  if (act === 'start' && (it.state === 'down' || it.state === 'stopped')) return true
-  if (act === 'stop' && it.state === 'ok' && it.kind !== 'native') return true
+  const kind = recGet(it, 'kind')
+  const state = recGet(it, 'state')
+  if (act === 'logs' && (kind === 'docker' || kind === 'native' || kind === 'launchd')) return true
+  if (act === 'start' && (state === 'down' || state === 'stopped')) return true
+  if (act === 'stop' && state === 'ok' && kind !== 'native') return true
   if (act === 'restart' && it.state === 'ok') return true
   return false
 }
@@ -1073,7 +1077,7 @@ function isScreenSharing(it) {
 
 function browseHost() {
   return finiteText(window.location.hostname, '')
-    || finiteText(asRecord(managed.value).host_ip, '')
+    || finiteText(recGet(managed.value, 'host_ip'), '')
     || 'localhost'
 }
 
@@ -1096,8 +1100,8 @@ function openUrl(it) {
     return `http://${browseHost()}:${m[1]}`
   }
   // native ports list like "8125"
-  if (ps && /^\d{2,5}/.test(ps.trim())) {
-    const port = ps.trim().split(/[,\s]/)[0]
+  if (ps && /^\d{2,5}/.test(asTrimmed(ps))) {
+    const port = asTrimmed(ps).split(/[,\s]/)[0]
     if (!['1883', '5432', '6379', '3306', '5900', '9100'].includes(port)) {
       return `http://${browseHost()}:${port}`
     }
@@ -1112,12 +1116,12 @@ function catalogOpenUrl(tpl) {
     const host = finiteText(window.location.hostname, '') || 'localhost'
     return `vnc://${host}`
   }
-  const hinted = finiteText(tpl.url_hint, '') || finiteText(tpl.url, '')
+  const hinted = finiteText(recGet(tpl, 'url_hint'), '') || finiteText(recGet(tpl, 'url'), '')
   if (hinted) return hinted
-  const ut = finiteText(tpl.url_template, '')
+  const ut = finiteText(recGet(tpl, 'url_template'), '')
   if (!ut) {
     // ports-only fallback for web-ish services
-    const ports = asArray(asRecord(tpl).ports)
+    const ports = asArray(recGet(tpl, 'ports'))
     for (const p of ports) {
       const ps = fieldText(p).split('/')[0]
       if (/^\d+$/.test(ps) && !['1883', '5432', '6379', '3306', '5900', '9100', '22000', '53'].includes(ps)) {
@@ -1129,10 +1133,12 @@ function catalogOpenUrl(tpl) {
   }
   const host = finiteText(window.location.hostname, '') || 'localhost'
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
-  const vars = asArray(tpl.vars)
+  const vars = asArray(recGet(tpl, 'vars'))
   for (const v of vars) {
-    if (v && v.name && v.default != null && v.default !== '') {
-      out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
+    const name = recGet(v, 'name')
+    const def = recGet(v, 'default')
+    if (name && def != null && def !== '') {
+      out = out.replaceAll(`{{${finiteText(name, '')}}}`, String(finiteText(def, '')))
     }
   }
   // leftover placeholders → not a usable URL
@@ -1182,7 +1188,7 @@ async function launchOpenInner(it, u) {
         const id = (it.id && String(it.id).includes(':'))
           ? it.id
           : `native:${it.source_id || it.id || 'native-screen-sharing'}`
-        const result = await manageApp(id, 'open')
+        const result = asRecord(await manageApp(id, 'open'))
         if (!stillOnApps(generation)) return
         if (result.ok) {
           toast(`✅ ${t('apps.open_url')} · ${result.url || u}`)
@@ -1206,7 +1212,7 @@ function goManage(tpl) {
     const id = tpl.kind === 'native'
       ? `native:${tpl.id}`
       : `docker:${tpl.id}`
-    const hit = asArray(asRecord(managed.value).items).find(x => asRecord(x).id === id || asRecord(x).source_id === tpl.id)
+    const hit = asArray(recGet(managed.value, 'items')).find(x => recGet(x, 'id') === id || recGet(x, 'source_id') === tpl.id)
     if (hit) openDetail(hit)
   }, 400)
 }
@@ -1221,7 +1227,7 @@ async function loadManaged(force = false) {
     if (generation !== managedGeneration) return
     managed.value = {
       ...payload,
-      items: asArray(payload.items),
+      items: asArray(recGet(payload, 'items')),
       counts: payload.counts == null ? null : asRecord(payload.counts),
     }
     managedError.value = ''
@@ -1245,12 +1251,13 @@ async function loadManaged(force = false) {
 
 function softText(j, fallbackKey = 'common.fail') {
   const rec = asRecord(j)
-  if (rec.code) {
-    const key = `err.${rec.code}`
-    const translated = t(key, asRecord(rec.params))
+  const code = recGet(rec, 'code')
+  if (code) {
+    const key = `err.${code}`
+    const translated = t(key, asRecord(recGet(rec, 'params')))
     if (translated !== key) return translated
   }
-  return finiteText(rec.message, '') || t(fallbackKey)
+  return finiteText(recGet(rec, 'message'), '') || t(fallbackKey)
 }
 
 let appsDataGeneration = 0
@@ -1268,8 +1275,8 @@ async function loadAutostart(force = false) {
     if (generation !== appsDataGeneration) return
     autostart.value = {
       ...payload,
-      items: asArray(payload.items),
-      groups: asArray(payload.groups),
+      items: asArray(recGet(payload, 'items')),
+      groups: asArray(recGet(payload, 'groups')),
       counts: payload.counts == null ? null : asRecord(payload.counts),
     }
     autostartError.value = ''
@@ -1287,13 +1294,13 @@ async function loadAutostart(force = false) {
 
 async function setAutostartItem(it, enabled) {
   const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
-  if (!confirm(t(key, { name: finiteText(asRecord(it).name) }))) return
+  if (!confirm(t(key, { name: finiteText(recGet(it, 'name')) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await setAppAutostart(it.id, enabled)
+    const result = asRecord(await setAppAutostart(it.id, enabled))
     if (!stillOnApps(generation)) return
-    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(asRecord(it).name)}` : '❌ ' + softText(result))
+    toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')} · ${finiteText(recGet(it, 'name'))}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
     await Promise.all([loadAutostart(true), loadManaged(true)])
   } catch (e) {
@@ -1305,12 +1312,12 @@ async function setAutostartItem(it, enabled) {
 }
 
 async function setDockerPolicy(it, policy) {
-  if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id), policy: finiteText(policy) }))) return
+  if (!confirm(t('apps.confirm_docker_policy', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')), policy: finiteText(policy) }))) return
   const name = fieldText(it.id).replace(/^docker-ctr:/, '').replace(/^docker:/, '')
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await setDockerAutostartPolicy(name, policy)
+    const result = asRecord(await setDockerAutostartPolicy(name, policy))
     if (!stillOnApps(generation)) return
     toast(result.ok ? `✅ restart=${finiteText(policy)}` : '❌ ' + softText(result))
     // Disjoint state (`autostart` vs `managed`) re-read after the same write.
@@ -1328,7 +1335,7 @@ async function runAutostartNow() {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await runAppAutostartNow()
+    const result = asRecord(await runAppAutostartNow())
     if (!stillOnApps(generation)) return
     toast(result.ok ? '✅ ' + (finiteText(result.message, '') || t('common.ok')) : '❌ ' + softText(result))
     // This starts every autostart-enabled app, so the table it was launched from
@@ -1347,17 +1354,17 @@ async function runAutostartNow() {
 async function toggleManagedAutostart(it, enabled) {
   if (!it.autostart_id) {
     const key = enabled ? 'apps.confirm_autostart_on' : 'apps.confirm_autostart_off'
-    if (!confirm(t(key, { name: finiteText(asRecord(it).name) }))) return
+    if (!confirm(t(key, { name: finiteText(recGet(it, 'name')) }))) return
   }
   const generation = appsDataGeneration
   busy.value = true
   try {
     // Prefer dedicated autostart_id (brew:xxx) when present
     if (it.autostart_id) {
-      await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled)
+      const r = asRecord(await setAutostartItem({ id: it.autostart_id, name: it.name }, enabled))
       return
     }
-    const result = await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off')
+    const result = asRecord(await manageApp(it.id, enabled ? 'autostart_on' : 'autostart_off'))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${enabled ? t('apps.auto_on') : t('apps.auto_off')}` : '❌ ' + softText(result))
     await loadManaged(true)
@@ -1423,7 +1430,7 @@ async function cfRefresh() {
   try {
     const status = asRecord(await getCloudflareStatus())
     if (!stillOnApps(generation)) return
-    cfStatus.value = { ...status, tunnels: asArray(status.tunnels) }
+    cfStatus.value = { ...status, tunnels: asArray(recGet(status, 'tunnels')) }
     if (status.active_tunnel && !cfSelectedTunnel.value) {
       cfSelectedTunnel.value = status.active_tunnel
     }
@@ -1693,7 +1700,7 @@ async function saveCredential(applyToService) {
   const generation = detailGeneration
   credentialBusy.value = true
   try {
-    const result = await saveAppCredential({
+    const result = asRecord(await saveAppCredential({
       service_id: detail.value.id,
       display_name: finiteText(detail.value.name, '') || finiteText(detail.value.id),
       username: f.username,
@@ -1701,9 +1708,9 @@ async function saveCredential(applyToService) {
       url: f.url,
       notes: f.notes,
       apply_to_service: !!applyToService,
-    })
+    }))
     if (generation !== detailGeneration || !pageAlive) return
-    credential.value = result.credential
+    credential.value = asRecord(result.credential)
     credentialForm.value.password = ''
     credentialForm.value.confirm = ''
     showCredentialPassword.value = false
@@ -1723,7 +1730,7 @@ async function deleteCredential() {
   const generation = detailGeneration
   credentialBusy.value = true
   try {
-    await deleteAppCredential(detail.value.id)
+    const r = asRecord(await deleteAppCredential(detail.value.id))
     if (generation !== detailGeneration || !pageAlive) return
     await loadCredential(detail.value)
     if (generation !== detailGeneration || !pageAlive) return
@@ -1747,7 +1754,7 @@ async function openManagedLogs(it) {
   curJob.value = null
   const generation = ++managedLogGeneration
   logOpen.value = true
-  logTitle.value = (finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id)) + ' · logs'
+  logTitle.value = (finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id'))) + ' · logs'
   logText.value = t('common.loading')
   try {
     const result = asRecord(await getManagedAppLogs(it.id, 150))
@@ -1765,11 +1772,11 @@ async function openManagedLogs(it) {
 async function doManagedAction(it, action) {
   if (!it?.id) return
   if (['stop', 'restart', 'update'].includes(action)
-    && !confirm(t('services.confirm_action', { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id), action: finiteText(action) }))) return
+    && !confirm(t('services.confirm_action', { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')), action: finiteText(action) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await manageApp(it.id, action)
+    const result = asRecord(await manageApp(it.id, action))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${finiteText(action)}` : '❌ ' + softText(result))
     await loadManaged(true)
@@ -1788,7 +1795,7 @@ async function doManagedUninstall(it) {
   const confirmKey = it.kind === 'launchd'
     ? 'apps.confirm_uninstall_launchd'
     : 'apps.confirm_uninstall_managed'
-  if (!confirm(t(confirmKey, { name: finiteText(asRecord(it).name, '') || finiteText(asRecord(it).id) }))) return
+  if (!confirm(t(confirmKey, { name: finiteText(recGet(it, 'name'), '') || finiteText(recGet(it, 'id')) }))) return
   const removeData = it.kind === 'docker'
     ? confirm(t('apps.confirm_remove_data'))
     : it.kind === 'launchd'
@@ -1797,7 +1804,7 @@ async function doManagedUninstall(it) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const result = await manageApp(it.id, 'uninstall', removeData)
+    const result = asRecord(await manageApp(it.id, 'uninstall', removeData))
     if (!stillOnApps(generation)) return
     toast(result.ok !== false ? `✅ ${t('apps.uninstalled')}` : '❌ ' + softText(result))
     detail.value = null
@@ -1814,31 +1821,30 @@ const quickCats = computed(() => {
   const prefer = ['all', 'native', 'docker', 'featured', 'network', 'remote', 'media', 'files', 'ops', 'monitor']
   const map = Object.fromEntries(asArray(categories.value).map((c) => {
     const rec = asRecord(c)
-    return [rec.id, rec]
+    return [recGet(rec, 'id'), rec]
   }))
   return prefer.map(id => map[id] || { id, label: id }).filter(Boolean)
 })
 
 const filtered = computed(() => {
   let list = asArray(catalog.value)
-  if (cat.value === 'featured') list = list.filter(x => asRecord(x).featured)
-  else if (cat.value === 'native') list = list.filter(x => asRecord(x).kind === 'native')
-  else if (cat.value === 'docker') list = list.filter(x => (asRecord(x).kind || 'docker') === 'docker')
-  else if (cat.value && cat.value !== 'all') list = list.filter(x => asRecord(x).category === cat.value)
-  if (onlyFeatured.value) list = list.filter(x => asRecord(x).featured)
-  if (hideInstalled.value) list = list.filter(x => !asRecord(x).installed)
+  if (cat.value === 'featured') list = list.filter((x) => recGet(x, 'featured'))
+  else if (cat.value === 'native') list = list.filter((x) => recGet(x, 'kind') === 'native')
+  else if (cat.value === 'docker') list = list.filter((x) => (recGet(x, 'kind') || 'docker') === 'docker')
+  else if (cat.value && cat.value !== 'all') list = list.filter((x) => recGet(x, 'category') === cat.value)
+  if (onlyFeatured.value) list = list.filter((x) => recGet(x, 'featured'))
+  if (hideInstalled.value) list = list.filter((x) => !recGet(x, 'installed'))
   const rawQ = q.value
-  const s = typeof rawQ === 'string' ? rawQ.trim().toLowerCase() : ''
+  const s = asTrimmed(rawQ).toLowerCase()
   if (s) {
-    list = list.filter(x => {
-      const rec = asRecord(x)
-      return fieldText(rec.name).toLowerCase().includes(s)
-        || fieldText(rec.desc).toLowerCase().includes(s)
-        || fieldText(rec.id).toLowerCase().includes(s)
-        || fieldText(rec.package).toLowerCase().includes(s)
-        || asArray(rec.tags).some(tg => fieldText(tg).toLowerCase().includes(s))
-        || fieldText(rec.category).toLowerCase().includes(s)
-        || fieldText(rec.kind).toLowerCase().includes(s)
+    list = list.filter((x) => {
+      return fieldText(recGet(x, 'name')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'desc')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'id')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'package')).toLowerCase().includes(s)
+        || asArray(recGet(x, 'tags')).some((tg) => fieldText(tg).toLowerCase().includes(s))
+        || fieldText(recGet(x, 'category')).toLowerCase().includes(s)
+        || fieldText(recGet(x, 'kind')).toLowerCase().includes(s)
     })
   }
   return list
@@ -1850,28 +1856,28 @@ function catLabel(id) {
     const tr = t(key)
     if (tr && tr !== key) return tr
   }
-  const c = asArray(categories.value).find(x => x.id === id)
+  const c = asArray(categories.value).find(x => recGet(x, 'id') === id)
   return finiteText(c?.label, '') || finiteText(id, '') || 'other'
 }
 
 function countLabel(id) {
   if (id === 'all') {
-    const n = finiteN(overview.value.total, null)
+    const n = finiteN(recGet(overview.value, 'total'), null)
     return n != null ? ` (${n})` : ''
   }
   if (id === 'featured') {
-    const n = asArray(catalog.value).filter(x => x.featured).length
+    const n = asArray(catalog.value).filter(x => recGet(x, 'featured')).length
     return n ? ` (${n})` : ''
   }
   if (id === 'native') {
-    const n = finiteN(overview.value.native_count, null)
+    const n = finiteN(recGet(overview.value, 'native_count'), null)
     return n != null ? ` (${n})` : ''
   }
   if (id === 'docker') {
-    const n = finiteN(overview.value.docker_count, null)
+    const n = finiteN(recGet(overview.value, 'docker_count'), null)
     return n != null ? ` (${n})` : ''
   }
-  const n = finiteN(asRecord(overview.value.counts)[id], null)
+  const n = finiteN(recGet(recGet(overview.value, 'counts'), id), null)
   return n ? ` (${n})` : ''
 }
 
@@ -1881,8 +1887,8 @@ async function refresh(manual = false) {
   try {
     const d = asRecord(await getStacks())
     if (generation !== appsDataGeneration) return
-    stacks.value = asArray(d.stacks)
-    jobs.value = asArray(d.jobs)
+    stacks.value = asArray(recGet(d, 'stacks'))
+    jobs.value = asArray(recGet(d, 'jobs'))
   } catch (e) {
     if (generation !== appsDataGeneration) return
     // The job-completion poll calls this in the background (the server, not
@@ -1899,9 +1905,9 @@ async function loadCatalog() {
   try {
     const d = asRecord(await getCatalog())
     if (generation !== appsDataGeneration) return
-    catalog.value = asArray(d.templates)
+    catalog.value = asArray(recGet(d, 'templates'))
     overview.value = d
-    const cats = asArray(d.categories)
+    const cats = asArray(recGet(d, 'categories'))
     if (cats.length) categories.value = cats
     catalogError.value = ''
   } catch (e) {
@@ -1919,9 +1925,9 @@ function openInstall(tpl) {
   installUrl.value = ''
   installCreds.value = ''
   const vars = {}
-  for (const v of asArray(asRecord(tpl).vars)) {
+  for (const v of asArray(recGet(tpl, 'vars'))) {
     const rec = asRecord(v)
-    if (rec.name) vars[rec.name] = rec.default || ''
+    if (recGet(rec, 'name')) vars[recGet(rec, 'name')] = recGet(rec, 'default') || ''
   }
   installVars.value = vars
 }
@@ -1932,7 +1938,7 @@ function summaryLine(r) {
   return t('catalog_remote.result_summary', {
     added: finiteN(Array.isArray(r.added) ? r.added.length : r.added, 0),
     updated: finiteN(Array.isArray(r.updated) ? r.updated.length : r.updated, 0),
-    unchanged: finiteN(r.unchanged, 0),
+    unchanged: finiteN(recGet(r, 'unchanged'), 0),
     rejected: finiteN(Array.isArray(r.rejected) ? r.rejected.length : r.rejected, 0),
   })
 }
@@ -1964,7 +1970,7 @@ async function saveRemoteSource() {
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
-    await setCatalogRemoteSource(remoteUrl.value.trim())
+    const r = asRecord(await setCatalogRemoteSource(asTrimmed(remoteUrl.value)))
     if (!stillOnApps(generation)) return
     toast('✅ ' + t('catalog_remote.saved'))
     await loadRemote()
@@ -2003,7 +2009,7 @@ async function checkRemoteUpdates() {
 }
 
 async function restoreBuiltin(item) {
-  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(asRecord(item).id) }))) return
+  if (!confirm(t('catalog_remote.restore_confirm', { id: finiteText(recGet(item, 'id')) }))) return
   const generation = appsDataGeneration
   remoteBusy.value = true
   try {
@@ -2032,8 +2038,8 @@ async function doInstall() {
   if (!installTpl.value) return
   const isNative = installTpl.value.kind === 'native'
   const msg = isNative
-    ? t('apps.confirm_native', { name: finiteText(asRecord(installTpl.value).name) })
-    : t('apps.confirm_msg', { name: finiteText(asRecord(installTpl.value).name), id: finiteText(asRecord(installTpl.value).id) })
+    ? t('apps.confirm_native', { name: finiteText(recGet(installTpl.value, 'name')) })
+    : t('apps.confirm_msg', { name: finiteText(recGet(installTpl.value, 'name')), id: finiteText(recGet(installTpl.value, 'id')) })
   if (!confirm(msg)) return
   const generation = appsDataGeneration
   busy.value = true
@@ -2043,22 +2049,22 @@ async function doInstall() {
   try {
     const r = asRecord(await installCatalog(installTpl.value.id, installVars.value))
     if (!stillOnApps(generation)) return
-    installLog.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n→ ${finiteText(r.path)}` : '')
-    if (finiteText(r.notes, '')) installLog.value += `\n\n${finiteText(r.notes)}`
-    const url = finiteText(r.url, '') || finiteText(r.url_hint, '')
+    installLog.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n→ ${finiteText(recGet(r, 'path'))}` : '')
+    if (finiteText(recGet(r, 'notes'), '')) installLog.value += `\n\n${finiteText(recGet(r, 'notes'))}`
+    const url = finiteText(recGet(r, 'url'), '') || finiteText(recGet(r, 'url_hint'), '')
     if (url) installUrl.value = url
     // Surface the upstream default login only once something actually
     // deployed; the field also rides the listing, so fall back to it for
     // installs whose backend predates the response field.
-    if (r.ok) {
-      installCreds.value = finiteText(r.first_run_credentials, '') || finiteText(installTpl.value.first_run_credentials, '')
+    if (recGet(r, 'ok')) {
+      installCreds.value = finiteText(recGet(r, 'first_run_credentials'), '') || finiteText(recGet(installTpl.value, 'first_run_credentials'), '')
     }
     // First line only in the toast. A failure message can be several lines --
     // a pkg-based cask, for instance, explains that brew cannot be elevated and
     // prints the command to run on the Mac instead. The full text is right there
     // in installLog; a five-line toast just hides the rest of the page.
-    toast(r.ok ? `✅ ${finiteText(asRecord(installTpl.value).name)}` : '❌ ' + firstLine(r.message))
-    if (r.ok) {
+    toast(recGet(r, 'ok') ? `✅ ${finiteText(recGet(installTpl.value, 'name'))}` : '❌ ' + firstLine(recGet(r, 'message')))
+    if (recGet(r, 'ok')) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
       await Promise.all([loadCatalog(), loadManaged(true), refresh(true)])
@@ -2076,8 +2082,8 @@ async function doUninstall(tpl) {
   const isNative = tpl.kind === 'native'
   if (!confirm(
     isNative
-      ? t('apps.confirm_uninstall_native', { name: finiteText(asRecord(tpl).name) })
-      : t('apps.confirm_uninstall', { name: finiteText(asRecord(tpl).name), id: finiteText(asRecord(tpl).id) })
+      ? t('apps.confirm_uninstall_native', { name: finiteText(recGet(tpl, 'name')) })
+      : t('apps.confirm_uninstall', { name: finiteText(recGet(tpl, 'name')), id: finiteText(recGet(tpl, 'id')) })
   )) return
 
   // Docker: optional keep compose dir (default remove)
@@ -2091,9 +2097,9 @@ async function doUninstall(tpl) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const r = await uninstallCatalog(tpl.id, { remove_data: removeData })
+    const r = asRecord(await uninstallCatalog(tpl.id, { remove_data: removeData }))
     if (!stillOnApps(generation)) return
-    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(asRecord(tpl).name)}` : '❌ ' + firstLine(r.message))
+    toast(r.ok ? `✅ ${t('apps.uninstalled')} ${finiteText(recGet(tpl, 'name'))}` : '❌ ' + firstLine(r.message))
     if (r.message && !r.ok) {
       // show detail in console-friendly toast only; full msg may be long
     }
@@ -2109,15 +2115,15 @@ async function doUninstall(tpl) {
 }
 
 async function run(s, action) {
-  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(asRecord(s).name) }))) return
-  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(asRecord(s).name) }))) return
+  if (action === 'down' && !confirm(t('apps.confirm_down', { name: finiteText(recGet(s, 'name')) }))) return
+  if (action === 'update' && !confirm(t('apps.confirm_update', { name: finiteText(recGet(s, 'name')) }))) return
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const r = await runStack(s.id, action)
+    const r = asRecord(await runStack(recGet(s, 'id'), action))
     if (!stillOnApps(generation)) return
-    toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
-    if (r.job_id) openJob(r.job_id, s.name)
+    toast('🚀 ' + (finiteText(recGet(r, 'message'), '') || t('common.ok')))
+    if (recGet(r, 'job_id')) openJob(recGet(r, 'job_id'), recGet(s, 'name'))
     refresh(true)
   } catch (e) {
     if (!stillOnApps(generation)) return
@@ -2144,15 +2150,15 @@ function openJob(jobId, title) {
     try {
       const j = asRecord(await getStackJob(curJob.value))
       if (generation !== jobPollGeneration) return
-      logText.value = finiteText(j.log, '') + (j.running ? '\n⏳…' : '')
-      if (!j.running) {
+      logText.value = finiteText(recGet(j, 'log'), '') + (recGet(j, 'running') ? '\n⏳…' : '')
+      if (!recGet(j, 'running')) {
         stopJobPolling()
         refresh()
         return
       }
     } catch (e) {
       if (generation !== jobPollGeneration) return
-      logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
+      logText.value = asTrimmed(`${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`)
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }

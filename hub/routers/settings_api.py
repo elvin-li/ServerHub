@@ -421,7 +421,7 @@ def _jsonable(value, depth: int = 0):
 
 def _text(value, default: str = "") -> str:
     cleaned = _jsonable(value)
-    return cleaned if isinstance(cleaned, str) and cleaned else default
+    return cleaned if _isa(cleaned, str) and cleaned else default
 
 
 def _finite(value, default):
@@ -503,8 +503,19 @@ def _epoch(value, default: int = 0) -> int:
 
 def _flag(value, default: bool = True) -> bool:
     # _isa: a ``__class__``-property bomb flag used to detonate the bare
-    # gate itself instead of answering *default*.
-    return value if _isa(value, bool) else default
+    # gate itself instead of answering *default*.  Identity on the inner
+    # arm: a lying ``__class__`` impostor used to ride through ``return
+    # value`` into GET /api/settings JSON.
+    if _isa(value, bool):
+        if type(value) is bool:
+            return value
+        try:
+            return bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return default
+    return default
 
 
 def _truthy(value) -> bool:
@@ -518,7 +529,14 @@ def _truthy(value) -> bool:
     # _isa: a ``__class__``-property bomb used to detonate this bare gate
     # one line ahead of the guarded bool() below.
     if _isa(value, bool):
-        return value
+        if type(value) is bool:
+            return value
+        try:
+            return bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return False
     try:
         return bool(value)
     except _CONTROL_FLOW:
@@ -531,7 +549,7 @@ def _json_list(value) -> list:
     # _isa: a ``__class__``-property bomb riding stacks / log_sources /
     # groups_order used to detonate the bare gate itself.
     cleaned = _jsonable(value if _isa(value, (list, tuple, set, frozenset)) else [])
-    return cleaned if isinstance(cleaned, list) else []
+    return cleaned if _isa(cleaned, list) else []
 
 
 def _public_settings() -> dict:
@@ -552,7 +570,7 @@ def _public_settings() -> dict:
         density = "compact"
     ollama = _as_map(s.get("ollama"))
     aliases = _jsonable(_as_map(s.get("ip_aliases")))
-    if not isinstance(aliases, dict):
+    if not _isa(aliases, dict):
         aliases = {}
     # ``password and password != "change-me"`` reflects into the leftover's
     # own ``__bool__`` / ``__ne__``; a subclass bomb there used to 500 the
@@ -853,10 +871,10 @@ def _redact_export(node, depth: int = 0):
     # export after yaml.safe_load succeeded (RecursionError is not YAMLError).
     if depth > 64:
         return None
-    if isinstance(node, dict):
+    if _isa(node, dict):
         out = {}
         for k, v in node.items():
-            if not isinstance(k, str):
+            if not _isa(k, str):
                 try:
                     k = str(k)
                 except _CONTROL_FLOW:
@@ -869,9 +887,9 @@ def _redact_export(node, depth: int = 0):
             else:
                 out[k] = _redact_export(v, depth + 1)
         return out
-    if isinstance(node, list):
+    if _isa(node, list):
         return [_redact_export(v, depth + 1) for v in node]
-    if isinstance(node, str):
+    if _isa(node, str):
         return _utf8_text(node)
     return node
 
@@ -897,7 +915,7 @@ def export_services_yaml():
         data = load_yaml_int_capped(
             read_text_capped(CONFIG_FILE, _YAML_CAP, encoding="utf-8")
         ) or {}
-        if not isinstance(data, dict):
+        if not _isa(data, dict):
             raise api_error("system_settings.export_failed")
 
         # An already-parsed over-cap int (YAML hex loads uncapped through
@@ -961,7 +979,7 @@ def _audit_backup_run(kind: str, request: Request | None, result) -> None:
         username=request_username(request) if request is not None else "",
         client=request_client_id(request),
         kind=kind,
-        ok=bool(result.get("ok")) if isinstance(result, dict) else None,
+        ok=bool(result.get("ok")) if _isa(result, dict) else None,
     )
 
 

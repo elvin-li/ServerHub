@@ -345,7 +345,7 @@ def _diskutil_info(node: str) -> dict:
         # _root_info rule).
         if _rc_int(rc) == 0 and stdout:
             parsed = plistlib.loads(stdout)
-            return parsed if isinstance(parsed, dict) else {}
+            return parsed if _isa(parsed, dict) else {}
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -769,7 +769,7 @@ def sleep_disk(disk_id: str, mode: str = "sleep") -> dict:
     except BaseException:
         rows = []
     for row in rows:
-        if not isinstance(row, dict):
+        if not _isa(row, dict):
             continue
         if type(row) is not dict:
             try:

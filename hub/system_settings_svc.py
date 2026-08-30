@@ -60,9 +60,9 @@ def _rc_int(rc) -> int:
     sentinel, so junk cannot forge the vanished-pmset 503 either.
     """
     try:
-        if isinstance(rc, bool):
+        if _isa(rc, bool):
             return int(rc)
-        if isinstance(rc, int):
+        if _isa(rc, int):
             return int.__index__(rc)
         return int(rc)
     except _CONTROL_FLOW:
@@ -145,7 +145,7 @@ def _utf8_text(value) -> str:
             # bytes.  The try is for a *lying* ``__class__`` (claims bytes,
             # is not): the unbound call TypeErrors and the impostor renders
             # like any other junk object below instead of 500ing.
-            base = bytes if isinstance(value, bytes) else bytearray
+            base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
         except _CONTROL_FLOW:
             raise
@@ -183,7 +183,7 @@ def _as_text(value) -> str:
             # bomb (and the bound ``.decode`` was the subclass's own) — either
             # one raised out of the sanitizer.  The try is for a lying
             # ``__class__`` impostor, which renders as junk text below.
-            base = bytes if isinstance(value, bytes) else bytearray
+            base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
         except _CONTROL_FLOW:
             raise
@@ -375,7 +375,7 @@ def _json_atom(value):
             # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
             # bomb (and the bound ``.decode`` was the subclass's own) — either
             # one raised out of the sanitizer.
-            base = bytes if isinstance(value, bytes) else bytearray
+            base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
         except _CONTROL_FLOW:
             raise
@@ -497,7 +497,7 @@ def _json_tree(value, depth: int = 0):
             # Unbound base decode: ``bytes(value)`` ran a subclass ``__bytes__``
             # bomb (and the bound ``.decode`` was the subclass's own) — either
             # one raised out of the sanitizer.
-            base = bytes if isinstance(value, bytes) else bytearray
+            base = bytes if _isa(value, bytes) else bytearray
             return base.decode(value, "utf-8", "replace")
         except _CONTROL_FLOW:
             raise
@@ -534,7 +534,7 @@ def _json_tree(value, depth: int = 0):
                 try:
                     # Unbound base decode, matching the value arm: a key-rank
                     # ``__bytes__`` bomb used to raise out of the walk.
-                    kbase = bytes if isinstance(k, bytes) else bytearray
+                    kbase = bytes if _isa(k, bytes) else bytearray
                     k = kbase.decode(k, "utf-8", "replace")
                 except _CONTROL_FLOW:
                     raise
@@ -811,7 +811,7 @@ def get_power_info() -> dict:
         "ups": ups,
         "hint": "disksleep=0 means disks never sleep (common for a home NAS). Changing pmset may require sudo.",
     })
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 def set_power_pref(key: str, value: int) -> dict:
@@ -956,7 +956,7 @@ def get_disk_settings() -> dict:
         "power_disks": rows,
         "hint": "Sleep / wake HDDs from the Storage Array page; this adjusts the system disksleep policy.",
     })
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 def _panel_update_snapshot() -> dict:
@@ -968,7 +968,7 @@ def _panel_update_snapshot() -> dict:
         raise
     except BaseException:
         return {}
-    return snap if isinstance(snap, dict) else {}
+    return snap if _isa(snap, dict) else {}
 
 
 def get_management_access() -> dict:
@@ -981,7 +981,7 @@ def get_management_access() -> dict:
     # _mapping_get: a hash-shadowing key in the stored auth section used to
     # detonate the bare ``.get`` reads and degrade this whole section.
     username = _json_atom(_mapping_get(auth, "username"))
-    if not isinstance(username, str) or not username:
+    if not _isa(username, str) or not username:
         username = "admin"
     # leftover ``\ud800`` in host_ip() / configured_host() used to 500
     # GET /api/settings/system and the Management Access tile.
@@ -1003,7 +1003,7 @@ def get_management_access() -> dict:
             "data": str(DATA_DIR),
         },
     })
-    return cleaned if isinstance(cleaned, dict) else {}
+    return cleaned if _isa(cleaned, dict) else {}
 
 
 def get_share_globals() -> dict:
@@ -1039,7 +1039,7 @@ def get_thresholds() -> dict:
                 # /api/settings/thresholds and /other.  The try is for a
                 # lying ``__class__`` (claims bytes, is not): the entry
                 # drops, its siblings stay.
-                k = (bytes if isinstance(k, bytes) else bytearray).decode(
+                k = (bytes if _isa(k, bytes) else bytearray).decode(
                     k, "utf-8", "replace",
                 )
             except _CONTROL_FLOW:
@@ -1095,10 +1095,10 @@ def get_other_settings() -> dict:
             items = []
         for item in items:
             text = _json_atom(item)
-            if isinstance(text, str) and text:
+            if _isa(text, str) and text:
                 clean_ips.append(text)
     netmask = _json_atom(_mapping_get(alias, "netmask")) or "255.255.255.255"
-    if not isinstance(netmask, str):
+    if not _isa(netmask, str):
         netmask = "255.255.255.255"
     # _as_text first, then membership: the raw tuple compare gave a
     # str-subclass ``__eq__`` bomb (and any non-str leftover's reflected
@@ -1185,19 +1185,19 @@ def get_vm_settings() -> dict:
     try:
         from hub import vms_svc
         data = vms_svc.list_all_vms()
-        if not isinstance(data, dict):
+        if not _isa(data, dict):
             data = {}
         utm = data.get("utm") or data.get("utm_vms") or []
         orb = data.get("orb") or data.get("orb_machines") or []
-        if not isinstance(utm, list):
+        if not _isa(utm, list):
             utm = []
-        if not isinstance(orb, list):
+        if not _isa(orb, list):
             orb = []
-        if isinstance(data.get("vms"), list):
+        if _isa(data.get("vms"), list):
             # fallback if different shape
             items = []
             for v in data["vms"]:
-                if not isinstance(v, dict):
+                if not _isa(v, dict):
                     continue
                 items.append({
                     "id": _json_atom(v.get("id")),
@@ -1219,7 +1219,7 @@ def get_vm_settings() -> dict:
             }
         items = []
         for v in utm:
-            if not isinstance(v, dict):
+            if not _isa(v, dict):
                 continue
             items.append({
                 "id": _json_atom(v.get("id") or v.get("uuid") or v.get("name")),
@@ -1228,7 +1228,7 @@ def get_vm_settings() -> dict:
                 "backend": "utm",
             })
         for v in orb:
-            if not isinstance(v, dict):
+            if not _isa(v, dict):
                 continue
             items.append({
                 "id": _json_atom(v.get("id") or v.get("name")),
@@ -1386,7 +1386,7 @@ def _diag_metrics() -> dict:
         from hub import metrics
         hist = metrics.history(30)
         latest = hist[-1] if hist else None
-        return {"metrics_latest": _json_tree(latest) if isinstance(latest, dict) else None}
+        return {"metrics_latest": _json_tree(latest) if _isa(latest, dict) else None}
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -1458,7 +1458,7 @@ def collect_diagnostics() -> dict:
     ):
         bundle.update(section)
     cleaned = _json_tree(bundle)
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         cleaned = {}
     # Persist last diagnostics for download convenience.  Generation and
     # persistence are separate outcomes: callers can still render the in-memory
@@ -1619,4 +1619,4 @@ def unraid_settings_bundle(force: bool = False) -> dict:
     # that collect_diagnostics already applies; leftover inf / ``\ud800``
     # 500'd GET /api/settings/system.
     cleaned = _json_tree(v)
-    return cleaned if isinstance(cleaned, dict) else v
+    return cleaned if _isa(cleaned, dict) else v

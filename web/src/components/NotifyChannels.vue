@@ -19,20 +19,20 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in asArray(channels)" :key="finiteText(asRecord(c).id)">
+        <tr v-for="c in asArray(channels)" :key="finiteText(recGet(c, 'id'))">
           <td>
-            <strong>{{ finiteText(asRecord(c).name) }}</strong>
-            <div class="mono sub-line">{{ finiteText(asRecord(c).id) }}</div>
-            <div class="show-m sub">{{ typeLabel(asRecord(c).type) }} · {{ t(`notifych.level_${asRecord(c).min_level}`) }}</div>
+            <strong>{{ finiteText(recGet(c, 'name')) }}</strong>
+            <div class="mono sub-line">{{ finiteText(recGet(c, 'id')) }}</div>
+            <div class="show-m sub">{{ typeLabel(recGet(c, 'type')) }} · {{ t(`notifych.level_${recGet(c, 'min_level')}`) }}</div>
           </td>
-          <td class="col-hide-m">{{ typeLabel(asRecord(c).type) }}</td>
+          <td class="col-hide-m">{{ typeLabel(recGet(c, 'type')) }}</td>
           <td class="col-hide-m">
-            <span class="badge" :class="levelBadge(asRecord(c).min_level)">{{ t(`notifych.level_${asRecord(c).min_level}`) }}</span>
-            <span v-if="asRecord(c).notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
+            <span class="badge" :class="levelBadge(recGet(c, 'min_level'))">{{ t(`notifych.level_${recGet(c, 'min_level')}`) }}</span>
+            <span v-if="recGet(c, 'notify_resolve')" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
           </td>
           <td>
-            <span class="badge" :class="asRecord(c).enabled ? 'ok' : 'warn'">
-              {{ asRecord(c).enabled ? t('common.enabled') : t('common.disabled') }}
+            <span class="badge" :class="recGet(c, 'enabled') ? 'ok' : 'warn'">
+              {{ recGet(c, 'enabled') ? t('common.enabled') : t('common.disabled') }}
             </span>
           </td>
           <td class="row-btns">
@@ -55,11 +55,11 @@
     </div>
 
     <div v-if="editing" class="editor">
-      <h2 class="section-title">{{ asRecord(editing).existing ? t('notifych.edit_title', { name: finiteText(asRecord(editing).name, '') || finiteText(asRecord(editing).id) }) : t('notifych.add') }}</h2>
+      <h2 class="section-title">{{ recGet(editing, 'existing') ? t('notifych.edit_title', { name: finiteText(recGet(editing, 'name'), '') || finiteText(recGet(editing, 'id')) }) : t('notifych.add') }}</h2>
       <div class="form-grid">
         <label>{{ t('common.type') }}</label>
         <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
-          <option v-for="ty in asArray(typeIds)" :key="ty" :value="ty">{{ typeLabel(ty) }}</option>
+          <option v-for="ty in asArray(typeIds)" :key="finiteText(ty)" :value="finiteText(ty)">{{ typeLabel(ty) }}</option>
         </select>
         <label>{{ t('common.name') }}</label>
         <input v-model="editing.name" type="text" maxlength="80" :aria-label="t('common.name')" />
@@ -74,7 +74,7 @@
         <label>{{ t('notifych.notify_resolve') }}</label>
         <input type="checkbox" v-model="editing.notify_resolve" :aria-label="t('notifych.notify_resolve')" />
 
-        <template v-for="f in fieldsFor(editing.type)" :key="'f-' + f">
+        <template v-for="f in asArray(fieldsFor(editing.type))" :key="'f-' + finiteText(f)">
           <label>{{ fieldLabel(f) }}</label>
           <select v-if="f === 'tls'" v-model="editing.config.tls" :aria-label="fieldLabel(f)">
             <option value="starttls">STARTTLS</option>
@@ -90,7 +90,7 @@
           />
         </template>
 
-        <template v-for="s in secretsFor(editing.type)" :key="'s-' + s">
+        <template v-for="s in asArray(secretsFor(editing.type))" :key="'s-' + finiteText(s)">
           <label>{{ fieldLabel(s) }}</label>
           <input
             v-model="editing.secrets[s]"
@@ -117,7 +117,7 @@ import {
   testNotifyChannel, updateNotifyChannel,
 } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText, recGet } from '../lib/finite'
 
 const toast = inject('toast')
 const { t } = injectI18n()
@@ -174,34 +174,36 @@ function levelBadge(level) {
 }
 
 function softText(j, fallbackKey = 'common.fail') {
-  if (j?.code) {
-    const key = `err.${j.code}`
-    const translated = t(key, j.params || {})
+  const rec = asRecord(j)
+  const code = recGet(rec, 'code')
+  if (code) {
+    const key = `err.${code}`
+    const translated = t(key, asRecord(recGet(rec, 'params')))
     if (translated !== key) return translated
   }
-  return j?.message || t(fallbackKey)
+  return finiteText(recGet(rec, 'message'), '') || t(fallbackKey)
 }
 
 function fieldsFor(ty) {
-  return asArray(types.value[ty]?.fields)
+  return asArray(recGet(recGet(types.value, ty), 'fields'))
 }
 
 function secretsFor(ty) {
-  return asArray(types.value[ty]?.secrets)
+  return asArray(recGet(recGet(types.value, ty), 'secrets'))
 }
 
 async function load() {
   const generation = ++loadGeneration
   try {
-    const r = await getNotifyChannels()
+    const r = asRecord(await getNotifyChannels())
     if (generation !== loadGeneration || !pageAlive) return
-    channels.value = asArray(asRecord(r).channels).map((c) => asRecord(c))
-    types.value = asRecord(asRecord(r).types)
-    typeIds.value = Object.keys(types.value)
+    channels.value = asArray(recGet(r, 'channels')).map((c) => asRecord(c))
+    types.value = asRecord(recGet(r, 'types'))
+    typeIds.value = Object.keys(asRecord(types.value))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     toast('❌ ' + finiteText(e.message))
   } finally {
     if (generation === loadGeneration) loaded.value = true
@@ -227,15 +229,15 @@ function startEdit(c) {
   const row = asRecord(c)
   editing.value = {
     existing: true,
-    id: row.id,
-    type: row.type,
-    name: row.name,
-    enabled: row.enabled,
-    min_level: row.min_level,
-    notify_resolve: row.notify_resolve,
-    config: { ...asRecord(row.config) },
+    id: recGet(row, 'id'),
+    type: recGet(row, 'type'),
+    name: recGet(row, 'name'),
+    enabled: recGet(row, 'enabled'),
+    min_level: recGet(row, 'min_level'),
+    notify_resolve: recGet(row, 'notify_resolve'),
+    config: { ...asRecord(recGet(row, 'config')) },
     secrets: {},
-    has: { ...asRecord(row.has) },
+    has: { ...asRecord(recGet(row, 'has')) },
   }
 }
 
@@ -260,8 +262,11 @@ async function save() {
       config: e.config,
       secrets,
     }
-    if (e.existing) await updateNotifyChannel(e.id, body)
-    else await createNotifyChannel(body)
+    if (e.existing) {
+      const r = asRecord(await updateNotifyChannel(e.id, body))
+    } else {
+      const r = asRecord(await createNotifyChannel(body))
+    }
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.save'))
     editing.value = null
@@ -279,9 +284,9 @@ async function testChannel(c) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = asRecord(await testNotifyChannel(row.id))
+    const r = asRecord(await testNotifyChannel(recGet(row, 'id')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
+    toast(recGet(r, 'ok') ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -296,10 +301,10 @@ async function removeChannel(c) {
   const generation = loadGeneration
   busy.value = true
   try {
-    await deleteNotifyChannel(row.id)
+    const r = asRecord(await deleteNotifyChannel(finiteText(recGet(row, 'id'), '')))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('common.delete'))
-    if (asRecord(editing.value).id === row.id) editing.value = null
+    if (recGet(editing.value, 'id') === recGet(row, 'id')) editing.value = null
     await load()
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return

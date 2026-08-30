@@ -1131,16 +1131,6 @@ class _FmtParam:
         return text
 
 
-def jsonable_error_detail(value):
-    """Sanitize a non-coded error body for Starlette's allow_nan=False encoder.
-
-    Coded errors go through ``error_payload`` and are cleaned there.  FastAPI's
-    own validation handler builds its body from the request, so it needs the
-    same treatment before the response is rendered.
-    """
-    return _jsonable_param(value)
-
-
 def error_payload(code: str, /, **params) -> tuple[int, dict]:
     """(http status, response body) for *code* — the shape the SPA parses.
 
@@ -1179,13 +1169,13 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
         message = template
     # Leftover ``\\ud800`` in a formatted param used to 500 the error body
     # under Starlette's UTF-8 encode even after params themselves were cleaned.
-    if not isinstance(message, str):
+    if not _isinst(message, str):
         try:
             message = str(message)
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            message = template if isinstance(template, str) else code
+            message = template if _isinst(template, str) else code
     # Unbound str.encode: ``str.format`` yields an exact str, but the
     # ``str(message)`` fallback above keeps a str *subclass* whose ``__str__``
     # returns itself, so a bound ``.encode`` could dispatch into a leftover
@@ -1195,7 +1185,7 @@ def error_payload(code: str, /, **params) -> tuple[int, dict]:
     if params:
         clean = {}
         for k, v in params.items():
-            if not isinstance(k, str):
+            if not _isinst(k, str):
                 try:
                     k = str(k)
                 except _CONTROL_FLOW:
@@ -1301,7 +1291,7 @@ def exc_detail(exc, cap: int = 200) -> str:
         raise
     except BaseException:
         return "error"
-    if not isinstance(text, str):
+    if not _isinst(text, str):
         try:
             text = str(text)
         except _CONTROL_FLOW:

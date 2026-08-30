@@ -15,7 +15,7 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="56" />
 
     <!-- Ollama absent: clear empty state + a path to install it -->
-    <div v-else-if="data && !data.installed" class="card-block absent">
+    <div v-else-if="data && !recGet(data, 'installed')" class="card-block absent">
       <h2>{{ t('ollama.absent_title') }}</h2>
       <p class="meta">{{ t('ollama.absent_body') }}</p>
       <router-link class="btn-link" to="/apps">{{ t('ollama.absent_cta') }}</router-link>
@@ -31,27 +31,27 @@
         <div v-if="asArray(duplicateLabels).length" class="notice warn" role="alert">
           {{ t('ollama.duplicate_agents', { labels: asArray(duplicateLabels).map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
         </div>
-        <div v-if="data.url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
-          {{ t('ollama.url_rejected', { url: finiteText(data.url) }) }}
+        <div v-if="recGet(data, 'url_rejected')" class="notice warn" role="alert" data-test="ollama-url-rejected">
+          {{ t('ollama.url_rejected', { url: finiteText(recGet(data, 'url')) }) }}
         </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
-            <div class="mono">{{ finiteText(data.service?.label) }}</div>
+            <div class="mono">{{ finiteText(recGet(recGet(data, 'service'), 'label')) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.version') }}</div>
-            <div class="mono">{{ finiteText(data.version) }}</div>
+            <div class="mono">{{ finiteText(recGet(data, 'version')) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
-              <span>{{ finiteText(data.url) }}</span>
+              <span>{{ finiteText(recGet(data, 'url')) }}</span>
               <!-- Two identical "Copy" buttons sit in this card copying
                    different URLs; a form-controls listing cannot tell them
                    apart without the field name. The visible "Copy" text stays
                    first in the name (WCAG 2.5.3). -->
-              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(data.url)">{{ t('common.copy') }}</button>
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(recGet(data, 'url'))">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
@@ -61,18 +61,18 @@
               <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.openai_api') })" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
-          <div v-if="data.service?.pid">
+          <div v-if="recGet(recGet(data, 'service'), 'pid')">
             <div class="meta">{{ t('ollama.pid') }}</div>
-            <div class="mono">{{ finiteN(data.service.pid) }}</div>
+            <div class="mono">{{ finiteN(recGet(recGet(data, 'service'), 'pid')) }}</div>
           </div>
         </div>
-        <p v-if="data.service?.inferred" class="meta" style="margin:8px 0 0">
+        <p v-if="recGet(recGet(data, 'service'), 'inferred')" class="meta" style="margin:8px 0 0">
           {{ t('ollama.listing_missed') }}
         </p>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="svcBusy || !data.service?.label || data.reachable" @click="act('start')">{{ t('services.act_start') }}</button>
-          <button class="tiny danger" :disabled="svcBusy || !data.service?.label" @click="act('stop')">{{ t('services.act_stop') }}</button>
-          <button class="tiny" :disabled="svcBusy || !data.service?.label" @click="act('restart')">{{ t('services.act_restart') }}</button>
+          <button class="tiny primary" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label') || recGet(data, 'reachable')" @click="act('start')">{{ t('services.act_start') }}</button>
+          <button class="tiny danger" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label')" @click="act('stop')">{{ t('services.act_stop') }}</button>
+          <button class="tiny" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label')" @click="act('restart')">{{ t('services.act_restart') }}</button>
         </div>
       </div>
 
@@ -94,14 +94,14 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(resident)" :key="finiteText(asRecord(m).name)">
+              <tr v-for="m in asArray(resident)" :key="finiteText(recGet(m, 'name'))">
                 <td class="mono">
-                  {{ finiteText(asRecord(m).name) }}
-                  <div class="show-m sub">{{ finiteN(asRecord(m).context_length) }} · {{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</div>
+                  {{ finiteText(recGet(m, 'name')) }}
+                  <div class="show-m sub">{{ finiteN(recGet(m, 'context_length')) }} · {{ recGet(m, 'forever') ? t('ollama.resident_forever') : fmtDate(recGet(m, 'expires_at')) }}</div>
                 </td>
-                <td>{{ fmtSize(asRecord(m).size_vram || asRecord(m).size) }}</td>
-                <td class="mono col-hide-m">{{ finiteN(asRecord(m).context_length) }}</td>
-                <td class="col-hide-m">{{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</td>
+                <td>{{ fmtSize(recGet(m, 'size_vram') || recGet(m, 'size')) }}</td>
+                <td class="mono col-hide-m">{{ finiteN(recGet(m, 'context_length')) }}</td>
+                <td class="col-hide-m">{{ recGet(m, 'forever') ? t('ollama.resident_forever') : fmtDate(recGet(m, 'expires_at')) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
                 </td>
@@ -139,20 +139,20 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(models)" :key="finiteText(asRecord(m).name)">
+              <tr v-for="m in asArray(models)" :key="finiteText(recGet(m, 'name'))">
                 <td class="mono">
-                  {{ finiteText(asRecord(m).name) }}
-                  <div class="show-m sub">{{ finiteText(asRecord(m).family) }}{{ finiteText(asRecord(m).parameter_size, '') ? ' ' + finiteText(asRecord(m).parameter_size) : '' }} · {{ finiteText(asRecord(m).quantization) }}</div>
-                  <div v-if="asArray(asRecord(m).capabilities).length" class="show-m sub">{{ asArray(asRecord(m).capabilities).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
+                  {{ finiteText(recGet(m, 'name')) }}
+                  <div class="show-m sub">{{ finiteText(recGet(m, 'family')) }}{{ finiteText(recGet(m, 'parameter_size'), '') ? ' ' + finiteText(recGet(m, 'parameter_size')) : '' }} · {{ finiteText(recGet(m, 'quantization')) }}</div>
+                  <div v-if="asArray(recGet(m, 'capabilities')).length" class="show-m sub">{{ asArray(recGet(m, 'capabilities')).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
                 </td>
-                <td>{{ fmtSize(asRecord(m).size) }}</td>
-                <td class="col-hide-m">{{ finiteText(asRecord(m).family) }} <span v-if="finiteText(asRecord(m).parameter_size, '')" class="meta">{{ finiteText(asRecord(m).parameter_size) }}</span></td>
-                <td class="mono col-hide-m">{{ finiteText(asRecord(m).quantization) }}</td>
+                <td>{{ fmtSize(recGet(m, 'size')) }}</td>
+                <td class="col-hide-m">{{ finiteText(recGet(m, 'family')) }} <span v-if="finiteText(recGet(m, 'parameter_size'), '')" class="meta">{{ finiteText(recGet(m, 'parameter_size')) }}</span></td>
+                <td class="mono col-hide-m">{{ finiteText(recGet(m, 'quantization')) }}</td>
                 <td class="col-hide-m">
-                  <span v-for="c in asArray(asRecord(m).capabilities)" :key="finiteText(c)" class="badge cap">{{ finiteText(c) }}</span>
-                  <span v-if="!asArray(asRecord(m).capabilities).length">—</span>
+                  <span v-for="c in asArray(recGet(m, 'capabilities'))" :key="finiteText(c)" class="badge cap">{{ finiteText(c) }}</span>
+                  <span v-if="!asArray(recGet(m, 'capabilities')).length">—</span>
                 </td>
-                <td class="meta col-hide-m">{{ fmtDate(asRecord(m).modified) }}</td>
+                <td class="meta col-hide-m">{{ fmtDate(recGet(m, 'modified')) }}</td>
                 <td class="ops">
                   <button class="tiny danger" @click="openDelete(m)">{{ t('ollama.act_delete') }}</button>
                 </td>
@@ -182,17 +182,17 @@
             :aria-label="t('ollama.pull_name_label')"
             @keydown.enter="startPull"
           />
-          <button class="primary" :disabled="pullBusy || pullInfo?.running || !pullName.trim()" @click="startPull">
-            {{ pullInfo?.running ? t('ollama.pull_running_short') : t('ollama.act_pull') }}
+          <button class="primary" :disabled="pullBusy || recGet(pullInfo, 'running') || !asTrimmed(pullName)" @click="startPull">
+            {{ recGet(pullInfo, 'running') ? t('ollama.pull_running_short') : t('ollama.act_pull') }}
           </button>
         </div>
-        <div v-if="pullInfo && (pullInfo.running || pullInfo.log)">
+        <div v-if="pullInfo && (recGet(pullInfo, 'running') || recGet(pullInfo, 'log'))">
           <div class="meta" style="margin-bottom:6px">
-            <span v-if="pullInfo.running">⏳ {{ t('ollama.pull_running', { name: finiteText(pullInfo.model, '') }) }}</span>
-            <span v-else-if="pullInfo.rc === 0">✅ {{ t('ollama.pull_done_ok') }}</span>
-            <span v-else-if="pullInfo.rc != null">❌ {{ t('ollama.pull_done_fail', { rc: finiteN(pullInfo.rc) }) }}</span>
+            <span v-if="recGet(pullInfo, 'running')">⏳ {{ t('ollama.pull_running', { name: finiteText(recGet(pullInfo, 'model'), '') }) }}</span>
+            <span v-else-if="recGet(pullInfo, 'rc') === 0">✅ {{ t('ollama.pull_done_ok') }}</span>
+            <span v-else-if="recGet(pullInfo, 'rc') != null">❌ {{ t('ollama.pull_done_fail', { rc: finiteN(recGet(pullInfo, 'rc')) }) }}</span>
           </div>
-          <pre class="logbox" aria-live="polite">{{ finiteText(pullInfo.log, '') || t('maintenance.log_loading') }}</pre>
+          <pre class="logbox" aria-live="polite">{{ finiteText(recGet(pullInfo, 'log'), '') || t('maintenance.log_loading') }}</pre>
         </div>
       </div>
 
@@ -208,23 +208,23 @@
           <div v-if="!asArray(chatMessages).length" class="meta">{{ t('ollama.chat_empty') }}</div>
           <div
             v-for="(m, i) in asArray(chatMessages)"
-            :key="i"
+            :key="finiteText(recGet(m, 'role')) + ':' + i"
             class="chat-msg"
-            :class="asRecord(m).role"
+            :class="recGet(m, 'role')"
           >
-            <div class="chat-role">{{ asRecord(m).role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
-            <pre v-if="asRecord(m).thinking && !asRecord(m).content" class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
-            <details v-else-if="asRecord(m).thinking" class="chat-thinking-wrap">
+            <div class="chat-role">{{ recGet(m, 'role') === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
+            <pre v-if="recGet(m, 'thinking') && !recGet(m, 'content')" class="chat-thinking">{{ finiteText(recGet(m, 'thinking')) }}</pre>
+            <details v-else-if="recGet(m, 'thinking')" class="chat-thinking-wrap">
               <summary>{{ t('ollama.chat_thinking') }}</summary>
-              <pre class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
+              <pre class="chat-thinking">{{ finiteText(recGet(m, 'thinking')) }}</pre>
             </details>
-            <div v-if="asRecord(m).content || asRecord(m).pending" class="chat-body">{{ finiteText(asRecord(m).content, '') || t('ollama.chat_sending') }}</div>
-            <div v-if="asRecord(m).error" class="chat-error">{{ finiteText(asRecord(m).error) }}</div>
+            <div v-if="recGet(m, 'content') || recGet(m, 'pending')" class="chat-body">{{ finiteText(recGet(m, 'content'), '') || t('ollama.chat_sending') }}</div>
+            <div v-if="recGet(m, 'error')" class="chat-error">{{ finiteText(recGet(m, 'error')) }}</div>
           </div>
         </div>
         <div class="toolbar" style="flex-wrap:wrap">
           <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
-            <option v-for="m in asArray(models)" :key="'chat-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
+            <option v-for="m in asArray(models)" :key="'chat-' + finiteText(recGet(m, 'name'))" :value="recGet(m, 'name')">{{ finiteText(recGet(m, 'name')) }}</option>
           </select>
           <textarea
             v-model="chatInput"
@@ -253,7 +253,7 @@
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
           <select v-model="testModel" :aria-label="t('ollama.test_model_label')">
-            <option v-for="m in asArray(models)" :key="'test-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
+            <option v-for="m in asArray(models)" :key="'test-' + finiteText(recGet(m, 'name'))" :value="recGet(m, 'name')">{{ finiteText(recGet(m, 'name')) }}</option>
           </select>
           <input
             v-model="testPrompt"
@@ -264,7 +264,7 @@
             maxlength="2000"
             @keydown.enter="runTest"
           />
-          <button class="primary" :disabled="testBusy || !testModel || !testPrompt.trim()" @click="runTest">
+          <button class="primary" :disabled="testBusy || !testModel || !asTrimmed(testPrompt)" @click="runTest">
             {{ testBusy ? t('ollama.testing') : t('ollama.act_test') }}
           </button>
         </div>
@@ -344,20 +344,20 @@
           <button class="tiny" @click="closeDelete">{{ t('common.close') }}</button>
         </div>
         <p style="margin:0 0 10px">
-          {{ t('ollama.delete_body', { name: finiteText(asRecord(deleteTarget).name), size: fmtSize(asRecord(deleteTarget).size) }) }}
+          {{ t('ollama.delete_body', { name: finiteText(recGet(deleteTarget, 'name')), size: fmtSize(recGet(deleteTarget, 'size')) }) }}
         </p>
         <input
           v-model="deleteText"
           type="text"
           class="mono"
           style="width:100%;margin-bottom:10px"
-          :placeholder="finiteText(asRecord(deleteTarget).name, '')"
+          :placeholder="finiteText(recGet(deleteTarget, 'name'), '')"
           :aria-label="t('ollama.delete_type_label')"
         />
         <div class="row">
           <button
             class="danger"
-            :disabled="deleteText.trim() !== asRecord(deleteTarget).name || deleting"
+            :disabled="asTrimmed(deleteText) !== recGet(deleteTarget, 'name') || deleting"
             @click="doDelete"
           >{{ t('ollama.delete_confirm') }}</button>
           <button @click="closeDelete">{{ t('common.cancel') }}</button>
@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN as finiteNum, finiteText, recGet } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -437,22 +437,23 @@ let actionTimer = null
 let pullTimer = null
 let pullGeneration = 0
 
-const models = computed(() => asArray(asRecord(data.value).models).map((row) => asRecord(row)))
-const resident = computed(() => asArray(asRecord(data.value).resident).map((row) => asRecord(row)))
+const models = computed(() => asArray(recGet(data.value, 'models')).map((row) => asRecord(row)))
+const resident = computed(() => asArray(recGet(data.value, 'resident')).map((row) => asRecord(row)))
 const duplicateLabels = computed(() => {
-  const c = asArray(asRecord(asRecord(data.value).service).candidates)
+  const c = asArray(recGet(recGet(data.value, 'service'), 'candidates'))
   return c.length > 1 ? c : []
 })
 
 const openaiCompatUrl = computed(() => {
-  const base = (finiteText(data.value?.url, '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
+  const base = (finiteText(recGet(data.value, 'url'), '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
   return finiteText(`${base}/v1`, '')
 })
 
 const serviceBadge = computed(() => {
+  const row = asRecord(data.value)
   if (!data.value) return { cls: '', text: '' }
-  if (data.value.reachable) return { cls: 'ok', text: t('ollama.state_running') }
-  if (data.value.service?.running) return { cls: 'warn', text: t('ollama.state_starting') }
+  if (row.reachable) return { cls: 'ok', text: t('ollama.state_running') }
+  if (recGet(row.service, 'running')) return { cls: 'warn', text: t('ollama.state_starting') }
   return { cls: 'down', text: t('ollama.state_stopped') }
 })
 
@@ -465,21 +466,21 @@ const testText = computed(() => {
   if (testBusy.value) return t('ollama.testing')
   const r = testResult.value
   if (!r) return t('ollama.testing')
-  return finiteText(r.response, '') || finiteText(r.thinking, '') || finiteText(r.error, '') || (r.ok ? '—' : t('ollama.test_failed'))
+  return finiteText(recGet(r, 'response'), '') || finiteText(recGet(r, 'thinking'), '') || finiteText(recGet(r, 'error'), '') || (recGet(r, 'ok') ? '—' : t('ollama.test_failed'))
 })
 
 const chatSendDisabled = computed(() =>
   chatBusy.value
   || !data.value?.reachable
   || !chatModel.value
-  || !chatInput.value.trim())
+  || !asTrimmed(chatInput.value))
 
 function defaultChatModel(j) {
   const row = asRecord(j)
-  const res = asArray(row.resident).map((item) => asRecord(item))
-  if (res[0]?.name) return res[0].name
-  const mods = asArray(row.models).map((item) => asRecord(item))
-  return mods[0]?.name || ''
+  const res = asArray(recGet(row, 'resident')).map((item) => asRecord(item))
+  if (recGet(res[0], 'name')) return recGet(res[0], 'name')
+  const mods = asArray(recGet(row, 'models')).map((item) => asRecord(item))
+  return recGet(mods[0], 'name') || ''
 }
 
 async function scrollChat() {
@@ -490,8 +491,8 @@ async function scrollChat() {
 }
 
 function finiteN(v) {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : '—'
+  const n = finiteNum(v, null)
+  return n != null && Number.isFinite(n) ? n : '—'
 }
 
 /** What an empty resident/models table really means.
@@ -501,14 +502,14 @@ function finiteN(v) {
  * this page never rendered: the tables claimed "no models" over a failed
  * read (the same false-empty the unreachable branch already avoids). */
 function emptyListText(emptyKey) {
-  if (!data.value?.reachable) return t('ollama.daemon_unreachable')
-  if (data.value?.error) return t('ollama.list_error', { error: finiteText(data.value.error, '') })
+  if (!recGet(data.value, 'reachable')) return t('ollama.daemon_unreachable')
+  if (recGet(data.value, 'error')) return t('ollama.list_error', { error: finiteText(recGet(data.value, 'error'), '') })
   return t(emptyKey)
 }
 
 function fmtSize(n) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v <= 0) return '—'
+  const v = finiteNum(n, null)
+  if (v == null || !Number.isFinite(v) || v <= 0) return '—'
   if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB'
   if (v >= 1e6) return (v / 1e6).toFixed(0) + ' MB'
   return (v / 1e3).toFixed(0) + ' KB'
@@ -532,11 +533,11 @@ async function copyText(text) {
 async function loadOllamaSettings() {
   const generation = loadGeneration
   try {
-    const s = await getSettings()
+    const s = asRecord(await getSettings())
     if (generation !== loadGeneration || !pageAlive) return
     ollamaForm.value = {
-      url: s.ollama?.url || data.value?.url || 'http://127.0.0.1:11434',
-      label: s.ollama?.label || '',
+      url: recGet(s.ollama, 'url') || recGet(data.value, 'url') || 'http://127.0.0.1:11434',
+      label: recGet(s.ollama, 'label') || '',
     }
     ollamaSettingsLoaded.value = true
     ollamaSettingsError.value = ''
@@ -545,7 +546,7 @@ async function loadOllamaSettings() {
     ollamaSettingsLoaded.value = false
     ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
-      url: data.value?.url || 'http://127.0.0.1:11434',
+      url: recGet(data.value, 'url') || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
     }
   }
@@ -561,12 +562,12 @@ async function saveOllamaSettings() {
   const generation = loadGeneration
   ollamaSaving.value = true
   try {
-    await putSettings({
+    const r = asRecord(await putSettings({
       ollama: {
-        url: ollamaForm.value.url.trim(),
-        label: ollamaForm.value.label.trim(),
+        url: asTrimmed(recGet(ollamaForm.value, 'url')),
+        label: asTrimmed(recGet(ollamaForm.value, 'label')),
       },
-    })
+    }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('ollama.settings_saved'))
     await refresh(true)
@@ -592,13 +593,13 @@ async function refresh(force = false) {
     if (generation !== loadGeneration || !pageAlive) return false
     data.value = {
       ...j,
-      models: asArray(j.models).map((row) => asRecord(row)),
-      resident: asArray(j.resident).map((row) => asRecord(row)),
-      service: asRecord(j.service),
+      models: asArray(recGet(j, 'models')).map((row) => asRecord(row)),
+      resident: asArray(recGet(j, 'resident')).map((row) => asRecord(row)),
+      service: asRecord(recGet(j, 'service')),
     }
     loadError.value = ''
-    if (!testModel.value && asArray(j.models).length) {
-      testModel.value = asRecord(asArray(j.models)[0]).name
+    if (!testModel.value && asArray(recGet(j, 'models')).length) {
+      testModel.value = recGet(asRecord(asArray(recGet(j, 'models'))[0]), 'name')
     }
     if (!chatModel.value) chatModel.value = defaultChatModel(j)
     // A pull started elsewhere (or before a navigation) resumes its log tail.
@@ -606,7 +607,7 @@ async function refresh(force = false) {
     return true
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   } finally {
     if (generation === loadGeneration && pageAlive) {
@@ -622,17 +623,17 @@ function refreshNow() {
 
 // ── service control (existing /api/action channel; target = launchd label) ──
 async function act(action) {
-  const label = finiteText(data.value?.service?.label, '')
+  const label = finiteText(recGet(recGet(data.value, 'service'), 'label'), '')
   if (!label) return
   if (action === 'stop' && !confirm(t('ollama.confirm_stop', { name: finiteText(label) }))) return
   if (action === 'restart' && !confirm(t('services.confirm_restart', { name: finiteText(label) }))) return
   const generation = loadGeneration
   svcBusy.value = true
   try {
-    const r = await doAction(label, action)
+    const r = asRecord(await doAction(label, action))
     if (generation !== loadGeneration || !pageAlive) return
-    toast(r.ok ? `✅ ${label} · ${action}` : `❌ ${finiteText(r.message, '') || action}`)
-    if (r.ok) {
+    toast(recGet(r, 'ok') ? `✅ ${label} · ${action}` : `❌ ${finiteText(recGet(r, 'message'), '') || action}`)
+    if (recGet(r, 'ok')) {
       if (actionTimer) clearTimeout(actionTimer)
       actionTimer = setTimeout(() => {
         actionTimer = null
@@ -653,13 +654,13 @@ async function act(action) {
 // ── resident model unload ────────────────────────────────────────────────────
 async function unload(m) {
   const row = asRecord(m)
-  if (!confirm(t('ollama.confirm_unload', { name: finiteText(row.name) }))) return
+  if (!confirm(t('ollama.confirm_unload', { name: finiteText(recGet(row, 'name')) }))) return
   const generation = loadGeneration
   unloading.value = true
   try {
-    await unloadOllamaModel(row.name)
+    const r = asRecord(await unloadOllamaModel(recGet(row, 'name')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('ollama.unloaded', { name: finiteText(row.name) }))
+    toast('✅ ' + t('ollama.unloaded', { name: finiteText(recGet(row, 'name')) }))
     void refresh(true)
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
@@ -680,13 +681,13 @@ function closeDelete() {
 }
 async function doDelete() {
   const target = asRecord(deleteTarget.value)
-  if (!target.name || deleteText.value.trim() !== target.name) return
+  if (!recGet(target, 'name') || asTrimmed(deleteText.value) !== recGet(target, 'name')) return
   const generation = loadGeneration
   deleting.value = true
   try {
-    await deleteOllamaModel(target.name)
+    const r = asRecord(await deleteOllamaModel(recGet(target, 'name')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast('✅ ' + t('ollama.deleted', { name: finiteText(target.name) }))
+    toast('✅ ' + t('ollama.deleted', { name: finiteText(recGet(target, 'name')) }))
     closeDelete()
     void refresh(true)
   } catch (e) {
@@ -710,10 +711,10 @@ function stopPullPolling() {
 async function pollPullLog(generation) {
   if (generation !== pullGeneration) return
   try {
-    const j = await getOllamaPullLog()
+    const j = asRecord(await getOllamaPullLog())
     if (generation !== pullGeneration) return
     pullInfo.value = j
-    if (!j.running) {
+    if (!recGet(j, 'running')) {
       stopPullPolling()
       void refresh(true)
       return
@@ -721,7 +722,7 @@ async function pollPullLog(generation) {
   } catch (e) {
     if (generation !== pullGeneration) return
     // Transient failure: say so in the box and keep tailing.
-    pullInfo.value = { ...asRecord(pullInfo.value), log: `${pullInfo.value?.log || ''}\n⚠ ${e.message || e}`.trim() }
+    pullInfo.value = { ...asRecord(pullInfo.value), log: asTrimmed(`${pullInfo.value?.log || ''}\n⚠ ${finiteText(e.message || e)}`) }
   }
   if (generation === pullGeneration) {
     pullTimer = setTimeout(() => { void pollPullLog(generation) }, 1500)
@@ -736,12 +737,12 @@ function startPullPolling() {
 }
 
 async function startPull() {
-  const name = pullName.value.trim()
+  const name = asTrimmed(pullName.value)
   if (!name || pullBusy.value || pullInfo.value?.running) return
   const generation = loadGeneration
   pullBusy.value = true
   try {
-    await startOllamaPull(name)
+    const r = asRecord(await startOllamaPull(name))
     if (generation !== loadGeneration || !pageAlive) return
     toast('🚀 ' + t('ollama.pull_started', { name: finiteText(name) }))
     pullName.value = ''
@@ -760,9 +761,9 @@ async function startPull() {
  *  tick instead of refetching what it just received. */
 async function resumePullTail() {
   try {
-    const j = await getOllamaPullLog()
+    const j = asRecord(await getOllamaPullLog())
     if (!pageAlive) return
-    if (j?.running) {
+    if (recGet(j, 'running')) {
       pullInfo.value = j
       stopPullPolling()
       const generation = pullGeneration
@@ -775,7 +776,7 @@ async function resumePullTail() {
 
 // ── in-panel chat ────────────────────────────────────────────────────────────
 async function sendChat() {
-  const text = chatInput.value.trim()
+  const text = asTrimmed(chatInput.value)
   if (chatBusy.value || !data.value?.reachable || !chatModel.value || !text) return
   chatInput.value = ''
   chatMessages.value.push({ role: 'user', content: text })
@@ -784,9 +785,10 @@ async function sendChat() {
   chatBusy.value = true
   chatAbort = new AbortController()
   // The just-pushed user turn is not pending; include it. Drop empty assistant stubs.
-  const payload = chatMessages.value
-    .filter((m) => !m.pending && (m.role === 'user' || (m.role === 'assistant' && m.content)))
-    .map((m) => ({ role: m.role, content: m.content }))
+  const payload = asArray(chatMessages.value)
+    .map((m) => asRecord(m))
+    .filter((m) => !recGet(m, 'pending') && (recGet(m, 'role') === 'user' || (recGet(m, 'role') === 'assistant' && recGet(m, 'content'))))
+    .map((m) => ({ role: recGet(m, 'role'), content: recGet(m, 'content') }))
   void scrollChat()
   try {
     await chatOllamaModel(chatModel.value, payload, 128, {
@@ -823,12 +825,12 @@ function clearChat() {
 
 // ── quick test ───────────────────────────────────────────────────────────────
 async function runTest() {
-  if (testBusy.value || !testModel.value || !testPrompt.value.trim()) return
+  if (testBusy.value || !testModel.value || !asTrimmed(testPrompt.value)) return
   const generation = loadGeneration
   testBusy.value = true
   testResult.value = null
   try {
-    const next = await testOllamaModel(testModel.value, testPrompt.value)
+    const next = asRecord(await testOllamaModel(testModel.value, testPrompt.value))
     if (generation !== loadGeneration || !pageAlive) return
     testResult.value = next
   } catch (e) {

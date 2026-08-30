@@ -256,7 +256,7 @@ def _diskutil_info_uncached(node: str) -> dict:
     # keeps the tree structure and simply renders that node without details
     # instead of holding the whole overview until the disk answers.
     pl = _plist(["/usr/sbin/diskutil", "info", "-plist", node], timeout=5)
-    return pl if isinstance(pl, dict) else {}
+    return pl if _isa(pl, dict) else {}
 
 
 def _fetch_shared(node: str) -> dict:
@@ -644,7 +644,7 @@ def _opt_bool(value):
     if value is None:
         return None
     try:
-        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        if _isa(value, float) and (value != value or value in (float("inf"), float("-inf"))):
             return None
         # ``__bool__``/``__eq__`` bombs (the tools5 class) used to raise out
         # of the listing walk and drop the whole node for one bad flag.
@@ -694,7 +694,7 @@ def _size_gb(size: int):
 
 
 def _label_ok(value: str) -> bool:
-    if not isinstance(value, str) or not value:
+    if not _isa(value, str) or not value:
         return False
     try:
         value.encode("utf-8")
@@ -785,7 +785,7 @@ def list_managed_volumes() -> list[dict]:
             # cost GET /api/storage/manage a bare 500 (the pool5 guard-the-call
             # rule) where an empty listing is the honest degrade.
             return {}
-        return found if isinstance(found, dict) else {}
+        return found if _isa(found, dict) else {}
 
     # Three of the four now come from hub.disk_snapshot, shared with the power
     # listing (that module name is deliberately not written here: an import guard in
@@ -1027,8 +1027,8 @@ def list_managed_volumes() -> list[dict]:
             return []
         found = [ident]
         try:
-            parts = node.get("Partitions") if isinstance(node.get("Partitions"), list) else []
-            apfs = node.get("APFSVolumes") if isinstance(node.get("APFSVolumes"), list) else []
+            parts = node.get("Partitions") if _isa(node.get("Partitions"), list) else []
+            apfs = node.get("APFSVolumes") if _isa(node.get("APFSVolumes"), list) else []
         except _CONTROL_FLOW:
             raise
         except BaseException:

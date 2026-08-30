@@ -303,12 +303,12 @@ def _rc_int(rc) -> int:
     timeout, a vanished CLI, or success.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
         # Unbound base coercion: a subclass ``__index__``/``__int__`` bomb
         # cannot fire, and a lying-``__class__`` impostor TypeErrors here
         # instead of passing the gate (the modules5 unbound convention).
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         # Digit-cap probe: past CPython's int->str cap the status cannot be
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)
@@ -427,67 +427,6 @@ def parse_int_capped(digits: str):
 #: One definition for every engine-down classifier (compose validate, the
 #: Apps-page compose wrapper, catalog install/uninstall, the stack jobs), so
 #: a new phrasing only ever needs adding here.
-ENGINE_DOWN_RE = re.compile(
-    r"cannot connect to the docker daemon"
-    r"|is the docker daemon running"
-    r"|error during connect"
-    r"|docker daemon is not running",
-    re.I,
-)
-
-
-def looks_engine_down(text) -> bool:
-    """True when CLI output *text* reads like the daemon socket is gone.
-
-    Purely a message-pattern gate: callers must still confirm with a forced
-    ``engine_up`` probe before classifying, so output that merely quotes these
-    strings (a container's own log, say) cannot flip a real failure into
-    ``container.engine_down``.
-    """
-    return bool(ENGINE_DOWN_RE.search(_as_text(text)))
-
-
-def looks_cli_vanished(text) -> bool:
-    """True when *text* is ``run_capped``/``sh``'s FileNotFoundError sentinel.
-
-    Both helpers report a binary that could not be spawned as the exact
-    two-word sentinel ``"not found"`` (with rc -1) — never a real CLI exit.
-    A docker CLI that vanished between an up-front presence gate and the
-    spawn (OrbStack uninstalled mid-request, a dying mount) is the same
-    operator-facing state as a stopped engine — docker is unreachable — so
-    the classifiers that already map daemon-socket failures to
-    ``container.engine_down`` treat the two alike (the hub/backups.py
-    ``_docker_vanished`` convention).
-
-    Purely a message-pattern gate like :func:`looks_engine_down`: callers
-    must still confirm with a forced ``engine_up`` probe — which cannot
-    answer "up" while the CLI is gone — so a genuine CLI exit whose output
-    merely reads "not found" while the engine is up keeps its original
-    failure mapping.
-    """
-    return _as_text(text).strip() == "not found"
-
-
-def cli_on_disk() -> bool:
-    """True when the DOCKER binary is still present on disk.
-
-    ``run_capped``/``sh`` collapse *every* FileNotFoundError spawn into the
-    same ``(-1, "not found")`` sentinel — a cwd that vanished between the
-    caller's own mkdir/exists gate and the spawn (a stack directory deleted
-    mid-request) raises exactly like a vanished binary.  Classifiers that
-    map the sentinel to ``container.engine_down`` must therefore confirm
-    the CLI actually left the disk first: with the binary still present and
-    the engine merely off, the 503 told the operator to start the engine
-    when the real problem was the missing directory.  A stat that raises
-    (EIO/ESTALE under a dying mount holding the binary) counts as gone —
-    the CLI is unreachable either way.
-    """
-    try:
-        return Path(DOCKER).exists()
-    except (OSError, ValueError):
-        return False
-
-
 def inspect_object(out: str) -> dict | None:
     """First object from ``docker inspect`` JSON, or None if unusable.
 
@@ -499,12 +438,12 @@ def inspect_object(out: str) -> dict | None:
         parsed = safe_json_loads(out, parse_int=parse_int_capped)
     except (TypeError, ValueError, RecursionError):
         return None
-    if isinstance(parsed, list):
+    if _isa(parsed, list):
         parsed = parsed[0] if parsed else None
-    if not isinstance(parsed, dict):
+    if not _isa(parsed, dict):
         return None
     cleaned = _jsonable(parsed)
-    return cleaned if isinstance(cleaned, dict) else None
+    return cleaned if _isa(cleaned, dict) else None
 
 
 def docker_json(args: list[str], timeout=30) -> Any:
@@ -513,7 +452,7 @@ def docker_json(args: list[str], timeout=30) -> Any:
     if rc != 0:
         return None, rc, err or out
     if not out.strip():
-        argv = args if isinstance(args, (list, tuple)) else ()
+        argv = args if _isa(args, (list, tuple)) else ()
         return [] if "--format" in " ".join(str(a) for a in argv) else None, 0, ""
     try:
         # docker --format '{{json .}}' produces NDJSON
@@ -529,22 +468,22 @@ def docker_json(args: list[str], timeout=30) -> Any:
                         # RecursionError: leftover nested NDJSON row is not
                         # ValueError; skip it so siblings still list.
                         continue
-                    if isinstance(parsed, list):
+                    if _isa(parsed, list):
                         objs.extend(
-                            _jsonable(x) for x in parsed if isinstance(x, dict)
+                            _jsonable(x) for x in parsed if _isa(x, dict)
                         )
-                    elif isinstance(parsed, dict):
+                    elif _isa(parsed, dict):
                         objs.append(_jsonable(parsed))
-                return [x for x in objs if isinstance(x, dict)], 0, ""
+                return [x for x in objs if _isa(x, dict)], 0, ""
         parsed = safe_json_loads(out, parse_int=parse_int_capped)
-        if isinstance(parsed, list):
+        if _isa(parsed, list):
             return [
-                x for x in (_jsonable(row) for row in parsed if isinstance(row, dict))
-                if isinstance(x, dict)
+                x for x in (_jsonable(row) for row in parsed if _isa(row, dict))
+                if _isa(x, dict)
             ], 0, ""
-        if isinstance(parsed, dict):
+        if _isa(parsed, dict):
             cleaned = _jsonable(parsed)
-            return cleaned if isinstance(cleaned, dict) else {}, 0, ""
+            return cleaned if _isa(cleaned, dict) else {}, 0, ""
         return [], 0, ""
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
         return [], 0, ""
@@ -689,8 +628,8 @@ def peek_engine() -> bool | None:
 
 def redact_env(env_list: list[str] | None) -> list[str]:
     out = []
-    for e in env_list if isinstance(env_list, list) else []:
-        if not isinstance(e, str):
+    for e in env_list if _isa(env_list, list) else []:
+        if not _isa(e, str):
             continue
         if "=" in e:
             k, v = e.split("=", 1)

@@ -1133,7 +1133,7 @@ def storage_overview() -> dict:
             raise
         except BaseException:
             continue
-        if isinstance(d, dict):
+        if _isa(d, dict):
             clean_disks.append(d)
     disks = clean_disks
     system_vols = [v for v in vols if v.get("kind") == "system"]
@@ -1164,12 +1164,12 @@ def storage_overview() -> dict:
         })
 
     # Mark shared-pool siblings so UI can show a hint
-    groups = cap_array.get("groups") if isinstance(cap_array, dict) else None
-    if not isinstance(groups, list):
+    groups = cap_array.get("groups") if _isa(cap_array, dict) else None
+    if not _isa(groups, list):
         groups = []
     shared_keys = {
         g.get("disk_id") for g in groups
-        if isinstance(g, dict) and g.get("mode") == "shared_pool" and g.get("disk_id")
+        if _isa(g, dict) and g.get("mode") == "shared_pool" and g.get("disk_id")
     }
     for d in array_devices:
         if d.get("disk_id") in shared_keys:

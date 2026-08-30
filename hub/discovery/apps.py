@@ -9,6 +9,19 @@ from hub.host_address import resolve_value
 from hub.util import fan_out, port_open, sh
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 # Both collectors here probe one configured entry at a time, and a single probe
@@ -24,13 +37,13 @@ def _entry_id(raw) -> str:
     """Row id as text; ``""`` drops the entry (the jobs._task_id rule).
 
     YAML numeric ids (``id: 8080``) load as int; the rows here used to emit
-    them raw while ``actions.registry()`` gated on ``isinstance(sid, str)``,
+    them raw while ``actions.registry()`` gated on ``_isinst(sid, str)``,
     so the dashboard rendered start/stop buttons on a target POST /api/action
     could never find.  A renderable int coerces through the ``str()`` probe;
     an over-cap hex leftover (``id: 0xfff…`` loads uncapped and its ``str()``
     raises the digit-cap ValueError ``json.dumps`` would) drops only its
     entry instead of rendering a ghost row whose id nulls out in JSON.  bool
-    passes ``isinstance(int)`` and must not become ``"True"``.  The scrub
+    passes ``_isinst(int)`` and must not become ``"True"``.  The scrub
     matches ``actions._as_text`` so the id a row serves is byte-for-byte the
     registry key that can act on it.
     """
@@ -99,9 +112,9 @@ def collect_apps(engine_up):
     # out of the workers avoids putting avoidable traffic through the shared
     # config lock while the probes are in flight.
     plans: list[dict] = []
-    for raw in cfg().get("apps") or []:
+    for raw in cfg().get("apps") if _isinst(cfg().get("apps"), list) else []:
         a = resolve_value(raw)
-        if not isinstance(a, dict):
+        if not _isinst(a, dict):
             continue
         sid = _entry_id(a.get("id"))
         if not sid:
@@ -169,9 +182,9 @@ def _probe_port(port):
 
 def collect_scripts():
     scripts = []
-    for raw in cfg().get("scripts") or []:
+    for raw in cfg().get("scripts") if _isinst(cfg().get("scripts"), list) else []:
         s = resolve_value(raw)
-        if isinstance(s, dict):
+        if _isinst(s, dict):
             scripts.append(s)
     # Flattened across scripts *and* their ports, so a machine with several
     # multi-port scripts overlaps every check rather than only the outer loop.
@@ -179,15 +192,15 @@ def collect_scripts():
     # together in configuration order.
     def _ports(s):
         raw = s.get("ports")
-        if isinstance(raw, list):
+        if _isinst(raw, list):
             rows = raw
-        elif isinstance(raw, int) and not isinstance(raw, bool):
+        elif type(raw) is int:
             rows = [raw]
         else:
             return []
         out = []
         for p in rows:
-            if isinstance(p, int) and not isinstance(p, bool):
+            if type(p) is int:
                 try:
                     str(p)
                 except ValueError:

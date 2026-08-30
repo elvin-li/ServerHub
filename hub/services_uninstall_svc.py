@@ -31,9 +31,19 @@ from hub.util import read_bytes_capped, sh, strftime_now
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 
+def _isinst(value, types) -> bool:
+    """isinstance that a leftover raising ``__class__`` cannot 500 through."""
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``sh`` leftovers arrive as bytes/None; leftover ``str(exc)`` RecursionError must not 500 uninstall."""
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         value = value.decode("utf-8", "replace")
     elif value is None:
         return ""
@@ -186,10 +196,10 @@ def _agent_paths(path: Path) -> tuple[str, str, str]:
         raise
     except BaseException:
         return path.stem, "", ""
-    if not isinstance(data, dict):
+    if not _isinst(data, dict):
         return path.stem, "", ""
     args = data.get("ProgramArguments") or []
-    if not isinstance(args, list):
+    if not _isinst(args, list):
         args = []
     # _as_text, not str(): a hex plist ``<integer>`` (base 16 dodges the
     # int(str) parse cap) in Label / ProgramArguments / WorkingDirectory

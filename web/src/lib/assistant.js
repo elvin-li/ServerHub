@@ -1,4 +1,4 @@
-import { asArray, asRecord, finiteText } from './finite'
+import { asArray, asRecord, asTrimmed, finiteText, recGet } from './finite'
 
 /** Shell event: open the AI drawer from any page (Dashboard, etc.). */
 export const ASSISTANT_EVENT = 'serverhub:assistant'
@@ -13,16 +13,16 @@ export function openAssistant(detail = {}) {
  * Used by Cmd+K so "logs" / "docker" jump without opening the drawer.
  */
 export function matchCatalog(panels, query, limit = 6) {
-  const needle = finiteText(query, '').trim().toLowerCase()
+  const needle = asTrimmed(finiteText(query, '')).toLowerCase()
   if (!needle || !asArray(panels).length) return []
   const scored = []
   for (const panel of asArray(panels)) {
     const row = asRecord(panel)
-    const title = finiteText(row.title, '').toLowerCase()
-    const path = finiteText(row.path, '').toLowerCase()
-    const aliases = asArray(row.aliases).map((alias) => finiteText(alias, '').toLowerCase())
+    const title = finiteText(recGet(row, 'title'), '').toLowerCase()
+    const path = finiteText(recGet(row, 'path'), '').toLowerCase()
+    const aliases = asArray(recGet(row, 'aliases')).map((alias) => finiteText(alias, '').toLowerCase())
     let score = 0
-    if (title === needle || finiteText(row.id, '') === needle || path === needle || path === `/${needle}`) {
+    if (title === needle || finiteText(recGet(row, 'id'), '') === needle || path === needle || path === `/${needle}`) {
       score = 100
     } else if (aliases.includes(needle)) {
       score = 90

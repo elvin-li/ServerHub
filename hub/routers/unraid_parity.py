@@ -10,6 +10,21 @@ from pydantic import BaseModel
 from hub import audit, auth, docker_info_svc, health_svc, identity_svc, system_settings_svc, users_svc
 from hub.tools_svc import launchd_timers
 
+_CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 router = APIRouter(tags=["unraid-parity"])
 
 
@@ -67,7 +82,7 @@ def api_scheduler():
     # the same data — a leftover ``\ud800`` label or an over-cap plist int
     # answered a raw 500 here and a 200 there.
     timers = system_settings_svc._json_tree(launchd_timers())
-    if not isinstance(timers, list):
+    if not _isinst(timers, list):
         timers = []
     return {
         "timers": timers,
@@ -161,7 +176,7 @@ def api_diagnostics_download():
     except (TypeError, ValueError, OverflowError, RecursionError):
         # RecursionError: leftover nested diagnostics after _json_tree is not ValueError.
         body = "{}"
-    if isinstance(body, str):
+    if _isinst(body, str):
         body = body.encode("utf-8", "replace").decode("utf-8")
     name = f"serverhub-diagnostics-{strftime_now('%Y%m%d-%H%M%S')}.json"
     return PlainTextResponse(

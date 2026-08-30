@@ -358,9 +358,9 @@ def _jsonable(value, depth: int = 0):
 
 def _sysctl_int(value) -> int | None:
     """int from a sysctl `-n` payload that may be str, bytes, or already int."""
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             # Base coercion before the ``>= 0`` probe: a leftover int
             # subclass whose comparison methods raise (the modules5 bomb
@@ -576,7 +576,7 @@ def _cpu_and_mem_from_top_cached() -> dict:
             except BaseException:
                 pass
     value = _cpu_and_mem_from_top() or {}
-    if not isinstance(value, dict):
+    if not _isa(value, dict):
         value = {}
     try:
         _top_cache.update(t=now, v=value)
@@ -979,9 +979,9 @@ def _thermal() -> dict | None:
 
 def _nonneg_bytes(value) -> int | None:
     """Non-negative byte count, or None for leftovers that would 500 JSON."""
-    if isinstance(value, bool) or value is None:
+    if type(value) is bool or value is None:
         return None
-    if isinstance(value, int):
+    if _isa(value, int):
         if type(value) is not int:
             # Base coercion before the range probe: a leftover int subclass
             # whose comparison methods raise (the modules5 bomb class) used
@@ -1017,11 +1017,11 @@ def _gpu_model(entry: dict) -> str | None:
 def _iter_ioreg_dicts(value, depth: int = 0):
     if depth > 6 or value is None:
         return
-    if isinstance(value, dict):
+    if _isa(value, dict):
         yield value
         for v in value.values():
             yield from _iter_ioreg_dicts(v, depth + 1)
-    elif isinstance(value, (list, tuple)):
+    elif _isa(value, (list, tuple)):
         for item in value:
             yield from _iter_ioreg_dicts(item, depth + 1)
 
@@ -1039,19 +1039,19 @@ def _gpu() -> dict | None:
         )
         if _rc_int(rc) != 0 or not out:
             return None
-        raw = out.encode("utf-8", "replace") if isinstance(out, str) else out
+        raw = out.encode("utf-8", "replace") if _isa(out, str) else out
         parsed = plistlib.loads(raw)
 
         best = None
         best_score = -1.0
         for entry in _iter_ioreg_dicts(parsed):
-            if not isinstance(entry, dict):
+            if not _isa(entry, dict):
                 continue
             stats = entry.get("PerformanceStatistics")
-            if not isinstance(stats, dict):
+            if not _isa(stats, dict):
                 stats = {}
             util_raw = stats.get("Device Utilization %")
-            util = None if isinstance(util_raw, bool) else _finite_float(util_raw)
+            util = None if type(util_raw) is bool else _finite_float(util_raw)
             used = _nonneg_bytes(stats.get("In use system memory"))
             alloc = _nonneg_bytes(stats.get("Alloc system memory"))
             model = _gpu_model(entry)
@@ -1126,7 +1126,7 @@ def peek_sensors() -> dict | None:
         # non-dict planted in the cache used to escape here verbatim —
         # GET /api/system/sensors?light=1 answered a JSON array, and the
         # metrics sampler then AttributeError'd on snapshot.get().
-        return cleaned if isinstance(cleaned, dict) else None
+        return cleaned if _isa(cleaned, dict) else None
     return None
 
 
@@ -1219,7 +1219,7 @@ def collect_sensors(force: bool = False) -> dict:
         # Re-sanitize: leftover inf / ``\ud800`` planted in the cache used
         # to 500 GET /api/system/sensors (the light peek already re-sanitized).
         cleaned = _jsonable(hit)
-        return cleaned if isinstance(cleaned, dict) else {}
+        return cleaned if _isa(cleaned, dict) else {}
 
     with _refresh_lock:
         # Single-flight: concurrent dashboard/metrics callers share one sample.
@@ -1228,7 +1228,7 @@ def collect_sensors(force: bool = False) -> dict:
         age = _cache_age(time.time(), _mapping_get(_cache, "t")) if hit is not None else 1e9
         if hit is not None and ((not force and age < _sensors_ttl()) or age < 1.0):
             cleaned = _jsonable(hit)
-            return cleaned if isinstance(cleaned, dict) else {}
+            return cleaned if _isa(cleaned, dict) else {}
         return _collect_sensors_uncached()
 
 

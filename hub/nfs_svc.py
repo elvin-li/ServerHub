@@ -226,9 +226,9 @@ def _rc_int(rc) -> int:
     misread as success.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         # Digit-cap probe: past CPython's int->str cap the status cannot be
         # rendered by any log line or JSON encoder — junk, reads as failure.
         str(value)

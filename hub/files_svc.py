@@ -390,8 +390,8 @@ def _isinst(value, types) -> bool:
     real-type fast check misses, so a leftover whose ``__class__`` is a
     raising property blew straight through a bare type gate before any
     launderer could run.  Two such gates sat outside a try and 500'd raw:
-    ``isinstance(_settings().get("roots"), list)`` in :func:`default_roots`
-    (every Files route starts there) and ``isinstance(raw, bool)`` on a
+    ``_isinst(_settings().get("roots"), list)`` in :func:`default_roots`
+    (every Files route starts there) and ``_isinst(raw, bool)`` on a
     ``max_upload_mb`` leftover in :func:`_max_upload_mb` (POST
     /api/files/upload).  A raising ``__class__`` is treated as "none of
     these types" — fail closed to the default/scrub branch (the
@@ -564,7 +564,7 @@ def _root_label(value) -> str:
     """Configured root id/name as text, via a ``str()`` probe.
 
     YAML parses ``id: 2`` / ``name: 2024`` as ints, and the previous
-    ``isinstance(value, str)`` gate silently replaced them with the directory
+    ``_isinst(value, str)`` gate silently replaced them with the directory
     basename.  Two configured roots whose directories share a basename then
     collapsed onto one id: the SPA's picker showed two identical entries and
     ``root_id=2`` — the id the YAML author wrote — answered
@@ -623,47 +623,6 @@ def _cfg_path_text(value) -> str | None:
     if value is None or type(value) is bool:
         return None
     return _as_text(value) or None
-
-
-def _finite_int(value, default: int = 0) -> int:
-    """A stat number JSON and headers can carry, or *default*.
-
-    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
-    ``st_size`` that is already a >4300-digit int passes through untouched,
-    and CPython's int->str digit limit then ValueError'd Starlette's
-    ``json.dumps`` — 500ing GET /api/files/list after the listing had
-    already been built — and the ``str(length)`` Content-Length header on
-    GET /api/files/download.  ``float()`` rejects anything beyond float
-    range, the same junk test hub/backups.py applies to its stat numbers.
-    """
-    try:
-        value = int(value)
-        float(value)
-    except (TypeError, ValueError, OverflowError, OSError):
-        return default
-    return value
-
-
-def _max_upload_mb() -> int:
-    """The configured upload cap in MB, or 512 on junk.
-
-    ``int(raw)`` with a try only guards *conversions*: YAML parses hex and
-    octal integer text uncapped (``int(x, 16)`` is a power-of-two base, so
-    CPython's 4300-digit parse limit does not apply), and a leftover
-    ``max_upload_mb: 0xFFF…`` was therefore already an over-cap int that
-    passed straight through — silently disabling the upload size cap, and
-    handing ``files.upload_too_large`` an over-cap ``max_mb`` param that
-    ``json.dumps`` cannot render.  :func:`_finite_int`'s float() probe
-    rejects anything beyond float range, the same junk test the stat
-    numbers get.
-    """
-    raw = _settings().get("max_upload_mb")
-    if isinstance(raw, bool) or raw is None:
-        return 512
-    max_mb = _finite_int(raw, 512)
-    if max_mb <= 0:
-        return 512
-    return max_mb
 
 
 def _try_resolve(value) -> Path | None:
@@ -1031,7 +990,7 @@ def _clean_component(value: str | None) -> str:
     """
     if value is None:
         text = ""
-    elif not isinstance(value, str):
+    elif not _isinst(value, str):
         raise api_error("files.bad_name")
     else:
         text = value.strip().replace("/", "").replace("\\", "")
@@ -1315,7 +1274,7 @@ def _path_of_fd(fd: int) -> str | None:
         raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(4096))
     except (OSError, AttributeError, TypeError, ValueError):
         return None
-    if not isinstance(raw, (bytes, bytearray)):
+    if not _isinst(raw, (bytes, bytearray)):
         return None
     text = bytes(raw).split(b"\x00", 1)[0].decode("utf-8", "surrogateescape")
     return text or None
@@ -1561,7 +1520,7 @@ def _plist_keepalive() -> bool | None:
     try:
         import plistlib
         pl = plistlib.loads(read_bytes_capped(FB_PLIST, _PLIST_CAP))
-        return bool(isinstance(pl, dict) and pl.get("KeepAlive"))
+        return bool(_isinst(pl, dict) and pl.get("KeepAlive"))
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -1711,7 +1670,7 @@ def set_filebrowser_ondemand(enabled: bool = True) -> dict:
         # not a usable LaunchAgent — so swallow broadly like the sibling
         # reader _plist_keepalive() and the repo's other plist readers.
         raise api_error("files.fb_bad_plist")
-    if not isinstance(pl, dict):
+    if not _isinst(pl, dict):
         raise api_error("files.fb_bad_plist")
     if enabled:
         pl["RunAtLoad"] = False

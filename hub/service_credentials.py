@@ -33,6 +33,16 @@ SECURITY = "/usr/bin/security"
 HTPASSWD = "/usr/sbin/htpasswd"
 
 
+def _isinst(value, types) -> bool:
+    """isinstance that a leftover raising ``__class__`` cannot 500 through."""
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _home_dir() -> Path:
     """Best-effort HOME.  ``Path.home()`` leftover used to 500 import."""
     return user_home() or Path("/var/empty/serverhub-credentials")
@@ -65,7 +75,7 @@ def _as_text(val) -> str:
     """JSON-safe text. Leftover ``\\ud800`` used to 500 GET /api/apps/credentials."""
     if val is None:
         return ""
-    if isinstance(val, (bytes, bytearray)):
+    if _isinst(val, (bytes, bytearray)):
         val = val.decode("utf-8", "replace")
     else:
         try:
@@ -88,9 +98,18 @@ def _json_safe(value, depth: int = 0):
     """Drop leftover inf/bytes/dates/!!set so Starlette allow_nan=False cannot 500."""
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None:
         return value
-    if isinstance(value, int):
+    if _isinst(value, bool):
+        if type(value) is bool:
+            return value
+        try:
+            return bool(value)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    if _isinst(value, int):
         try:
             str(value)
         except ValueError:
@@ -98,15 +117,15 @@ def _json_safe(value, depth: int = 0):
             # the number at all — same drop as its inf float sibling.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         out = {}
         for k, v in value.items():
             try:
@@ -119,7 +138,7 @@ def _json_safe(value, depth: int = 0):
                 continue
             out[key] = _json_safe(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         return [_json_safe(v, depth + 1) for v in value]
     iso = getattr(value, "isoformat", None)
     if callable(iso):
@@ -146,7 +165,7 @@ def _run_with_input(command: list[str], stdin: str | None, *, timeout: int) -> t
         return -1, "", "invalid argv"
     try:
         payload = None if stdin is None else (
-            stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+            stdin.encode("utf-8") if _isinst(stdin, str) else stdin
         )
     except UnicodeEncodeError as exc:
         return -1, "", _as_text(exc)[:200]
@@ -220,7 +239,7 @@ def _load() -> dict[str, dict]:
         # (torn write leaving non-UTF-8 bytes); RecursionError is a leftover
         # deeply nested store.  The credentials page reads this.
         return {}
-    if not isinstance(raw, dict):
+    if not _isinst(raw, dict):
         return {}
     # Scrub keys (and values) *on load*, before they become lookup keys.
     # ``json.loads`` happily produces a lone-surrogate KEY from an escaped
@@ -229,9 +248,9 @@ def _load() -> dict[str, dict]:
     # UnicodeEncodeError — swallowed by _save's broad except — which made
     # every subsequent store()/delete() a silent no-op on disk.
     cleaned = _json_safe(raw)
-    if not isinstance(cleaned, dict):
+    if not _isinst(cleaned, dict):
         return {}
-    return {str(k): v for k, v in cleaned.items() if isinstance(v, dict)}
+    return {str(k): v for k, v in cleaned.items() if _isinst(v, dict)}
 
 
 def _save(items: dict[str, dict]) -> None:
@@ -240,8 +259,8 @@ def _save(items: dict[str, dict]) -> None:
     # write at umask-derived 0644.
     cleaned = {}
     for key, value in items.items():
-        row = _json_safe(value) if isinstance(value, dict) else None
-        if isinstance(row, dict):
+        row = _json_safe(value) if _isinst(value, dict) else None
+        if _isinst(row, dict):
             # _as_text, not str(): a lone-surrogate key survives str() and
             # then no UTF-8 encode of the dumped document can succeed, so the
             # whole write — every row, not just the bad key — silently failed.
@@ -379,14 +398,14 @@ def get(service_id: str) -> dict:
 
 
 def public_item(item: dict) -> dict:
-    if not isinstance(item, dict):
+    if not _isinst(item, dict):
         item = {}
     service_id = item.get("service_id")
-    service_id = service_id if isinstance(service_id, str) else _as_text(service_id)
+    service_id = service_id if _isinst(service_id, str) else _as_text(service_id)
     adapter = item.get("adapter") or adapter_for(service_id)
-    adapter = adapter if isinstance(adapter, str) else adapter_for(service_id)
+    adapter = adapter if _isinst(adapter, str) else adapter_for(service_id)
     updated = item.get("updated_at")
-    if isinstance(updated, bool):
+    if _isinst(updated, bool):
         updated = None
     else:
         try:
@@ -405,7 +424,7 @@ def public_item(item: dict) -> dict:
         "has_password": True,
         "updated_at": updated,
     })
-    if not isinstance(out, dict):
+    if not _isinst(out, dict):
         return {
             "service_id": service_id,
             "display_name": service_id,
@@ -426,9 +445,9 @@ def public_item(item: dict) -> dict:
         ("notes", ""),
         ("adapter", adapter),
     ):
-        if not isinstance(out.get(key), str):
+        if not _isinst(out.get(key), str):
             out[key] = fallback
-    if not isinstance(out.get("updated_at"), int):
+    if not _isinst(out.get("updated_at"), int):
         out["updated_at"] = None
     out["can_apply"] = out.get("adapter") != "generic"
     out["applied"] = bool(out.get("applied"))

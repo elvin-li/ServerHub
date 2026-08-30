@@ -29,6 +29,27 @@ class UtilResourceSecureLeftoverTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 resource_mode.resource_mode()
 
+    def test_resource_mode_class_bomb_settings_is_default_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        with mock.patch.object(resource_mode, "cfg", return_value={"settings": ClassBomb()}):
+            self.assertEqual(resource_mode.resource_mode(), resource_mode.DEFAULT)
+            self.assertFalse(resource_mode.is_high())
+
+    def test_resource_mode_class_bomb_value_is_default_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        with mock.patch.object(
+            resource_mode, "cfg", return_value={"settings": {"resource_mode": ClassBomb()}},
+        ):
+            self.assertEqual(resource_mode.resource_mode(), resource_mode.DEFAULT)
+
     def test_spawn_record_swallows_a_baseexception_key_bomb(self):
         def _boom(*_a, **_k):
             raise LeftoverWatchdogTimeout("spawn key bomb")

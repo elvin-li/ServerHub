@@ -9,6 +9,24 @@ DEFAULT = "low"
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew the settings-map gate and the ``resource_mode``
+    value gate — GET /api/status (``_status_ttl`` → ``is_high``) and
+    GET /api/system/sensors?light=1 answered HTTP 500 instead of DEFAULT
+    ``low``.  Fail-closed.  Exact-str copies still use ``type(v) is not str``.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def resource_mode() -> str:
     # ``settings: []`` / a scalar used to AttributeError ``.get`` and 500
     # GET /api/status on a cache hit (``_status_ttl`` → ``is_high``) plus
@@ -20,7 +38,7 @@ def resource_mode() -> str:
         raise
     except BaseException:
         settings = {}
-    if not isinstance(settings, dict):
+    if not _isinst(settings, dict):
         settings = {}
     # ``dict.get`` under a guard, not the bound ``.get``: a leftover settings
     # map that is a dict *subclass* with a bombing ``.get`` passes the
@@ -38,7 +56,7 @@ def resource_mode() -> str:
             raise
         except BaseException:
             v = None
-    if isinstance(v, str) and type(v) is not str:
+    if _isinst(v, str) and type(v) is not str:
         # Exact-str copy: a str-subclass value whose ``__eq__`` raises used
         # to detonate the ``v in ALLOWED`` membership below.
         try:
@@ -47,7 +65,7 @@ def resource_mode() -> str:
             raise
         except BaseException:
             v = None
-    if not isinstance(v, str) or not v:
+    if not _isinst(v, str) or not v:
         return DEFAULT
     return v if v in ALLOWED else DEFAULT
 

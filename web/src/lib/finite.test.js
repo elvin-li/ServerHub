@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+import { asArray, asRecord, asJsonBody, asTrimmed, asUri, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, recGet, withUnit } from './finite'
+
+describe('asJsonBody leftover answers', () => {
+  it('keeps lists and mappings, fail-closes primitives', () => {
+    expect(asJsonBody({ a: 1 })).toEqual({ a: 1 })
+    expect(asJsonBody(['a'])).toEqual(['a'])
+    expect(asJsonBody([])).toEqual([])
+    expect(asJsonBody(null)).toEqual({})
+    expect(asJsonBody('x')).toEqual({})
+    expect(asJsonBody(12)).toEqual({})
+  })
+})
 
 describe('asRecord leftover mappings', () => {
   it('keeps real objects and fail-closes lists', () => {
@@ -8,6 +19,36 @@ describe('asRecord leftover mappings', () => {
     expect(asRecord(['a'])).toEqual({})
     expect(asRecord(null)).toEqual({})
     expect(asRecord('x')).toEqual({})
+  })
+})
+
+describe('recGet leftover field bombs', () => {
+  it('fail-closes getter bombs and keeps real fields', () => {
+    expect(recGet({ ok: true }, 'ok')).toBe(true)
+    expect(recGet(null, 'ok', false)).toBe(undefined)
+    expect(recGet({
+      get ok() { throw new Error('boom') },
+    }, 'ok', false)).toBe(false)
+  })
+})
+
+describe('asUri leftover ids', () => {
+  it('encodes strings/finite numbers and fail-closes leftover mappings', () => {
+    expect(asUri('a b')).toBe('a%20b')
+    expect(asUri(12)).toBe('12')
+    expect(asUri(null)).toBe('')
+    expect(asUri({ toString: () => { throw new Error('boom') } })).toBe('')
+    expect(asUri(Number.POSITIVE_INFINITY)).toBe('')
+  })
+})
+
+describe('asTrimmed leftover needles', () => {
+  it('trims exact strings and fail-closes leftover non-strings', () => {
+    expect(asTrimmed('  x  ')).toBe('x')
+    expect(asTrimmed('')).toBe('')
+    expect(asTrimmed(null)).toBe('')
+    expect(asTrimmed(12)).toBe('')
+    expect(asTrimmed({ trim: () => { throw new Error('boom') } })).toBe('')
   })
 })
 
