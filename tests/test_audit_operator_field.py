@@ -1,6 +1,6 @@
 """Audit records must name the operator in the field the Audit page reads.
 
-``web/src/views/Audit.vue`` renders ``e.username`` and treats every other key as an
+``web/src/views/Audit.vue`` renders ``asRecord(e).username`` and treats every other key as an
 extra detail.  The newer feature routers were written with ``actor=`` instead, so
 seventeen call sites recorded who performed a privileged WireGuard, NFS, RAID,
 snapshot or SMART operation and then displayed the operator as an em dash -- the
@@ -32,8 +32,8 @@ class AuditOperatorFieldTests(unittest.TestCase):
         text = AUDIT_VIEW.read_text()
         self.assertRegex(
             text,
-            r"e\.username",
-            "Audit.vue no longer renders e.username; update OPERATOR_FIELD",
+            r"asRecord\(e\)\.username",
+            "Audit.vue no longer renders asRecord(e).username; update OPERATOR_FIELD",
         )
 
     def test_no_router_records_the_operator_as_actor(self):

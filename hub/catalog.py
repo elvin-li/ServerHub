@@ -1657,14 +1657,15 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             # generated passwords) reported as an uncoded two-word
             # ``message: "not found"`` the SPA cannot translate.
             unreachable = looks_engine_down(msg) or (
-                # The sentinel is any FileNotFoundError spawn — a dest_dir
-                # (the compose cwd) that vanished between mkdir and the
-                # spawn raises identically — so the binary must be confirmed
-                # gone from disk before the sentinel reads as a vanished CLI
-                # (the compose_svc / actions convention): with the CLI still
-                # present and the engine merely off, the keep-the-stack 503
-                # pointed the operator at the wrong remedy.
-                rc == -1 and looks_cli_vanished(msg) and not cli_on_disk()
+                # FileNotFoundError spawn collapses to ``(-1, "not found")``.
+                # ``cli_on_disk()`` used to also be required so a vanished
+                # compose cwd was not misread as a vanished binary — but a
+                # runner that still has ``docker`` on disk then skipped the
+                # keep-the-stack engine_down path and rolled the install back
+                # (catalog4/6 leftover HTTP).  The forced ``engine_up``
+                # probe below still refuses to classify while the engine is
+                # actually up.
+                rc == -1 and looks_cli_vanished(msg)
             )
             if unreachable and not engine_up(force=True):
                 # Same shape as the missing-CLI branch just above: the compose
@@ -1824,14 +1825,14 @@ def uninstall_template(
     joined = "\n".join(logs)
     if (
         not down_ok
-        # The vanished-CLI sentinel only classifies once the binary is
-        # confirmed gone from disk (the compose_svc / actions convention):
-        # any FileNotFoundError spawn collapses into the same "not found",
-        # so a dest_dir that vanished mid-request with the CLI still on
-        # disk keeps the ordinary uninstall path instead of the 503.
+        # The vanished-CLI sentinel is the same did-nothing state as a
+        # stopped engine: classify it even when ``docker`` is still on disk
+        # (GitHub CI leftover HTTP), then confirm with a forced engine_up
+        # probe so a genuine CLI "not found" while the engine is up keeps
+        # the ordinary uninstall path.
         and (
             looks_engine_down(joined)
-            or (looks_cli_vanished(joined) and not cli_on_disk())
+            or looks_cli_vanished(joined)
         )
         and not engine_up(force=True)
     ):
