@@ -1416,13 +1416,14 @@ function switchTab(id) {
 async function loadSysBundle() {
   const generation = loadGeneration
   try {
-    const next = await getSystemSettings()
+    const next = asRecord(await getSystemSettings())
     if (generation !== loadGeneration || !pageAlive) return
     sysBundle.value = next
     sysBundleError.value = ''
-    const p = asRecord(sysBundle.value?.power?.settings)
+    const power = asRecord(next.power)
+    const p = asRecord(power.settings)
     powerForm.value = {
-      sleep: p.sleep ?? sysBundle.value?.power?.sleep ?? 0,
+      sleep: p.sleep ?? power.sleep ?? 0,
       displaysleep: p.displaysleep ?? sysBundle.value?.power?.displaysleep ?? 10,
       disksleep: p.disksleep ?? sysBundle.value?.power?.disksleep ?? 0,
       womp: p.womp ?? sysBundle.value?.power?.womp ?? 1,
@@ -1447,7 +1448,7 @@ async function applyPower(key) {
   const generation = beginSaving()
   try {
     const value = powerForm.value[key]
-    const result = await setPowerSetting(key, value)
+    const result = asRecord(await setPowerSetting(key, value))
     if (!pageAlive) return
     toast(result.ok ? `✅ ${finiteText(key)}=${finiteText(value)}` : `❌ ${softText(result)}`)
     await loadSysBundle()
@@ -1463,7 +1464,7 @@ async function runAliasAlign() {
   if (!confirm(t('network.confirm_autobind'))) return
   const generation = beginSaving()
   try {
-    const result = await runAliasAutoBind()
+    const result = asRecord(await runAliasAutoBind())
     if (!pageAlive) return
     toast(result.ok ? `✅ ${finiteText(result.message, '') || t('common.ok')}` : `❌ ${finiteText(result.message, '') || t('common.fail')}`)
     await loadSysBundle()
@@ -1479,12 +1480,13 @@ async function runDiagnostics() {
   const generation = beginSaving()
   diagMsg.value = ''
   try {
-    const result = await generateDiagnostics()
+    const result = asRecord(await generateDiagnostics())
     if (!pageAlive) return
     const saved = Boolean(result.saved_path)
     diagMsg.value = saved
       ? `${t('settings.diag_saved')}: ${result.saved_path}`
       : t('settings.diag_save_failed', { error: finiteText(result.save_error, '') || t('common.failed') })
+    const health = asRecord(result.health)
     diagPreview.value = jsonText({
       generated_at: result.generated_at,
       hostname: result.hostname,
@@ -1494,8 +1496,8 @@ async function runDiagnostics() {
       other: result.other,
       vms: result.vms,
       metrics_latest: result.metrics_latest,
-      health_summary: asArray(result.health?.checks).length
-        ? asArray(result.health.checks).slice(0, 8)
+      health_summary: asArray(health.checks).length
+        ? asArray(health.checks).slice(0, 8)
         : result.health,
     }, '', 2)
     toast(saved ? '✅ ' + t('settings.diag_done') : '❌ ' + finiteText(diagMsg.value))
@@ -1569,13 +1571,13 @@ async function syncUiToServer() {
 async function loadIdentity() {
   const generation = loadGeneration
   try {
-    const next = await getIdentity()
+    const next = asRecord(await getIdentity())
     if (generation !== loadGeneration || !pageAlive) return
     identity.value = next
     identityForm.value = {
-      computer_name: identity.value.computer_name || '',
-      comment: identity.value.comment || '',
-      host_ip: identity.value.host_ip_config || 'auto',
+      computer_name: next.computer_name || '',
+      comment: next.comment || '',
+      host_ip: next.host_ip_config || 'auto',
     }
     identityLoaded.value = true
     identityError.value = ''
@@ -1595,11 +1597,11 @@ async function saveIdentity() {
   }
   const generation = beginSaving()
   try {
-    const r = await putIdentity({
+    const r = asRecord(await putIdentity({
       computer_name: identityForm.value.computer_name || null,
       comment: identityForm.value.comment,
       host_ip: identityForm.value.host_ip,
-    })
+    }))
     if (!pageAlive) return
     toast('✅ ' + (finiteText(r.message, '') || t('common.save')))
     await loadIdentity()
@@ -1616,7 +1618,7 @@ async function saveIdentity() {
 async function loadDockerInfo() {
   const generation = loadGeneration
   try {
-    const next = await getDockerInfo()
+    const next = asRecord(await getDockerInfo())
     if (generation !== loadGeneration || !pageAlive) return
     dockerInfo.value = next
     dockerError.value = ''
@@ -1637,7 +1639,7 @@ async function loadLauncher() {
   launcherLoading.value = true
   launcherError.value = ''
   try {
-    const status = await getLauncherStatus()
+    const status = asRecord(await getLauncherStatus())
     if (request !== launcherLoadRequest || !pageAlive) return
     launcher.value = status
     launcherError.value = ''
@@ -1670,8 +1672,8 @@ async function waitForPanelRestart() {
   const deadline = Date.now() + 150000
   while (launcherPageAlive && Date.now() < deadline) {
     try {
-      const status = await getLauncherStatus()
-      if (status?.panel_running) return status
+      const status = asRecord(await getLauncherStatus())
+      if (status.panel_running) return status
     } catch {
       // Expected for as long as nothing is listening.
     }
@@ -2190,14 +2192,15 @@ async function saveTerminal() {
 async function loadUps() {
   const generation = loadGeneration
   try {
-    const next = await getUps()
+    const next = asRecord(await getUps())
     if (generation !== loadGeneration || !pageAlive) return
     upsInfo.value = next
     upsError.value = ''
-    const sd = asRecord(upsInfo.value.settings?.shutdown)
+    const settings = asRecord(next.settings)
+    const sd = asRecord(settings.shutdown)
     upsForm.value = {
-      alerts_enabled: upsInfo.value.settings?.alerts_enabled !== false,
-      low_battery_pct: upsInfo.value.settings?.low_battery_pct ?? 20,
+      alerts_enabled: settings.alerts_enabled !== false,
+      low_battery_pct: settings.low_battery_pct ?? 20,
       shutdown: {
         enabled: sd.enabled === true,
         trigger_pct: sd.trigger_pct ?? '',

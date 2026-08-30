@@ -93,7 +93,7 @@
       <p class="login-foot">{{ t('auth.local_only') }}</p>
       <div class="login-locale">
         <select :value="locale" @change="onLocale" :title="t('appearance.language')" :aria-label="t('appearance.language')">
-          <option v-for="l in locales" :key="l.id" :value="l.id">{{ finiteText(l.native) }}</option>
+          <option v-for="l in asArray(locales)" :key="finiteText(asRecord(l).id)" :value="asRecord(l).id">{{ finiteText(asRecord(l).native) }}</option>
         </select>
       </div>
     </section>
@@ -107,7 +107,7 @@ import { getAuthStatus, getSetupToken, loginAuth, resetAuthLost, setupAuth, veri
 import { applyAuthStatus } from '../lib/authState'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteText } from '../lib/finite'
 
 const { t, locale, locales, setLocale } = injectI18n()
 const route = useRoute()
@@ -153,7 +153,7 @@ let loginGeneration = 0
 onMounted(async () => {
   pageAlive = true
   try {
-    const state = await getAuthStatus()
+    const state = asRecord(await getAuthStatus())
     if (!pageAlive) return
     setupMode.value = !!state.setup_required
     username.value = finiteText(state.username, '') || 'admin'
@@ -161,7 +161,7 @@ onMounted(async () => {
     tokenNeeded.value = state.setup_token_required !== false
     if (setupMode.value && tokenNeeded.value) {
       try {
-        const tokenResp = await getSetupToken()
+        const tokenResp = asRecord(await getSetupToken())
         if (!pageAlive) return
         autoToken.value = finiteText(tokenResp.setup_token, '')
         if (autoToken.value) setupToken.value = autoToken.value
@@ -197,13 +197,14 @@ async function copyToken() {
 }
 
 function rememberSession(result) {
-  if (!result || typeof result !== 'object') return
+  const row = asRecord(result)
+  if (!Object.keys(row).length && (result == null || typeof result !== 'object')) return
   applyAuthStatus({
     authenticated: true,
-    username: finiteText(result.username, '') || finiteText(username.value),
-    role: result.role,
-    can_manage: result.can_manage,
-    resources: result.resources,
+    username: finiteText(row.username, '') || finiteText(username.value),
+    role: row.role,
+    can_manage: row.can_manage,
+    resources: row.resources,
   })
 }
 
@@ -233,15 +234,15 @@ async function submit() {
   busy.value = true
   try {
     if (setupMode.value) {
-      const result = await setupAuth(username.value, password.value, setupToken.value)
+      const result = asRecord(await setupAuth(username.value, password.value, setupToken.value))
       if (!pageAlive) return
       if (generation !== loginGeneration) return
       rememberSession(result)
     } else {
-      const result = await loginAuth(username.value, password.value)
+      const result = asRecord(await loginAuth(username.value, password.value))
       if (!pageAlive) return
       if (generation !== loginGeneration) return
-      if (result && result.totp_required) {
+      if (result.totp_required) {
         // Password accepted; the account demands a code before any session
         // exists. Keep the pending token in memory and swap the form.
         totpPending.value = finiteText(result.pending, '')
@@ -272,7 +273,7 @@ async function submitTotp() {
   const generation = loginGeneration
   busy.value = true
   try {
-    const result = await verifyTotpLogin(totpPending.value, totpCode.value)
+    const result = asRecord(await verifyTotpLogin(totpPending.value, totpCode.value))
     if (!pageAlive) return
     if (generation !== loginGeneration) return
     rememberSession(result)

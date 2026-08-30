@@ -494,11 +494,12 @@ const NAV_MEMBER = [
 const nav = computed(() => {
   const groups = authState.authenticated && authState.role === 'member' ? NAV_MEMBER : NAV_ADMIN
   if (photoHubOk.value) return groups
-  return groups.map((item) => {
-    if (!item.children?.some((c) => c.to === '/photoshub')) return item
+  return asArray(groups).map((item) => {
+    const row = asRecord(item)
+    if (!asArray(row.children).some((c) => asRecord(c).to === '/photoshub')) return item
     return {
-      ...item,
-      children: item.children.filter((c) => c.to !== '/photoshub'),
+      ...row,
+      children: asArray(row.children).filter((c) => asRecord(c).to !== '/photoshub'),
     }
   })
 })
@@ -507,7 +508,7 @@ const activeGroup = computed(() => {
   const path = route.path
   for (const item of asArray(nav.value)) {
     if (item.exact && path === item.to) return item
-    if (item.match && item.match.some(m => path === m || path.startsWith(m + '/'))) return item
+    if (item.match && asArray(item.match).some(m => path === m || path.startsWith(m + '/'))) return item
     if (!item.exact && !item.match && (path === item.to || path.startsWith(item.to + '/'))) return item
   }
   return null
@@ -518,7 +519,7 @@ const activeChildren = computed(() => asArray(activeGroup.value?.children))
 function isActive(item) {
   const path = route.path
   if (item.exact) return path === item.to
-  if (item.match) return item.match.some(m => path === m || path.startsWith(m + '/'))
+  if (item.match) return asArray(item.match).some(m => path === m || path.startsWith(m + '/'))
   return path === item.to || path.startsWith(item.to + '/')
 }
 

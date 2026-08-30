@@ -3883,7 +3883,7 @@ describe('leftover Infinity interpolations', () => {
     expect(login).not.toMatch(/autoToken\.value = tokenResp\.setup_token \|\| ''/)
     expect(login).toMatch(/finiteText\(tokenResp\.setup_token, ''\)/)
     expect(login).not.toMatch(/username: result\.username \|\| username\.value/)
-    expect(login).toMatch(/finiteText\(result\.username, ''\) \|\| finiteText\(username\.value\)/)
+    expect(login).toMatch(/finiteText\(row\.username, ''\) \|\| finiteText\(username\.value\)/)
     expect(login).not.toMatch(/\{\{\s*autoToken\s*\}\}/)
     expect(login).toMatch(/finiteText\(autoToken\)/)
     expect(login).not.toMatch(/\{\{\s*error\s*\}\}/)
@@ -3893,7 +3893,7 @@ describe('leftover Infinity interpolations', () => {
     expect(login).not.toMatch(/totpPending\.value = result\.pending \|\| ''/)
     expect(login).toMatch(/finiteText\(result\.pending, ''\)/)
     expect(login).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
-    expect(login).toMatch(/finiteText\(l\.native\)/)
+    expect(login).toMatch(/finiteText\(asRecord\(l\)\.native\)/)
   })
 
   it('AdminPasswordDialog has no leftover API interpolations', () => {
