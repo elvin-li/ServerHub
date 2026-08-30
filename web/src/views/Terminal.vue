@@ -47,7 +47,7 @@
            toast that faded in four seconds, leaving a dead control with no
            explanation and no retry. -->
       <LoadFailure v-if="statusError" :detail="statusError" :retry="load" />
-      <div v-if="target === 'host' && status && !status.host_enabled" class="locked">
+      <div v-if="target === 'host' && status && !asRecord(status).host_enabled" class="locked">
         <strong>{{ t('terminal.host_locked_title') }}</strong>
         <p>{{ t('terminal.host_locked_body') }}</p>
         <router-link class="btn tiny primary" to="/settings">{{ t('terminal.host_locked_cta') }}</router-link>
@@ -138,7 +138,7 @@ function clearConnectTimer() {
 }
 
 const canOpen = computed(() => {
-  if (target.value === 'host') return !!status.value?.host_enabled
+  if (target.value === 'host') return !!asRecord(status.value).host_enabled
   return !!container.value
 })
 const targetLabel = computed(() => {
@@ -157,7 +157,7 @@ async function load() {
   try {
     const next = await getTerminal()
     if (!pageAlive) return
-    status.value = next
+    status.value = asRecord(next)
     statusError.value = ''
   } catch (error) {
     if (!pageAlive) return
