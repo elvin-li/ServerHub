@@ -476,11 +476,11 @@ async function openFullFB() {
     }
     const j = asRecord(await ensureFileBrowser())
     if (request !== listRequest) return
-    if (!j.ok) throw new Error(finiteText(j.message, '') || t('common.failed'))
+    if (!recGet(j, 'ok')) throw new Error(finiteText(recGet(j, 'message'), '') || t('common.failed'))
     fb.value = j
-    const url = finiteText(j.url, '') || 'http://localhost:8125'
+    const url = finiteText(recGet(j, 'url'), '') || 'http://localhost:8125'
     window.open(url, '_blank', 'noopener')
-    toast(j.started ? t('files.fb_started') : t('files.fb_running'))
+    toast(recGet(j, 'started') ? t('files.fb_started') : t('files.fb_running'))
     // optional: enable on-demand mode so it won't auto-start at boot next time
   } catch (e) {
     if (request !== listRequest) return
@@ -499,9 +499,9 @@ async function stopFB() {
   try {
     const j = asRecord(await stopFileBrowser())
     if (request !== listRequest) return
-    if (!j.ok) throw new Error(finiteText(j.message, '') || t('common.failed'))
+    if (!recGet(j, 'ok')) throw new Error(finiteText(recGet(j, 'message'), '') || t('common.failed'))
     fb.value = j
-    toast(finiteText(j.message, '') || '✅ ' + t('common.ok'))
+    toast(finiteText(recGet(j, 'message'), '') || '✅ ' + t('common.ok'))
   } catch (e) {
     if (request !== listRequest) return
     toast(`❌ ${finiteText(e.message)}`)

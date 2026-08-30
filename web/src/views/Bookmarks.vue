@@ -105,9 +105,9 @@ function badgeText(b) {
 function backendHint(b) {
   const bk = asRecord(recGet(b, 'backend'))
   if (!bk.id && !bk.name && !bk.kind && !bk.status && !bk.state) return ''
-  const name = finiteText(bk.name, '') || finiteText(bk.id, '')
-  const st = finiteText(bk.status, '') || finiteText(bk.state, '')
-  return `${finiteText(bk.kind, '') || 'svc'}: ${name}${st ? ' · ' + st : ''}`
+  const name = finiteText(recGet(bk, 'name'), '') || finiteText(recGet(bk, 'id'), '')
+  const st = finiteText(recGet(bk, 'status'), '') || finiteText(recGet(bk, 'state'), '')
+  return `${finiteText(recGet(bk, 'kind'), '') || 'svc'}: ${name}${st ? ' · ' + st : ''}`
 }
 function finiteMs(ms) {
   const n = finiteN(ms, null)
