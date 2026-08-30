@@ -682,7 +682,7 @@ async function doUpdate(c) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await updateContainer(c.id)
+    const j = asRecord(await updateContainer(c.id))
     if (!stillOnList(generation)) return
     toast('🚀 ' + (finiteText(j.message, '') || t('docker.updating')))
     if (j.job_id) watchJob(j.job_id)
@@ -705,7 +705,7 @@ async function doAll(action) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await containersAll(action)
+    const j = asRecord(await containersAll(action))
     if (!stillOnList(generation)) return
     batchToast(j)
     scheduleRefresh(1000)
@@ -723,7 +723,7 @@ async function batchSel(action) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await batchContainers(action, asArray(selected.value))
+    const j = asRecord(await batchContainers(action, asArray(selected.value)))
     if (!stillOnList(generation)) return
     batchToast(j)
     scheduleRefresh(1000)
@@ -740,7 +740,7 @@ async function checkUpdates() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await checkContainerUpdates()
+    const j = asRecord(await checkContainerUpdates())
     if (!stillOnList(generation)) return
     toast('🚀 ' + finiteText(j.message))
     if (j.job_id) watchJob(j.job_id)
@@ -771,7 +771,7 @@ function watchJob(id) {
       return
     }
     try {
-      const j = await getStackJob(id)
+      const j = asRecord(await getStackJob(id))
       if (generation !== jobPollGeneration) return
       jobLog.value = j.log || ''
       if (!j.running) {
@@ -849,7 +849,7 @@ async function runExec() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await execContainer(execC.value.id, execCmd.value)
+    const j = asRecord(await execContainer(execC.value.id, execCmd.value))
     if (!stillOnList(generation)) return
     execOut.value = finiteText(j.output, '') || finiteText(j.message, '') || jsonText(j, '')
   } catch (e) {
@@ -878,7 +878,7 @@ async function openInspect(c) {
 async function loadImages() {
   const generation = listGeneration
   try {
-    const next = asArray((await getImages()).images)
+    const next = asArray(asRecord(await getImages()).images).map((row) => asRecord(row))
     if (generation !== listGeneration) return
     images.value = next
     subError.value.images = ''
@@ -893,7 +893,7 @@ async function loadImages() {
 async function loadVolumes() {
   const generation = listGeneration
   try {
-    const next = asArray((await getVolumes()).volumes)
+    const next = asArray(asRecord(await getVolumes()).volumes).map((row) => asRecord(row))
     if (generation !== listGeneration) return
     volumes.value = next
     subError.value.volumes = ''
@@ -908,7 +908,7 @@ async function loadVolumes() {
 async function loadNetworks() {
   const generation = listGeneration
   try {
-    const next = asArray((await getNetworks()).networks)
+    const next = asArray(asRecord(await getNetworks()).networks).map((row) => asRecord(row))
     if (generation !== listGeneration) return
     networks.value = next
     subError.value.networks = ''
@@ -923,7 +923,7 @@ async function loadNetworks() {
 async function loadEngine() {
   const generation = listGeneration
   try {
-    const next = await getDockerInfo()
+    const next = asRecord(await getDockerInfo())
     if (generation !== listGeneration) return
     engineInfo.value = next
     subError.value.engine = ''
@@ -983,7 +983,7 @@ async function doRun() {
       command: runForm.value.command.trim() || null,
       privileged: !!runForm.value.privileged,
     }
-    const j = await runContainer(body)
+    const j = asRecord(await runContainer(body))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.container_created') : `❌ ${finiteText(j.message)}`)
     if (j.ok) {
@@ -1003,7 +1003,7 @@ async function doPull() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await pullImageApi(pullImage.value.trim())
+    const j = asRecord(await pullImageApi(pullImage.value.trim()))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.pull_done') : `❌ ${finiteText(j.message)}`)
     stopJobPolling()
@@ -1027,7 +1027,7 @@ async function rmi(im) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await removeImage(ref, true)
+    const j = asRecord(await removeImage(ref, true))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadImages()
@@ -1043,7 +1043,7 @@ async function createVol() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await createVolume(newVol.value.trim())
+    const j = asRecord(await createVolume(newVol.value.trim()))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.volume_created') : `❌ ${finiteText(j.message)}`)
     newVol.value = ''
@@ -1061,7 +1061,7 @@ async function rmVol(v) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await removeVolume(v.Name, true)
+    const j = asRecord(await removeVolume(v.Name, true))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadVolumes()
@@ -1077,7 +1077,7 @@ async function createNet() {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await createNetwork(newNet.value.trim())
+    const j = asRecord(await createNetwork(newNet.value.trim()))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.network_created') : `❌ ${finiteText(j.message)}`)
     newNet.value = ''
@@ -1095,7 +1095,7 @@ async function rmNet(n) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await removeNetwork(n.Name)
+    const j = asRecord(await removeNetwork(n.Name))
     if (!stillOnList(generation)) return
     toast(j.ok ? '✅ ' + t('docker.removed') : `❌ ${finiteText(j.message)}`)
     loadNetworks()
@@ -1114,7 +1114,7 @@ async function toggleAutostart(c) {
   const generation = listGeneration
   busy.value = true
   try {
-    const j = await setRestartPolicy(c.id, next)
+    const j = asRecord(await setRestartPolicy(c.id, next))
     if (!stillOnList(generation)) return
     toast(j.ok ? `✅ ${t('docker.autostart')} → ${next}` : `❌ ${finiteText(j.message)}`)
     refresh()
