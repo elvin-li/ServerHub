@@ -9,6 +9,19 @@ from hub.auth import COOKIE_NAME, is_admin, session_username, setup_required, ve
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 
 def origin_allowed(origin: str | None, host: str | None) -> bool:
     """Return whether an HTTP(S) Origin exactly matches the request Host.
@@ -18,8 +31,8 @@ def origin_allowed(origin: str | None, host: str | None) -> bool:
     a logged-in browser to open a privileged socket.
     """
     try:
-        origin_ok = isinstance(origin, str)
-        host_ok = isinstance(host, str)
+        origin_ok = _isinst(origin, str)
+        host_ok = _isinst(host, str)
     except _CONTROL_FLOW:
         raise
     except BaseException:

@@ -224,9 +224,9 @@ def _rc_int(rc) -> int:
     the failure branch.
     """
     try:
-        if isinstance(rc, bool):
+        if type(rc) is bool:
             return int(rc)
-        value = int.__index__(rc) if isinstance(rc, int) else int(rc)
+        value = int.__index__(rc) if _isa(rc, int) else int(rc)
         str(value)
         return value
     except _CONTROL_FLOW:
@@ -538,7 +538,7 @@ def _admin_result(result) -> dict:
     # itself — a raw 500 on every snapshots/timemachine mutation one line
     # ahead of the laundering built to absorb junk shapes.
     cleaned = _jsonable(result) if _isa(result, dict) else {}
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         return {"ok": False, "error": "failed"}
     # A tmutil that vanished between boot and the mutation (an OS update
     # mid-flight, a dying system volume) used to surface as the generic 500
@@ -613,7 +613,7 @@ def _plist(argv: list[str], *, timeout: int = 15) -> dict | None:
         # Same ExpatError leftover as raid_svc._plist: a torn tmutil plist
         # used to 500 /api/snapshots instead of rendering an empty page.
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return parsed if _isa(parsed, dict) else None
 
 
 def _snapshot_date(name: str) -> str:
@@ -929,7 +929,7 @@ def overview(force: bool = False) -> dict:
     # because snapshot_mounts always reports the boot volume first, so the
     # page still renders while a hostile listing drops.
     try:
-        mounts = [m for m in list(snapshot_mounts()) if isinstance(m, str)]
+        mounts = [m for m in list(snapshot_mounts()) if _isa(m, str)]
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -957,7 +957,7 @@ def overview(force: bool = False) -> dict:
         # per-mount result (one that refuses ``len()`` or iteration, or a row
         # missing its own keys) must cost its own volume row, never the page.
         try:
-            rows = list(snaps) if isinstance(snaps, list) else []
+            rows = list(snaps) if _isa(snaps, list) else []
             if not rows and mount != "/":
                 # A non-APFS or snapshot-less external volume adds no signal.
                 continue
@@ -969,11 +969,11 @@ def overview(force: bool = False) -> dict:
                 "snapshots": rows,
                 "newest": (
                     _as_text(dict.get(newest, "date"))
-                    if isinstance(newest, dict) else ""
+                    if _isa(newest, dict) else ""
                 ),
                 "deletable": sum(
                     1 for s in rows
-                    if isinstance(s, dict) and _truthy(dict.get(s, "deletable"))
+                    if _isa(s, dict) and _truthy(dict.get(s, "deletable"))
                 ),
             })
         except _CONTROL_FLOW:
@@ -1056,14 +1056,14 @@ def delete_all_snapshots(mount: str) -> dict:
     except BaseException:
         listed = []
     try:
-        rows = list.__iter__(listed) if isinstance(listed, list) else iter(())
+        rows = list.__iter__(listed) if _isa(listed, list) else iter(())
     except _CONTROL_FLOW:
         raise
     except BaseException:
         rows = iter(())
     try:
         for s in rows:
-            if not isinstance(s, dict) or not _truthy(dict.get(s, "deletable")):
+            if not _isa(s, dict) or not _truthy(dict.get(s, "deletable")):
                 continue
             token = _as_text(dict.get(s, "date_token"))
             if _SNAP_DATE.fullmatch(token):

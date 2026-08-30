@@ -33,6 +33,19 @@ from hub.util import safe_json_loads
 from hub.websocket_security import authenticate_websocket
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    Fail-closed: a raising ``__class__`` property cannot 500 a JSON route.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 MAX_SESSIONS = 4
@@ -121,7 +134,7 @@ def _json_object(text: str) -> dict | None:
         payload = safe_json_loads(text, loads=json.loads)
     except (TypeError, ValueError, RecursionError):
         return None
-    return payload if isinstance(payload, dict) else None
+    return payload if _isinst(payload, dict) else None
 
 
 def _argv(target: str, container: str, shell: str) -> tuple[list[str], str | None]:

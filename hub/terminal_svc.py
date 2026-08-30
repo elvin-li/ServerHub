@@ -355,7 +355,7 @@ def status() -> dict:
     }
     # Leftover YAML ``cwd: "\\ud800"`` / ``shell: .inf`` used to 500 GET /api/terminal.
     cleaned = _jsonable(payload)
-    return cleaned if isinstance(cleaned, dict) else payload
+    return cleaned if _isa(cleaned, dict) else payload
 
 
 def _default_shell() -> str:
@@ -599,7 +599,7 @@ def _jsonable(value, depth: int = 0):
 def _response(result: dict) -> dict:
     """JSON-safe run payload. Leftover ``cwd: \\ud800`` used to 500 the encoder."""
     cleaned = _jsonable(result)
-    return cleaned if isinstance(cleaned, dict) else result
+    return cleaned if _isa(cleaned, dict) else result
 
 
 #: Every field ``run_host``/``run_container`` reads or mutates on a run
@@ -698,11 +698,11 @@ def _clip_audit(value):
     disk is bounded on its way to the browser).  The input is post-shaping
     plain JSON types, so plain bound calls are safe here.
     """
-    if isinstance(value, str):
+    if _isa(value, str):
         return _clip_audit_text(value)
-    if isinstance(value, dict):
+    if _isa(value, dict):
         return {_clip_audit_text(k): _clip_audit(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if _isa(value, list):
         return [_clip_audit(v) for v in value]
     return value
 
@@ -711,7 +711,7 @@ def _audit(entry: dict[str, Any]) -> None:
     """Append one line to the audit log; never let logging break the request."""
     try:
         payload = _jsonable(entry)
-        if not isinstance(payload, dict):
+        if not _isa(payload, dict):
             return
         # Clip after shaping: a leftover unbounded field (the auth trail's
         # found case was a 300 KB command) used to write a line wider than
@@ -1336,9 +1336,9 @@ def recent_audit(limit: int = 50) -> list[dict]:
             # before, plus whatever a subclass row's own hooks raise while
             # the decoder walks it: the row is unreadable either way.
             continue
-        if isinstance(parsed, dict):
+        if _isa(parsed, dict):
             cleaned = _jsonable(parsed)
-            if isinstance(cleaned, dict):
+            if _isa(cleaned, dict):
                 # Clip on read too: a leftover fat field written by an older
                 # build (or another writer) is bounded before Starlette
                 # renders it, the same both-ways clip the auth trail applies.
