@@ -224,37 +224,37 @@
       <div
         class="tile"
         style="margin-bottom:12px;border-left:3px solid var(--accent)"
-        v-if="data?.wstunnel?.configured || data?.wstunnel?.running || data?.wstunnel?.enabled"
+        v-if="asRecord(asRecord(data).wstunnel).configured || asRecord(asRecord(data).wstunnel).running || asRecord(asRecord(data).wstunnel).enabled"
       >
         <div class="row" style="margin-bottom:6px;align-items:center;gap:10px;flex-wrap:wrap">
           <h2 style="margin:0;flex:1">{{ t('wg.wstunnel_title') }}</h2>
-          <span class="badge" :class="data.wstunnel.running ? 'ok' : 'warn'">
-            {{ data.wstunnel.running ? t('common.running') : t('common.off') }}
+          <span class="badge" :class="asRecord(asRecord(data).wstunnel).running ? 'ok' : 'warn'">
+            {{ asRecord(asRecord(data).wstunnel).running ? t('common.running') : t('common.off') }}
           </span>
-          <span v-if="data.wstunnel.stale_restrict" class="badge warn">{{ t('wg.wstunnel_stale') }}</span>
-          <span v-else-if="data.wstunnel.stable_restrict === false" class="badge warn">{{ t('wg.wstunnel_unstable') }}</span>
-          <span v-else-if="data.wstunnel.aligned === false" class="badge warn">{{ t('wg.wstunnel_mismatch') }}</span>
+          <span v-if="asRecord(asRecord(data).wstunnel).stale_restrict" class="badge warn">{{ t('wg.wstunnel_stale') }}</span>
+          <span v-else-if="asRecord(asRecord(data).wstunnel).stable_restrict === false" class="badge warn">{{ t('wg.wstunnel_unstable') }}</span>
+          <span v-else-if="asRecord(asRecord(data).wstunnel).aligned === false" class="badge warn">{{ t('wg.wstunnel_mismatch') }}</span>
           <button class="tiny" @click="settingsOpen = true">{{ t('common.edit') }}</button>
         </div>
         <p style="margin:0 0 8px;font-size:12px;color:var(--sub);line-height:1.5">
           {{ t('wg.wstunnel_hint') }}
         </p>
         <div style="font-size:12px;line-height:1.6">
-          <div>{{ t('wg.wstunnel_listen') }} <code>{{ finiteText(data.wstunnel.listen) }}</code></div>
-          <div>{{ t('wg.wstunnel_public') }} <code>{{ finiteText(data.wstunnel.public) }}</code></div>
-          <div>{{ t('wg.wstunnel_restrict') }} <code>{{ finiteText(data.wstunnel.restrict_to) }}</code></div>
+          <div>{{ t('wg.wstunnel_listen') }} <code>{{ finiteText(asRecord(asRecord(data).wstunnel).listen) }}</code></div>
+          <div>{{ t('wg.wstunnel_public') }} <code>{{ finiteText(asRecord(asRecord(data).wstunnel).public) }}</code></div>
+          <div>{{ t('wg.wstunnel_restrict') }} <code>{{ finiteText(asRecord(asRecord(data).wstunnel).restrict_to) }}</code></div>
           <div
-            v-if="!data.wstunnel.aligned && data.wstunnel.desired_restrict_to"
+            v-if="!asRecord(asRecord(data).wstunnel).aligned && asRecord(asRecord(data).wstunnel).desired_restrict_to"
             class="sub"
           >
             {{ t('wg.wstunnel_desired') }}
-            <code>{{ finiteText(data.wstunnel.desired_listen) }} → {{ finiteText(data.wstunnel.desired_restrict_to) }}</code>
+            <code>{{ finiteText(asRecord(asRecord(data).wstunnel).desired_listen) }} → {{ finiteText(asRecord(asRecord(data).wstunnel).desired_restrict_to) }}</code>
           </div>
           <div
-            v-if="data.wstunnel.client_command"
+            v-if="asRecord(asRecord(data).wstunnel).client_command"
             class="mono"
             style="margin:8px 0 0;font-size:11px;word-break:break-all"
-          >{{ finiteText(data.wstunnel.client_command) }}</div>
+          >{{ finiteText(asRecord(asRecord(data).wstunnel).client_command) }}</div>
         </div>
         <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
           <button

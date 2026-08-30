@@ -504,10 +504,10 @@
           <span v-if="finiteText(smartData?.ts, '')">{{ finiteText(smartData.ts) }}</span>
           <template v-if="smartData">
             <span :style="{ color: smartData.passwordless_sudo ? 'var(--ok-text)' : 'var(--warn-text)' }">
-              {{ smartData.passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
+              {{ asRecord(smartData).passwordless_sudo ? t('main_extra.smart_sudo_ok') : t('main_extra.smart_sudo_no') }}
             </span>
             <span :style="{ color: smartData.smartctl_installed ? 'var(--ok-text)' : 'var(--down-text)' }">
-              {{ smartData.smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
+              {{ asRecord(smartData).smartctl_installed ? t('main_extra.smartctl_yes') : t('main_extra.smartctl_no') }}
             </span>
           </template>
           <span v-else-if="smartError" style="color:var(--down-text)">{{ finiteText(smartError) }}</span>

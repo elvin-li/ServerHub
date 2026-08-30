@@ -491,7 +491,7 @@
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span v-if="upsInfo.present" class="badge" :class="upsInfo.on_battery ? 'warn' : 'ok'">
-              {{ upsInfo.on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
+              {{ asRecord(upsInfo).on_battery ? t('dashboard.ups_on_battery') : t('dashboard.ups_on_ac') }}
             </span>
             <span v-else class="sub">{{ t('settings.ups_none') }}</span>
             <span v-if="finiteN(upsInfo.battery_percent, null) != null" class="mono" style="margin-left:8px">
@@ -672,13 +672,13 @@
           <label>UTM</label>
           <div>
             <span class="badge" :class="sysBundle.vms.utm_available ? 'ok' : 'warn'">
-              {{ sysBundle.vms.utm_available ? t('common.ok') : '—' }}
+              {{ asRecord(asRecord(sysBundle).vms).utm_available ? t('common.ok') : '—' }}
             </span>
           </div>
           <label>OrbStack</label>
           <div>
             <span class="badge" :class="sysBundle.vms.orb_available ? 'ok' : 'warn'">
-              {{ sysBundle.vms.orb_available ? t('common.ok') : '—' }}
+              {{ asRecord(asRecord(sysBundle).vms).orb_available ? t('common.ok') : '—' }}
             </span>
           </div>
           <label>{{ t('settings.vm_total') }}</label>
@@ -727,7 +727,7 @@
           <label>NTP</label>
           <div>
             <span class="badge" :class="sysBundle.datetime.ntp_enabled ? 'ok' : 'warn'">
-              {{ sysBundle.datetime.ntp_enabled == null ? '—' : (sysBundle.datetime.ntp_enabled ? t('common.on') : t('common.off')) }}
+              {{ asRecord(asRecord(sysBundle).datetime).ntp_enabled == null ? '—' : (asRecord(asRecord(sysBundle).datetime).ntp_enabled ? t('common.on') : t('common.off')) }}
             </span>
             <span class="mono" style="margin-left:8px">{{ finiteText(sysBundle.datetime.ntp_server, '') }}</span>
           </div>
@@ -794,7 +794,7 @@
           <label>{{ t('settings.power_source') }}</label>
           <div>
             <span class="badge" :class="sysBundle.power.ups.on_ac ? 'ok' : 'warn'">
-              {{ sysBundle.power.ups.source === 'ac' ? 'AC' : finiteText(sysBundle.power.ups.source) }}
+              {{ asRecord(asRecord(asRecord(sysBundle).power).ups).source === 'ac' ? 'AC' : finiteText(asRecord(asRecord(asRecord(sysBundle).power).ups).source) }}
             </span>
           </div>
           <label>{{ t('settings.battery') }}</label>
@@ -880,7 +880,7 @@
           <label>{{ t('settings.auto_bind') }}</label>
           <div>
             <span class="badge" :class="sysBundle.alias_auto.config?.auto_bind ? 'ok' : 'warn'">
-              {{ sysBundle.alias_auto.config?.auto_bind ? t('common.on') : t('common.off') }}
+              {{ asRecord(asRecord(asRecord(sysBundle).alias_auto).config).auto_bind ? t('common.on') : t('common.off') }}
             </span>
           </div>
           <label>{{ t('settings.preferred_nic') }}</label>
@@ -923,7 +923,7 @@
           <label>smbd</label>
           <div>
             <span class="badge" :class="sysBundle.shares.smb_running ? 'ok' : 'down'">
-              {{ sysBundle.shares.smb_running ? t('common.running') : t('common.off') }}
+              {{ asRecord(asRecord(sysBundle).shares).smb_running ? t('common.running') : t('common.off') }}
             </span>
           </div>
           <label>{{ t('settings.share_count') }}</label>
@@ -982,12 +982,12 @@
           <label>{{ t('settings.auth') }}</label>
           <div>
             <span class="badge" :class="sysBundle.management.auth_enabled ? 'ok' : 'warn'">
-              {{ sysBundle.management.auth_enabled ? t('common.on') : t('common.off') }}
+              {{ asRecord(asRecord(sysBundle).management).auth_enabled ? t('common.on') : t('common.off') }}
             </span>
             · {{ finiteText(sysBundle.management.username) }}
           </div>
           <label>{{ t('settings.auth_localhost') }}</label>
-          <div>{{ sysBundle.management.allow_localhost ? t('common.yes') : t('common.no') }}</div>
+          <div>{{ asRecord(asRecord(sysBundle).management).allow_localhost ? t('common.yes') : t('common.no') }}</div>
           <label>Host IP</label>
           <div class="mono">{{ finiteText(sysBundle.management.host_ip) }}</div>
           <label>Nginx HTTPS</label>
