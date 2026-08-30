@@ -2,7 +2,7 @@
   <div>
     <div class="page-title">
       <h1>{{ t('pages.account') }}</h1>
-      <span class="meta">{{ t('account.meta', { name: finiteText(asRecord(authState).username) }) }}</span>
+      <span class="meta">{{ t('account.meta', { name: finiteText(recGet(authState, 'username')) }) }}</span>
     </div>
 
     <div class="account-grid">
@@ -12,7 +12,7 @@
         <p class="hint" style="margin-top:0">{{ t('account.password_hint') }}</p>
         <div class="form-grid">
           <label>{{ t('settings.username') }}</label>
-          <div class="mono">{{ finiteText(asRecord(authState).username) }}</div>
+          <div class="mono">{{ finiteText(recGet(authState, 'username')) }}</div>
           <label>{{ t('settings.current_password') }}</label>
           <input v-model="currentPassword" type="password" autocomplete="current-password" :aria-label="t('settings.current_password')" />
           <label>{{ t('settings.new_password') }}</label>
@@ -118,7 +118,7 @@ import {
 } from '../api/client'
 import { authState } from '../lib/authState'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, recGet } from '../lib/finite'
 import { injectI18n } from '../i18n'
 
 const toast = inject('toast')
@@ -156,7 +156,7 @@ async function savePassword() {
   const generation = loadGeneration
   savingPassword.value = true
   try {
-    await changeAuthPassword(asRecord(authState).username, currentPassword.value, newPassword.value)
+    await changeAuthPassword(recGet(authState, 'username'), currentPassword.value, newPassword.value)
     if (generation !== loadGeneration || !pageAlive) return
     currentPassword.value = ''
     newPassword.value = ''

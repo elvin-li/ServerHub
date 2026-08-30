@@ -82,13 +82,13 @@
       <div v-else-if="preview" role="status" aria-live="polite"
            style="border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px;font-size:12px">
         <div style="margin-bottom:6px">
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(asRecord(preview).creates) }) }}</span>
-          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(asRecord(preview).updates) }) }}</span>
-          <span class="badge" :class="asRecord(preview).deletes ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(asRecord(preview).deletes) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_creates', { n: finiteN(recGet(preview, 'creates')) }) }}</span>
+          <span class="badge accent" style="margin-right:6px">{{ t('sched.preview_updates', { n: finiteN(recGet(preview, 'updates')) }) }}</span>
+          <span class="badge" :class="recGet(preview, 'deletes') ? 'warn' : ''">{{ t('sched.preview_deletes', { n: finiteN(recGet(preview, 'deletes')) }) }}</span>
         </div>
-        <div v-if="!asRecord(preview).total" class="meta">{{ t('sched.preview_empty') }}</div>
+        <div v-if="!recGet(preview, 'total')" class="meta">{{ t('sched.preview_empty') }}</div>
         <div v-else style="max-height:140px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre">
-          <div v-for="(line, i) in asArray(asRecord(preview).samples)" :key="finiteText(line) + ':' + i">{{ finiteText(line) }}</div>
+          <div v-for="(line, i) in asArray(recGet(preview, 'samples'))" :key="finiteText(line) + ':' + i">{{ finiteText(line) }}</div>
         </div>
       </div>
     </template>
@@ -98,7 +98,7 @@
       <div class="kv" style="margin-bottom:8px">
         <div class="k">{{ t('sched.stack') }}</div>
         <select v-model="stackId" :aria-label="t('sched.stack')">
-          <option v-for="s in asArray(stacks)" :key="finiteText(asRecord(s).id)" :value="asRecord(s).id">{{ finiteText(asRecord(s).name, '') || finiteText(asRecord(s).id) }}</option>
+          <option v-for="s in asArray(stacks)" :key="finiteText(recGet(s, 'id'))" :value="recGet(s, 'id')">{{ finiteText(recGet(s, 'name'), '') || finiteText(recGet(s, 'id')) }}</option>
         </select>
         <div class="k">{{ t('sched.stack_retain') }}</div>
         <input v-model.number="retain" type="number" min="1" max="365" :aria-label="t('sched.stack_retain')" />
@@ -128,7 +128,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getStacks, rsyncPreview } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, recGet } from '../lib/finite'
 
 const props = defineProps({
   job: { type: Object, default: null },
@@ -246,7 +246,7 @@ async function doPreview() {
     if (generation !== previewGeneration || !pageAlive) return
     preview.value = {
       ...asRecord(next),
-      samples: asArray(asRecord(next).samples),
+      samples: asArray(recGet(next, 'samples')),
     }
   } catch (e) {
     if (generation !== previewGeneration || !pageAlive) return

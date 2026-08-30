@@ -30,21 +30,21 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in asArray(filtered)" :key="finiteText(asRecord(task).id)">
+          <tr v-for="task in asArray(filtered)" :key="finiteText(recGet(task, 'id'))">
             <td>
-              <strong>{{ finiteText(asRecord(task).name) }}</strong>
-              <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(task).id) }}</div>
-              <div v-if="finiteText(asRecord(task).desc, '')" class="show-m sub">{{ finiteText(asRecord(task).desc) }}</div>
+              <strong>{{ finiteText(recGet(task, 'name')) }}</strong>
+              <div class="mono" style="color:var(--sub)">{{ finiteText(recGet(task, 'id')) }}</div>
+              <div v-if="finiteText(recGet(task, 'desc'), '')" class="show-m sub">{{ finiteText(recGet(task, 'desc')) }}</div>
             </td>
-            <td class="col-hide-m" style="max-width:360px">{{ finiteText(asRecord(task).desc) }}</td>
+            <td class="col-hide-m" style="max-width:360px">{{ finiteText(recGet(task, 'desc')) }}</td>
             <td>
-              <span v-if="asRecord(task).running" class="badge warn">{{ t('maintenance.running') }}</span>
-              <span v-else-if="asRecord(task).rc === 0" class="badge ok">✅ {{ finiteText(asRecord(task).finished) }}</span>
-              <span v-else-if="asRecord(task).rc != null" class="badge down">❌ {{ finiteN(asRecord(task).rc) }}</span>
+              <span v-if="recGet(task, 'running')" class="badge warn">{{ t('maintenance.running') }}</span>
+              <span v-else-if="recGet(task, 'rc') === 0" class="badge ok">✅ {{ finiteText(recGet(task, 'finished')) }}</span>
+              <span v-else-if="recGet(task, 'rc') != null" class="badge down">❌ {{ finiteN(recGet(task, 'rc')) }}</span>
               <span v-else class="badge">{{ t('maintenance.ready') }}</span>
             </td>
             <td class="ops">
-              <button class="tiny primary" :disabled="asRecord(task).running || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
+              <button class="tiny primary" :disabled="recGet(task, 'running') || anyRunning" @click="run(task)">{{ t('maintenance.run') }}</button>
               <button class="tiny" @click="openLog(task)">{{ t('maintenance.log') }}</button>
             </td>
           </tr>
@@ -143,7 +143,7 @@ async function refresh() {
     // list.  Each row is asRecord so a leftover null cell cannot throw
     // later.  Do not wrap a Set as asArray — this payload is never a Set.
     const rows = asArray(list)
-    const fromEnvelope = asArray(asRecord(list).tasks)
+    const fromEnvelope = asArray(recGet(list, 'tasks'))
     tasks.value = (rows.length ? rows : fromEnvelope).map((row) => asRecord(row))
     loadError.value = ''
     return true

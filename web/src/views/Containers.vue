@@ -5,8 +5,8 @@
       <span class="meta">
         {{ t('pages.docker_meta') }} ·
         <template v-if="data">
-          {{ t('common.engine') }} {{ asRecord(data).engine_up ? t('common.running') : t('common.stopped') }} · {{ asArray(containers).length }}
-          <span v-if="finiteText(asRecord(data).update_checked_at, '')"> · {{ finiteText(asRecord(data).update_checked_at) }}</span>
+          {{ t('common.engine') }} {{ recGet(data, 'engine_up') ? t('common.running') : t('common.stopped') }} · {{ asArray(containers).length }}
+          <span v-if="finiteText(recGet(data, 'update_checked_at'), '')"> · {{ finiteText(recGet(data, 'update_checked_at')) }}</span>
         </template>
       </span>
     </div>
@@ -78,16 +78,16 @@
            all — no table, no message — for either state. -->
       <div v-if="!asArray(containers).length" class="placeholder">{{ t('docker.no_containers') }}</div>
       <div v-else-if="!asArray(filteredContainers).length" class="placeholder">{{ t('common.no_match') }}</div>
-      <template v-for="grp in asArray(displayGroups)" :key="finiteText(asRecord(grp).name)">
+      <template v-for="grp in asArray(displayGroups)" :key="finiteText(recGet(grp, 'name'))">
         <h2 v-if="groupByProject" class="section-title">
-          {{ finiteText(asRecord(grp).name) }}
-          <span class="badge">{{ asArray(asRecord(grp).items).length }}</span>
+          {{ finiteText(recGet(grp, 'name')) }}
+          <span class="badge">{{ asArray(recGet(grp, 'items')).length }}</span>
         </h2>
         <div class="table-wrap" :style="groupByProject ? 'margin-bottom:10px' : ''">
           <table class="dense fit-m">
             <thead>
               <tr>
-                <th style="width:28px"><input type="checkbox" :checked="allSelected(asRecord(grp).items)" :aria-label="t('common.select_all')" @change="toggleAll(asRecord(grp).items, $event)" /></th>
+                <th style="width:28px"><input type="checkbox" :checked="allSelected(recGet(grp, 'items'))" :aria-label="t('common.select_all')" @change="toggleAll(recGet(grp, 'items'), $event)" /></th>
                 <th><span class="sr-only">{{ t('common.status_led') }}</span></th>
                 <th>{{ t('docker.app') }}</th>
                 <th class="col-hide-m">{{ t('docker.version_update') }}</th>
@@ -103,10 +103,10 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in asArray(asRecord(grp).items)" :key="finiteText(asRecord(c).id)">
+              <tr v-for="c in asArray(recGet(grp, 'items'))" :key="finiteText(recGet(c, 'id'))">
 <!-- Named after the container (Files/Services row-checkbox pattern):
                      anonymous checkboxes cannot be told apart in a form-controls list. -->
-                <td><input type="checkbox" :value="asRecord(c).id" v-model="selected" :aria-label="t('common.select_row_name', { name: finiteText(asRecord(c).name, '') || finiteText(asRecord(c).id) })" /></td>
+                <td><input type="checkbox" :value="recGet(c, 'id')" v-model="selected" :aria-label="t('common.select_row_name', { name: finiteText(recGet(c, 'name'), '') || finiteText(recGet(c, 'id')) })" /></td>
                 <!-- The LED is the row's whole status signal on mobile (the
                      uptime column is col-hide-m); colour alone says nothing to
                      a screen reader, so hide the paint and spell the state —
@@ -116,43 +116,43 @@
                   <span class="sr-only">{{ ledText(c) }}</span>
                 </td>
                 <td style="max-width:260px">
-                  <strong>{{ finiteText(asRecord(c).name) }}</strong>
-                  <span v-if="asRecord(c).sandbox" class="badge" style="background:var(--bar-track);color:var(--sub)">pause</span>
-                  <span v-else-if="asRecord(c).system" class="badge" style="background:color-mix(in srgb, #6366f1 20%, transparent);color:color-mix(in srgb, #6366f1 40%, var(--txt))">k8s</span>
+                  <strong>{{ finiteText(recGet(c, 'name')) }}</strong>
+                  <span v-if="recGet(c, 'sandbox')" class="badge" style="background:var(--bar-track);color:var(--sub)">pause</span>
+                  <span v-else-if="recGet(c, 'system')" class="badge" style="background:color-mix(in srgb, #6366f1 20%, transparent);color:color-mix(in srgb, #6366f1 40%, var(--txt))">k8s</span>
                   <div
                     class="mono"
                     style="color:var(--sub);font-size:10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                    :title="finiteText(asRecord(c).raw_name, '') || finiteText(asRecord(c).id)"
-                  >{{ finiteText(asRecord(c).subtitle, '') || finiteText(asRecord(c).id) }}</div>
-                  <span v-if="finiteText(asRecord(c).project, '')" class="badge accent">{{ finiteText(asRecord(c).project) }}</span>
-                  <div v-if="finiteText(asRecord(c).network, '') || finiteText(asRecord(c).ports, '')" class="show-m sub mono">{{ [finiteText(asRecord(c).network, ''), finiteText(asRecord(c).ports, '')].filter(Boolean).join(' · ') }}</div>
-                  <div class="show-m sub mono">{{ shortImage(asRecord(c).image) }}</div>
-                  <span v-if="asRecord(c).update === true" class="show-m badge warn">{{ t('docker.updateable') }}</span>
-                  <span v-else-if="asRecord(c).update === false" class="show-m badge ok">{{ t('docker.latest') }}</span>
+                    :title="finiteText(recGet(c, 'raw_name'), '') || finiteText(recGet(c, 'id'))"
+                  >{{ finiteText(recGet(c, 'subtitle'), '') || finiteText(recGet(c, 'id')) }}</div>
+                  <span v-if="finiteText(recGet(c, 'project'), '')" class="badge accent">{{ finiteText(recGet(c, 'project')) }}</span>
+                  <div v-if="finiteText(recGet(c, 'network'), '') || finiteText(recGet(c, 'ports'), '')" class="show-m sub mono">{{ [finiteText(recGet(c, 'network'), ''), finiteText(recGet(c, 'ports'), '')].filter(Boolean).join(' · ') }}</div>
+                  <div class="show-m sub mono">{{ shortImage(recGet(c, 'image')) }}</div>
+                  <span v-if="recGet(c, 'update') === true" class="show-m badge warn">{{ t('docker.updateable') }}</span>
+                  <span v-else-if="recGet(c, 'update') === false" class="show-m badge ok">{{ t('docker.latest') }}</span>
                   <div class="show-m" @click.stop>
                     <button
                       class="tiny"
-                      :class="asRecord(c).autostart ? 'primary' : ''"
+                      :class="recGet(c, 'autostart') ? 'primary' : ''"
                       :disabled="busy"
-                      :title="t('docker.current_policy', { p: finiteText(asRecord(c).restart_policy, '') || 'no' })"
+                      :title="t('docker.current_policy', { p: finiteText(recGet(c, 'restart_policy'), '') || 'no' })"
                       @click="toggleAutostart(c)"
-                    >{{ t('docker.autostart') }} {{ asRecord(c).autostart ? t('common.yes') : t('common.no') }}</button>
+                    >{{ t('docker.autostart') }} {{ recGet(c, 'autostart') ? t('common.yes') : t('common.no') }}</button>
                   </div>
                 </td>
                 <td class="col-hide-m">
-                  <div class="mono" :title="finiteText(asRecord(c).image)">{{ shortImage(asRecord(c).image) }}</div>
-                  <span v-if="asRecord(c).update === true" class="badge warn">{{ t('docker.updateable') }}</span>
-                  <span v-else-if="asRecord(c).update === false" class="badge ok">{{ t('docker.latest') }}</span>
+                  <div class="mono" :title="finiteText(recGet(c, 'image'))">{{ shortImage(recGet(c, 'image')) }}</div>
+                  <span v-if="recGet(c, 'update') === true" class="badge warn">{{ t('docker.updateable') }}</span>
+                  <span v-else-if="recGet(c, 'update') === false" class="badge ok">{{ t('docker.latest') }}</span>
                 </td>
-                <td class="mono col-hide-m">{{ finiteText(asRecord(c).network) }}</td>
-                <td v-if="advanced" class="mono col-hide-m">{{ finiteText(asRecord(c).ip) }}</td>
-                <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(asRecord(c).ports)">{{ finiteText(asRecord(c).ports) }}</td>
+                <td class="mono col-hide-m">{{ finiteText(recGet(c, 'network')) }}</td>
+                <td v-if="advanced" class="mono col-hide-m">{{ finiteText(recGet(c, 'ip')) }}</td>
+                <td class="mono col-hide-m" style="max-width:120px;overflow:hidden;text-overflow:ellipsis" :title="finiteText(recGet(c, 'ports'))">{{ finiteText(recGet(c, 'ports')) }}</td>
                 <td class="mono col-hide-m" style="max-width:140px" :title="mountTitle(c)">
-                  <template v-if="asArray(asRecord(c).mounts).length">
-                    <div v-for="(m,i) in asArray(asRecord(c).mounts).slice(0,2)" :key="finiteText(asRecord(m).src) + ':' + finiteText(asRecord(m).dst) + ':' + i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                      {{ shortPath(asRecord(m).src) }} → {{ finiteText(asRecord(m).dst) }}
+                  <template v-if="asArray(recGet(c, 'mounts')).length">
+                    <div v-for="(m,i) in asArray(recGet(c, 'mounts')).slice(0,2)" :key="finiteText(recGet(m, 'src')) + ':' + finiteText(recGet(m, 'dst')) + ':' + i" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                      {{ shortPath(recGet(m, 'src')) }} → {{ finiteText(recGet(m, 'dst')) }}
                     </div>
-                    <span v-if="asArray(asRecord(c).mounts).length>2" style="color:var(--sub)">+{{ asArray(asRecord(c).mounts).length-2 }}</span>
+                    <span v-if="asArray(recGet(c, 'mounts')).length>2" style="color:var(--sub)">+{{ asArray(recGet(c, 'mounts')).length-2 }}</span>
                   </template>
                   <template v-else>—</template>
                 </td>
@@ -169,26 +169,26 @@
                 <td class="col-hide-m">
                   <button
                     class="tiny"
-                    :class="asRecord(c).autostart ? 'primary' : ''"
+                    :class="recGet(c, 'autostart') ? 'primary' : ''"
                     :disabled="busy"
-                    :title="t('docker.current_policy', { p: finiteText(asRecord(c).restart_policy, '') || 'no' })"
+                    :title="t('docker.current_policy', { p: finiteText(recGet(c, 'restart_policy'), '') || 'no' })"
                     @click="toggleAutostart(c)"
-                  >{{ asRecord(c).autostart ? t('common.yes') : t('common.no') }}</button>
-                  <div class="mono" style="color:var(--sub)">{{ finiteText(asRecord(c).restart_policy) }}</div>
+                  >{{ recGet(c, 'autostart') ? t('common.yes') : t('common.no') }}</button>
+                  <div class="mono" style="color:var(--sub)">{{ finiteText(recGet(c, 'restart_policy')) }}</div>
                 </td>
-                <td class="col-hide-m">{{ finiteText(asRecord(c).status) }}</td>
+                <td class="col-hide-m">{{ finiteText(recGet(c, 'status')) }}</td>
                 <td class="ops">
-                  <a v-if="asRecord(c).url" class="btn tiny primary" :href="finiteText(asRecord(c).url, '')" target="_blank">WebUI</a>
-                  <button v-if="asRecord(c).raw_state==='running'" class="tiny" :disabled="busy" @click="act(c,'restart')">{{ t('dashboard.act_restart') }}</button>
-                  <button v-if="asRecord(c).raw_state==='running'" class="tiny hide-m" :disabled="busy" @click="act(c,'pause')">{{ t('docker.pause') }}</button>
-                  <button v-if="asRecord(c).raw_state==='paused'" class="tiny primary hide-m" :disabled="busy" @click="act(c,'unpause')">{{ t('docker.unpause') }}</button>
-                  <button v-if="asRecord(c).raw_state==='running'||asRecord(c).raw_state==='paused'" class="tiny danger" :disabled="busy" @click="act(c,'stop')">{{ t('dashboard.act_stop') }}</button>
-                  <button v-if="asRecord(c).raw_state!=='running'&&asRecord(c).raw_state!=='paused'" class="tiny primary" :disabled="busy" @click="act(c,'start')">{{ t('dashboard.act_start') }}</button>
+                  <a v-if="recGet(c, 'url')" class="btn tiny primary" :href="finiteText(recGet(c, 'url'), '')" target="_blank">WebUI</a>
+                  <button v-if="recGet(c, 'raw_state')==='running'" class="tiny" :disabled="busy" @click="act(c,'restart')">{{ t('dashboard.act_restart') }}</button>
+                  <button v-if="recGet(c, 'raw_state')==='running'" class="tiny hide-m" :disabled="busy" @click="act(c,'pause')">{{ t('docker.pause') }}</button>
+                  <button v-if="recGet(c, 'raw_state')==='paused'" class="tiny primary hide-m" :disabled="busy" @click="act(c,'unpause')">{{ t('docker.unpause') }}</button>
+                  <button v-if="recGet(c, 'raw_state')==='running'||recGet(c, 'raw_state')==='paused'" class="tiny danger" :disabled="busy" @click="act(c,'stop')">{{ t('dashboard.act_stop') }}</button>
+                  <button v-if="recGet(c, 'raw_state')!=='running'&&recGet(c, 'raw_state')!=='paused'" class="tiny primary" :disabled="busy" @click="act(c,'start')">{{ t('dashboard.act_start') }}</button>
                   <button class="tiny" :disabled="busy" @click="openLogs(c)">{{ t('docker.logs') }}</button>
                   <button class="tiny hide-m" :disabled="busy" @click="openExec(c)">{{ t('docker.console') }}</button>
                   <button class="tiny" :disabled="busy" @click="openInspect(c)">{{ t('common.details') }}</button>
-                  <button v-if="asRecord(c).update" class="tiny primary hide-m" :disabled="busy" @click="doUpdate(c)">{{ t('docker.update') }}</button>
-                  <button v-if="asRecord(c).raw_state!=='running'&&asRecord(c).raw_state!=='paused'" class="tiny danger" :disabled="busy" @click="act(c,'remove')">{{ t('docker.remove') }}</button>
+                  <button v-if="recGet(c, 'update')" class="tiny primary hide-m" :disabled="busy" @click="doUpdate(c)">{{ t('docker.update') }}</button>
+                  <button v-if="recGet(c, 'raw_state')!=='running'&&recGet(c, 'raw_state')!=='paused'" class="tiny danger" :disabled="busy" @click="act(c,'remove')">{{ t('docker.remove') }}</button>
                 </td>
               </tr>
             </tbody>
@@ -210,15 +210,15 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('docker.repo') }}</th><th>Tag</th><th class="col-hide-m">ID</th><th>{{ t('docker.size') }}</th><th class="col-hide-m">{{ t('docker.created') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(im,i) in asArray(images)" :key="finiteText(asRecord(im).ID) + ':' + finiteText(asRecord(im).Tag) + ':' + i">
+            <tr v-for="(im,i) in asArray(images)" :key="finiteText(recGet(im, 'ID')) + ':' + finiteText(recGet(im, 'Tag')) + ':' + i">
               <td class="mono">
-                {{ finiteText(asRecord(im).Repository) }}
-                <div class="show-m sub">{{ String(finiteText(asRecord(im).ID, '')).replace('sha256:','').slice(0,12) }} · {{ finiteText(asRecord(im).CreatedSince, '') || finiteText(asRecord(im).CreatedAt) }}</div>
+                {{ finiteText(recGet(im, 'Repository')) }}
+                <div class="show-m sub">{{ String(finiteText(recGet(im, 'ID'), '')).replace('sha256:','').slice(0,12) }} · {{ finiteText(recGet(im, 'CreatedSince'), '') || finiteText(recGet(im, 'CreatedAt')) }}</div>
               </td>
-              <td>{{ finiteText(asRecord(im).Tag) }}</td>
-              <td class="mono col-hide-m">{{ String(finiteText(asRecord(im).ID, '')).replace('sha256:','').slice(0,12) }}</td>
-              <td>{{ finiteText(asRecord(im).Size) }}</td>
-              <td class="col-hide-m">{{ finiteText(asRecord(im).CreatedSince, '') || finiteText(asRecord(im).CreatedAt) }}</td>
+              <td>{{ finiteText(recGet(im, 'Tag')) }}</td>
+              <td class="mono col-hide-m">{{ String(finiteText(recGet(im, 'ID'), '')).replace('sha256:','').slice(0,12) }}</td>
+              <td>{{ finiteText(recGet(im, 'Size')) }}</td>
+              <td class="col-hide-m">{{ finiteText(recGet(im, 'CreatedSince'), '') || finiteText(recGet(im, 'CreatedAt')) }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmi(im)">{{ t('docker.remove') }}</button>
               </td>
@@ -242,13 +242,13 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th class="col-hide-m">{{ t('docker.driver') }}</th><th>{{ t('docker.mountpoint') }}</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="v in asArray(volumes)" :key="finiteText(asRecord(v).Name)">
+            <tr v-for="v in asArray(volumes)" :key="finiteText(recGet(v, 'Name'))">
               <td class="mono">
-                {{ finiteText(asRecord(v).Name) }}
-                <div class="show-m sub">{{ finiteText(asRecord(v).Driver) }}</div>
+                {{ finiteText(recGet(v, 'Name')) }}
+                <div class="show-m sub">{{ finiteText(recGet(v, 'Driver')) }}</div>
               </td>
-              <td class="col-hide-m">{{ finiteText(asRecord(v).Driver) }}</td>
-              <td class="mono" style="font-size:11px">{{ finiteText(asRecord(v).Mountpoint) }}</td>
+              <td class="col-hide-m">{{ finiteText(recGet(v, 'Driver')) }}</td>
+              <td class="mono" style="font-size:11px">{{ finiteText(recGet(v, 'Mountpoint')) }}</td>
               <td class="ops">
                 <button class="tiny danger" :disabled="busy" @click="rmVol(v)">{{ t('docker.remove') }}</button>
               </td>
@@ -272,17 +272,17 @@
         <table class="dense fit-m">
           <thead><tr><th>{{ t('common.name') }}</th><th>{{ t('docker.driver') }}</th><th class="col-hide-m">Scope</th><th class="col-hide-m">ID</th><th>{{ t('common.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="n in asArray(networks)" :key="finiteText(asRecord(n).Id)">
+            <tr v-for="n in asArray(networks)" :key="finiteText(recGet(n, 'Id'))">
               <td>
-                {{ finiteText(asRecord(n).Name) }}
-                <div class="show-m sub mono">{{ finiteText(asRecord(n).Scope) }} · {{ finiteText(asRecord(n).Id) }}</div>
+                {{ finiteText(recGet(n, 'Name')) }}
+                <div class="show-m sub mono">{{ finiteText(recGet(n, 'Scope')) }} · {{ finiteText(recGet(n, 'Id')) }}</div>
               </td>
-              <td>{{ finiteText(asRecord(n).Driver) }}</td>
-              <td class="col-hide-m">{{ finiteText(asRecord(n).Scope) }}</td>
-              <td class="mono col-hide-m">{{ finiteText(asRecord(n).Id) }}</td>
+              <td>{{ finiteText(recGet(n, 'Driver')) }}</td>
+              <td class="col-hide-m">{{ finiteText(recGet(n, 'Scope')) }}</td>
+              <td class="mono col-hide-m">{{ finiteText(recGet(n, 'Id')) }}</td>
               <td class="ops">
                 <button
-                  v-if="!['bridge','host','none'].includes(asRecord(n).Name)"
+                  v-if="!['bridge','host','none'].includes(recGet(n, 'Name'))"
                   class="tiny danger"
                   :disabled="busy"
                   @click="rmNet(n)"
@@ -308,29 +308,29 @@
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.engine_info') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).Name) }}</div>
-            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).ServerVersion) }}</div>
-            <div class="k">OrbStack</div><div class="mono">{{ finiteText(asRecord(engineInfo).orb_version) }}</div>
-            <div class="k">OS</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).OperatingSystem) }}</div>
-            <div class="k">Arch</div><div>{{ finiteText(asRecord(asRecord(engineInfo).info).Architecture) }}</div>
-            <div class="k">CPU</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).NCPU) }}</div>
+            <div class="k">{{ t('common.name') }}</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'Name')) }}</div>
+            <div class="k">{{ t('docker.version') }}</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'ServerVersion')) }}</div>
+            <div class="k">OrbStack</div><div class="mono">{{ finiteText(recGet(engineInfo, 'orb_version')) }}</div>
+            <div class="k">OS</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'OperatingSystem')) }}</div>
+            <div class="k">Arch</div><div>{{ finiteText(recGet(recGet(engineInfo, 'info'), 'Architecture')) }}</div>
+            <div class="k">CPU</div><div>{{ finiteN(recGet(recGet(engineInfo, 'info'), 'NCPU')) }}</div>
             <div class="k">{{ t('docker.mem') }}</div><div>{{ engineMem }} GB</div>
-            <div class="k">Root</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).DockerRootDir) }}</div>
-            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).Driver) }}</div>
-            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).LoggingDriver) }}</div>
-            <div class="k">Cgroup</div><div class="mono">{{ finiteText(asRecord(asRecord(engineInfo).info).CgroupDriver) }}</div>
+            <div class="k">Root</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'DockerRootDir')) }}</div>
+            <div class="k">{{ t('docker.driver') }}</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'Driver')) }}</div>
+            <div class="k">{{ t('docker.log_driver') }}</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'LoggingDriver')) }}</div>
+            <div class="k">Cgroup</div><div class="mono">{{ finiteText(recGet(recGet(engineInfo, 'info'), 'CgroupDriver')) }}</div>
           </div>
         </div>
         <div class="card">
           <h2 class="section-title" style="margin-top:0">{{ t('docker.resources') }}</h2>
           <div class="kv">
-            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).Containers) }}</div>
-            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersRunning, 0) }}</span></div>
-            <div class="k">{{ t('docker.paused') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersPaused, 0) }}</div>
-            <div class="k">{{ t('common.stopped') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).ContainersStopped, 0) }}</div>
-            <div class="k">{{ t('docker.images') }}</div><div>{{ finiteN(asRecord(asRecord(engineInfo).info).Images, 0) }}</div>
-            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ finiteText(asRecord(engineInfo).docker_cli) }}</div>
-            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ finiteText(asRecord(engineInfo).orb_cli) }}</div>
+            <div class="k">{{ t('docker.total_containers') }}</div><div>{{ finiteN(recGet(recGet(engineInfo, 'info'), 'Containers')) }}</div>
+            <div class="k">{{ t('common.running') }}</div><div><span class="badge ok">{{ finiteN(recGet(recGet(engineInfo, 'info'), 'ContainersRunning'), 0) }}</span></div>
+            <div class="k">{{ t('docker.paused') }}</div><div>{{ finiteN(recGet(recGet(engineInfo, 'info'), 'ContainersPaused'), 0) }}</div>
+            <div class="k">{{ t('common.stopped') }}</div><div>{{ finiteN(recGet(recGet(engineInfo, 'info'), 'ContainersStopped'), 0) }}</div>
+            <div class="k">{{ t('docker.images') }}</div><div>{{ finiteN(recGet(recGet(engineInfo, 'info'), 'Images'), 0) }}</div>
+            <div class="k">docker CLI</div><div class="mono" style="font-size:10px">{{ finiteText(recGet(engineInfo, 'docker_cli')) }}</div>
+            <div class="k">orb CLI</div><div class="mono" style="font-size:10px">{{ finiteText(recGet(engineInfo, 'orb_cli')) }}</div>
           </div>
           <div class="btns" style="margin-top:12px">
             <button class="tiny" @click="loadEngine">{{ t('common.refresh') }}</button>
@@ -358,7 +358,7 @@
     <div ref="execPanel" v-if="execC" class="modal-bg" @click.self="execC=null" role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ctr-exec-title">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ finiteText(asRecord(execC).name) }}</span>
+          <span id="ctr-exec-title" class="name">{{ t('docker.console') }} · {{ finiteText(recGet(execC, 'name')) }}</span>
           <button class="tiny" @click="execC=null">{{ t('common.close') }}</button>
         </div>
         <p style="color:var(--sub);font-size:11px;margin-bottom:8px">
@@ -415,21 +415,21 @@
     <div v-if="inspectData" class="drawer-bg" @click.self="inspectData=null" role="presentation">
       <div ref="inspectPanel" class="drawer" style="overflow:auto" role="dialog" aria-modal="true" aria-labelledby="ctr-inspect-title" tabindex="-1">
         <div class="row" style="margin-bottom:10px">
-          <span id="ctr-inspect-title" class="name">{{ t('common.details') }} · {{ finiteText(asRecord(inspectData).Name) }}</span>
+          <span id="ctr-inspect-title" class="name">{{ t('common.details') }} · {{ finiteText(recGet(inspectData, 'Name')) }}</span>
           <button class="tiny" @click="inspectData=null">{{ t('common.close') }}</button>
         </div>
         <div class="kv">
-          <div class="k">{{ t('docker.image') }}</div><div class="mono">{{ finiteText(asRecord(inspectData).Image) }}</div>
-          <div class="k">{{ t('common.status') }}</div><div>{{ finiteText(asRecord(asRecord(inspectData).State).Status) }} · {{ finiteText(asRecord(asRecord(inspectData).State).Health) }}</div>
-          <div class="k">{{ t('docker.network') }}</div><div>{{ asArray(asRecord(inspectData).Networks).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-          <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ finiteText(asRecord(asRecord(inspectData).RestartPolicy).Name) }}</div>
+          <div class="k">{{ t('docker.image') }}</div><div class="mono">{{ finiteText(recGet(inspectData, 'Image')) }}</div>
+          <div class="k">{{ t('common.status') }}</div><div>{{ finiteText(recGet(recGet(inspectData, 'State'), 'Status')) }} · {{ finiteText(recGet(recGet(inspectData, 'State'), 'Health')) }}</div>
+          <div class="k">{{ t('docker.network') }}</div><div>{{ asArray(recGet(inspectData, 'Networks')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+          <div class="k">{{ t('docker.restart_policy') }}</div><div>{{ finiteText(recGet(recGet(inspectData, 'RestartPolicy'), 'Name')) }}</div>
         </div>
         <h2 class="section-title">{{ t('docker.mounts') }}</h2>
-        <div v-for="(m,i) in asArray(asRecord(inspectData).Mounts)" :key="finiteText(asRecord(m).Source) + ':' + finiteText(asRecord(m).Destination) + ':' + i" class="mono" style="margin-bottom:3px">
-          {{ finiteText(asRecord(m).Source) }} → {{ finiteText(asRecord(m).Destination) }}
+        <div v-for="(m,i) in asArray(recGet(inspectData, 'Mounts'))" :key="finiteText(recGet(m, 'Source')) + ':' + finiteText(recGet(m, 'Destination')) + ':' + i" class="mono" style="margin-bottom:3px">
+          {{ finiteText(recGet(m, 'Source')) }} → {{ finiteText(recGet(m, 'Destination')) }}
         </div>
         <h2 class="section-title">{{ t('docker.env_masked') }}</h2>
-        <pre class="log" style="max-height:180px">{{ asArray(asRecord(inspectData).Env).map(e => finiteText(e, '')).filter(Boolean).join('\n') }}</pre>
+        <pre class="log" style="max-height:180px">{{ asArray(recGet(inspectData, 'Env')).map(e => finiteText(e, '')).filter(Boolean).join('\n') }}</pre>
       </div>
     </div>
   </div>
@@ -532,10 +532,10 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const containers = computed(() => asArray(asRecord(data.value).containers).map((c) => asRecord(c)))
-const stats = computed(() => asRecord(asRecord(data.value).stats))
+const containers = computed(() => asArray(recGet(data.value, 'containers')).map((c) => asRecord(c)))
+const stats = computed(() => asRecord(recGet(data.value, 'stats')))
 const engineMem = computed(() => {
-  const n = finiteN(asRecord(asRecord(engineInfo.value).info).MemTotal, null)
+  const n = finiteN(recGet(recGet(engineInfo.value, 'info'), 'MemTotal'), null)
   if (n == null || !Number.isFinite(n) || n <= 0) return '—'
   return (n / 2 ** 30).toFixed(1)
 })
@@ -564,7 +564,7 @@ const displayGroups = computed(() => {
   if (!groupByProject.value) return [{ name: t('common.all'), items: list }]
   const map = {}
   for (const c of list) {
-    const k = finiteText(asRecord(c).project, '') || t('docker.other_group')
+    const k = finiteText(recGet(c, 'project'), '') || t('docker.other_group')
     map[k] = map[k] || []
     map[k].push(c)
   }
@@ -600,7 +600,7 @@ function shortPath(p) {
   return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : s
 }
 function mountTitle(c) {
-  return asArray(asRecord(c).mounts).map(m => `${finiteText(asRecord(m).src)} → ${finiteText(asRecord(m).dst)}`).join('\n')
+  return asArray(recGet(c, 'mounts')).map(m => `${finiteText(recGet(m, 'src'))} → ${finiteText(recGet(m, 'dst'))}`).join('\n')
 }
 function cpuNum(s) {
   if (!s) return null
@@ -649,13 +649,13 @@ function batchToast(j) {
 }
 
 async function act(c, action) {
-  if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: finiteText(asRecord(c).name) }))) return
-  if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: finiteText(asRecord(c).name) }))) return
+  if (action === 'stop' && !confirm(t('docker.confirm_stop', { name: finiteText(recGet(c, 'name')) }))) return
+  if (action === 'remove' && !confirm(t('docker.confirm_remove', { name: finiteText(recGet(c, 'name')) }))) return
   // restart and pause also take a running service offline, so they get the same
   // confirmation as stop. Previously only stop/remove were guarded, and the
   // restart/pause buttons sit immediately next to them in the row.
-  if (action === 'restart' && !confirm(t('docker.confirm_restart', { name: finiteText(asRecord(c).name) }))) return
-  if (action === 'pause' && !confirm(t('docker.confirm_pause', { name: finiteText(asRecord(c).name) }))) return
+  if (action === 'restart' && !confirm(t('docker.confirm_restart', { name: finiteText(recGet(c, 'name')) }))) return
+  if (action === 'pause' && !confirm(t('docker.confirm_pause', { name: finiteText(recGet(c, 'name')) }))) return
   const generation = listGeneration
   busy.value = true
   try {
@@ -665,7 +665,7 @@ async function act(c, action) {
       toast('🚀 ' + t('docker.update_job_started'))
       watchJob(r.job_id)
     } else {
-      toast(r.ok ? `✅ ${finiteText(asRecord(c).name)}` : `❌ ${finiteText(r.message)}`)
+      toast(r.ok ? `✅ ${finiteText(recGet(c, 'name'))}` : `❌ ${finiteText(r.message)}`)
       if (r.ok) scheduleRefresh(800)
     }
   } catch (e) {
@@ -678,7 +678,7 @@ async function act(c, action) {
 }
 
 async function doUpdate(c) {
-  if (!confirm(t('docker.confirm_update', { name: finiteText(asRecord(c).name) }))) return
+  if (!confirm(t('docker.confirm_update', { name: finiteText(recGet(c, 'name')) }))) return
   const generation = listGeneration
   busy.value = true
   try {
@@ -819,7 +819,7 @@ function scrollLogToEnd() {
 
 function openLogs(c) {
   closeLogs()
-  logName.value = finiteText(asRecord(c).name)
+  logName.value = finiteText(recGet(c, 'name'))
   logText.value = t('docker.log_connecting') + '\n'
   logDrawer.value = true
   es = openContainerLogs(c.id, { tail: 300, follow: true })
@@ -1057,7 +1057,7 @@ async function createVol() {
 }
 
 async function rmVol(v) {
-  if (!confirm(t('docker.confirm_remove_volume', { name: finiteText(asRecord(v).Name) }))) return
+  if (!confirm(t('docker.confirm_remove_volume', { name: finiteText(recGet(v, 'Name')) }))) return
   const generation = listGeneration
   busy.value = true
   try {
@@ -1091,7 +1091,7 @@ async function createNet() {
 }
 
 async function rmNet(n) {
-  if (!confirm(t('docker.confirm_remove_network', { name: finiteText(asRecord(n).Name) }))) return
+  if (!confirm(t('docker.confirm_remove_network', { name: finiteText(recGet(n, 'Name')) }))) return
   const generation = listGeneration
   busy.value = true
   try {
@@ -1110,7 +1110,7 @@ async function rmNet(n) {
 async function toggleAutostart(c) {
   const next = c.autostart ? 'no' : 'unless-stopped'
   const key = c.autostart ? 'docker.confirm_autostart_off' : 'docker.confirm_autostart_on'
-  if (!confirm(t(key, { name: finiteText(asRecord(c).name) }))) return
+  if (!confirm(t(key, { name: finiteText(recGet(c, 'name')) }))) return
   const generation = listGeneration
   busy.value = true
   try {

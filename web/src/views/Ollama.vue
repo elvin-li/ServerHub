@@ -15,7 +15,7 @@
     <SkeletonLoader v-if="!loaded" variant="tiles" :rows="2" :span="6" :tile-height="56" />
 
     <!-- Ollama absent: clear empty state + a path to install it -->
-    <div v-else-if="data && !asRecord(data).installed" class="card-block absent">
+    <div v-else-if="data && !recGet(data, 'installed')" class="card-block absent">
       <h2>{{ t('ollama.absent_title') }}</h2>
       <p class="meta">{{ t('ollama.absent_body') }}</p>
       <router-link class="btn-link" to="/apps">{{ t('ollama.absent_cta') }}</router-link>
@@ -31,27 +31,27 @@
         <div v-if="asArray(duplicateLabels).length" class="notice warn" role="alert">
           {{ t('ollama.duplicate_agents', { labels: asArray(duplicateLabels).map(l => finiteText(l, '')).filter(Boolean).join(', ') }) }}
         </div>
-        <div v-if="asRecord(data).url_rejected" class="notice warn" role="alert" data-test="ollama-url-rejected">
-          {{ t('ollama.url_rejected', { url: finiteText(asRecord(data).url) }) }}
+        <div v-if="recGet(data, 'url_rejected')" class="notice warn" role="alert" data-test="ollama-url-rejected">
+          {{ t('ollama.url_rejected', { url: finiteText(recGet(data, 'url')) }) }}
         </div>
         <div class="svc-grid">
           <div>
             <div class="meta">{{ t('ollama.service_label') }}</div>
-            <div class="mono">{{ finiteText(asRecord(asRecord(data).service).label) }}</div>
+            <div class="mono">{{ finiteText(recGet(recGet(data, 'service'), 'label')) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.version') }}</div>
-            <div class="mono">{{ finiteText(asRecord(data).version) }}</div>
+            <div class="mono">{{ finiteText(recGet(data, 'version')) }}</div>
           </div>
           <div>
             <div class="meta">{{ t('ollama.api') }}</div>
             <div class="mono api-line">
-              <span>{{ finiteText(asRecord(data).url) }}</span>
+              <span>{{ finiteText(recGet(data, 'url')) }}</span>
               <!-- Two identical "Copy" buttons sit in this card copying
                    different URLs; a form-controls listing cannot tell them
                    apart without the field name. The visible "Copy" text stays
                    first in the name (WCAG 2.5.3). -->
-              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(asRecord(data).url)">{{ t('common.copy') }}</button>
+              <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.api') })" @click="copyText(recGet(data, 'url'))">{{ t('common.copy') }}</button>
             </div>
           </div>
           <div>
@@ -61,18 +61,18 @@
               <button class="tiny" type="button" :aria-label="t('ollama.copy_name', { name: t('ollama.openai_api') })" @click="copyText(openaiCompatUrl)">{{ t('common.copy') }}</button>
             </div>
           </div>
-          <div v-if="asRecord(asRecord(data).service).pid">
+          <div v-if="recGet(recGet(data, 'service'), 'pid')">
             <div class="meta">{{ t('ollama.pid') }}</div>
-            <div class="mono">{{ finiteN(asRecord(asRecord(data).service).pid) }}</div>
+            <div class="mono">{{ finiteN(recGet(recGet(data, 'service'), 'pid')) }}</div>
           </div>
         </div>
-        <p v-if="asRecord(asRecord(data).service).inferred" class="meta" style="margin:8px 0 0">
+        <p v-if="recGet(recGet(data, 'service'), 'inferred')" class="meta" style="margin:8px 0 0">
           {{ t('ollama.listing_missed') }}
         </p>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="tiny primary" :disabled="svcBusy || !asRecord(asRecord(data).service).label || asRecord(data).reachable" @click="act('start')">{{ t('services.act_start') }}</button>
-          <button class="tiny danger" :disabled="svcBusy || !asRecord(asRecord(data).service).label" @click="act('stop')">{{ t('services.act_stop') }}</button>
-          <button class="tiny" :disabled="svcBusy || !asRecord(asRecord(data).service).label" @click="act('restart')">{{ t('services.act_restart') }}</button>
+          <button class="tiny primary" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label') || recGet(data, 'reachable')" @click="act('start')">{{ t('services.act_start') }}</button>
+          <button class="tiny danger" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label')" @click="act('stop')">{{ t('services.act_stop') }}</button>
+          <button class="tiny" :disabled="svcBusy || !recGet(recGet(data, 'service'), 'label')" @click="act('restart')">{{ t('services.act_restart') }}</button>
         </div>
       </div>
 
@@ -94,14 +94,14 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(resident)" :key="finiteText(asRecord(m).name)">
+              <tr v-for="m in asArray(resident)" :key="finiteText(recGet(m, 'name'))">
                 <td class="mono">
-                  {{ finiteText(asRecord(m).name) }}
-                  <div class="show-m sub">{{ finiteN(asRecord(m).context_length) }} · {{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</div>
+                  {{ finiteText(recGet(m, 'name')) }}
+                  <div class="show-m sub">{{ finiteN(recGet(m, 'context_length')) }} · {{ recGet(m, 'forever') ? t('ollama.resident_forever') : fmtDate(recGet(m, 'expires_at')) }}</div>
                 </td>
-                <td>{{ fmtSize(asRecord(m).size_vram || asRecord(m).size) }}</td>
-                <td class="mono col-hide-m">{{ finiteN(asRecord(m).context_length) }}</td>
-                <td class="col-hide-m">{{ asRecord(m).forever ? t('ollama.resident_forever') : fmtDate(asRecord(m).expires_at) }}</td>
+                <td>{{ fmtSize(recGet(m, 'size_vram') || recGet(m, 'size')) }}</td>
+                <td class="mono col-hide-m">{{ finiteN(recGet(m, 'context_length')) }}</td>
+                <td class="col-hide-m">{{ recGet(m, 'forever') ? t('ollama.resident_forever') : fmtDate(recGet(m, 'expires_at')) }}</td>
                 <td class="ops">
                   <button class="tiny" :disabled="unloading" @click="unload(m)">{{ t('ollama.act_unload') }}</button>
                 </td>
@@ -139,20 +139,20 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="m in asArray(models)" :key="finiteText(asRecord(m).name)">
+              <tr v-for="m in asArray(models)" :key="finiteText(recGet(m, 'name'))">
                 <td class="mono">
-                  {{ finiteText(asRecord(m).name) }}
-                  <div class="show-m sub">{{ finiteText(asRecord(m).family) }}{{ finiteText(asRecord(m).parameter_size, '') ? ' ' + finiteText(asRecord(m).parameter_size) : '' }} · {{ finiteText(asRecord(m).quantization) }}</div>
-                  <div v-if="asArray(asRecord(m).capabilities).length" class="show-m sub">{{ asArray(asRecord(m).capabilities).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
+                  {{ finiteText(recGet(m, 'name')) }}
+                  <div class="show-m sub">{{ finiteText(recGet(m, 'family')) }}{{ finiteText(recGet(m, 'parameter_size'), '') ? ' ' + finiteText(recGet(m, 'parameter_size')) : '' }} · {{ finiteText(recGet(m, 'quantization')) }}</div>
+                  <div v-if="asArray(recGet(m, 'capabilities')).length" class="show-m sub">{{ asArray(recGet(m, 'capabilities')).map(c => finiteText(c, '')).filter(Boolean).join(', ') }}</div>
                 </td>
-                <td>{{ fmtSize(asRecord(m).size) }}</td>
-                <td class="col-hide-m">{{ finiteText(asRecord(m).family) }} <span v-if="finiteText(asRecord(m).parameter_size, '')" class="meta">{{ finiteText(asRecord(m).parameter_size) }}</span></td>
-                <td class="mono col-hide-m">{{ finiteText(asRecord(m).quantization) }}</td>
+                <td>{{ fmtSize(recGet(m, 'size')) }}</td>
+                <td class="col-hide-m">{{ finiteText(recGet(m, 'family')) }} <span v-if="finiteText(recGet(m, 'parameter_size'), '')" class="meta">{{ finiteText(recGet(m, 'parameter_size')) }}</span></td>
+                <td class="mono col-hide-m">{{ finiteText(recGet(m, 'quantization')) }}</td>
                 <td class="col-hide-m">
-                  <span v-for="c in asArray(asRecord(m).capabilities)" :key="finiteText(c)" class="badge cap">{{ finiteText(c) }}</span>
-                  <span v-if="!asArray(asRecord(m).capabilities).length">—</span>
+                  <span v-for="c in asArray(recGet(m, 'capabilities'))" :key="finiteText(c)" class="badge cap">{{ finiteText(c) }}</span>
+                  <span v-if="!asArray(recGet(m, 'capabilities')).length">—</span>
                 </td>
-                <td class="meta col-hide-m">{{ fmtDate(asRecord(m).modified) }}</td>
+                <td class="meta col-hide-m">{{ fmtDate(recGet(m, 'modified')) }}</td>
                 <td class="ops">
                   <button class="tiny danger" @click="openDelete(m)">{{ t('ollama.act_delete') }}</button>
                 </td>
@@ -208,23 +208,23 @@
           <div v-if="!asArray(chatMessages).length" class="meta">{{ t('ollama.chat_empty') }}</div>
           <div
             v-for="(m, i) in asArray(chatMessages)"
-            :key="finiteText(asRecord(m).role) + ':' + i"
+            :key="finiteText(recGet(m, 'role')) + ':' + i"
             class="chat-msg"
-            :class="asRecord(m).role"
+            :class="recGet(m, 'role')"
           >
-            <div class="chat-role">{{ asRecord(m).role === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
-            <pre v-if="asRecord(m).thinking && !asRecord(m).content" class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
-            <details v-else-if="asRecord(m).thinking" class="chat-thinking-wrap">
+            <div class="chat-role">{{ recGet(m, 'role') === 'user' ? t('ollama.chat_you') : t('ollama.chat_assistant') }}</div>
+            <pre v-if="recGet(m, 'thinking') && !recGet(m, 'content')" class="chat-thinking">{{ finiteText(recGet(m, 'thinking')) }}</pre>
+            <details v-else-if="recGet(m, 'thinking')" class="chat-thinking-wrap">
               <summary>{{ t('ollama.chat_thinking') }}</summary>
-              <pre class="chat-thinking">{{ finiteText(asRecord(m).thinking) }}</pre>
+              <pre class="chat-thinking">{{ finiteText(recGet(m, 'thinking')) }}</pre>
             </details>
-            <div v-if="asRecord(m).content || asRecord(m).pending" class="chat-body">{{ finiteText(asRecord(m).content, '') || t('ollama.chat_sending') }}</div>
-            <div v-if="asRecord(m).error" class="chat-error">{{ finiteText(asRecord(m).error) }}</div>
+            <div v-if="recGet(m, 'content') || recGet(m, 'pending')" class="chat-body">{{ finiteText(recGet(m, 'content'), '') || t('ollama.chat_sending') }}</div>
+            <div v-if="recGet(m, 'error')" class="chat-error">{{ finiteText(recGet(m, 'error')) }}</div>
           </div>
         </div>
         <div class="toolbar" style="flex-wrap:wrap">
           <select v-model="chatModel" :aria-label="t('ollama.chat_model_label')" :disabled="chatBusy">
-            <option v-for="m in asArray(models)" :key="'chat-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
+            <option v-for="m in asArray(models)" :key="'chat-' + finiteText(recGet(m, 'name'))" :value="recGet(m, 'name')">{{ finiteText(recGet(m, 'name')) }}</option>
           </select>
           <textarea
             v-model="chatInput"
@@ -253,7 +253,7 @@
         </div>
         <div class="toolbar" style="margin-bottom:8px;flex-wrap:wrap">
           <select v-model="testModel" :aria-label="t('ollama.test_model_label')">
-            <option v-for="m in asArray(models)" :key="'test-' + finiteText(asRecord(m).name)" :value="asRecord(m).name">{{ finiteText(asRecord(m).name) }}</option>
+            <option v-for="m in asArray(models)" :key="'test-' + finiteText(recGet(m, 'name'))" :value="recGet(m, 'name')">{{ finiteText(recGet(m, 'name')) }}</option>
           </select>
           <input
             v-model="testPrompt"
@@ -344,20 +344,20 @@
           <button class="tiny" @click="closeDelete">{{ t('common.close') }}</button>
         </div>
         <p style="margin:0 0 10px">
-          {{ t('ollama.delete_body', { name: finiteText(asRecord(deleteTarget).name), size: fmtSize(asRecord(deleteTarget).size) }) }}
+          {{ t('ollama.delete_body', { name: finiteText(recGet(deleteTarget, 'name')), size: fmtSize(recGet(deleteTarget, 'size')) }) }}
         </p>
         <input
           v-model="deleteText"
           type="text"
           class="mono"
           style="width:100%;margin-bottom:10px"
-          :placeholder="finiteText(asRecord(deleteTarget).name, '')"
+          :placeholder="finiteText(recGet(deleteTarget, 'name'), '')"
           :aria-label="t('ollama.delete_type_label')"
         />
         <div class="row">
           <button
             class="danger"
-            :disabled="asTrimmed(deleteText) !== asRecord(deleteTarget).name || deleting"
+            :disabled="asTrimmed(deleteText) !== recGet(deleteTarget, 'name') || deleting"
             @click="doDelete"
           >{{ t('ollama.delete_confirm') }}</button>
           <button @click="closeDelete">{{ t('common.cancel') }}</button>
@@ -437,15 +437,15 @@ let actionTimer = null
 let pullTimer = null
 let pullGeneration = 0
 
-const models = computed(() => asArray(asRecord(data.value).models).map((row) => asRecord(row)))
-const resident = computed(() => asArray(asRecord(data.value).resident).map((row) => asRecord(row)))
+const models = computed(() => asArray(recGet(data.value, 'models')).map((row) => asRecord(row)))
+const resident = computed(() => asArray(recGet(data.value, 'resident')).map((row) => asRecord(row)))
 const duplicateLabels = computed(() => {
-  const c = asArray(asRecord(asRecord(data.value).service).candidates)
+  const c = asArray(recGet(recGet(data.value, 'service'), 'candidates'))
   return c.length > 1 ? c : []
 })
 
 const openaiCompatUrl = computed(() => {
-  const base = (finiteText(asRecord(data.value).url, '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
+  const base = (finiteText(recGet(data.value, 'url'), '') || 'http://127.0.0.1:11434').replace(/\/$/, '')
   return finiteText(`${base}/v1`, '')
 })
 
@@ -453,7 +453,7 @@ const serviceBadge = computed(() => {
   const row = asRecord(data.value)
   if (!data.value) return { cls: '', text: '' }
   if (row.reachable) return { cls: 'ok', text: t('ollama.state_running') }
-  if (asRecord(row.service).running) return { cls: 'warn', text: t('ollama.state_starting') }
+  if (recGet(row.service, 'running')) return { cls: 'warn', text: t('ollama.state_starting') }
   return { cls: 'down', text: t('ollama.state_stopped') }
 })
 
@@ -536,8 +536,8 @@ async function loadOllamaSettings() {
     const s = asRecord(await getSettings())
     if (generation !== loadGeneration || !pageAlive) return
     ollamaForm.value = {
-      url: asRecord(s.ollama).url || asRecord(data.value).url || 'http://127.0.0.1:11434',
-      label: asRecord(s.ollama).label || '',
+      url: recGet(s.ollama, 'url') || recGet(data.value, 'url') || 'http://127.0.0.1:11434',
+      label: recGet(s.ollama, 'label') || '',
     }
     ollamaSettingsLoaded.value = true
     ollamaSettingsError.value = ''
@@ -546,7 +546,7 @@ async function loadOllamaSettings() {
     ollamaSettingsLoaded.value = false
     ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
-      url: asRecord(data.value).url || 'http://127.0.0.1:11434',
+      url: recGet(data.value, 'url') || 'http://127.0.0.1:11434',
       label: ollamaForm.value.label || '',
     }
   }
@@ -564,8 +564,8 @@ async function saveOllamaSettings() {
   try {
     const r = asRecord(await putSettings({
       ollama: {
-        url: asTrimmed(asRecord(ollamaForm.value).url),
-        label: asTrimmed(asRecord(ollamaForm.value).label),
+        url: asTrimmed(recGet(ollamaForm.value, 'url')),
+        label: asTrimmed(recGet(ollamaForm.value, 'label')),
       },
     }))
     if (generation !== loadGeneration || !pageAlive) return
