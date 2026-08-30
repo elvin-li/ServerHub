@@ -21,6 +21,24 @@ from hub import cli_args
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded signature-library gates — GET
+    /api/status answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 #: One signature per known service.
 #:   procs: lowercase process-name tokens.  Matched exact or by prefix in
 #:          either direction, because `lsof` truncates COMMAND (e.g. a
@@ -296,7 +314,7 @@ def _iter_signatures(extras: list[dict] | None):
     """Operator-defined signatures first, so they override a built-in slug."""
     seen: set[str] = set()
     for sig in extras or []:
-        if not isinstance(sig, dict):
+        if not _isinst(sig, dict):
             continue
         slug = sig.get("slug")
         if not slug or slug in seen:
@@ -373,7 +391,7 @@ def identify(
 
 def parse_signature(raw) -> dict | None:
     """Normalise one operator-defined signature, or None if it is unusable."""
-    if not isinstance(raw, dict):
+    if not _isinst(raw, dict):
         return None
     # _utf8_text (a str() probe), not bare str(): a hand-edited hex slug
     # (``slug: 0xfff…`` loads uncapped through YAML) raised the int->str
@@ -391,16 +409,16 @@ def parse_signature(raw) -> dict | None:
         p
         for p in (
             _utf8_text(item).strip().lower()
-            for item in (raw_procs if isinstance(raw_procs, list) else [])
+            for item in (raw_procs if _isinst(raw_procs, list) else [])
         )
         if p
     )
     ports: list[int] = []
     raw_ports = raw.get("ports")
     # YAML ``ports: !!set`` is a set; ``[.inf]`` OverflowError's ``int()``.
-    port_rows = raw_ports if isinstance(raw_ports, (list, tuple, set, frozenset)) else []
+    port_rows = raw_ports if _isinst(raw_ports, (list, tuple, set, frozenset)) else []
     for p in port_rows:
-        if isinstance(p, bool):
+        if type(p) is bool:
             continue
         try:
             n = int(p)
@@ -437,7 +455,7 @@ def configured_signatures() -> list[dict]:
         raise
     except BaseException:
         return []
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
         return []
     out: list[dict] = []
     seen: set[str] = set()
@@ -552,7 +570,7 @@ def remember_into(data: dict, sig: dict) -> dict:
     """
     row = yaml_signature(sig)
     rows = data.get("service_signatures")
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         rows = []
         data["service_signatures"] = rows
     slug = row["slug"]
@@ -571,7 +589,7 @@ def remove_from(data: dict, slug: str) -> dict | None:
     if not slug:
         return None
     rows = data.get("service_signatures")
-    if not isinstance(rows, list):
+    if not _isinst(rows, list):
         return None
     keep = []
     removed = None
