@@ -57,6 +57,23 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in :func:`configured_targets` and
+    :func:`check_freshness` — POST /api/alerts/check answered HTTP 500
+    instead of skipping the junk cell.  Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _utf8_text(value) -> str:
     """Drop leftover types / lone surrogates so a stale-job row cannot 500."""
     if value is None:
@@ -104,6 +121,19 @@ def _utf8_text(value) -> str:
     return "" if _ADDR_REPR_RE.search(text) else text
 
 
+def _log_cell(value) -> str:
+    """A leftover-safe log fragment. ``logging`` itself calls ``isinstance``
+    on ``%r`` arguments, so a ``__class__`` bomb in ``log.warning(..., entry)``
+    used to 500 POST /api/alerts/check after the mapping gate already skipped.
+    """
+    try:
+        return _utf8_text(type(value).__name__) or "<unrepr>"
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return "<unrepr>"
+
+
 @dataclass(frozen=True)
 class Target:
     #: Stable id; becomes the state key / alert id ``freshness:<id>``.
@@ -138,27 +168,27 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
     if raw is None:
         from hub.config import cfg
         raw = cfg().get("freshness_targets")
-    if not isinstance(raw, list):
+    if not _isinst(raw, list):
         return ()
     out: list[Target] = []
     seen: set[str] = set()
     for entry in raw:
-        if not isinstance(entry, dict):
-            log.warning("freshness_targets: skipping non-mapping entry %r", entry)
+        if not _isinst(entry, dict):
+            log.warning("freshness_targets: skipping non-mapping entry %s", _log_cell(entry))
             continue
         try:
             tid = _utf8_text(entry.get("id") or "").strip()
         except _CONTROL_FLOW:
             raise
         except BaseException:
-            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            log.warning("freshness_targets: skipping malformed entry %s", _log_cell(entry))
             continue
         try:
             pattern = os.path.expanduser(_utf8_text(entry.get("pattern") or "").strip())
         except (TypeError, ValueError, RuntimeError, OSError):
             # Path.home / expanduser RuntimeError when HOME is unset; leftover
             # NUL is ValueError. Either used to 500 POST /api/alerts/check.
-            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            log.warning("freshness_targets: skipping malformed entry %s", _log_cell(entry))
             continue
         try:
             max_age = float(entry.get("max_age_hours") or 0)
@@ -168,7 +198,7 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
             max_age = 0.0
         if (not _ID_RE.fullmatch(tid) or tid in seen
                 or not os.path.isabs(pattern) or max_age <= 0):
-            log.warning("freshness_targets: skipping malformed entry %r", entry)
+            log.warning("freshness_targets: skipping malformed entry %s", _log_cell(entry))
             continue
         req_raw = entry.get("require_dir") or entry.get("require_mount") or ""
         try:
@@ -176,7 +206,7 @@ def configured_targets(raw: list | None = None) -> tuple[Target, ...]:
         except (TypeError, ValueError, RuntimeError, OSError):
             require_dir = None
         if require_dir is not None and not os.path.isabs(require_dir):
-            log.warning("freshness_targets: ignoring non-absolute require_dir on %r", entry)
+            log.warning("freshness_targets: ignoring non-absolute require_dir on %s", _log_cell(entry))
             require_dir = None
         seen.add(tid)
         out.append(Target(
@@ -232,9 +262,9 @@ def check_freshness(prev: dict, new_state: dict, now: int,
     """
     from hub import alerts as _alerts
 
-    if not isinstance(prev, dict):
+    if not _isinst(prev, dict):
         prev = {}
-    if not isinstance(new_state, dict):
+    if not _isinst(new_state, dict):
         return []
     try:
         now = int(now)
@@ -246,12 +276,12 @@ def check_freshness(prev: dict, new_state: dict, now: int,
             now = 0
 
     last_fire = prev.get("_freshness_last")
-    if not isinstance(last_fire, dict):
+    if not _isinst(last_fire, dict):
         last_fire = {}
     new_last = dict(last_fire)
     emitted: list = []
     n = _alerts.notify_settings()
-    if not isinstance(n, dict):
+    if not _isinst(n, dict):
         n = {}
 
     for t in targets if targets is not None else configured_targets():
