@@ -41,6 +41,23 @@ _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
 
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded launchctl row gates — GET
+    /api/health/checks answered HTTP 500 instead of dropping the junk cell.
+    Fail-closed.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
 def _as_text(value) -> str:
     """``launchctl`` leftovers arrive as int/None/bytes; leftover ``\\ud800`` used to 500 health/apps JSON."""
     if value is None:
@@ -130,7 +147,7 @@ class Listing:
             name = _as_text(label).strip()
             if not name or name == "Label":
                 continue
-            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+            if _isinst(entry, (tuple, list)) and len(entry) >= 2:
                 pid, status = _as_text(entry[0]), _as_text(entry[1])
             else:
                 continue
