@@ -1135,8 +1135,10 @@ function catalogOpenUrl(tpl) {
   let out = ut.replaceAll('{{HOST_IP}}', host).replaceAll('{{HOST}}', host)
   const vars = asArray(recGet(tpl, 'vars'))
   for (const v of vars) {
-    if (v && v.name && v.default != null && v.default !== '') {
-      out = out.replaceAll(`{{${finiteText(v.name, '')}}}`, String(finiteText(v.default, '')))
+    const name = recGet(v, 'name')
+    const def = recGet(v, 'default')
+    if (name && def != null && def !== '') {
+      out = out.replaceAll(`{{${finiteText(name, '')}}}`, String(finiteText(def, '')))
     }
   }
   // leftover placeholders → not a usable URL

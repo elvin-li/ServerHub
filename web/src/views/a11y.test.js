@@ -3387,7 +3387,7 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).not.toMatch(/\{\{\s*logText\s*\}\}/)
     expect(maintenance).toMatch(/finiteText\(logText\)/)
     expect(maintenance).toMatch(/logText\.value = finiteText\(recGet\(j, 'log'\), ''\)/)
-    expect(maintenance).toMatch(/logTitle\.value = finiteText\(rec\.name\)/)
+    expect(maintenance).toMatch(/logTitle\.value = finiteText\(recGet\(rec, 'name'\)\)/)
     expect(maintenance).toMatch(/v-for="task in asArray\(filtered\)"/)
     expect(maintenance).toMatch(/v-else-if="!asArray\(tasks\)\.length"/)
     expect(maintenance).toMatch(/asRecord\(await getMaintenanceLog/)

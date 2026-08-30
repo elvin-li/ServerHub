@@ -165,13 +165,13 @@ async function run(task) {
   // task.confirm, which defaults to false in the API (hub/routers/api.py) and is
   // absent from the documented example task, so the destructive entries shipped
   // unguarded.
-  if (!confirm(t('maintenance.confirm_run', { name: finiteText(rec.name) }))) return
+  if (!confirm(t('maintenance.confirm_run', { name: finiteText(recGet(rec, 'name')) }))) return
   const generation = listGeneration
   rec.running = true
   try {
-    const r = asRecord(await runMaintenance(rec.id))
+    const r = asRecord(await runMaintenance(recGet(rec, 'id')))
     if (generation !== listGeneration || !pageAlive) return
-    toast('🚀 ' + t('maintenance.started', { name: finiteText(rec.name) }))
+    toast('🚀 ' + t('maintenance.started', { name: finiteText(recGet(rec, 'name')) }))
     openLog(rec)
     await refresh()
   } catch (e) {
@@ -213,8 +213,8 @@ async function pollLog(generation) {
 function openLog(task) {
   stopLogPolling()
   const rec = asRecord(task)
-  curId.value = rec.id
-  logTitle.value = finiteText(rec.name)
+  curId.value = recGet(rec, 'id')
+  logTitle.value = finiteText(recGet(rec, 'name'))
   logOpen.value = true
   logText.value = t('maintenance.log_loading')
   const generation = pollGeneration
