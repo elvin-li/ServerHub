@@ -26,6 +26,17 @@ export function asTrimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+/** Hostile leftover ids used to throw in encodeURIComponent. */
+export function asUri(value) {
+  try {
+    if (typeof value === 'number' && Number.isFinite(value)) return encodeURIComponent(String(value))
+    if (typeof value === 'string') return encodeURIComponent(value)
+    return ''
+  } catch {
+    return ''
+  }
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)

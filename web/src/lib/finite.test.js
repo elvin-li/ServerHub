@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, asJsonBody, asTrimmed, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+import { asArray, asRecord, asJsonBody, asTrimmed, asUri, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
 
 describe('asJsonBody leftover answers', () => {
   it('keeps lists and mappings, fail-closes primitives', () => {
@@ -19,6 +19,16 @@ describe('asRecord leftover mappings', () => {
     expect(asRecord(['a'])).toEqual({})
     expect(asRecord(null)).toEqual({})
     expect(asRecord('x')).toEqual({})
+  })
+})
+
+describe('asUri leftover ids', () => {
+  it('encodes strings/finite numbers and fail-closes leftover mappings', () => {
+    expect(asUri('a b')).toBe('a%20b')
+    expect(asUri(12)).toBe('12')
+    expect(asUri(null)).toBe('')
+    expect(asUri({ toString: () => { throw new Error('boom') } })).toBe('')
+    expect(asUri(Number.POSITIVE_INFINITY)).toBe('')
   })
 })
 

@@ -2009,6 +2009,8 @@ describe('operations polling and submission guards', () => {
     expect(client).toMatch(/if \(signal\?\.aborted\) \{\s*\n\s*const err = new Error\('aborted'\)/)
     expect(client).toMatch(/finiteN\(value, null\)/)
     expect(client).not.toMatch(/value: Number\(value\)/)
+    expect(client).toMatch(/asUri\(id\)/)
+    expect(client).not.toMatch(/encodeURIComponent\(id\)/)
   })
 
   it('discards a second-await mutation that used to land after leave', () => {

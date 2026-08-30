@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, asJsonBody, asTrimmed, finiteN, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, asJsonBody, asTrimmed, asUri, finiteN, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -209,7 +209,7 @@ export const createApiKey = ({ name, role, expiresDays }) => json('/api/api-keys
     ...(expiresDays ? { expires_days: expiresDays } : {}),
   }),
 })
-export const revokeApiKey = (id) => json(`/api/api-keys/${encodeURIComponent(id)}`, {
+export const revokeApiKey = (id) => json(`/api/api-keys/${asUri(id)}`, {
   method: 'DELETE',
 })
 
@@ -221,17 +221,17 @@ export const createPanelAccount = ({ username, password, resources }) =>
     body: jsonDump({ username, password, resources: asArray(resources) }),
   })
 export const setPanelAccountResources = (username, resources) =>
-  json(`/api/auth/accounts/${encodeURIComponent(username)}/resources`, {
+  json(`/api/auth/accounts/${asUri(username)}/resources`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ resources: asArray(resources) }),
   })
 export const resetPanelAccountPassword = (username, newPassword) =>
-  json(`/api/auth/accounts/${encodeURIComponent(username)}/password`, {
+  json(`/api/auth/accounts/${asUri(username)}/password`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ new_password: newPassword }),
   })
 export const deletePanelAccount = (username) =>
-  json(`/api/auth/accounts/${encodeURIComponent(username)}`, { method: 'DELETE' })
+  json(`/api/auth/accounts/${asUri(username)}`, { method: 'DELETE' })
 
 export const getStatus = () => json('/api/status')
 export const doAction = async (target, action) => {
@@ -271,11 +271,11 @@ const jsonBody = (method, body) => ({
 export const getManagedApps = (force = false) =>
   json(`/api/apps/managed${force ? '?force=true' : ''}`)
 export const getManagedAppDetail = (id) =>
-  json(`/api/apps/managed/detail?id=${encodeURIComponent(id)}`)
+  json(`/api/apps/managed/detail?id=${asUri(id)}`)
 export const manageApp = (id, action, removeData = false) =>
   json('/api/apps/managed/action', jsonBody('POST', { id, action, remove_data: removeData }))
 export const getManagedAppLogs = (id, lines = 150) =>
-  json(`/api/apps/managed/logs?id=${encodeURIComponent(id)}&lines=${lines}`)
+  json(`/api/apps/managed/logs?id=${asUri(id)}&lines=${lines}`)
 export const getAutostartApps = (force = false) =>
   json(`/api/apps/autostart${force ? '?force=true' : ''}`)
 export const setAppAutostart = (id, enabled, policy = undefined) =>
@@ -289,11 +289,11 @@ export const setDockerAutostartPolicy = (name, policy) =>
 export const runAppAutostartNow = () =>
   json('/api/apps/autostart/run-now', { method: 'POST' })
 export const getAppCredential = (id) =>
-  json(`/api/apps/credentials?id=${encodeURIComponent(id)}`)
+  json(`/api/apps/credentials?id=${asUri(id)}`)
 export const saveAppCredential = (body) =>
   json('/api/apps/credentials', jsonBody('POST', body))
 export const deleteAppCredential = (id) =>
-  json(`/api/apps/credentials?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+  json(`/api/apps/credentials?id=${asUri(id)}`, { method: 'DELETE' })
 
 // Cloudflare Tunnel operations
 export const getCloudflareStatus = () => json('/api/cloudflared/status')
@@ -335,40 +335,40 @@ export const stopFileBrowser = () =>
 
 // Storage management
 export const setDiskPower = (diskId, action) =>
-  json(`/api/storage/disks/${encodeURIComponent(diskId)}/power`, jsonBody('POST', { action }))
+  json(`/api/storage/disks/${asUri(diskId)}/power`, jsonBody('POST', { action }))
 export const manageStorageDevice = (deviceId, body) =>
-  json(`/api/storage/manage/${encodeURIComponent(deviceId)}`, jsonBody('POST', body))
+  json(`/api/storage/manage/${asUri(deviceId)}`, jsonBody('POST', body))
 
 // Enriched service management
 export const getServices = (force = false) =>
   json(`/api/services${force ? '?force=true' : ''}`)
 export const getServiceDetail = (id) =>
-  json(`/api/services/${encodeURIComponent(id)}/detail`)
+  json(`/api/services/${asUri(id)}/detail`)
 export const getServiceLogs = (id, lines = 200) =>
-  json(`/api/services/${encodeURIComponent(id)}/logs?lines=${lines}`)
+  json(`/api/services/${asUri(id)}/logs?lines=${lines}`)
 export const bulkServiceAction = (ids, action) =>
   json('/api/services/bulk-action', jsonBody('POST', { ids, action }))
 export const updateServiceOverride = (id, body) =>
-  json(`/api/services/${encodeURIComponent(id)}/override`, jsonBody('PUT', body))
+  json(`/api/services/${asUri(id)}/override`, jsonBody('PUT', body))
 export const setServiceHidden = (id, hide = true) =>
-  json(`/api/services/${encodeURIComponent(id)}/hide`, jsonBody('POST', { hide }))
+  json(`/api/services/${asUri(id)}/hide`, jsonBody('POST', { hide }))
 // Promote an auto-discovered listener into a managed services.yaml entry.
 export const adoptService = (id, body = {}) =>
-  json(`/api/services/${encodeURIComponent(id)}/adopt`, jsonBody('POST', body))
+  json(`/api/services/${asUri(id)}/adopt`, jsonBody('POST', body))
 export const updateServiceScript = (id, body) =>
-  json(`/api/services/${encodeURIComponent(id)}/script`, jsonBody('PUT', body))
+  json(`/api/services/${asUri(id)}/script`, jsonBody('PUT', body))
 export const forgetServiceScript = (id) =>
-  json(`/api/services/${encodeURIComponent(id)}/script`, { method: 'DELETE' })
+  json(`/api/services/${asUri(id)}/script`, { method: 'DELETE' })
 export const getServiceSignatures = () => json('/api/services/signatures')
 export const upsertServiceSignature = (body) =>
   json('/api/services/signatures', jsonBody('PUT', body))
 export const forgetServiceSignature = (slug) =>
-  json(`/api/services/signatures/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+  json(`/api/services/signatures/${asUri(slug)}`, { method: 'DELETE' })
 export const getGroupRules = () => json('/api/services/group-rules')
 export const saveGroupRules = (body) =>
   json('/api/services/group-rules', jsonBody('PUT', body))
 export const deleteGroupRule = (id) =>
-  json(`/api/services/group-rules/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  json(`/api/services/group-rules/${asUri(id)}`, { method: 'DELETE' })
 
 // Network configuration and diagnostics
 export const getSystemNetwork = (force = false) =>
@@ -384,23 +384,23 @@ export const switchNetworkProfile = (profile) =>
 export const setNetworkServiceOrder = (services) =>
   json('/api/system/network/order', jsonBody('POST', { services }))
 export const setNetworkServiceEnabled = (name, enabled) =>
-  json(`/api/system/network/services/${encodeURIComponent(name)}/enabled`, jsonBody('POST', { enabled }))
+  json(`/api/system/network/services/${asUri(name)}/enabled`, jsonBody('POST', { enabled }))
 export const addNetworkAlias = (body) =>
   json('/api/system/network/alias/add', jsonBody('POST', body))
 export const removeNetworkAlias = (body) =>
   json('/api/system/network/alias/remove', jsonBody('POST', body))
 export const setNetworkDhcp = (name) =>
-  json(`/api/system/network/services/${encodeURIComponent(name)}/dhcp`, { method: 'POST' })
+  json(`/api/system/network/services/${asUri(name)}/dhcp`, { method: 'POST' })
 export const setNetworkManual = (name, body) =>
-  json(`/api/system/network/services/${encodeURIComponent(name)}/manual`, jsonBody('POST', body))
+  json(`/api/system/network/services/${asUri(name)}/manual`, jsonBody('POST', body))
 export const setNetworkDns = (name, servers) =>
-  json(`/api/system/network/services/${encodeURIComponent(name)}/dns`, jsonBody('POST', { servers }))
+  json(`/api/system/network/services/${asUri(name)}/dns`, jsonBody('POST', { servers }))
 export const setWifiPower = (state) =>
-  json(`/api/system/network/wifi/${encodeURIComponent(state)}`, { method: 'POST' })
+  json(`/api/system/network/wifi/${asUri(state)}`, { method: 'POST' })
 export const lookupNetworkDns = (host) =>
-  json(`/api/system/network/dns-lookup?host=${encodeURIComponent(host)}`)
+  json(`/api/system/network/dns-lookup?host=${asUri(host)}`)
 export const setContainerPorts = (container, ports) =>
-  json(`/api/system/network/docker/ports/${encodeURIComponent(container)}`, jsonBody('POST', { ports }))
+  json(`/api/system/network/docker/ports/${asUri(container)}`, jsonBody('POST', { ports }))
 export const connectContainerNetwork = (mode, network, container, force = false) =>
   json(`/api/system/network/docker/${mode === 'disconnect' ? 'disconnect' : 'connect'}`, jsonBody('POST', {
     network,
@@ -460,15 +460,15 @@ export const getMaintenance = () => json('/api/maintenance')
 // "task-?" (lone-surrogate ids) — a raw `?` truncated the path into the query
 // string, so a task the list offered a Run button for 404'd as unknown_task.
 export const runMaintenance = (id) =>
-  json(`/api/maintenance/${encodeURIComponent(id)}/run`, { method: 'POST' })
+  json(`/api/maintenance/${asUri(id)}/run`, { method: 'POST' })
 export const getMaintenanceLog = (id) =>
-  json(`/api/maintenance/${encodeURIComponent(id)}/log`)
+  json(`/api/maintenance/${asUri(id)}/log`)
 
 // Homebrew services. Service actions can run for up to 120 seconds server-side.
 const BREW_ACTION_TIMEOUT = 130000
 export const getBrewServices = () => json('/api/brew/services')
 export const brewAction = (name, action) =>
-  json(`/api/brew/services/${encodeURIComponent(name)}/action`, {
+  json(`/api/brew/services/${asUri(name)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ action }),
@@ -478,9 +478,9 @@ export const brewAction = (name, action) =>
 // and archives its plist, so it goes through the shared client for consistent
 // session-lost handling.
 export const getServiceUninstallPreview = (sid) =>
-  json(`/api/services/${encodeURIComponent(sid)}/uninstall/preview`)
+  json(`/api/services/${asUri(sid)}/uninstall/preview`)
 export const uninstallService = (sid, { remove_data = false } = {}) =>
-  json(`/api/services/${encodeURIComponent(sid)}/uninstall`, jsonBody('POST', { remove_data }))
+  json(`/api/services/${asUri(sid)}/uninstall`, jsonBody('POST', { remove_data }))
 
 // Container operations. Synchronous Docker commands need the backend ceiling plus
 // a little transport slack; batch/all execute actions serially across containers.
@@ -494,7 +494,7 @@ const CONTAINER_RUN_TIMEOUT = 190000
 export const getContainers = (stats = true) =>
   json(`/api/containers?stats=${stats ? 'true' : 'false'}`)
 export const containerAction = (name, action) =>
-  json(`/api/containers/${encodeURIComponent(name)}/action`, {
+  json(`/api/containers/${asUri(name)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ action }),
@@ -514,21 +514,21 @@ export const containersAll = (action) =>
 export const checkContainerUpdates = () =>
   json('/api/containers/check-updates', { method: 'POST' })
 export const updateContainer = (name) =>
-  json(`/api/containers/${encodeURIComponent(name)}/update`, { method: 'POST' })
+  json(`/api/containers/${asUri(name)}/update`, { method: 'POST' })
 export const execContainer = (name, command) =>
-  json(`/api/containers/${encodeURIComponent(name)}/exec`, {
+  json(`/api/containers/${asUri(name)}/exec`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ command }),
   }, CONTAINER_EXEC_TIMEOUT)
 export const setRestartPolicy = (name, policy) =>
-  json(`/api/containers/${encodeURIComponent(name)}/restart-policy`, {
+  json(`/api/containers/${asUri(name)}/restart-policy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ policy }),
   })
 export const inspectContainer = (name) =>
-  json(`/api/containers/${encodeURIComponent(name)}/inspect`)
+  json(`/api/containers/${asUri(name)}/inspect`)
 export const runContainer = (body) =>
   json('/api/containers/run', {
     method: 'POST',
@@ -585,17 +585,17 @@ export const prune = (kind = 'system') =>
 const COMPOSE_OPERATION_TIMEOUT = 40000
 export const getStacks = () => json('/api/stacks')
 export const runStack = (id, action = 'update') =>
-  json(`/api/stacks/${encodeURIComponent(id)}/run`, {
+  json(`/api/stacks/${asUri(id)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ action }),
   })
 export const getStackJob = (jobId) =>
-  json(`/api/stacks/jobs/${encodeURIComponent(jobId)}`)
+  json(`/api/stacks/jobs/${asUri(jobId)}`)
 export const getCompose = (stackId) =>
-  json(`/api/compose/${encodeURIComponent(stackId)}`)
+  json(`/api/compose/${asUri(stackId)}`)
 export const putCompose = (stackId, content, check = true) =>
-  json(`/api/compose/${encodeURIComponent(stackId)}`, {
+  json(`/api/compose/${asUri(stackId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ content, check }),
@@ -651,18 +651,18 @@ export const createShare = (body) => json('/api/shares/smb', {
   body: jsonDump(body),
 }, SHARING_ADMIN_TIMEOUT)
 export const updateShare = (recordName, body) =>
-  json(`/api/shares/smb/${encodeURIComponent(recordName)}`, {
+  json(`/api/shares/smb/${asUri(recordName)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump(body),
   }, SHARING_ADMIN_TIMEOUT)
 export const removeShare = (recordName) =>
-  json(`/api/shares/smb/${encodeURIComponent(recordName)}?confirm=true`, {
+  json(`/api/shares/smb/${asUri(recordName)}?confirm=true`, {
     method: 'DELETE',
   }, SHARING_ADMIN_TIMEOUT)
 // Per-user share access = the shared directory's filesystem ACL.
 export const getShareAcl = (path) =>
-  json(`/api/shares/acl?path=${encodeURIComponent(path)}`)
+  json(`/api/shares/acl?path=${asUri(path)}`)
 export const setShareAcl = (path, username, level) =>
   json('/api/shares/acl', {
     method: 'PUT',
@@ -670,7 +670,7 @@ export const setShareAcl = (path, username, level) =>
     body: jsonDump({ path, username, level }),
   }, SHARING_ADMIN_TIMEOUT)
 export const setSystemSharing = (serviceId, enabled) =>
-  json(`/api/shares/system/${encodeURIComponent(serviceId)}`, {
+  json(`/api/shares/system/${asUri(serviceId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump({ enabled }),
@@ -679,7 +679,7 @@ export const openSharingSettings = () =>
   json('/api/shares/open-system-settings', { method: 'POST' })
 export const getLogSources = () => json('/api/logs')
 export const getLogTail = (id, lines = 200) =>
-  json(`/api/logs/${encodeURIComponent(id)}?lines=${lines}`)
+  json(`/api/logs/${asUri(id)}?lines=${lines}`)
 export const getSettings = () => json('/api/settings')
 export const getLauncherStatus = () => json('/api/launcher')
 export const openLauncherApp = () => json('/api/launcher/open', { method: 'POST' })
@@ -689,7 +689,7 @@ export const setLauncherLogin = (enabled) => json('/api/launcher/login', {
   body: jsonDump({ enabled }),
 })
 export const controlPanelService = (action) =>
-  json(`/api/launcher/panel/${encodeURIComponent(action)}`, { method: 'POST' })
+  json(`/api/launcher/panel/${asUri(action)}`, { method: 'POST' })
 export const putSettings = (body) =>
   json('/api/settings', {
     method: 'PUT',
@@ -698,7 +698,7 @@ export const putSettings = (body) =>
   })
 // Tiered history: backend picks the layer (raw 90s / 5m / 1h) for the span and
 // caps the point count; response adds { tier, since, until } next to points.
-export const getMetricsRange = (range) => json(`/api/metrics?range=${encodeURIComponent(range)}`)
+export const getMetricsRange = (range) => json(`/api/metrics?range=${asUri(range)}`)
 export const getAlerts = (limit = 50) => json(`/api/alerts?limit=${limit}`)
 // Read-only: there is deliberately no writer or clear endpoint for the audit
 // trail, so this module exposes only the reader.
@@ -711,11 +711,11 @@ export const getNotifyChannels = () => json('/api/alerts/channels')
 export const createNotifyChannel = (body) =>
   json('/api/alerts/channels', jsonBody('POST', body))
 export const updateNotifyChannel = (id, body) =>
-  json(`/api/alerts/channels/${encodeURIComponent(id)}`, jsonBody('PUT', body))
+  json(`/api/alerts/channels/${asUri(id)}`, jsonBody('PUT', body))
 export const deleteNotifyChannel = (id) =>
-  json(`/api/alerts/channels/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  json(`/api/alerts/channels/${asUri(id)}`, { method: 'DELETE' })
 export const testNotifyChannel = (id) =>
-  json(`/api/alerts/channels/${encodeURIComponent(id)}/test`, { method: 'POST' })
+  json(`/api/alerts/channels/${asUri(id)}/test`, { method: 'POST' })
 // UPS / battery power monitoring
 export const getUps = (force = false) => json(`/api/ups${force ? '?force=true' : ''}`)
 export const putUpsSettings = (body) => json('/api/ups/settings', jsonBody('PUT', body))
@@ -744,15 +744,15 @@ export const getSchedulerJobs = () => json('/api/scheduler/jobs')
 export const createSchedulerJob = (body) =>
   json('/api/scheduler/jobs', jsonBody('POST', body))
 export const updateSchedulerJob = (id, body) =>
-  json(`/api/scheduler/jobs/${encodeURIComponent(id)}`, jsonBody('PUT', body))
+  json(`/api/scheduler/jobs/${asUri(id)}`, jsonBody('PUT', body))
 export const deleteSchedulerJob = (id) =>
-  json(`/api/scheduler/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  json(`/api/scheduler/jobs/${asUri(id)}`, { method: 'DELETE' })
 export const enableSchedulerJob = (id, enabled) =>
-  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/enable`, jsonBody('POST', { enabled }))
+  json(`/api/scheduler/jobs/${asUri(id)}/enable`, jsonBody('POST', { enabled }))
 export const runSchedulerJobNow = (id) =>
-  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/run-now`, { method: 'POST' })
+  json(`/api/scheduler/jobs/${asUri(id)}/run-now`, { method: 'POST' })
 export const getSchedulerJobRuns = (id, limit = 20) =>
-  json(`/api/scheduler/jobs/${encodeURIComponent(id)}/runs?limit=${limit}`)
+  json(`/api/scheduler/jobs/${asUri(id)}/runs?limit=${limit}`)
 // rsync backup helpers: binary capabilities + dry-run preview.  The backend
 // caps a preview at 120s (rsync_svc.PREVIEW_TIMEOUT) and kills the process
 // group past that, so the client only needs that ceiling plus transport slack.
@@ -763,7 +763,7 @@ export const getCatalog = () => json('/api/catalog')
 const CATALOG_INSTALL_TIMEOUT = 900000 // brew cask / pull can exceed 30s
 
 export async function installCatalog(id, variables = {}) {
-  const url = `/api/catalog/${encodeURIComponent(id)}/install`
+  const url = `/api/catalog/${asUri(id)}/install`
   const body = jsonDump({ confirm: true, variables })
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await json(
@@ -801,7 +801,7 @@ export async function installCatalog(id, variables = {}) {
 }
 export const uninstallCatalog = (id, { remove_data = true } = {}) =>
   json(
-    `/api/catalog/${encodeURIComponent(id)}/uninstall`,
+    `/api/catalog/${asUri(id)}/uninstall`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -837,13 +837,13 @@ export const createVm = (body) =>
     body: jsonDump(body),
   }, VM_OPERATION_TIMEOUT)
 export const vmAction = (vmId, body) =>
-  json(`/api/vms/${encodeURIComponent(vmId)}/action`, {
+  json(`/api/vms/${asUri(vmId)}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: jsonDump(body),
   }, VM_OPERATION_TIMEOUT)
 export const createVmConsoleSession = (consoleId) =>
-  json(`/api/vms/${encodeURIComponent(consoleId)}/console/session`, {
+  json(`/api/vms/${asUri(consoleId)}/console/session`, {
     method: 'POST',
   })
 export const getHost = () => json('/api/system/host')
@@ -910,7 +910,7 @@ export const setWireguardPsk = (pubkey, op) =>
 // and a "/" encoded as %2F would be decoded back into a path separator before
 // Starlette routes the request, 404-ing every key that contains one.
 export const getWireguardPeerConfig = (pubkey, format = 'wg') =>
-  json(`/api/wireguard/peers/config?pubkey=${encodeURIComponent(pubkey)}&format=${encodeURIComponent(format)}`)
+  json(`/api/wireguard/peers/config?pubkey=${asUri(pubkey)}&format=${asUri(format)}`)
 export const controlWireguardInterface = (action) =>
   json('/api/wireguard/interface', jsonBody('POST', { action }), WG_CONTROL_TIMEOUT)
 export const syncWireguard = () =>
@@ -924,7 +924,7 @@ export const remediateWireguard = (target, enabled = true) =>
 /** Download URL for a peer config. A navigation, not a fetch, so the browser
  *  handles the attachment; the session cookie authorizes it. */
 export const wireguardPeerDownloadUrl = (pubkey, format = 'wg') =>
-  `/api/wireguard/peers/download?pubkey=${encodeURIComponent(pubkey)}&format=${encodeURIComponent(format)}`
+  `/api/wireguard/peers/download?pubkey=${asUri(pubkey)}&format=${asUri(format)}`
 
 // Power & remote desktop
 export const getPower = () => json('/api/system/power')
@@ -939,7 +939,7 @@ export function openContainerLogs(name, { tail = 200, follow = true } = {}) {
     tail: String(tail),
     follow: follow ? 'true' : 'false',
   })
-  return new EventSource(`/api/containers/${encodeURIComponent(name)}/logs?${q}`)
+  return new EventSource(`/api/containers/${asUri(name)}/logs?${q}`)
 }
 
 const PHOTOSHUB_ACTION_TIMEOUT = 600000
@@ -950,7 +950,7 @@ export const getPhotosHubPending = () => json('/api/photoshub/pending-delete')
 // A URL, not a request: the browser loads previews itself via <img>, so the
 // panel session authorises them and the Immich API key stays on the server.
 export const photosHubThumbUrl = (id) =>
-  `/api/photoshub/pending-delete/thumb/${encodeURIComponent(id)}`
+  `/api/photoshub/pending-delete/thumb/${asUri(id)}`
 export const postPhotosHubAction = (action) =>
   json('/api/photoshub/action', jsonBody('POST', { action }), PHOTOSHUB_ACTION_TIMEOUT)
 export const postPhotosHubPendingRemove = (ids) =>
@@ -1079,7 +1079,7 @@ export async function chatOllamaModel(model, messages, numPredict = 128, { onChu
 // Find is a catalog match. Brief/ask may wait on the resident model the same
 // way /api/ollama/chat does, so they share that 130s ceiling.
 export const getAssistantCatalog = (locale = 'zh-CN') =>
-  json(`/api/assistant/catalog?locale=${encodeURIComponent(locale)}`)
+  json(`/api/assistant/catalog?locale=${asUri(locale)}`)
 export const askAssistant = (query, { locale = 'zh-CN', action = 'auto', history = [], path = '', signal } = {}) =>
   json('/api/assistant/ask', { ...jsonBody('POST', {
     query,
