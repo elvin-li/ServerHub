@@ -66,24 +66,24 @@
       <div class="tile span-3">
         <h3>{{ t('pool.sum_total') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(asRecord(shownSummary).total_gb) }} <span class="unit">GB</span>
+          {{ finiteN(recGet(shownSummary, 'total_gb')) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('pool.sum_members', { n: finiteN(asRecord(shownSummary).member_count, 0) }) }}</div>
+        <div class="sub">{{ t('pool.sum_members', { n: finiteN(recGet(shownSummary, 'member_count'), 0) }) }}</div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_used') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(asRecord(shownSummary).used_gb) }} <span class="unit">GB</span>
+          {{ finiteN(recGet(shownSummary, 'used_gb')) }} <span class="unit">GB</span>
         </div>
-        <div class="sub">{{ t('common.free') }} {{ fmtGb(asRecord(shownSummary).avail_gb) }}</div>
-        <div class="pct-bar" :class="barClass(asRecord(shownSummary).pct)" style="margin-top:6px">
-          <i :style="{ width: barPct(asRecord(shownSummary).pct) + '%' }"></i>
+        <div class="sub">{{ t('common.free') }} {{ fmtGb(recGet(shownSummary, 'avail_gb')) }}</div>
+        <div class="pct-bar" :class="barClass(recGet(shownSummary, 'pct'))" style="margin-top:6px">
+          <i :style="{ width: barPct(recGet(shownSummary, 'pct')) + '%' }"></i>
         </div>
       </div>
       <div class="tile span-3">
         <h3>{{ t('pool.sum_largest') }}</h3>
         <div class="v" style="font-size:16px">
-          {{ finiteN(asRecord(shownSummary).largest_single_file_gb) }} <span class="unit">GB</span>
+          {{ finiteN(recGet(shownSummary, 'largest_single_file_gb')) }} <span class="unit">GB</span>
         </div>
         <div class="sub">{{ t('pool.sum_largest_hint') }}</div>
       </div>
@@ -111,29 +111,29 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in asArray(selectedMembers)" :key="finiteText(asRecord(m).mount)">
+          <tr v-for="m in asArray(selectedMembers)" :key="finiteText(recGet(m, 'mount'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(m).mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(asRecord(m).disk_id) }} · {{ finiteText(asRecord(m).filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(asRecord(m).used_gb) }} / {{ fmtGb(asRecord(m).avail_gb) }}</div>
+              <strong>{{ finiteText(recGet(m, 'mount')) }}</strong>
+              <div class="show-m sub">{{ finiteText(recGet(m, 'disk_id')) }} · {{ finiteText(recGet(m, 'filesystem')) }}</div>
+              <div class="show-m sub">{{ fmtGb(recGet(m, 'used_gb')) }} / {{ fmtGb(recGet(m, 'avail_gb')) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(m).disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(m).filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(m).total_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(m).used_gb) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(m).avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(m, 'disk_id')) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(m, 'filesystem')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(m, 'total_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(m, 'used_gb')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(m, 'avail_gb')) }}</td>
             <td style="min-width:100px">
-              {{ withUnit(asRecord(m).pct, '%') }}
-              <div class="pct-bar" :class="barClass(asRecord(m).pct)" style="margin-top:3px">
-                <i :style="{ width: barPct(asRecord(m).pct) + '%' }"></i>
+              {{ withUnit(recGet(m, 'pct'), '%') }}
+              <div class="pct-bar" :class="barClass(recGet(m, 'pct'))" style="margin-top:3px">
+                <i :style="{ width: barPct(recGet(m, 'pct')) + '%' }"></i>
               </div>
             </td>
             <td class="ops">
               <button
                 class="tiny"
                 :disabled="busy"
-                :aria-label="t('pool.remove_aria', { mount: finiteText(asRecord(m).mount) })"
-                @click="removeMember(asRecord(m).mount)"
+                :aria-label="t('pool.remove_aria', { mount: finiteText(recGet(m, 'mount')) })"
+                @click="removeMember(recGet(m, 'mount'))"
               >{{ t('pool.remove') }}</button>
             </td>
           </tr>
@@ -160,22 +160,22 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in asArray(availableCandidates)" :key="finiteText(asRecord(c).mount)">
+          <tr v-for="c in asArray(availableCandidates)" :key="finiteText(recGet(c, 'mount'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(c).mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(asRecord(c).disk_id) }} · {{ finiteText(asRecord(c).filesystem) }}</div>
-              <div class="show-m sub">{{ fmtGb(asRecord(c).total_gb) }}</div>
+              <strong>{{ finiteText(recGet(c, 'mount')) }}</strong>
+              <div class="show-m sub">{{ finiteText(recGet(c, 'disk_id')) }} · {{ finiteText(recGet(c, 'filesystem')) }}</div>
+              <div class="show-m sub">{{ fmtGb(recGet(c, 'total_gb')) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(c).disk_id) }}</td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(c).filesystem) }}</td>
-            <td class="col-hide-m">{{ fmtGb(asRecord(c).total_gb) }}</td>
-            <td>{{ fmtGb(asRecord(c).avail_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(c, 'disk_id')) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(c, 'filesystem')) }}</td>
+            <td class="col-hide-m">{{ fmtGb(recGet(c, 'total_gb')) }}</td>
+            <td>{{ fmtGb(recGet(c, 'avail_gb')) }}</td>
             <td class="ops">
               <button
                 class="tiny primary"
                 :disabled="busy"
-                :aria-label="t('pool.add_aria', { mount: finiteText(asRecord(c).mount) })"
-                @click="addMember(asRecord(c).mount)"
+                :aria-label="t('pool.add_aria', { mount: finiteText(recGet(c, 'mount')) })"
+                @click="addMember(recGet(c, 'mount'))"
               >{{ t('pool.add') }}</button>
             </td>
           </tr>
@@ -208,14 +208,14 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in asArray(shownFaults)" :key="finiteText(asRecord(r).mount)">
+          <tr v-for="r in asArray(shownFaults)" :key="finiteText(recGet(r, 'mount'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(r).mount) }}</strong>
-              <div class="show-m sub">{{ finiteText(asRecord(r).disk_id) }}</div>
+              <strong>{{ finiteText(recGet(r, 'mount')) }}</strong>
+              <div class="show-m sub">{{ finiteText(recGet(r, 'disk_id')) }}</div>
             </td>
-            <td class="mono col-hide-m">{{ finiteText(asRecord(r).disk_id) }}</td>
-            <td style="color:var(--warn-text)">{{ fmtGb(asRecord(r).at_risk_gb) }}</td>
-            <td style="color:var(--ok-text)">{{ fmtGb(asRecord(r).survives_gb) }}</td>
+            <td class="mono col-hide-m">{{ finiteText(recGet(r, 'disk_id')) }}</td>
+            <td style="color:var(--warn-text)">{{ fmtGb(recGet(r, 'at_risk_gb')) }}</td>
+            <td style="color:var(--ok-text)">{{ fmtGb(recGet(r, 'survives_gb')) }}</td>
             <td class="col-hide-m">
               <span class="badge ok">{{ t('pool.others_unaffected') }}</span>
             </td>
@@ -310,7 +310,7 @@ let pageAlive = true
 let loadGeneration = 0
 
 const policies = computed(() => {
-  const list = asArray(asRecord(view.value).policies)
+  const list = asArray(recGet(view.value, 'policies'))
   return list.length ? list : ['most-free', 'least-used-pct', 'round-robin']
 })
 
@@ -354,10 +354,10 @@ function mapPool(raw) {
   const data = asRecord(raw)
   return {
     ...data,
-    members: asArray(data.members).map((row) => asRecord(row)),
-    unassigned: asArray(data.unassigned).map((row) => asRecord(row)),
-    fault_model: asArray(data.fault_model).map((row) => asRecord(row)),
-    summary: asRecord(data.summary),
+    members: asArray(recGet(data, 'members')).map((row) => asRecord(row)),
+    unassigned: asArray(recGet(data, 'unassigned')).map((row) => asRecord(row)),
+    fault_model: asArray(recGet(data, 'fault_model')).map((row) => asRecord(row)),
+    summary: asRecord(recGet(data, 'summary')),
   }
 }
 
@@ -366,10 +366,10 @@ function syncFromView(raw) {
   const data = mapPool(raw)
   view.value = data
   preview.value = null
-  selected.value = asArray(data.members).map((m) => recGet(m, 'mount'))
-  poolName.value = finiteText(data.name, '') || 'pool'
-  minFreeGb.value = Number(finiteN(data.min_free_gb, 0)) || 0
-  if (data.policy) policy.value = data.policy
+  selected.value = asArray(recGet(data, 'members')).map((m) => recGet(m, 'mount'))
+  poolName.value = finiteText(recGet(data, 'name'), '') || 'pool'
+  minFreeGb.value = Number(finiteN(recGet(data, 'min_free_gb'), 0)) || 0
+  if (recGet(data, 'policy')) policy.value = recGet(data, 'policy')
 }
 
 async function refresh() {

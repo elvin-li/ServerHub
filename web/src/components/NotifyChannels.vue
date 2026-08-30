@@ -19,20 +19,20 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in asArray(channels)" :key="finiteText(asRecord(c).id)">
+        <tr v-for="c in asArray(channels)" :key="finiteText(recGet(c, 'id'))">
           <td>
-            <strong>{{ finiteText(asRecord(c).name) }}</strong>
-            <div class="mono sub-line">{{ finiteText(asRecord(c).id) }}</div>
-            <div class="show-m sub">{{ typeLabel(asRecord(c).type) }} · {{ t(`notifych.level_${asRecord(c).min_level}`) }}</div>
+            <strong>{{ finiteText(recGet(c, 'name')) }}</strong>
+            <div class="mono sub-line">{{ finiteText(recGet(c, 'id')) }}</div>
+            <div class="show-m sub">{{ typeLabel(recGet(c, 'type')) }} · {{ t(`notifych.level_${recGet(c, 'min_level')}`) }}</div>
           </td>
-          <td class="col-hide-m">{{ typeLabel(asRecord(c).type) }}</td>
+          <td class="col-hide-m">{{ typeLabel(recGet(c, 'type')) }}</td>
           <td class="col-hide-m">
-            <span class="badge" :class="levelBadge(asRecord(c).min_level)">{{ t(`notifych.level_${asRecord(c).min_level}`) }}</span>
-            <span v-if="asRecord(c).notify_resolve" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
+            <span class="badge" :class="levelBadge(recGet(c, 'min_level'))">{{ t(`notifych.level_${recGet(c, 'min_level')}`) }}</span>
+            <span v-if="recGet(c, 'notify_resolve')" class="badge" style="margin-left:4px">{{ t('notifych.resolve_short') }}</span>
           </td>
           <td>
-            <span class="badge" :class="asRecord(c).enabled ? 'ok' : 'warn'">
-              {{ asRecord(c).enabled ? t('common.enabled') : t('common.disabled') }}
+            <span class="badge" :class="recGet(c, 'enabled') ? 'ok' : 'warn'">
+              {{ recGet(c, 'enabled') ? t('common.enabled') : t('common.disabled') }}
             </span>
           </td>
           <td class="row-btns">
@@ -55,7 +55,7 @@
     </div>
 
     <div v-if="editing" class="editor">
-      <h2 class="section-title">{{ asRecord(editing).existing ? t('notifych.edit_title', { name: finiteText(asRecord(editing).name, '') || finiteText(asRecord(editing).id) }) : t('notifych.add') }}</h2>
+      <h2 class="section-title">{{ recGet(editing, 'existing') ? t('notifych.edit_title', { name: finiteText(recGet(editing, 'name'), '') || finiteText(recGet(editing, 'id')) }) : t('notifych.add') }}</h2>
       <div class="form-grid">
         <label>{{ t('common.type') }}</label>
         <select v-model="editing.type" :disabled="editing.existing" :aria-label="t('common.type')">
@@ -195,8 +195,8 @@ async function load() {
   try {
     const r = asRecord(await getNotifyChannels())
     if (generation !== loadGeneration || !pageAlive) return
-    channels.value = asArray(r.channels).map((c) => asRecord(c))
-    types.value = asRecord(r.types)
+    channels.value = asArray(recGet(r, 'channels')).map((c) => asRecord(c))
+    types.value = asRecord(recGet(r, 'types'))
     typeIds.value = Object.keys(asRecord(types.value))
     loadError.value = ''
   } catch (e) {
@@ -227,15 +227,15 @@ function startEdit(c) {
   const row = asRecord(c)
   editing.value = {
     existing: true,
-    id: row.id,
-    type: row.type,
-    name: row.name,
-    enabled: row.enabled,
-    min_level: row.min_level,
-    notify_resolve: row.notify_resolve,
-    config: { ...asRecord(row.config) },
+    id: recGet(row, 'id'),
+    type: recGet(row, 'type'),
+    name: recGet(row, 'name'),
+    enabled: recGet(row, 'enabled'),
+    min_level: recGet(row, 'min_level'),
+    notify_resolve: recGet(row, 'notify_resolve'),
+    config: { ...asRecord(recGet(row, 'config')) },
     secrets: {},
-    has: { ...asRecord(row.has) },
+    has: { ...asRecord(recGet(row, 'has')) },
   }
 }
 
@@ -282,9 +282,9 @@ async function testChannel(c) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const r = asRecord(await testNotifyChannel(row.id))
+    const r = asRecord(await testNotifyChannel(recGet(row, 'id')))
     if (generation !== loadGeneration || !pageAlive) return
-    toast(r.ok ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
+    toast(recGet(r, 'ok') ? '✅ ' + t('notifych.test_sent') : '❌ ' + softText(r))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))
