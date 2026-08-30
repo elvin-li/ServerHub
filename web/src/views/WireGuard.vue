@@ -189,11 +189,11 @@
         <div class="tile span-3">
           <h2>{{ t('wg.listen_port') }}</h2>
           <div class="v">{{ finiteN(recGet(data, 'listen_port')) }}</div>
-          <div class="sub">{{ finiteText(data.interface) }}</div>
+          <div class="sub">{{ finiteText(recGet(data, 'interface')) }}</div>
         </div>
         <div class="tile span-3">
           <h2>{{ t('wg.subnet') }}</h2>
-          <div class="v" style="font-size:15px">{{ finiteText(data.address, '') || finiteText(data.subnet) }}</div>
+          <div class="v" style="font-size:15px">{{ finiteText(recGet(data, 'address'), '') || finiteText(recGet(data, 'subnet')) }}</div>
           <div class="sub">MTU {{ finiteN(recGet(data, 'mtu')) }}</div>
         </div>
         <div class="tile span-3">
@@ -205,7 +205,7 @@
           <h2>{{ t('wg.keepalive_missing') }}</h2>
           <!-- -text tints, not the raw hues: --warn / --ok are fill colours
                and fail AA as ink (contrast.test.js pins the binding shape). -->
-          <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn-text)' : 'var(--ok-text)' }">
+          <div class="v" :style="{ color: recGet(data, 'keepalive_missing') ? 'var(--warn-text)' : 'var(--ok-text)' }">
             {{ finiteN(recGet(data, 'keepalive_missing')) }}
           </div>
         </div>
@@ -213,10 +213,10 @@
 
       <div class="tile" style="margin-bottom:12px" v-if="data">
         <h2>{{ t('wg.server_key') }}</h2>
-        <div class="mono" style="font-size:11px;word-break:break-all">{{ finiteText(data.public_key) }}</div>
+        <div class="mono" style="font-size:11px;word-break:break-all">{{ finiteText(recGet(data, 'public_key')) }}</div>
         <div class="sub" style="margin-top:6px">
           {{ t('wg.endpoint') }}:
-          <code>{{ finiteText(data.endpoint, '') || t('wg.endpoint_unset') }}</code>
+          <code>{{ finiteText(recGet(data, 'endpoint'), '') || t('wg.endpoint_unset') }}</code>
           <button class="tiny" style="margin-left:8px" @click="settingsOpen = true">{{ t('common.edit') }}</button>
         </div>
       </div>
@@ -550,7 +550,7 @@
           </label>
           <label>
             {{ t('wg.wan_interface') }}
-            <input v-model="cfgForm.wan_interface" type="text" :placeholder="finiteText(readiness?.wan_interface, '') || 'en0'" />
+            <input v-model="cfgForm.wan_interface" type="text" :placeholder="finiteText(recGet(readiness, 'wan_interface'), '') || 'en0'" />
           </label>
         </div>
         <div class="form-row">
