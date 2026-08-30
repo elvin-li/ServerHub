@@ -379,8 +379,8 @@ const toastIsError = computed(() => /^\s*(?:\u274c|\u26a0)/.test(toast.value))
 provide('toast', showToast)
 provide('t', t)
 
-const counts = computed(() => status.value?.counts)
-const engineUp = computed(() => status.value?.engine_up)
+const counts = computed(() => asRecord(asRecord(status.value).counts))
+const engineUp = computed(() => asRecord(status.value).engine_up)
 const engineClass = computed(() => (engineUp.value ? 'ok' : 'down'))
 
 /**

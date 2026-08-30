@@ -562,12 +562,12 @@ async function saveOllamaSettings() {
   const generation = loadGeneration
   ollamaSaving.value = true
   try {
-    await putSettings({
+    const r = asRecord(await putSettings({
       ollama: {
         url: ollamaForm.value.url.trim(),
         label: ollamaForm.value.label.trim(),
       },
-    })
+    }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('ollama.settings_saved'))
     await refresh(true)

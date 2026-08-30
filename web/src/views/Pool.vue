@@ -376,7 +376,7 @@ async function refresh() {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const data = mapPool(await getStoragePool(true))
+    const data = mapPool(asRecord(await getStoragePool(true)))
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     loadError.value = ''
@@ -411,7 +411,7 @@ async function doPreview() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const planned = mapPool(await planStoragePool(selected.value, policy.value))
+    const planned = mapPool(asRecord(await planStoragePool(selected.value, policy.value)))
     if (generation !== loadGeneration || !pageAlive) return
     preview.value = planned
     lastMsg.value = t('pool.msg_preview', { n: asArray(selected.value).length })
@@ -428,12 +428,12 @@ async function doSave() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const data = mapPool(await saveStoragePool({
+    const data = mapPool(asRecord(await saveStoragePool({
       mounts: selected.value,
       policy: policy.value,
       name: poolName.value.trim() || 'pool',
       min_free_gb: Number(minFreeGb.value) || 0,
-    }))
+    })))
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     lastMsg.value = t('pool.msg_saved')
@@ -451,7 +451,7 @@ async function doClear() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const data = mapPool(await clearStoragePool())
+    const data = mapPool(asRecord(await clearStoragePool()))
     if (generation !== loadGeneration || !pageAlive) return
     syncFromView(data)
     clearOpen.value = false
