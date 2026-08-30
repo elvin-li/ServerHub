@@ -3495,6 +3495,10 @@ describe('leftover Infinity interpolations', () => {
     expect(app).toMatch(/finiteText\(toast\)/)
     expect(app).not.toMatch(/\{\{\s*l\.native\s*\}\}/)
     expect(app).toMatch(/finiteText\(asRecord\(l\)\.native\)/)
+    expect(app).toMatch(/v-for="item in asArray\(nav\)"/)
+    expect(app).toMatch(/v-for="th in asArray\(themes\)"/)
+    expect(app).not.toMatch(/v-for="item in nav"/)
+    expect(app).not.toMatch(/v-for="th in themes"/)
   })
 
   it('Audit leftover extra fields go through finiteText', () => {
@@ -3514,6 +3518,7 @@ describe('leftover Infinity interpolations', () => {
     expect(audit).toMatch(/max: finiteN\(maxRetained\)/)
     expect(audit).toMatch(/asArray\(entries\.value\)\.slice\(\)\.reverse\(\)/)
     expect(audit).toMatch(/v-for="\(e, i\) in asArray\(filteredRows\)"/)
+    expect(audit).toMatch(/:key="finiteText\(asRecord\(e\)\.ts\)/)
   })
 
   it('Dashboard leftover service totals go through finiteN', () => {
