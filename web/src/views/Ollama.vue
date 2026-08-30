@@ -477,10 +477,10 @@ const chatSendDisabled = computed(() =>
 
 function defaultChatModel(j) {
   const row = asRecord(j)
-  const res = asArray(row.resident).map((item) => asRecord(item))
-  if (res[0]?.name) return res[0].name
-  const mods = asArray(row.models).map((item) => asRecord(item))
-  return mods[0]?.name || ''
+  const res = asArray(recGet(row, 'resident')).map((item) => asRecord(item))
+  if (recGet(res[0], 'name')) return recGet(res[0], 'name')
+  const mods = asArray(recGet(row, 'models')).map((item) => asRecord(item))
+  return recGet(mods[0], 'name') || ''
 }
 
 async function scrollChat() {

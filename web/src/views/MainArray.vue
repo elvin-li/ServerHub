@@ -959,18 +959,20 @@ const smartNotice = computed(() => {
 })
 
 function powerLed(d) {
-  if (d.power_state === 'active') return 'on'
-  if (d.power_state === 'spun_down' || d.power_state === 'offline') return 'off'
-  if (d.power_state === 'idle') return 'warn'
+  const state = recGet(d, 'power_state')
+  if (state === 'active') return 'on'
+  if (state === 'spun_down' || state === 'offline') return 'off'
+  if (state === 'idle') return 'warn'
   return 'off'
 }
 function powerLabel(s) {
   return ({ active: t('main_extra.power_active'), idle: t('main_extra.power_idle'), spun_down: t('main_extra.power_spun_down'), offline: t('main_extra.power_offline') })[s] || t('main_extra.power_unknown')
 }
 function powerBadge(d) {
-  if (d.power_state === 'active') return 'ok'
-  if (d.power_state === 'spun_down') return 'warn'
-  if (d.power_state === 'offline') return 'down'
+  const state = recGet(d, 'power_state')
+  if (state === 'active') return 'ok'
+  if (state === 'spun_down') return 'warn'
+  if (state === 'offline') return 'down'
   return ''
 }
 function sizeGb(value) {
@@ -979,11 +981,11 @@ function sizeGb(value) {
 }
 function wrapStorage(next) {
   const row = asRecord(next)
-  const arr = asRecord(row.array)
-  const managed = asRecord(row.managed)
+  const arr = asRecord(recGet(row, 'array'))
+  const managed = asRecord(recGet(row, 'managed'))
   return {
     ...row,
-    power_disks: asArray(row.power_disks).map((d) => {
+    power_disks: asArray(recGet(row, 'power_disks')).map((d) => {
       const disk = asRecord(d)
       return { ...disk, volumes: asArray(recGet(disk, 'volumes')).map((v) => asRecord(v)) }
     }),
@@ -994,13 +996,13 @@ function wrapStorage(next) {
     }),
     array: {
       ...arr,
-      devices: asArray(arr.devices).map((d) => asRecord(d)),
-      capacity_groups: asArray(arr.capacity_groups).map((g) => asRecord(g)),
+      devices: asArray(recGet(arr, 'devices')).map((d) => asRecord(d)),
+      capacity_groups: asArray(recGet(arr, 'capacity_groups')).map((g) => asRecord(g)),
     },
     managed: {
       ...managed,
-      volumes: asArray(managed.volumes).map((v) => asRecord(v)),
-      fs_types: asArray(managed.fs_types).length ? asArray(managed.fs_types) : ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS'],
+      volumes: asArray(recGet(managed, 'volumes')).map((v) => asRecord(v)),
+      fs_types: asArray(recGet(managed, 'fs_types')).length ? asArray(recGet(managed, 'fs_types')) : ['APFS', 'ExFAT', 'JHFS+', 'MS-DOS'],
     },
   }
 }

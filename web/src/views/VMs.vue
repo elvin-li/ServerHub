@@ -271,8 +271,8 @@ async function refresh(manual = false) {
     const row = asRecord(next)
     data.value = {
       ...row,
-      vms: asArray(row.vms).map((item) => asRecord(item)),
-      orb_distros: asArray(row.orb_distros),
+      vms: asArray(recGet(row, 'vms')).map((item) => asRecord(item)),
+      orb_distros: asArray(recGet(row, 'orb_distros')),
     }
     loadError.value = ''
   } catch (e) {

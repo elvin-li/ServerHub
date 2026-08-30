@@ -496,10 +496,10 @@ const nav = computed(() => {
   if (photoHubOk.value) return groups
   return asArray(groups).map((item) => {
     const row = asRecord(item)
-    if (!asArray(row.children).some((c) => recGet(c, 'to') === '/photoshub')) return item
+    if (!asArray(recGet(row, 'children')).some((c) => recGet(c, 'to') === '/photoshub')) return item
     return {
       ...row,
-      children: asArray(row.children).filter((c) => recGet(c, 'to') !== '/photoshub'),
+      children: asArray(recGet(row, 'children')).filter((c) => recGet(c, 'to') !== '/photoshub'),
     }
   })
 })
