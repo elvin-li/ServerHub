@@ -109,7 +109,7 @@ async function load() {
 async function test() {
   busy.value = true
   try {
-    const j = await testNginx()
+    const j = asRecord(await testNginx())
     if (!pageAlive) return
     msg.value = finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('gateway.conf_valid') : '❌ ' + t('gateway.conf_invalid'))
@@ -125,7 +125,7 @@ async function reload() {
   if (!confirm(t('gateway.confirm_reload'))) return
   busy.value = true
   try {
-    const j = await reloadNginx()
+    const j = asRecord(await reloadNginx())
     if (!pageAlive) return
     msg.value = finiteText(j.message, '')
     toast(j.ok ? '✅ ' + t('common.reloaded') : '❌ ' + t('common.reload_failed'))
