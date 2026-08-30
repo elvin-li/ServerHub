@@ -2047,22 +2047,22 @@ async function doInstall() {
   try {
     const r = asRecord(await installCatalog(installTpl.value.id, installVars.value))
     if (!stillOnApps(generation)) return
-    installLog.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n→ ${finiteText(r.path)}` : '')
-    if (finiteText(r.notes, '')) installLog.value += `\n\n${finiteText(r.notes)}`
-    const url = finiteText(r.url, '') || finiteText(r.url_hint, '')
+    installLog.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n→ ${finiteText(recGet(r, 'path'))}` : '')
+    if (finiteText(recGet(r, 'notes'), '')) installLog.value += `\n\n${finiteText(recGet(r, 'notes'))}`
+    const url = finiteText(recGet(r, 'url'), '') || finiteText(recGet(r, 'url_hint'), '')
     if (url) installUrl.value = url
     // Surface the upstream default login only once something actually
     // deployed; the field also rides the listing, so fall back to it for
     // installs whose backend predates the response field.
-    if (r.ok) {
-      installCreds.value = finiteText(r.first_run_credentials, '') || finiteText(installTpl.value.first_run_credentials, '')
+    if (recGet(r, 'ok')) {
+      installCreds.value = finiteText(recGet(r, 'first_run_credentials'), '') || finiteText(recGet(installTpl.value, 'first_run_credentials'), '')
     }
     // First line only in the toast. A failure message can be several lines --
     // a pkg-based cask, for instance, explains that brew cannot be elevated and
     // prints the command to run on the Mac instead. The full text is right there
     // in installLog; a five-line toast just hides the rest of the page.
-    toast(r.ok ? `✅ ${finiteText(recGet(installTpl.value, 'name'))}` : '❌ ' + firstLine(r.message))
-    if (r.ok) {
+    toast(recGet(r, 'ok') ? `✅ ${finiteText(recGet(installTpl.value, 'name'))}` : '❌ ' + firstLine(recGet(r, 'message')))
+    if (recGet(r, 'ok')) {
       // Three independent re-reads after a successful install: catalog, managed
       // list and stacks. refresh() was already fire-and-forget here.
       await Promise.all([loadCatalog(), loadManaged(true), refresh(true)])
@@ -2118,10 +2118,10 @@ async function run(s, action) {
   const generation = appsDataGeneration
   busy.value = true
   try {
-    const r = asRecord(await runStack(s.id, action))
+    const r = asRecord(await runStack(recGet(s, 'id'), action))
     if (!stillOnApps(generation)) return
-    toast('🚀 ' + (finiteText(r.message, '') || t('common.ok')))
-    if (r.job_id) openJob(r.job_id, s.name)
+    toast('🚀 ' + (finiteText(recGet(r, 'message'), '') || t('common.ok')))
+    if (recGet(r, 'job_id')) openJob(recGet(r, 'job_id'), recGet(s, 'name'))
     refresh(true)
   } catch (e) {
     if (!stillOnApps(generation)) return

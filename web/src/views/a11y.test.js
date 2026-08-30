@@ -1531,7 +1531,7 @@ describe('operations polling and submission guards', () => {
   it('does not refresh a failed backup into the successful list', () => {
     // refresh(true): these re-reads follow a user-initiated backup, so their
     // failure may toast (jobFinishRefresh.test.js pins the background chain).
-    expect(backups).toContain('if (r.ok) await refresh(true)')
+    expect(backups).toContain("if (recGet(r, 'ok')) await refresh(true)")
   })
 
   it('tears down action timers on Services and Apps job polls', () => {
@@ -2719,7 +2719,7 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).not.toMatch(/`✅ restart=\$\{policy\}`/)
     expect(apps).toMatch(/`✅ restart=\$\{finiteText\(policy\)\}`/)
     expect(apps).not.toMatch(/r\.first_run_credentials \|\| installTpl\.value\.first_run_credentials/)
-    expect(apps).toMatch(/finiteText\(r\.first_run_credentials, ''\) \|\| finiteText\(installTpl\.value\.first_run_credentials/)
+    expect(apps).toMatch(/finiteText\(recGet\(r, 'first_run_credentials'\), ''\) \|\| finiteText\(recGet\(installTpl\.value, 'first_run_credentials'/)
     expect(apps).not.toMatch(/logTitle\.value = title \|\| jobId/)
     expect(apps).toMatch(/logTitle\.value = finiteText\(title, ''\) \|\| finiteText\(jobId\)/)
     expect(apps).not.toMatch(/logText\.value = j\.log \+/)

@@ -659,14 +659,14 @@ async function act(c, action) {
   const generation = listGeneration
   busy.value = true
   try {
-    const r = asRecord(await containerAction(c.id, action))
+    const r = asRecord(await containerAction(recGet(c, 'id'), action))
     if (!stillOnList(generation)) return
-    if (action === 'update' && r.job_id) {
+    if (action === 'update' && recGet(r, 'job_id')) {
       toast('🚀 ' + t('docker.update_job_started'))
-      watchJob(r.job_id)
+      watchJob(recGet(r, 'job_id'))
     } else {
-      toast(r.ok ? `✅ ${finiteText(recGet(c, 'name'))}` : `❌ ${finiteText(r.message)}`)
-      if (r.ok) scheduleRefresh(800)
+      toast(recGet(r, 'ok') ? `✅ ${finiteText(recGet(c, 'name'))}` : `❌ ${finiteText(recGet(r, 'message'))}`)
+      if (recGet(r, 'ok')) scheduleRefresh(800)
     }
   } catch (e) {
     if (!stillOnList(generation)) return
@@ -949,7 +949,7 @@ async function doPrune(kind) {
   try {
     const r = asRecord(await prune(kind))
     if (!stillOnList(generation)) return
-    toast(r.ok ? '✅ ' + t('docker.done') : '❌ ' + finiteText(r.message))
+    toast(recGet(r, 'ok') ? '✅ ' + t('docker.done') : '❌ ' + finiteText(recGet(r, 'message')))
     refresh()
     if (tab.value === 'images') loadImages()
     if (tab.value === 'volumes') loadVolumes()

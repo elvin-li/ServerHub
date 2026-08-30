@@ -256,7 +256,7 @@ function webUrl(v) {
 
 function requireOk(result) {
   const row = asRecord(result)
-  if (row.ok === false) throw new Error(finiteText(row.message, '') || t('err.request_failed'))
+  if (recGet(row, 'ok') === false) throw new Error(finiteText(recGet(row, 'message'), '') || t('err.request_failed'))
   return row
 }
 

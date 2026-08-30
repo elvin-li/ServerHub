@@ -941,8 +941,8 @@ async function doImport() {
 
 function removePeer(peer) {
   const row = asRecord(peer)
-  if (!confirm(t('wg.confirm_delete', { name: finiteText(row.name, '') || String(finiteText(row.pubkey, '')).slice(0, 16) }))) return
-  return withBusy(() => deleteWireguardPeer(row.pubkey), 'wg.peer_deleted')
+  if (!confirm(t('wg.confirm_delete', { name: finiteText(recGet(row, 'name'), '') || String(finiteText(recGet(row, 'pubkey'), '')).slice(0, 16) }))) return
+  return withBusy(() => deleteWireguardPeer(recGet(row, 'pubkey')), 'wg.peer_deleted')
 }
 
 function togglePsk(peer) {

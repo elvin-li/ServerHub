@@ -486,14 +486,14 @@ async function saveJob(body) {
 
 async function runJob(job) {
   const row = asRecord(job)
-  const confirmKey = row.type === 'stack_backup'
+  const confirmKey = recGet(row, 'type') === 'stack_backup'
     ? 'backups.confirm_stack_run'
     : 'backups.confirm_rsync_run'
-  if (!confirm(t(confirmKey, { name: finiteText(row.name, '') || finiteText(row.id) }))) return
+  if (!confirm(t(confirmKey, { name: finiteText(recGet(row, 'name'), '') || finiteText(recGet(row, 'id')) }))) return
   try {
-    const r = asRecord(await runSchedulerJobNow(finiteText(row.id, '')))
+    const r = asRecord(await runSchedulerJobNow(finiteText(recGet(row, 'id'), '')))
     if (!pageAlive) return
-    toast('✅ ' + t('sched.started', { name: finiteText(row.name) }))
+    toast('✅ ' + t('sched.started', { name: finiteText(recGet(row, 'name')) }))
     await loadJobs()
   } catch (e) {
     if (!pageAlive) return
@@ -503,9 +503,9 @@ async function runJob(job) {
 
 async function removeJob(job) {
   const row = asRecord(job)
-  if (!confirm(t('sched.confirm_delete', { name: finiteText(row.name) }))) return
+  if (!confirm(t('sched.confirm_delete', { name: finiteText(recGet(row, 'name')) }))) return
   try {
-    const r = asRecord(await deleteSchedulerJob(finiteText(row.id, '')))
+    const r = asRecord(await deleteSchedulerJob(finiteText(recGet(row, 'id'), '')))
     if (!pageAlive) return
     toast('✅ ' + t('sched.deleted'))
     await loadJobs()
@@ -541,9 +541,9 @@ async function doPg() {
   try {
     const r = asRecord(await backupPostgres())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
-    toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))} (${sizeMb(recGet(r, 'size_mb'))})` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -560,9 +560,9 @@ async function doImmich() {
   try {
     const r = asRecord(await backupImmich())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
-    toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))} (${sizeMb(recGet(r, 'size_mb'))})` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -579,9 +579,9 @@ async function doCfg() {
   try {
     const r = asRecord(await backupConfigs())
     if (!pageAlive) return
-    msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)}` : '')
-    toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
-    if (r.ok) await refresh(true)
+    msg.value = (recGet(r, 'ok') ? '✅ ' : '❌ ') + (finiteText(recGet(r, 'message'), '') || '') + (finiteText(recGet(r, 'path'), '') ? `\n${finiteText(recGet(r, 'path'))}` : '')
+    toast(recGet(r, 'ok') ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
+    if (recGet(r, 'ok')) await refresh(true)
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
