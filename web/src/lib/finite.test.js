@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asArray, asRecord, asJsonBody, asTrimmed, asUri, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, withUnit } from './finite'
+import { asArray, asRecord, asJsonBody, asTrimmed, asUri, barPct, finiteN, finiteText, fmtGb, fmtMb, fmtTs, jsonDump, jsonLoad, jsonText, recGet, withUnit } from './finite'
 
 describe('asJsonBody leftover answers', () => {
   it('keeps lists and mappings, fail-closes primitives', () => {
@@ -19,6 +19,16 @@ describe('asRecord leftover mappings', () => {
     expect(asRecord(['a'])).toEqual({})
     expect(asRecord(null)).toEqual({})
     expect(asRecord('x')).toEqual({})
+  })
+})
+
+describe('recGet leftover field bombs', () => {
+  it('fail-closes getter bombs and keeps real fields', () => {
+    expect(recGet({ ok: true }, 'ok')).toBe(true)
+    expect(recGet(null, 'ok', false)).toBe(undefined)
+    expect(recGet({
+      get ok() { throw new Error('boom') },
+    }, 'ok', false)).toBe(false)
   })
 })
 

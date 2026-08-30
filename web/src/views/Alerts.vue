@@ -76,7 +76,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, recGet, finiteN, finiteText, fmtTs } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
@@ -94,9 +94,9 @@ const loadError = ref('')
 const filter = ref('all')
 const filtered = computed(() => {
   const rows = asArray(alerts.value).map((a) => asRecord(a))
-  if (filter.value === 'issues') return rows.filter((a) => a.level !== 'ok')
+  if (filter.value === 'issues') return rows.filter((a) => recGet(a, 'level') !== 'ok')
   if (filter.value === 'down' || filter.value === 'warn') {
-    return rows.filter((a) => a.level === filter.value)
+    return rows.filter((a) => recGet(a, 'level') === filter.value)
   }
   return rows
 })

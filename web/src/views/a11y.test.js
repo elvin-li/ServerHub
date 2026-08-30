@@ -3288,6 +3288,8 @@ describe('leftover Infinity interpolations', () => {
     expect(health).toMatch(/asArray\(asRecord\(data\)\.checks\)/)
     expect(health).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
     expect(health).toMatch(/finiteN\(asArray\(asRecord\(data\)\.checks\)\.length\)/)
+    expect(health).toMatch(/recGet\(c, 'ok'\)/)
+    expect(health).toMatch(/recGet\(c, 'level'\)/)
   })
 
   it('Users leftover counts and uids go through finiteN', () => {
@@ -3446,6 +3448,7 @@ describe('leftover Infinity interpolations', () => {
     expect(alerts).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
     expect(alerts).toMatch(/finiteN\(asArray\(alerts\)\.length\)/)
     expect(alerts).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(alerts).toMatch(/recGet\(a, 'level'\)/)
   })
 
   it('Scheduler leftover counts/duration/rc go through finite helpers', () => {

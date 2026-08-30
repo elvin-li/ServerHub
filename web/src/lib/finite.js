@@ -37,6 +37,16 @@ export function asUri(value) {
   }
 }
 
+/** Hostile leftover field reads used to throw on getter bombs. */
+export function recGet(value, key, fallback = undefined) {
+  try {
+    const rec = asRecord(value)
+    return rec[key]
+  } catch {
+    return fallback
+  }
+}
+
 export function finiteN(value, fallback = '—') {
   if (value == null || value === '') return fallback
   const n = typeof value === 'number' ? value : Number(value)

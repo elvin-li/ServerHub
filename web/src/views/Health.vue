@@ -105,7 +105,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { getHealthChecks } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, recGet, finiteN, finiteText } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -122,9 +122,9 @@ let loadGeneration = 0
 const filtered = computed(() => {
   const list = asArray(asRecord(data.value).checks).map((row) => asRecord(row))
   if (filter.value === 'all') return list
-  if (filter.value === 'issues') return list.filter(c => !c.ok)
-  if (filter.value === 'error') return list.filter(c => !c.ok && c.level === 'error')
-  if (filter.value === 'warn') return list.filter(c => !c.ok && c.level === 'warn')
+  if (filter.value === 'issues') return list.filter((c) => !recGet(c, 'ok'))
+  if (filter.value === 'error') return list.filter((c) => !recGet(c, 'ok') && recGet(c, 'level') === 'error')
+  if (filter.value === 'warn') return list.filter((c) => !recGet(c, 'ok') && recGet(c, 'level') === 'warn')
   return list
 })
 
