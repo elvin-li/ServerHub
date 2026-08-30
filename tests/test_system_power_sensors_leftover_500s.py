@@ -965,5 +965,30 @@ class PowerSystemSensorsJsonableLeftoverTests(unittest.TestCase):
             self.assertIsNone(out["n"])
 
 
+class LeftoverClassBombTests(unittest.TestCase):
+    """Bare isinstance used to 500 power JSON on leftover __class__ bombs."""
+
+    def test_jsonable_class_bomb_json_encodes_not_a_raise(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        out = power_svc._jsonable(ClassBomb())
+        _json(out)
+        json.dumps(out, allow_nan=False)
+
+    def test_clamp_delay_class_bomb_uses_default(self):
+        class ClassBomb:
+            @property
+            def __class__(self):
+                raise RuntimeError("class bomb")
+
+        self.assertEqual(power_svc._clamp_delay(ClassBomb(), default=2.0), 2.0)
+
+    def test_bool_delay_stays_the_default(self):
+        self.assertEqual(power_svc._clamp_delay(True, default=2.0), 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,24 @@ _pool = LazyPool(3, "hub-power")
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 _ADDR_REPR_RE = re.compile(r" at 0x[0-9a-fA-F]+>")
 
+
+def _isinst(value, types) -> bool:
+    """``isinstance`` that a leftover ``__class__`` bomb cannot 500 through.
+
+    CPython's ``isinstance`` reads the operand's ``__class__`` whenever the
+    real-type fast check misses, so a leftover whose ``__class__`` is a
+    raising property blew unguarded gates in :func:`_jsonable`,
+    :func:`_clamp_delay` and GET /api/system/power's nic / Screen Sharing
+    walk — HTTP 500 instead of dropping the junk cell.  Fail-closed.
+    Bool leftovers stay ``type(x) is bool``.
+    """
+    try:
+        return isinstance(value, types)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
 #: The binary every power probe and mutation spawns.  Module-level so the
 #: vanished-CLI probe re-checks the exact path the spawn used.
 PMSET = "/usr/bin/pmset"
@@ -95,9 +113,9 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, int):
+    if _isinst(value, int):
         try:
             str(value)
         except ValueError:
@@ -108,18 +126,18 @@ def _jsonable(value, depth: int = 0):
             # 500 POST /api/system/screensharing/enable's ok payload.
             return None
         return value
-    if isinstance(value, float):
+    if _isinst(value, float):
         if value != value or value in (float("inf"), float("-inf")):
             return None
         return value
-    if isinstance(value, str):
+    if _isinst(value, str):
         return _as_text(value)
-    if isinstance(value, (bytes, bytearray)):
+    if _isinst(value, (bytes, bytearray)):
         return value.decode("utf-8", "replace")
-    if isinstance(value, dict):
+    if _isinst(value, dict):
         out = {}
         for k, v in value.items():
-            if not isinstance(k, (str, bytes, bytearray)):
+            if not _isinst(k, (str, bytes, bytearray)):
                 try:
                     k = str(k)
                 except _CONTROL_FLOW:
@@ -128,7 +146,7 @@ def _jsonable(value, depth: int = 0):
                     continue
             out[_as_text(k)] = _jsonable(v, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if _isinst(value, (list, tuple, set, frozenset)):
         return [_jsonable(v, depth + 1) for v in value]
     try:
         iso = getattr(value, "isoformat", None)
@@ -292,7 +310,7 @@ def _clamp_delay(raw, default: float = 2.0) -> float:
     the worker, so POST /api/system/power/action reported ``scheduled_in_sec: 2``
     while ``time.sleep(inf)`` OverflowError'd (or hung) and the action never ran.
     """
-    if isinstance(raw, bool) or raw is None:
+    if type(raw) is bool or raw is None:
         return default
     try:
         delay = float(raw)
@@ -360,13 +378,13 @@ def power_overview() -> dict:
 
     # `.result()` re-raises; a wedged `pmset` must not drop the power tile.
     nic = _result(f_nic, ("", ""))
-    if not isinstance(nic, (tuple, list)) or len(nic) < 2:
+    if not _isinst(nic, (tuple, list)) or len(nic) < 2:
         dev, mac = "", ""
     else:
         dev, mac = nic[0], nic[1]
     womp = _result(f_womp, None)
     screen_sharing = _result(f_ss, {}) or {}
-    if not isinstance(screen_sharing, dict):
+    if not _isinst(screen_sharing, dict):
         screen_sharing = {}
     try:
         host = screen_sharing.get("host") or _host_ip()
