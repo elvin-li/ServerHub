@@ -481,7 +481,7 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         from hub.config import cfg
 
         address_book = (cfg().get("settings") or {}).get("address_book") or {}
-        if not isinstance(address_book, dict):
+        if not _isa(address_book, dict):
             address_book = {}
         # _as_text absorbs a per-entry ``__class__``-property bomb now, so
         # one junk entry renders as junk text instead of raising into the
@@ -495,7 +495,7 @@ def template_variables(extra: dict[str, Any] | None = None) -> dict[str, str]:
         raise
     except BaseException:
         pass
-    if isinstance(extra, dict):
+    if _isa(extra, dict):
         values.update({
             _as_text(key): _as_text(value)
             for key, value in extra.items()

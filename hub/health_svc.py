@@ -883,7 +883,7 @@ def _serve_cached(hit: dict) -> dict:
     single-flight waiters still share one snapshot object.
     """
     cleaned = _jsonable(hit)
-    if not isinstance(cleaned, dict):
+    if not _isa(cleaned, dict):
         return {
             "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
             "summary": {"ok": 0, "warn": 0, "error": 0, "total": 0},
@@ -1159,7 +1159,7 @@ def _collect_checks() -> dict:
     for path in agent_paths:
         try:
             pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
-            if not isinstance(pl, dict):
+            if not _isa(pl, dict):
                 continue
             # str() probe via _as_text, with the plist filename as the
             # fallback (the stale_runtime.scan convention): plistlib parses
@@ -1275,7 +1275,7 @@ def _collect_checks() -> dict:
         "checks": checks,
         "healthy": errors == 0,
     })
-    if not isinstance(v, dict):
+    if not _isa(v, dict):
         v = {
             "ts": strftime_now("%Y-%m-%d %H:%M:%S"),
             "summary": {"ok": 0, "warn": 0, "error": 0, "total": 0},

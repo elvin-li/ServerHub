@@ -516,7 +516,7 @@ def set_identity(computer_name: str | None = None, comment: str | None = None, h
         raise
     except BaseException:
         identity = {}
-    if not isinstance(identity, dict):
+    if not _isa(identity, dict):
         identity = {}
     return {
         "ok": True,
