@@ -14,7 +14,7 @@
     <LoadFailure v-if="loadError" :detail="loadError" :retry="load" :busy="loading" />
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="6" />
     <div v-else-if="!Object.keys(asRecord(byCat)).length && !loadError" class="placeholder">{{ t('common.none') }}</div>
-    <div v-for="(list, cat) in asRecord(byCat)" :key="cat" style="margin-bottom:14px">
+    <div v-for="(list, cat) in asRecord(byCat)" :key="finiteText(cat)" style="margin-bottom:14px">
       <h2 class="section-title">{{ catLabel(cat) }}</h2>
       <div class="grid">
         <div v-for="m in asArray(list)" :key="finiteText(asRecord(m).id)" class="tile">

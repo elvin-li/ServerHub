@@ -67,6 +67,17 @@ describe('theme', () => {
     vi.unstubAllGlobals()
   })
 
+  it('walks catalogues through asArray so leftover non-lists cannot .some', () => {
+    const src = readFileSync(join(HERE, 'index.js'), 'utf8')
+    expect(src).toMatch(/asArray\(THEMES\)\.some/)
+    expect(src).toMatch(/asArray\(DENSITIES\)\.some/)
+    expect(src).toMatch(/themes: asArray\(THEMES\)/)
+    expect(src).toMatch(/densities: asArray\(DENSITIES\)/)
+    expect(src).toMatch(/asArray\(LIGHT_THEMES\)\.includes/)
+    expect(src).not.toMatch(/return THEMES\.some/)
+    expect(src).not.toMatch(/DENSITIES\.some\(d =>/)
+  })
+
   describe('setTheme', () => {
     it('applies the requested theme to the document root', () => {
       api.setFollowSystem(false)

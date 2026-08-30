@@ -3233,6 +3233,7 @@ describe('leftover Infinity interpolations', () => {
     expect(modules).toMatch(/finiteText\(r\)/)
     expect(modules).toMatch(/label === key \? finiteText\(cat\)/)
     expect(modules).toMatch(/v-for="\(list, cat\) in asRecord\(byCat\)"/)
+    expect(modules).toMatch(/:key="finiteText\(cat\)"/)
     expect(modules).toMatch(/v-for="m in asArray\(list\)"/)
     expect(modules).toMatch(/asArray\(asRecord\(m\)\.ui_routes\)/)
     expect(modules).toMatch(/asArray\(list\)\.length/)
@@ -3499,6 +3500,19 @@ describe('leftover Infinity interpolations', () => {
     expect(app).toMatch(/v-for="th in asArray\(themes\)"/)
     expect(app).not.toMatch(/v-for="item in nav"/)
     expect(app).not.toMatch(/v-for="th in themes"/)
+    expect(app).toMatch(/asArray\(c\.match\)\.some/)
+    expect(app).not.toMatch(/return c\.match\.some/)
+  })
+
+  it('theme leftover catalogues go through asArray', () => {
+    const src = readFileSync(resolve(SRC, 'theme/index.js'), 'utf8')
+    expect(src).toMatch(/from ['"][^'"]*lib\/finite/)
+    expect(src).toMatch(/asArray\(THEMES\)\.some/)
+    expect(src).toMatch(/asArray\(DENSITIES\)\.some/)
+    expect(src).toMatch(/themes: asArray\(THEMES\)/)
+    expect(src).toMatch(/densities: asArray\(DENSITIES\)/)
+    expect(src).toMatch(/asArray\(LIGHT_THEMES\)\.includes/)
+    expect(src).not.toMatch(/return THEMES\.some/)
   })
 
   it('Audit leftover extra fields go through finiteText', () => {

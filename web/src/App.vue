@@ -562,7 +562,7 @@ function isChildActive(c) {
   if (c.exact) return path === c.to
   // A child may own several routes (e.g. Array covers /main and /storage), so
   // honour `match` here too — otherwise /storage highlights nothing.
-  if (c.match) return c.match.some(m => path === m || path.startsWith(m + '/'))
+  if (c.match) return asArray(c.match).some(m => path === m || path.startsWith(m + '/'))
   return path === c.to || path.startsWith(c.to + '/')
 }
 

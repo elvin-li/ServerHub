@@ -1,5 +1,7 @@
 import { inject, ref } from 'vue'
 
+import { asArray, asRecord } from '../lib/finite.js'
+
 const THEMES = [
   {
     id: 'macos',
@@ -66,7 +68,7 @@ const THEME_PAIRS = {
 }
 
 const THEME_PAIR_LIGHT = Object.fromEntries(
-  Object.entries(THEME_PAIRS).map(([light, dark]) => [dark, light]),
+  Object.entries(asRecord(THEME_PAIRS)).map(([light, dark]) => [dark, light]),
 )
 
 function read(key, fallback) {
@@ -114,12 +116,12 @@ function prefersDark() {
 }
 
 function isCatalogueId(id) {
-  return THEMES.some(t => t.id === id)
+  return asArray(THEMES).some(t => asRecord(t).id === id)
 }
 
 function pairFamily(id) {
-  if (THEME_PAIRS[id]) return id
-  if (THEME_PAIR_LIGHT[id]) return THEME_PAIR_LIGHT[id]
+  if (asRecord(THEME_PAIRS)[id]) return id
+  if (asRecord(THEME_PAIR_LIGHT)[id]) return THEME_PAIR_LIGHT[id]
   return null
 }
 
@@ -196,10 +198,10 @@ function paintTheme(id) {
   root.setAttribute('data-theme', applied)
   root.setAttribute(
     'data-color-mode',
-    LIGHT_THEMES.includes(applied) ? 'light' : 'dark',
+    asArray(LIGHT_THEMES).includes(applied) ? 'light' : 'dark',
   )
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta && THEME_COLORS[applied]) meta.setAttribute('content', THEME_COLORS[applied])
+  if (meta && asRecord(THEME_COLORS)[applied]) meta.setAttribute('content', asRecord(THEME_COLORS)[applied])
   return applied
 }
 
@@ -249,7 +251,7 @@ function applyFollowSystem(on) {
 }
 
 function applyDensity(id) {
-  const valid = DENSITIES.some(d => d.id === id) ? id : 'compact'
+  const valid = asArray(DENSITIES).some(d => asRecord(d).id === id) ? id : 'compact'
   density.value = valid
   write(DENSITY_KEY, valid)
   if (typeof document === 'undefined') return
@@ -259,7 +261,7 @@ function applyDensity(id) {
 function initTheme() {
   const storedTheme = read(THEME_KEY, '')
   const storedFamily = read(THEME_FAMILY_KEY, '')
-  if (THEME_PAIRS[storedFamily]) {
+  if (asRecord(THEME_PAIRS)[storedFamily]) {
     themeFamily.value = storedFamily
   } else if (storedTheme && storedTheme !== 'system') {
     rememberFamily(storedTheme)
@@ -292,8 +294,8 @@ function useTheme() {
     themeFamily,
     followSystem,
     density,
-    themes: THEMES,
-    densities: DENSITIES,
+    themes: asArray(THEMES),
+    densities: asArray(DENSITIES),
     setTheme: applyTheme,
     setFollowSystem: applyFollowSystem,
     setDensity: applyDensity,
