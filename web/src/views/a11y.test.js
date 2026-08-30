@@ -872,7 +872,7 @@ describe('brew and gateway surface leftovers', () => {
     // it is decoration — same treatment as the VMs and Network inline LEDs.
     // (Table-cell LEDs are covered by their sr-only column header instead.)
     const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
-    expect(gateway).toMatch(/class="led" :class="asRecord\(data\)\.running \? 'on' : 'err'" aria-hidden="true"/)
+    expect(gateway).toMatch(/class="led" :class="recGet\(data, 'running'\) \? 'on' : 'err'" aria-hidden="true"/)
   })
 })
 
@@ -1643,7 +1643,7 @@ describe('operations polling and submission guards', () => {
     expect(files.match(/if \(!j\.ok\) throw new Error/g)).toHaveLength(2)
     expect(files).not.toMatch(/window\.open\(`\/api\/files\/download/)
     expect(files).toContain("a.rel = 'noopener'")
-    expect(files).toContain('a.download = finiteText(row.name, \'download\')')
+    expect(files).toContain("a.download = finiteText(recGet(row, 'name'), 'download')")
     expect(terminal).toContain('terminal handshake timeout')
     expect(terminal).toMatch(/message\.type === 'ready'[\s\S]{0,100}clearConnectTimer\(\)/)
     expect(terminal).toMatch(/function closeTerminal\(\)[\s\S]{0,100}clearConnectTimer\(\)/)
@@ -3254,8 +3254,11 @@ describe('leftover Infinity interpolations', () => {
     expect(files).toMatch(/finiteText\(asRecord\(it\)\.mode, ''\) \? ' · ' \+ finiteText\(asRecord\(it\)\.mode\)/)
     expect(files).toMatch(/v-for="it in asArray\(asRecord\(listing\)\.items\)"/)
     expect(files).toMatch(/v-for="r in asArray\(roots\)"/)
-    expect(files).toMatch(/items: asArray\(j\.items\)\.map\(\(row\) => asRecord\(row\)\)/)
-    expect(files).toMatch(/crumbs: asArray\(j\.crumbs\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(files).toMatch(/items: asArray\(recGet\(j, 'items'\)\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(files).toMatch(/crumbs: asArray\(recGet\(j, 'crumbs'\)\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(files).toMatch(/recGet\(i, 'path'\)/)
+    expect(files).toMatch(/recGet\(row, 'is_dir'\)/)
+    expect(files).toMatch(/recGet\(first, 'id'\)/)
   })
 
   it('Modules leftover names go through finiteText', () => {
@@ -3308,15 +3311,15 @@ describe('leftover Infinity interpolations', () => {
     expect(users).not.toMatch(/\{\{\s*data\.count\s*\}\}/)
     expect(users).not.toMatch(/\{\{\s*u\.uid\s*\}\}/)
     expect(users).not.toMatch(/\(data\.count \|\| 0\) - \(data\.admins \|\| 0\)/)
-    expect(users).toMatch(/finiteN\(asRecord\(data\)\.count/)
-    expect(users).toMatch(/finiteN\(asRecord\(data\)\.admins/)
-    expect(users).toMatch(/finiteN\(asRecord\(u\)\.uid\)/)
+    expect(users).toMatch(/finiteN\(recGet\(data, 'count'\)\)/)
+    expect(users).toMatch(/finiteN\(recGet\(data, 'admins'\)\)/)
+    expect(users).toMatch(/finiteN\(recGet\(u, 'uid'\)\)/)
     expect(users).toMatch(/function finiteDiff\([\s\S]*finiteN/)
-    expect(users).toMatch(/finiteDiff\(asRecord\(data\)\.count, asRecord\(data\)\.admins\)/)
+    expect(users).toMatch(/finiteDiff\(recGet\(data, 'count'\), recGet\(data, 'admins'\)\)/)
     expect(users).not.toMatch(/\{\{\s*u\.name\s*\}\}/)
-    expect(users).toMatch(/finiteText\(asRecord\(u\)\.name\)/)
-    expect(users).toMatch(/finiteText\(asRecord\(opt\)\.id\)/)
-    expect(users).toMatch(/finiteText\(asRecord\(opt\)\.name\)/)
+    expect(users).toMatch(/finiteText\(recGet\(u, 'name'\)\)/)
+    expect(users).toMatch(/finiteText\(recGet\(opt, 'id'\)\)/)
+    expect(users).toMatch(/finiteText\(recGet\(opt, 'name'\)\)/)
     expect(users).not.toMatch(/\{\{\s*opt\.name\s*\}\}/)
     expect(users).not.toMatch(/u\.gecos \|\| '—'/)
     expect(users).not.toMatch(/acct\.resources\.join\(', '\)/)
@@ -3328,10 +3331,10 @@ describe('leftover Infinity interpolations', () => {
     expect(users).not.toMatch(/toast\('❌ ' \+ e\.message\)/)
     expect(users).toMatch(/toast\('❌ ' \+ finiteText\(e\.message\)\)/)
     expect(users).toMatch(/v-for="opt in asArray\(serviceOptions\)"/)
-    expect(users).toMatch(/asArray\(asRecord\(await listPanelAccounts\(\)\)\.accounts\)\.map\(\(row\) => asRecord\(row\)\)/)
+    expect(users).toMatch(/asArray\(recGet\(asRecord\(await listPanelAccounts\(\)\), 'accounts'\)\)\.map\(\(row\) => asRecord\(row\)\)/)
     expect(users).toMatch(/v-for="acct in asArray\(accounts\)"/)
-    expect(users).toMatch(/asArray\(asRecord\(acct\)\.resources\)/)
-    expect(users).toMatch(/function accountName\([\s\S]*asRecord\(acct\)/)
+    expect(users).toMatch(/asArray\(recGet\(acct, 'resources'\)\)/)
+    expect(users).toMatch(/function accountName\([\s\S]*recGet\(acct, 'username'\)/)
     expect(users).toMatch(/const status = asRecord\(await getServices\(\)\)/)
     expect(users).toMatch(/const next = asRecord\(await getUsers\(\)\)/)
     expect(users).toMatch(/asArray\(createForm\.value\.resources\)/)
@@ -3345,20 +3348,22 @@ describe('leftover Infinity interpolations', () => {
     const gateway = readFileSync(resolve(SRC, 'views/Gateway.vue'), 'utf8')
     expect(gateway).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(gateway).not.toMatch(/pid \{\{ data\.pid \}\}/)
-    expect(gateway).toMatch(/finiteN\(asRecord\(data\)\.pid/)
+    expect(gateway).toMatch(/finiteN\(recGet\(data, 'pid'\)/)
     expect(gateway).not.toMatch(/\{\{\s*data\.label\s*\}\}/)
-    expect(gateway).toMatch(/finiteText\(asRecord\(data\)\.label\)/)
+    expect(gateway).toMatch(/finiteText\(recGet\(data, 'label'\)\)/)
     expect(gateway).not.toMatch(/\(s\.server_names \|\| \[\]\)\.join\(', '\) \|\| '—'/)
     expect(gateway).not.toMatch(/\{\{\s*data\.conf\s*\}\}/)
-    expect(gateway).toMatch(/finiteText\(asRecord\(data\)\.conf\)/)
+    expect(gateway).toMatch(/finiteText\(recGet\(data, 'conf'\)\)/)
     expect(gateway).not.toMatch(/\{\{\s*\(s\.listens \|\| \[\]\)\.join/)
-    expect(gateway).toMatch(/asArray\(asRecord\(s\)\.listens\)\.map\(n => finiteText\(n/)
-    expect(gateway).toMatch(/asArray\(asRecord\(s\)\.server_names\)\.map\(n => finiteText\(n/)
+    expect(gateway).toMatch(/asArray\(recGet\(s, 'listens'\)\)\.map\(n => finiteText\(n/)
+    expect(gateway).toMatch(/asArray\(recGet\(s, 'server_names'\)\)\.map\(n => finiteText\(n/)
     expect(gateway).not.toMatch(/\{\{\s*msg\s*\}\}/)
     expect(gateway).toMatch(/finiteText\(msg\)/)
     expect(gateway).not.toMatch(/msg\.value = j\.message \|\| ''/)
-    expect(gateway).toMatch(/msg\.value = finiteText\(j\.message, ''\)/)
+    expect(gateway).toMatch(/msg\.value = finiteText\(recGet\(j, 'message'\), ''\)/)
     expect(gateway).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
+    expect(gateway).toMatch(/recGet\(data, 'running'\)/)
+    expect(gateway).toMatch(/asArray\(recGet\(next, 'sites'\)\)/)
   })
 
   it('Maintenance leftover rc and finished reject Infinity', () => {
@@ -4149,7 +4154,7 @@ describe('Users and Account leftover a11y', () => {
     // numbers silently for a screen reader (Tools ports pattern).
     const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
     expect(users).toMatch(
-      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(asRecord\(data\)\.count\) \}\} \{\{ t\('users\.total'\) \}\}/,
+      /<span class="meta"[^>]*v-if="data" role="status">\s*\{\{ finiteN\(recGet\(data, 'count'\)\) \}\} \{\{ t\('users\.total'\) \}\}/,
     )
   })
 
@@ -4157,7 +4162,7 @@ describe('Users and Account leftover a11y', () => {
     // The LED repeats the Role badge's Admin/Standard text in colour only
     // (same as the Gateway and VMs LEDs).
     const users = readFileSync(resolve(SRC, 'views/Users.vue'), 'utf8')
-    expect(users).toMatch(/class="led" :class="asRecord\(u\)\.admin \? 'on' : 'off'" aria-hidden="true"/)
+    expect(users).toMatch(/class="led" :class="recGet\(u, 'admin'\) \? 'on' : 'off'" aria-hidden="true"/)
   })
 
   it('hides the Account enrollment QR and voices the password rule', () => {

@@ -18,12 +18,12 @@
         <div class="row">
           <!-- aria-hidden: the LED only repeats the Running/Stopped text
                beside it in colour (same as the VMs and Network inline LEDs). -->
-          <span class="led" :class="asRecord(data).running ? 'on' : 'err'" aria-hidden="true"></span>
-          <strong>{{ asRecord(data).running ? t('gateway.running') : t('gateway.stopped') }}</strong>
-          <span v-if="finiteN(asRecord(data).pid, null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(asRecord(data).pid) }}</span>
+          <span class="led" :class="recGet(data, 'running') ? 'on' : 'err'" aria-hidden="true"></span>
+          <strong>{{ recGet(data, 'running') ? t('gateway.running') : t('gateway.stopped') }}</strong>
+          <span v-if="finiteN(recGet(data, 'pid'), null) != null" class="mono" style="color:var(--sub)">pid {{ finiteN(recGet(data, 'pid')) }}</span>
         </div>
-        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(asRecord(data).label) }) }}</div>
-        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(asRecord(data).conf) }}</div>
+        <div class="sub" style="margin-top:8px">{{ t('gateway.label_is', { label: finiteText(recGet(data, 'label')) }) }}</div>
+        <div class="mono sub" style="font-size:11px;margin-top:4px">{{ finiteText(recGet(data, 'conf')) }}</div>
       </div>
       <div class="tile span-8">
         <h2>{{ t('gateway.about') }}</h2>
@@ -46,18 +46,18 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in asArray(asRecord(data).sites)" :key="finiteText(asRecord(s).file)">
+          <tr v-for="s in asArray(recGet(data, 'sites'))" :key="finiteText(recGet(s, 'file'))">
             <td class="mono">
-              <strong>{{ finiteText(asRecord(s).file) }}</strong>
-              <div v-if="asArray(asRecord(s).server_names).length" class="show-m sub">{{ asArray(asRecord(s).server_names).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-              <div v-if="asArray(asRecord(s).listens).length" class="show-m sub">{{ asArray(asRecord(s).listens).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
-              <div v-if="asArray(asRecord(s).upstreams).length" class="show-m sub">{{ asArray(asRecord(s).upstreams).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</div>
+              <strong>{{ finiteText(recGet(s, 'file')) }}</strong>
+              <div v-if="asArray(recGet(s, 'server_names')).length" class="show-m sub">{{ asArray(recGet(s, 'server_names')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="asArray(recGet(s, 'listens')).length" class="show-m sub">{{ asArray(recGet(s, 'listens')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</div>
+              <div v-if="asArray(recGet(s, 'upstreams')).length" class="show-m sub">{{ asArray(recGet(s, 'upstreams')).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</div>
             </td>
-            <td class="mono col-hide-m">{{ asArray(asRecord(s).listens).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
-            <td class="mono col-hide-m">{{ asArray(asRecord(s).server_names).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
-            <td class="mono col-hide-m" style="font-size:11px">{{ asArray(asRecord(s).upstreams).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
+            <td class="mono col-hide-m">{{ asArray(recGet(s, 'listens')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m">{{ asArray(recGet(s, 'server_names')).map(n => finiteText(n, '')).filter(Boolean).join(', ') }}</td>
+            <td class="mono col-hide-m" style="font-size:11px">{{ asArray(recGet(s, 'upstreams')).map(n => finiteText(n, '')).filter(Boolean).join(' · ') }}</td>
           </tr>
-          <tr v-if="!asArray(asRecord(data).sites).length && !loadError">
+          <tr v-if="!asArray(recGet(data, 'sites')).length && !loadError">
             <td colspan="4" class="empty-row">{{ t('gateway.empty') }}</td>
           </tr>
         </tbody>
@@ -71,7 +71,7 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 import { getNginx, reloadNginx, testNginx } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, recGet } from '../lib/finite'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -94,7 +94,7 @@ async function load() {
     if (seq !== loadSeq || !pageAlive) return
     data.value = {
       ...next,
-      sites: asArray(next.sites).map((s) => asRecord(s)),
+      sites: asArray(recGet(next, 'sites')).map((s) => asRecord(s)),
     }
     loadError.value = ''
   } catch (e) {
@@ -111,8 +111,8 @@ async function test() {
   try {
     const j = asRecord(await testNginx())
     if (!pageAlive) return
-    msg.value = finiteText(j.message, '')
-    toast(j.ok ? '✅ ' + t('gateway.conf_valid') : '❌ ' + t('gateway.conf_invalid'))
+    msg.value = finiteText(recGet(j, 'message'), '')
+    toast(recGet(j, 'ok') ? '✅ ' + t('gateway.conf_valid') : '❌ ' + t('gateway.conf_invalid'))
   } catch (e) {
     if (!pageAlive) return
     toast('❌ ' + finiteText(e.message))
@@ -127,8 +127,8 @@ async function reload() {
   try {
     const j = asRecord(await reloadNginx())
     if (!pageAlive) return
-    msg.value = finiteText(j.message, '')
-    toast(j.ok ? '✅ ' + t('common.reloaded') : '❌ ' + t('common.reload_failed'))
+    msg.value = finiteText(recGet(j, 'message'), '')
+    toast(recGet(j, 'ok') ? '✅ ' + t('common.reloaded') : '❌ ' + t('common.reload_failed'))
     void load()
   } catch (e) {
     if (!pageAlive) return

@@ -136,7 +136,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
-import { asArray, asRecord, asTrimmed, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, fmtTs, recGet } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -167,14 +167,14 @@ let pageAlive = true
 
 const allSelected = computed(() => {
   const items = asArray(asRecord(listing.value).items)
-  return items.length > 0 && items.every(i => asArray(selected.value).includes(asRecord(i).path))
+  return items.length > 0 && items.every((i) => asArray(selected.value).includes(recGet(i, 'path')))
 })
 
 const parentPath = computed(() => {
   const row = asRecord(listing.value)
   if (!listing.value) return null
-  const p = finiteText(row.path, '')
-  const root = finiteText(row.root, '')
+  const p = finiteText(recGet(row, 'path'), '')
+  const root = finiteText(recGet(row, 'root'), '')
   if (p === root) return null
   const parts = p.replace(/\/$/, '').split('/')
   parts.pop()
@@ -227,12 +227,12 @@ async function loadOverview() {
   try {
     const j = asRecord(await getFilesOverview())
     if (request !== listRequest) return false
-    roots.value = asArray(j.roots).map((row) => asRecord(row))
-    fb.value = asRecord(j.filebrowser)
+    roots.value = asArray(recGet(j, 'roots')).map((row) => asRecord(row))
+    fb.value = asRecord(recGet(j, 'filebrowser'))
     if (!rootId.value && asArray(roots.value).length) {
       const first = asRecord(asArray(roots.value)[0])
-      rootId.value = first.id
-      currentPath.value = first.path
+      rootId.value = recGet(first, 'id')
+      currentPath.value = recGet(first, 'path')
     }
     return true
   } catch (e) {
@@ -255,10 +255,10 @@ async function loadList() {
     if (request !== listRequest || !activated.value) return
     listing.value = {
       ...j,
-      items: asArray(j.items).map((row) => asRecord(row)),
-      crumbs: asArray(j.crumbs).map((row) => asRecord(row)),
+      items: asArray(recGet(j, 'items')).map((row) => asRecord(row)),
+      crumbs: asArray(recGet(j, 'crumbs')).map((row) => asRecord(row)),
     }
-    currentPath.value = j.path
+    currentPath.value = recGet(j, 'path')
   } catch (e) {
     if (request !== listRequest || !activated.value) return
     error.value = finiteText(e.message || String(e), '')
@@ -268,8 +268,8 @@ async function loadList() {
 }
 
 function onRootChange() {
-  const r = asRecord(asArray(roots.value).find(x => asRecord(x).id === rootId.value))
-  currentPath.value = r.path || ''
+  const r = asRecord(asArray(roots.value).find(x => recGet(x, 'id') === rootId.value))
+  currentPath.value = recGet(r, 'path') || ''
   loadList()
 }
 
@@ -280,8 +280,8 @@ function goPath(path) {
 
 function openItem(it) {
   const row = asRecord(it)
-  if (row.is_dir) {
-    currentPath.value = row.path
+  if (recGet(row, 'is_dir')) {
+    currentPath.value = recGet(row, 'path')
     loadList()
   } else {
     download(it)
@@ -298,7 +298,7 @@ function toggleSel(path) {
 
 function toggleAll(e) {
   if (e.target.checked) {
-    selected.value = asArray(asRecord(listing.value).items).map(i => asRecord(i).path)
+    selected.value = asArray(asRecord(listing.value).items).map((i) => recGet(i, 'path'))
   } else {
     selected.value = []
   }
@@ -327,12 +327,12 @@ async function doMkdir() {
 async function doRename(it) {
   if (busy.value) return
   const row = asRecord(it)
-  const name = prompt(t('files.rename_ph'), row.name)
-  if (!name || name === row.name) return
+  const name = prompt(t('files.rename_ph'), recGet(row, 'name'))
+  if (!name || name === recGet(row, 'name')) return
   const request = listRequest
   busy.value = true
   try {
-    const r = asRecord(await renameFile(row.path, name, rootId.value))
+    const r = asRecord(await renameFile(recGet(row, 'path'), name, rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -349,12 +349,12 @@ async function doRename(it) {
 async function doDeleteOne(it) {
   if (busy.value) return
   const row = asRecord(it)
-  const key = row.is_dir ? 'files.confirm_delete_dir' : 'files.confirm_delete'
-  if (!confirm(t(key, { name: finiteText(row.name) }))) return
+  const key = recGet(row, 'is_dir') ? 'files.confirm_delete_dir' : 'files.confirm_delete'
+  if (!confirm(t(key, { name: finiteText(recGet(row, 'name')) }))) return
   const request = listRequest
   busy.value = true
   try {
-    const r = asRecord(await deleteFile(row.path, rootId.value))
+    const r = asRecord(await deleteFile(recGet(row, 'path'), rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -371,7 +371,7 @@ async function doDeleteOne(it) {
 async function doDeleteSelected() {
   if (!asArray(selected.value).length) return
   const items = asArray(asRecord(listing.value).items)
-  const hasDir = asArray(selected.value).some((path) => asRecord(items.find((it) => asRecord(it).path === path)).is_dir)
+  const hasDir = asArray(selected.value).some((path) => recGet(items.find((it) => recGet(it, 'path') === path), 'is_dir'))
   const key = hasDir ? 'files.confirm_delete_n_dirs' : 'files.confirm_delete_n'
   if (!confirm(t(key, { n: asArray(selected.value).length }))) return
   const paths = [...asArray(selected.value)]
@@ -403,7 +403,7 @@ async function doDeleteSelected() {
 
 function download(it) {
   const row = asRecord(it)
-  const q = new URLSearchParams({ path: finiteText(row.path, '') })
+  const q = new URLSearchParams({ path: finiteText(recGet(row, 'path'), '') })
   if (rootId.value) q.set('root_id', rootId.value)
   // An <a> with rel=noopener, not window.open: the download endpoint can
   // 302 through a content-type the browser will render, and a tab opened
@@ -412,7 +412,7 @@ function download(it) {
   a.href = `/api/files/download?${q}`
   a.target = '_blank'
   a.rel = 'noopener'
-  a.download = finiteText(row.name, 'download')
+  a.download = finiteText(recGet(row, 'name'), 'download')
   document.body.appendChild(a)
   a.click()
   a.remove()
