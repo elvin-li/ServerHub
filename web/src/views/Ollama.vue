@@ -711,7 +711,7 @@ function stopPullPolling() {
 async function pollPullLog(generation) {
   if (generation !== pullGeneration) return
   try {
-    const j = await getOllamaPullLog()
+    const j = asRecord(await getOllamaPullLog())
     if (generation !== pullGeneration) return
     pullInfo.value = j
     if (!j.running) {
@@ -761,9 +761,9 @@ async function startPull() {
  *  tick instead of refetching what it just received. */
 async function resumePullTail() {
   try {
-    const j = await getOllamaPullLog()
+    const j = asRecord(await getOllamaPullLog())
     if (!pageAlive) return
-    if (j?.running) {
+    if (j.running) {
       pullInfo.value = j
       stopPullPolling()
       const generation = pullGeneration
@@ -829,7 +829,7 @@ async function runTest() {
   testBusy.value = true
   testResult.value = null
   try {
-    const next = await testOllamaModel(testModel.value, testPrompt.value)
+    const next = asRecord(await testOllamaModel(testModel.value, testPrompt.value))
     if (generation !== loadGeneration || !pageAlive) return
     testResult.value = next
   } catch (e) {
