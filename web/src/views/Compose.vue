@@ -343,7 +343,7 @@ function watchJob(id) {
       if (generation !== jobPollGeneration) return
       // Surface it rather than leaving jobLog frozen on '…' forever, which is
       // what a failed first poll looked like.
-      jobLog.value = `${jobLog.value === '…' ? '' : finiteText(jobLog.value, '')}\n⚠ ${finiteText(e.message, '') || finiteText(e)}`.trim()
+      jobLog.value = asTrimmed(`${jobLog.value === '…' ? '' : finiteText(jobLog.value, '')}\n⚠ ${finiteText(e.message, '') || finiteText(e)}`)
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }

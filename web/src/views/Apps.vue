@@ -2152,7 +2152,7 @@ function openJob(jobId, title) {
       }
     } catch (e) {
       if (generation !== jobPollGeneration) return
-      logText.value = `${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
+      logText.value = asTrimmed(`${logText.value === t('common.loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`)
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }

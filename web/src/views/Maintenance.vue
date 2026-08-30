@@ -205,7 +205,7 @@ async function pollLog(generation) {
     if (generation !== pollGeneration || !pageAlive) return
     // Say so instead of leaving the modal on maintenance.log_loading forever.
     // The loop still re-arms so a transient failure recovers on its own.
-    logText.value = `${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
+    logText.value = asTrimmed(`${logText.value === t('maintenance.log_loading') ? '' : logText.value || ''}\n⚠ ${finiteText(e.message || e)}`)
   }
   if (generation === pollGeneration && curId.value === id && pageAlive) {
     pollTimer = setTimeout(() => { void pollLog(generation) }, 1500)

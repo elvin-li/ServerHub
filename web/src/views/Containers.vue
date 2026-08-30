@@ -785,7 +785,7 @@ function watchJob(id) {
       // Say so instead of leaving the log frozen at its last content. The loop
       // still re-arms (a transient failure should recover), but the operator can
       // now see that the job status is not being read.
-      jobLog.value = `${jobLog.value || ''}\n⚠ ${finiteText(e.message || e)}`.trim()
+      jobLog.value = asTrimmed(`${jobLog.value || ''}\n⚠ ${finiteText(e.message || e)}`)
     }
     if (generation === jobPollGeneration) jobTimer = setTimeout(poll, 1500)
   }

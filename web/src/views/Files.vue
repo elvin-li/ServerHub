@@ -136,7 +136,7 @@
  * Full FileBrowser process is started only on explicit request, and can be stopped to free RAM.
  */
 import { computed, inject, onUnmounted, ref } from 'vue'
-import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, asTrimmed, finiteN, finiteText, fmtTs } from '../lib/finite'
 import {
   deleteFile,
   ensureFileBrowser,
@@ -392,7 +392,7 @@ async function doDeleteSelected() {
       }
     }
     if (request !== listRequest) return
-    toast(`${failed ? '❌' : '✅'} ${ok}/${paths.length}`)
+    toast(`${failed ? '❌' : '✅'} ${finiteN(ok, 0)}/${finiteN(asArray(paths).length, 0)}`)
     await loadList()
   } finally {
     // loadList() bumps listRequest, so a request match would leave the
@@ -429,8 +429,8 @@ async function uploadFiles(fileList) {
     for (const file of files) {
       try {
         const fd = new FormData()
-        fd.append('path', currentPath.value)
-        if (rootId.value) fd.append('root_id', rootId.value)
+        fd.append('path', asTrimmed(currentPath.value))
+        if (rootId.value) fd.append('root_id', asTrimmed(rootId.value))
         fd.append('file', file)
         const r = asRecord(await uploadFile(fd))
         if (request !== listRequest) return
@@ -442,7 +442,7 @@ async function uploadFiles(fileList) {
       }
     }
     if (request !== listRequest) return
-    toast(`${failed ? '❌' : '✅'} ${ok}/${files.length}`)
+    toast(`${failed ? '❌' : '✅'} ${finiteN(ok, 0)}/${finiteN(files.length, 0)}`)
     await loadList()
   } finally {
     // loadList() bumps listRequest, so a request match would leave Upload

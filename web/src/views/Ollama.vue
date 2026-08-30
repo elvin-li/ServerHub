@@ -722,7 +722,7 @@ async function pollPullLog(generation) {
   } catch (e) {
     if (generation !== pullGeneration) return
     // Transient failure: say so in the box and keep tailing.
-    pullInfo.value = { ...asRecord(pullInfo.value), log: `${pullInfo.value?.log || ''}\n⚠ ${e.message || e}`.trim() }
+    pullInfo.value = { ...asRecord(pullInfo.value), log: asTrimmed(`${pullInfo.value?.log || ''}\n⚠ ${finiteText(e.message || e)}`) }
   }
   if (generation === pullGeneration) {
     pullTimer = setTimeout(() => { void pollPullLog(generation) }, 1500)
