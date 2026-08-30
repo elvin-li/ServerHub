@@ -647,7 +647,8 @@ useDismissable(() => settingsOpen.value, () => { settingsOpen.value = false }, s
 // list is fixed rather than server-driven.
 const formats = computed(() => {
   const base = ['wg', 'clash', 'clashfull', 'sr']
-  if (data.value?.wstunnel?.enabled || data.value?.wstunnel?.running) {
+  const wst = asRecord(asRecord(data.value).wstunnel)
+  if (wst.enabled || wst.running) {
     return [...base, 'wst']
   }
   return base
@@ -903,7 +904,7 @@ const removeWstunnel = () => {
 }
 
 async function copyWstunnelCommand() {
-  const command = data.value?.wstunnel?.client_command
+  const command = finiteText(asRecord(asRecord(data.value).wstunnel).client_command, '')
   if (!command) return
   const ok = await copyToClipboard(command)
   if (!pageAlive) return
