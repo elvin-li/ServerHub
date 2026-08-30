@@ -864,7 +864,7 @@ async function refresh(force = false) {
   const generation = ++loadGeneration
   loading.value = true
   try {
-    const next = await getSystemNetwork(force)
+    const next = asRecord(await getSystemNetwork(force))
     if (generation !== loadGeneration) return
     data.value = mapNetwork(next)
     loadError.value = ''
@@ -894,7 +894,7 @@ async function runAutoBind() {
   busy.value = true
   autoBindLog.value = t('network.running')
   try {
-    const j = await runAliasAutoBind()
+    const j = asRecord(await runAliasAutoBind())
     if (!stillOnNetwork(generation)) return
     autoBindLog.value = jsonText(j.actions || j, finiteText(j.message, '') || t('network.failed'))
     toast(j.ok ? `✅ ${finiteText(j.message, '') || t('network.aligned')}` : `❌ ${finiteText(j.message, '') || t('network.failed')}`)
@@ -913,7 +913,7 @@ async function runFailover() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await runNetworkFailover()
+    const j = asRecord(await runNetworkFailover())
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${j.mode === 'wired' ? t('network.wired_ok') : t('network.wifi_engaged')}` : `❌ ${t('network.switch_failed')}`)
     await refresh(true)
@@ -929,7 +929,7 @@ async function saveAutoBind() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await updateAliasAuto({ auto_bind: autoBindOn.value })
+    const j = asRecord(await updateAliasAuto({ auto_bind: autoBindOn.value }))
     if (!stillOnNetwork(generation)) return
     toast(`✅ ${autoBindOn.value ? t('network.autobind_enabled') : t('network.autobind_disabled')}`)
     data.value = { ...data.value, alias_auto: j }
@@ -951,7 +951,7 @@ async function saveAutoIps() {
   busy.value = true
   try {
     const ips = autoIpsText.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-    const j = await updateAliasAuto({ ips })
+    const j = asRecord(await updateAliasAuto({ ips }))
     if (!stillOnNetwork(generation)) return
     toast(`✅ ${t('network.alias_list_saved')}`)
     data.value = { ...data.value, alias_auto: j }
@@ -970,7 +970,7 @@ async function applyProfile(profile) {
   busy.value = true
   msg.value = t('network.switching')
   try {
-    const j = await switchNetworkProfile(profile)
+    const j = asRecord(await switchNetworkProfile(profile))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.switched')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -993,7 +993,7 @@ async function saveOrder() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name))
+    const j = asRecord(await setNetworkServiceOrder(asArray(orderList.value).map(s => s.name)))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.order_saved')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1012,7 +1012,7 @@ async function toggleService(s) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkServiceEnabled(s.name, en)
+    const j = asRecord(await setNetworkServiceEnabled(s.name, en))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('common.ok') : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1200)
@@ -1032,7 +1032,7 @@ async function addAlias() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await addNetworkAlias(aliasForm.value)
+    const j = asRecord(await addNetworkAlias(aliasForm.value))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.ip_added')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1051,7 +1051,7 @@ async function removeAlias(device, ip) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' })
+    const j = asRecord(await removeNetworkAlias({ device, ip, netmask: '255.255.255.255' }))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.alias_deleted')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1086,7 +1086,7 @@ async function setDhcp(s) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkDhcp(s.name)
+    const j = asRecord(await setNetworkDhcp(s.name))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('network.dhcp_applied') : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1115,7 +1115,7 @@ async function applyManual() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkManual(manualSvc.value.name, manualForm.value)
+    const j = asRecord(await setNetworkManual(manualSvc.value.name, manualForm.value))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.static_applied')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1148,7 +1148,7 @@ async function applyDns() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setNetworkDns(dnsSvc.value.name, servers)
+    const j = asRecord(await setNetworkDns(dnsSvc.value.name, servers))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.dns_updated')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1171,7 +1171,7 @@ async function wifi(state) {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await setWifiPower(state)
+    const j = asRecord(await setWifiPower(state))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? '✅ ' + t('network.wifi_set', { state: label }) : `❌ ${finiteText(j.message)}`)
     if (j.ok) scheduleRefresh(1500)
@@ -1187,7 +1187,7 @@ async function doLookup() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const next = await lookupNetworkDns(lookupHost.value.trim())
+    const next = asRecord(await lookupNetworkDns(lookupHost.value.trim()))
     if (!stillOnNetwork(generation)) return
     lookupResult.value = next
   } catch (e) {
@@ -1224,7 +1224,7 @@ async function applyPorts() {
   busy.value = true
   msg.value = '…'
   try {
-    const j = await setContainerPorts(portEdit.value, ports)
+    const j = asRecord(await setContainerPorts(portEdit.value, ports))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.port_updated')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
@@ -1265,7 +1265,7 @@ async function applyConnect() {
   const generation = loadGeneration
   busy.value = true
   try {
-    const j = await connectContainerNetwork(connectMode.value, connectNet.value.name, container)
+    const j = asRecord(await connectContainerNetwork(connectMode.value, connectNet.value.name, container))
     if (!stillOnNetwork(generation)) return
     toast(j.ok ? `✅ ${t('network.done')}` : `❌ ${finiteText(j.message)}`)
     msg.value = finiteText(j.message, '')
