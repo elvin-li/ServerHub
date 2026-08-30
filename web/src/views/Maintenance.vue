@@ -171,7 +171,7 @@ async function run(task) {
   const generation = listGeneration
   rec.running = true
   try {
-    await runMaintenance(rec.id)
+    const r = asRecord(await runMaintenance(rec.id))
     if (generation !== listGeneration || !pageAlive) return
     toast('🚀 ' + t('maintenance.started', { name: finiteText(rec.name) }))
     openLog(rec)
