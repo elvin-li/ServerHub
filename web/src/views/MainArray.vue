@@ -137,9 +137,9 @@
               <div v-for="v in asArray(asRecord(d).volumes)" :key="finiteText(asRecord(v).mount)">{{ finiteText(asRecord(v).mount) }}</div>
             </td>
             <td class="ops">
-              <button v-if="asArray(d.actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
-              <button v-if="asArray(d.actions).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
-              <button v-if="asArray(d.actions).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
+              <button v-if="asArray(asRecord(d).actions).includes('wake')" class="tiny primary" :disabled="busy" @click="power(d, 'wake')">{{ t('main_extra.act_wake_mount') }}</button>
+              <button v-if="asArray(asRecord(d).actions).includes('sleep')" class="tiny" :disabled="busy || d.system" @click="power(d, 'sleep')">{{ t('main_extra.act_sleep') }}</button>
+              <button v-if="asArray(asRecord(d).actions).includes('eject')" class="tiny danger" :disabled="busy || d.system" @click="power(d, 'eject')">{{ t('main.eject') }}</button>
             </td>
           </tr>
           <tr v-if="!asArray(unassigned).length && !loadError && !pendingFull">
@@ -204,24 +204,24 @@
             </td>
             <td class="ops">
               <button
-                v-if="asArray(d.actions).includes('sleep')"
+                v-if="asArray(asRecord(d).actions).includes('sleep')"
                 class="tiny"
                 :disabled="busy || d.system"
                 @click="power(d, 'sleep')"
               >{{ t('main.sleep') }}</button>
               <button
-                v-if="asArray(d.actions).includes('wake')"
+                v-if="asArray(asRecord(d).actions).includes('wake')"
                 class="tiny primary"
                 :disabled="busy"
                 @click="power(d, 'wake')"
               >{{ t('main.wake') }}</button>
               <button
-                v-if="asArray(d.actions).includes('eject')"
+                v-if="asArray(asRecord(d).actions).includes('eject')"
                 class="tiny danger"
                 :disabled="busy || d.system"
                 @click="power(d, 'eject')"
               >{{ t('main.eject') }}</button>
-              <span v-if="!asArray(d.actions).length" class="sub">—</span>
+              <span v-if="!asArray(asRecord(d).actions).length" class="sub">—</span>
             </td>
           </tr>
           <tr v-if="!asArray(powerDisks).length && !loadError && !pendingFull">
