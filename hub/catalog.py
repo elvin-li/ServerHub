@@ -961,7 +961,7 @@ def _build_listing(now: float, sig: str) -> list:
             # below — a raw 500 on GET /api/catalog/templates after every
             # template had already parsed cleanly.
             hip = _safe_host_ip()
-            for port_spec in meta.get("ports") or []:
+            for port_spec in meta.get("ports") if _isinst(meta.get("ports"), list) else []:
                 ps = str(port_spec).split("/")[0]
                 if ps.isdigit() and ps not in ("1883", "5432", "6379", "3306", "5672", "5900", "9100", "22000"):
                     url_hint = f"http://{hip}:{ps}"

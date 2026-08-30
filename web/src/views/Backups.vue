@@ -317,7 +317,7 @@ const originalsHeadline = computed(() => {
   const raw = recGet(layers.value, 'originals')
   if (raw == null) return '—'
   const layer = asRecord(raw)
-  if (layer.pct != null) return t('backups.layer_originals_pct', { n: finiteN(layer.pct) })
+  if (recGet(layer, 'pct') != null) return t('backups.layer_originals_pct', { n: finiteN(recGet(layer, 'pct')) })
   return layerPresent(layer)
 })
 const pgLabel = computed(() => {

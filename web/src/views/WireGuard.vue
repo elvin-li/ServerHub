@@ -188,25 +188,25 @@
       <div class="dash-grid" style="margin-bottom:12px" v-if="data">
         <div class="tile span-3">
           <h2>{{ t('wg.listen_port') }}</h2>
-          <div class="v">{{ finiteN(data.listen_port) }}</div>
+          <div class="v">{{ finiteN(recGet(data, 'listen_port')) }}</div>
           <div class="sub">{{ finiteText(data.interface) }}</div>
         </div>
         <div class="tile span-3">
           <h2>{{ t('wg.subnet') }}</h2>
           <div class="v" style="font-size:15px">{{ finiteText(data.address, '') || finiteText(data.subnet) }}</div>
-          <div class="sub">MTU {{ finiteN(data.mtu) }}</div>
+          <div class="sub">MTU {{ finiteN(recGet(data, 'mtu')) }}</div>
         </div>
         <div class="tile span-3">
           <h2>{{ t('wg.active_peers') }}</h2>
-          <div class="v">{{ finiteN(data.active_count) }}/{{ finiteN(data.peer_count) }}</div>
-          <div class="sub" v-if="data.stale_count">{{ t('wg.stale', { n: finiteN(data.stale_count, 0) }) }}</div>
+          <div class="v">{{ finiteN(recGet(data, 'active_count')) }}/{{ finiteN(recGet(data, 'peer_count')) }}</div>
+          <div class="sub" v-if="recGet(data, 'stale_count')">{{ t('wg.stale', { n: finiteN(recGet(data, 'stale_count'), 0) }) }}</div>
         </div>
         <div class="tile span-3">
           <h2>{{ t('wg.keepalive_missing') }}</h2>
           <!-- -text tints, not the raw hues: --warn / --ok are fill colours
                and fail AA as ink (contrast.test.js pins the binding shape). -->
           <div class="v" :style="{ color: data.keepalive_missing ? 'var(--warn-text)' : 'var(--ok-text)' }">
-            {{ finiteN(data.keepalive_missing) }}
+            {{ finiteN(recGet(data, 'keepalive_missing')) }}
           </div>
         </div>
       </div>
@@ -931,7 +931,7 @@ async function createBatch() {
     () => batchAddWireguardPeers({ ...batch.value, mode: form.value.mode, keep_key: true }),
     null,
   )
-  if (result && pageAlive) toast('✅ ' + t('wg.batch_created', { n: finiteN(result.created) }))
+  if (result && pageAlive) toast('✅ ' + t('wg.batch_created', { n: finiteN(recGet(result, 'created')) }))
 }
 
 async function doImport() {

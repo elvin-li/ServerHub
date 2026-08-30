@@ -297,12 +297,12 @@
         <!-- role=status: these counts are Refresh's and Run-now's only answer
              and changed silently for a screen reader — same treatment as the
              managed-tab breakdown and every sibling .meta-count. -->
-        <span class="meta-count" role="status" v-if="autostart.counts">
-          {{ t('apps.auto_on') }} {{ finiteN(autostart.counts.autostart_on) }} ·
-          {{ t('apps.auto_off') }} {{ finiteN(autostart.counts.autostart_off) }} ·
-          brew {{ finiteN(autostart.counts.brew) }} ·
-          Docker {{ finiteN(autostart.counts.docker) }} ·
-          LaunchAgent {{ finiteN(autostart.counts.launchd) }}
+        <span class="meta-count" role="status" v-if="recGet(autostart, 'counts')">
+          {{ t('apps.auto_on') }} {{ finiteN(recGet(recGet(autostart, 'counts'), 'autostart_on')) }} ·
+          {{ t('apps.auto_off') }} {{ finiteN(recGet(recGet(autostart, 'counts'), 'autostart_off')) }} ·
+          brew {{ finiteN(recGet(recGet(autostart, 'counts'), 'brew')) }} ·
+          Docker {{ finiteN(recGet(recGet(autostart, 'counts'), 'docker')) }} ·
+          LaunchAgent {{ finiteN(recGet(recGet(autostart, 'counts'), 'launchd')) }}
         </span>
       </div>
       <p class="hint-line">{{ t('apps.autostart_hint') }}</p>
@@ -1870,14 +1870,14 @@ function countLabel(id) {
     return n ? ` (${n})` : ''
   }
   if (id === 'native') {
-    const n = finiteN(overview.value.native_count, null)
+    const n = finiteN(recGet(overview.value, 'native_count'), null)
     return n != null ? ` (${n})` : ''
   }
   if (id === 'docker') {
-    const n = finiteN(overview.value.docker_count, null)
+    const n = finiteN(recGet(overview.value, 'docker_count'), null)
     return n != null ? ` (${n})` : ''
   }
-  const n = finiteN(asRecord(overview.value.counts)[id], null)
+  const n = finiteN(recGet(recGet(overview.value, 'counts'), id), null)
   return n ? ` (${n})` : ''
 }
 
