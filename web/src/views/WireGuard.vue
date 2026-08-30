@@ -981,7 +981,7 @@ async function selectFormat(fmt) {
   const generation = loadGeneration
   peerFormat.value = fmt
   try {
-    const result = await getWireguardPeerConfig(peerDialog.value.pubkey, fmt)
+    const result = asRecord(await getWireguardPeerConfig(peerDialog.value.pubkey, fmt))
     if (generation !== loadGeneration || !pageAlive) return
     peerContent.value = finiteText(result.content, '')
     renderQr(peerContent.value, fmt)
@@ -1001,7 +1001,7 @@ async function openConf(reveal = false) {
   if (reveal && !confirm(t('wg.confirm_reveal'))) return
   const generation = loadGeneration
   try {
-    const next = await getWireguardConf(reveal)
+    const next = asRecord(await getWireguardConf(reveal))
     if (generation !== loadGeneration || !pageAlive) return
     confDialog.value = next
   } catch (e) {
@@ -1042,9 +1042,9 @@ const settingsError = ref('')
 async function loadSettings() {
   const generation = loadGeneration
   try {
-    const current = await getWireguardSettings()
+    const current = asRecord(await getWireguardSettings())
     if (generation !== loadGeneration || !pageAlive) return
-    cfgForm.value = { ...cfgForm.value, ...current.settings }
+    cfgForm.value = { ...cfgForm.value, ...asRecord(current.settings) }
     settingsLoaded.value = true
     settingsError.value = ''
   } catch (e) {

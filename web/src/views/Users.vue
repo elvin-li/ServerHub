@@ -393,11 +393,11 @@ async function createAccount() {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await createPanelAccount({
+    const r = asRecord(await createPanelAccount({
       username: createForm.value.username,
       password: createForm.value.password,
       resources: asArray(createForm.value.resources),
-    })
+    }))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('accounts.created', { name: finiteText(createForm.value.username) }))
     createForm.value = { username: '', password: '', resources: [] }
@@ -416,7 +416,7 @@ async function saveResources(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await setPanelAccountResources(accountName(acct), asArray(editResources.value))
+    const r = asRecord(await setPanelAccountResources(accountName(acct), asArray(editResources.value)))
     if (generation !== loadGeneration || !pageAlive) return
     toast('✅ ' + t('accounts.resources_saved', { name: accountName(acct) }))
     await loadAccounts()
@@ -434,7 +434,7 @@ async function doResetPassword(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await resetPanelAccountPassword(accountName(acct), resetPassword.value)
+    const r = asRecord(await resetPanelAccountPassword(accountName(acct), resetPassword.value))
     if (generation !== loadGeneration || !pageAlive) return
     resetPassword.value = ''
     toast('✅ ' + t('accounts.password_reset_done', { name: accountName(acct) }))
@@ -468,7 +468,7 @@ async function removeAccount(acct) {
   const generation = loadGeneration
   accountsBusy.value = true
   try {
-    await deletePanelAccount(accountName(acct))
+    const r = asRecord(await deletePanelAccount(accountName(acct)))
     if (generation !== loadGeneration || !pageAlive) return
     editing.value = ''
     toast('✅ ' + t('accounts.deleted', { name: accountName(acct) }))

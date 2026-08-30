@@ -124,9 +124,9 @@ async function refresh(manual = false) {
   const generation = ++loadGeneration
   busy.value = true
   try {
-    const d = await getAlerts(100)
+    const d = asRecord(await getAlerts(100))
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
+    alerts.value = asArray(d.alerts).map((a) => asRecord(a))
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false
@@ -152,9 +152,9 @@ async function check() {
     const r = asRecord(await forceAlertCheck())
     if (generation !== loadGeneration || !pageAlive) return
     toast(t('alerts.inspect_done', { n: asArray(r.emitted).length }))
-    const d = await getAlerts(100)
+    const d = asRecord(await getAlerts(100))
     if (generation !== loadGeneration || !pageAlive) return
-    alerts.value = asArray(asRecord(d).alerts).map((a) => asRecord(a))
+    alerts.value = asArray(d.alerts).map((a) => asRecord(a))
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return
     toast('❌ ' + finiteText(e.message))

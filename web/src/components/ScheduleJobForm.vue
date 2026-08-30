@@ -274,9 +274,9 @@ onMounted(async () => {
   if (!props.allowedTypes.includes('stack_backup')) return
   const generation = ++stacksGeneration
   try {
-    const d = await getStacks()
+    const d = asRecord(await getStacks())
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = asArray(d?.stacks).map((s) => asRecord(s))
+    stacks.value = asArray(d.stacks).map((s) => asRecord(s))
     stacksError.value = ''
     if (!stackId.value && asArray(stacks.value).length) stackId.value = asRecord(asArray(stacks.value)[0]).id
   } catch (e) {

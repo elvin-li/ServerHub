@@ -532,8 +532,8 @@ function scheduleRefresh(delay) {
   refreshTimers.add(id)
 }
 
-const containers = computed(() => asArray(data.value?.containers))
-const stats = computed(() => asRecord(data.value?.stats))
+const containers = computed(() => asArray(asRecord(data.value).containers).map((c) => asRecord(c)))
+const stats = computed(() => asRecord(asRecord(data.value).stats))
 const engineMem = computed(() => {
   const n = Number(engineInfo.value?.info?.MemTotal)
   if (!Number.isFinite(n) || n <= 0) return '—'
@@ -625,7 +625,7 @@ let listGeneration = 0
 async function refresh(manual = false) {
   const generation = ++listGeneration
   try {
-    const next = await getContainers(true)
+    const next = asRecord(await getContainers(true))
     if (generation !== listGeneration) return
     data.value = next
     listError.value = ''
@@ -659,7 +659,7 @@ async function act(c, action) {
   const generation = listGeneration
   busy.value = true
   try {
-    const r = await containerAction(c.id, action)
+    const r = asRecord(await containerAction(c.id, action))
     if (!stillOnList(generation)) return
     if (action === 'update' && r.job_id) {
       toast('🚀 ' + t('docker.update_job_started'))

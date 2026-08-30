@@ -180,9 +180,9 @@ function closeJobLog() {
 async function loadStacks(manual = false) {
   const generation = ++stacksGeneration
   try {
-    const d = await getStacks()
+    const d = asRecord(await getStacks())
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = asArray(asRecord(d).stacks).map((s) => asRecord(s))
+    stacks.value = asArray(d.stacks).map((s) => asRecord(s))
     loadError.value = ''
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return

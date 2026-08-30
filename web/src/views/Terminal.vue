@@ -155,9 +155,9 @@ watch(container, (id) => {
 
 async function load() {
   try {
-    const next = await getTerminal()
+    const next = asRecord(await getTerminal())
     if (!pageAlive) return
-    status.value = asRecord(next)
+    status.value = next
     statusError.value = ''
   } catch (error) {
     if (!pageAlive) return
@@ -165,9 +165,9 @@ async function load() {
     toast?.('❌ ' + finiteText(error.message))
   }
   try {
-    const response = await getContainers(false)
+    const response = asRecord(await getContainers(false))
     if (!pageAlive) return
-    containers.value = asArray(asRecord(response).containers)
+    containers.value = asArray(response.containers)
       .map((c) => asRecord(c))
       .filter((c) => c.state === 'ok' || finiteText(c.status, '').startsWith('Up'))
       .map((c) => asRecord({

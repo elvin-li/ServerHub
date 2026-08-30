@@ -483,7 +483,7 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const snap = await getPhotosHubStatus()
+    const snap = asRecord(await getPhotosHubStatus())
     if (generation !== loadGeneration || !pageAlive) return
     data.value = snap
     loaded.value = true
@@ -516,7 +516,7 @@ async function loadConfig({ force = false } = {}) {
   const generation = loadGeneration
   settingsError.value = ''
   try {
-    const next = await getPhotosHubConfig()
+    const next = asRecord(await getPhotosHubConfig())
     if (generation !== loadGeneration || !pageAlive) return
     const keepForm = Boolean(cfg.value) && formDirty.value && !force
     cfg.value = next
@@ -541,7 +541,7 @@ async function saveSettings() {
     if (f.album_pending) albums.pending_delete = f.album_pending
     const immich = { public_url: f.immich_public }
     if (f.immich_base) immich.base_url = f.immich_base
-    const next = await patchPhotosHubConfig({
+    const next = asRecord(await patchPhotosHubConfig({
       people: {
         yuanbao: { name: f.yuanbao_name, birthday: f.yuanbao_birthday },
         erbao: { name: f.erbao_name, birthday: f.erbao_birthday },
@@ -549,11 +549,11 @@ async function saveSettings() {
       albums,
       immich,
       panel: { url: f.panel_url },
-    })
+    }))
     if (generation !== loadGeneration || !pageAlive) return
     cfg.value = next
     applyForm(cfg.value)
-    const snap = await getPhotosHubStatus()
+    const snap = asRecord(await getPhotosHubStatus())
     if (generation !== loadGeneration || !pageAlive) return
     data.value = snap
     toast('✅ ' + t('photoshub.settings_saved'))
@@ -572,7 +572,7 @@ async function loadPending() {
   pendingLoading.value = true
   pendingError.value = ''
   try {
-    const next = await getPhotosHubPending()
+    const next = asRecord(await getPhotosHubPending())
     if (generation !== loadGeneration || !pageAlive) return
     pending.value = next
     selected.value = []
@@ -604,10 +604,10 @@ async function run(action) {
   busy.value = true
   busyAction.value = action
   try {
-    const next = await postPhotosHubAction(action)
+    const next = asRecord(await postPhotosHubAction(action))
     if (generation !== loadGeneration || !pageAlive) return
     lastAction.value = next
-    const after = next.status_after || (await getPhotosHubStatus())
+    const after = asRecord(next.status_after || (await getPhotosHubStatus()))
     if (generation !== loadGeneration || !pageAlive) return
     data.value = after
     if (action === 'delete-review') await loadPending()
@@ -657,7 +657,7 @@ async function removeSelected() {
 
 function toggleAll(ev) {
   const on = ev.target.checked
-  selected.value = on ? asArray(pending.value?.assets).map(a => a.id) : []
+  selected.value = on ? asArray(asRecord(pending.value).assets).map(a => asRecord(a).id) : []
 }
 
 async function switchLog(n) {
@@ -665,7 +665,7 @@ async function switchLog(n) {
   const generation = loadGeneration
   logName.value = n
   try {
-    const next = await getPhotosHubLogs(n)
+    const next = asRecord(await getPhotosHubLogs(n))
     if (generation !== loadGeneration || !pageAlive) return
     logData.value = next
     logError.value = ''

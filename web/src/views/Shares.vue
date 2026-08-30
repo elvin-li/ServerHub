@@ -489,9 +489,9 @@ async function applyAcl(username, level) {
   aclBusy.value = true
   try {
     // The response carries the read-back, verified on-disk state.
-    const result = await setShareAcl(editing.value.path, username, level)
+    const result = asRecord(await setShareAcl(editing.value.path, username, level))
     if (generation !== aclGeneration || !pageAlive) return
-    acl.value = { ...acl.value, ...result }
+    acl.value = { ...asRecord(acl.value), ...result }
     toast(`✅ ${t('shares.acl_saved', { name: finiteText(username) })}`)
   } catch (error) {
     if (generation !== aclGeneration || !pageAlive) return
@@ -534,9 +534,9 @@ async function saveShare() {
       time_machine: form.value.time_machine,
       tm_quota_gb: quotaPayload(),
     }
-    const result = editing.value
+    const result = asRecord(editing.value
       ? await updateShare(editing.value.record_name, options)
-      : await createShare({ path: form.value.path, name: form.value.name, ...options })
+      : await createShare({ path: form.value.path, name: form.value.name, ...options }))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${finiteText(result.message, '') || t('shares.saved')}`)
     sheetOpen.value = false
@@ -593,7 +593,7 @@ async function toggleService(service) {
   busy.value = true
   busyLabel.value = t('shares.waiting_for_admin')
   try {
-    await setSystemSharing(row.id, target)
+    const r = asRecord(await setSystemSharing(row.id, target))
     if (generation !== loadGeneration || !pageAlive) return
     toast(`✅ ${t('shares.service_updated')}`)
   } catch (error) {
