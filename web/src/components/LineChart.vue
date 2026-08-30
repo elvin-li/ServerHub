@@ -112,7 +112,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText } from '../lib/finite'
 
 // refLabel formats the reference line, which is a localized string.  Without
 // this the component threw a ReferenceError the moment any caller passed a
@@ -516,8 +516,8 @@ const refPct = computed(() =>
 )
 
 const refLabel = computed(() => {
-  if (props.reference == null || !Number.isFinite(Number(props.reference))) return ''
-  const r = Number(props.reference)
+  const r = finiteN(props.reference, null)
+  if (r == null || !Number.isFinite(Number(props.reference))) return ''
   return Number.isInteger(r) ? t('common.cores_n', { n: r }) : r.toFixed(1)
 })
 

@@ -974,8 +974,8 @@ function powerBadge(d) {
   return ''
 }
 function sizeGb(value) {
-  const n = Number(value)
-  return Number.isFinite(n) ? `${n} GB` : ''
+  const n = finiteN(value, null)
+  return n != null && Number.isFinite(n) ? `${n} GB` : ''
 }
 function wrapStorage(next) {
   const row = asRecord(next)

@@ -187,7 +187,7 @@ const cronText = computed(() => {
   const fields = cron.value.trim().split(/\s+/)
   if (fields.length !== 5) return t('sched.cron_invalid')
   const [min, hour, dom, mon, dow] = fields
-  const num = (s) => (/^\d{1,2}$/.test(s) ? Number(s) : null)
+  const num = (s) => (/^\d{1,2}$/.test(s) ? finiteN(s, null) : null)
   const hhmm = () => `${String(num(hour)).padStart(2, '0')}:${String(num(min)).padStart(2, '0')}`
   if (fields.every((f) => f === '*')) return t('sched.cron_every_minute')
   const step = min.match(/^\*\/(\d+)$/)
@@ -201,7 +201,7 @@ const cronText = computed(() => {
     return t('sched.cron_daily_at', { time: hhmm() })
   }
   if (num(min) !== null && num(hour) !== null && dom === '*' && mon === '*' && /^[0-7]$/.test(dow)) {
-    return t('sched.cron_weekly_at', { day: t(`sched.day_${Number(dow) % 7}`), time: hhmm() })
+    return t('sched.cron_weekly_at', { day: t(`sched.day_${finiteN(dow, 0) % 7}`), time: hhmm() })
   }
   if (num(min) !== null && num(hour) !== null && num(dom) !== null && mon === '*' && dow === '*') {
     return t('sched.cron_monthly_at', { day: num(dom), time: hhmm() })

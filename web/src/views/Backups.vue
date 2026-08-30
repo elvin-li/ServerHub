@@ -350,8 +350,8 @@ function fmt(t) {
 }
 
 function sizeMb(value) {
-  const n = Number(value)
-  return Number.isFinite(n) ? `${n} MB` : '—'
+  const n = finiteN(value, null)
+  return n != null && Number.isFinite(n) ? `${n} MB` : '—'
 }
 
 function layerPresent(layer) {

@@ -67,7 +67,7 @@
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createVmConsoleSession } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asRecord, finiteText } from '../lib/finite'
+import { asRecord, finiteN, finiteText } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 
 const props = defineProps({
@@ -94,8 +94,8 @@ const viewOnlyLocked = computed(() => Boolean(asRecord(asRecord(props.vm).consol
 const statusLabel = computed(() => t(`vms.console_status_${finiteText(status.value, 'failed')}`))
 
 function finiteSecs(value) {
-  const n = Number(value)
-  return Number.isFinite(n) && n >= 0 ? n : '—'
+  const n = finiteN(value, null)
+  return n != null && Number.isFinite(n) && n >= 0 ? n : '—'
 }
 
 function sameOriginWebSocketUrl(rawUrl) {

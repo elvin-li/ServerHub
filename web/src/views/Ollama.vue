@@ -383,7 +383,7 @@ import {
 } from '../api/client'
 import { injectI18n } from '../i18n'
 import { copyToClipboard } from '../lib/clipboard'
-import { asArray, asRecord, finiteText } from '../lib/finite'
+import { asArray, asRecord, finiteN as finiteNum, finiteText } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import { useDismissable } from '../composables/useDismissable'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
@@ -491,8 +491,8 @@ async function scrollChat() {
 }
 
 function finiteN(v) {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : '—'
+  const n = finiteNum(v, null)
+  return n != null && Number.isFinite(n) ? n : '—'
 }
 
 /** What an empty resident/models table really means.
@@ -508,8 +508,8 @@ function emptyListText(emptyKey) {
 }
 
 function fmtSize(n) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v <= 0) return '—'
+  const v = finiteNum(n, null)
+  if (v == null || !Number.isFinite(v) || v <= 0) return '—'
   if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB'
   if (v >= 1e6) return (v / 1e6).toFixed(0) + ' MB'
   return (v / 1e3).toFixed(0) + ' KB'

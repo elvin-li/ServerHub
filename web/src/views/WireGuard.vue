@@ -744,8 +744,8 @@ const peerFilename = computed(() => {
 })
 
 function relativeAge(seconds) {
-  const s = Number(seconds)
-  if (!Number.isFinite(s) || s < 0) return '—'
+  const s = finiteN(seconds, null)
+  if (s == null || !Number.isFinite(s) || s < 0) return '—'
   if (s < 60) return t('wg.age_seconds', { n: s })
   if (s < 3600) return t('wg.age_minutes', { n: Math.floor(s / 60) })
   if (s < 86400) return t('wg.age_hours', { n: Math.floor(s / 3600) })
