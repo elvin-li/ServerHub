@@ -925,7 +925,9 @@ def _build_listing(now: float, sig: str) -> list:
         # UI defaults: show empty for __RANDOM__ so install mints once
         vars_out = []
         values_for_url: dict[str, str] = {}
-        for v in meta.get("vars") or []:
+        for v in meta.get("vars") if _isinst(meta.get("vars"), list) else []:
+            if not _isinst(v, dict):
+                continue
             vv = dict(v)
             if vv.get("default") == "__RANDOM__":
                 vv["default"] = ""
@@ -1427,7 +1429,9 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             remapped.append(f"{name} {wanted} -> {chosen}")
         return str(chosen)
 
-    for v in meta.get("vars") or []:
+    for v in meta.get("vars") if _isinst(meta.get("vars"), list) else []:
+        if not _isinst(v, dict):
+            continue
         name = v["name"]
         raw_default = v.get("default")
         supplied = bool(variables and name in variables and variables[name] not in (None, ""))
@@ -1577,7 +1581,7 @@ def install_template(template_id: str, variables: dict | None = None) -> dict:
             readme += ["## Notes", notes, ""]
         secret_names = {
             _plain_str(v.get("name"))
-            for v in (meta.get("vars") or [])
+            for v in (meta.get("vars") if _isinst(meta.get("vars"), list) else [])
             if _isinst(v, dict) and v.get("secret")
         }
         redacted = {
