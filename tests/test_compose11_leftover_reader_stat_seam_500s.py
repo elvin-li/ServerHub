@@ -516,6 +516,14 @@ class ValidateEntryGateTests(_Compose11Sandbox):
         out = compose_svc.validate_compose_text(_liar(str))
         self.assertFalse(out.get("ok"))
 
+    def test_class_bomb_yaml_doc_is_a_verdict_not_a_raise(self):
+        """yaml.safe_load answering a leftover whose ``__class__`` raises
+        used to 500 at the bare ``isinstance(doc, dict)`` gate."""
+        with mock.patch.object(compose_svc.yaml, "safe_load", return_value=ClassBomb()):
+            out = compose_svc.validate_compose_text(VALID_COMPOSE)
+        self.assertFalse(out.get("ok"))
+        self.assertIsInstance(out.get("message"), str)
+
     def test_stays_immune_stack_sweep_still_clean(self):
         # The whole compose surface stays sub-500 with the fixes in place.
         for resp in (

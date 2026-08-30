@@ -491,7 +491,7 @@ def validate_compose_text(content: str, cwd: str | None = None) -> dict:
         # TypeError/ValueError/AttributeError/KeyError: leftover ``!!timestamp .inf``,
         # ``2026-13-01``, a 5000-digit int, or ``!!bool 2`` are not YAMLError.
         return {"ok": False, "message": exc_detail(e, 800)}
-    if not isinstance(doc, dict):
+    if not _isa(doc, dict):
         return {"ok": False, "message": "compose file must be a YAML mapping"}
     # _disk_text + _isa, not a bare isinstance + bound strip: a leftover
     # cwd whose ``__class__`` is a raising property, or a str-subclass
@@ -668,10 +668,10 @@ def create_stack(stack_id: str, name: str | None, content: str) -> dict:
 
     def apply(data: dict) -> None:
         stacks = data.get("stacks")
-        if not isinstance(stacks, list):
+        if not _isa(stacks, list):
             stacks = []
             data["stacks"] = stacks
-        if any(isinstance(entry, dict) and entry.get("id") == stack_id for entry in stacks):
+        if any(_isa(entry, dict) and _row_get(entry, "id") == stack_id for entry in stacks):
             return
         stacks.append({
             "id": stack_id,
