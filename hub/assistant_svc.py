@@ -73,7 +73,7 @@ def _isa(value, types) -> bool:
 
     ``isinstance`` consults ``value.__class__`` whenever the real type does
     not already match, so a leftover object whose ``__class__`` is a raising
-    property blew up the *gate itself* — every ``isinstance(panel, dict)``
+    property blew up the *gate itself* — every ``_isa(panel, dict)``
     outside a try, including the ones ``suggest_panels`` runs inside the
     router's own error fallback, where the re-raise was a guaranteed 500 on
     POST /api/assistant/ask.  A value the probe cannot classify is junk the
@@ -668,7 +668,7 @@ def _jsonable(value, depth: int = 0):
 def _panel_id(raw) -> str:
     """Catalog row identity as text; ``""`` drops the row.
 
-    The ``jobs._task_id`` rule.  The strict ``isinstance(pid, str)`` gate
+    The ``jobs._task_id`` rule.  The strict ``_isa(pid, str)`` gate
     silently wiped a numeric-id row (a hand-edited ``"id": 42`` — or a YAML /
     plist loader swap, which loads hex/octal *already-int* and uncapped) from
     every assistant answer at once: GET /api/assistant/catalog lost the Cmd+K
@@ -676,7 +676,7 @@ def _panel_id(raw) -> str:
     path lost the ``here`` context.  A renderable int coerces through the
     ``str()`` probe; an over-cap leftover — whose ``str()`` raises the same
     digit-cap ValueError ``json.dumps`` would — drops only its row.  bool
-    passes ``isinstance(int)`` and must not become ``"True"``.
+    passes ``_isa(int)`` and must not become ``"True"``.
     """
     if _isa(raw, str):
         # ``_utf8_text`` now recovers genuine renderable storage behind a
@@ -702,14 +702,14 @@ def _panel_id(raw) -> str:
 
 def _load_object(name: str) -> dict:
     data = _load_json(name)
-    return data if isinstance(data, dict) else {}
+    return data if _isa(data, dict) else {}
 
 
 def _load_list(name: str) -> list[dict]:
     data = _load_json(name)
-    if not isinstance(data, list):
+    if not _isa(data, list):
         return []
-    return [row for row in data if isinstance(row, dict)]
+    return [row for row in data if _isa(row, dict)]
 
 
 def _compile(pattern: object) -> re.Pattern[str]:
@@ -736,7 +736,7 @@ _panel_word = _INTENTS.get("panel_word")
 _PANEL_WORDS = tuple(
     text.lower() for w in _panel_word
     if w is not None and (text := _utf8_text(w))
-) if isinstance(_panel_word, list) else ()
+) if _isa(_panel_word, list) else ()
 PANELS: tuple[dict[str, Any], ...] = tuple(_load_list("assistant_panels.json"))
 
 
@@ -774,7 +774,7 @@ def _panel_rows() -> list:
 _BLURBS: dict[str, dict[str, str]] = {
     str(key): value
     for key, value in _load_object("assistant_blurbs.json").items()
-    if isinstance(value, dict)
+    if _isa(value, dict)
 }
 
 
@@ -855,7 +855,7 @@ def resolve_path(path: str | None, locale: str | None = None) -> dict | None:
                     break
     if hit is None:
         return None
-    # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used to
+    # _panel_id, not an _isa(pid, str) gate: a numeric-id row used to
     # lose the page turn's ``here`` context even though its path matched.
     pid, pth = _panel_id(_dget(hit, "id")), _dget(hit, "path")
     if not pid or not _isa(pth, str):
@@ -876,7 +876,7 @@ def catalog(locale: str | None = None) -> list[dict]:
     for panel in _panel_rows():
         if not _isa(panel, dict):
             continue
-        # _panel_id, not an isinstance(pid, str) gate: a numeric-id row used
+        # _panel_id, not an _isa(pid, str) gate: a numeric-id row used
         # to vanish from the Cmd+K catalog (the numeric-YAML-ids rule).  The
         # path stays a str gate — it is the SPA navigation target, and a
         # non-string path is junk the palette cannot open.
@@ -966,7 +966,7 @@ def match_panels(query: str, locale: str | None = None, limit: int = 6) -> list[
     for panel in _panel_rows():
         if not _isa(panel, dict):
             continue
-        # _panel_id, not an isinstance(pid, str) gate: a find used to skip a
+        # _panel_id, not an _isa(pid, str) gate: a find used to skip a
         # numeric-id row even when the query hit its alias dead-on.
         pid, pth = _panel_id(_dget(panel, "id")), _dget(panel, "path")
         # The coerced text: a lying-``__class__`` path claiming str coerces

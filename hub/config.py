@@ -178,7 +178,7 @@ def load_yaml_int_capped(text):
     try:
         return yaml.safe_load(text)
     except ValueError as exc:
-        if isinstance(exc, UnicodeDecodeError):
+        if _isa(exc, UnicodeDecodeError):
             raise
         # May re-raise ValueError for non-digit-cap corruption (a bad
         # ``2026-13-01`` date): the caller's corrupt-document path applies.
@@ -187,20 +187,20 @@ def load_yaml_int_capped(text):
 
 def _as_config(data) -> dict:
     """YAML that is not a mapping cannot answer ``.get`` and 500s every route."""
-    if not isinstance(data, dict):
+    if not _isa(data, dict):
         return {}
     patch = {}
     for key in _MAP_KEYS:
-        if key in data and not isinstance(data[key], dict):
+        if key in data and not _isa(data[key], dict):
             patch[key] = {}
     for key in _LIST_KEYS:
         if key not in data:
             continue
         raw = data[key]
-        if not isinstance(raw, list):
+        if not _isa(raw, list):
             patch[key] = []
         elif key != "groups_order":
-            cleaned = [x for x in raw if isinstance(x, dict)]
+            cleaned = [x for x in raw if _isa(x, dict)]
             if cleaned != raw:
                 patch[key] = cleaned
     if not patch:
@@ -283,7 +283,7 @@ def _read_disk_for_mutate() -> dict:
         TypeError, ValueError, AttributeError, KeyError,
     ):
         raise api_error("settings.config_unreadable")
-    if not isinstance(data, dict):
+    if not _isa(data, dict):
         # A whole-document paste (a compose file, a bare list) is content the
         # operator can still rescue by hand; overwriting it with settings
         # would not be.
@@ -473,8 +473,8 @@ def _env_text(value) -> str:
     died *before* its try block and left its row running forever — instead
     of degrading that one entry.
     """
-    if isinstance(value, (bytes, bytearray)):
-        base = bytes if isinstance(value, bytes) else bytearray
+    if _isa(value, (bytes, bytearray)):
+        base = bytes if _isa(value, bytes) else bytearray
         try:
             value = base.decode(value, "utf-8", "replace")
         except _CONTROL_FLOW:
@@ -483,7 +483,7 @@ def _env_text(value) -> str:
             return ""
     elif value is None:
         return ""
-    elif not isinstance(value, str):
+    elif not _isa(value, str):
         try:
             value = str(value)
         except RecursionError:
@@ -573,11 +573,11 @@ def set_override(sid: str, patch: dict) -> dict:
 
     def apply(data: dict) -> None:
         ov = data.get("overrides")
-        if not isinstance(ov, dict):
+        if not _isa(ov, dict):
             ov = {}
             data["overrides"] = ov
         cur = ov.get(sid)
-        cur = dict(cur) if isinstance(cur, dict) else {}
+        cur = dict(cur) if _isa(cur, dict) else {}
         for k, v in (patch or {}).items():
             if v is None:
                 cur.pop(k, None)
@@ -597,7 +597,7 @@ def drop_override(sid: str) -> None:
 
     def apply(data: dict) -> None:
         ov = data.get("overrides")
-        if isinstance(ov, dict):
+        if _isa(ov, dict):
             ov.pop(sid, None)
 
     mutate(apply)
@@ -1015,13 +1015,13 @@ def panel_locale() -> str:
     # 500 instead of the default locale.
     try:
         data = cfg()
-        settings = dict.get(data, "settings") if isinstance(data, dict) else None
-        ui = dict.get(settings, "ui") if isinstance(settings, dict) else None
+        settings = dict.get(data, "settings") if _isa(data, dict) else None
+        ui = dict.get(settings, "ui") if _isa(settings, dict) else None
     except _CONTROL_FLOW:
         raise
     except BaseException:
         return DEFAULT_UI_LOCALE
-    ui = ui if isinstance(ui, dict) else {}
+    ui = ui if _isa(ui, dict) else {}
     try:
         _locale_raw = dict.get(ui, "locale")
         # Guarded str(), not a bare one: a hand-edited YAML hex/octal locale

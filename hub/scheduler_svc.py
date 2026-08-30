@@ -875,11 +875,11 @@ def save_job(record: dict, *, mode: str = "upsert") -> bool:
     """
     def apply(data: dict) -> None:
         jobs = data.get("schedules")
-        if not isinstance(jobs, list):
+        if not _isinst(jobs, list):
             jobs = []
             data["schedules"] = jobs
         for i, j in enumerate(jobs):
-            if isinstance(j, dict) and _matches_id(j, record["id"]):
+            if _isinst(j, dict) and _matches_id(j, record["id"]):
                 if mode == "create":
                     raise _NoChange
                 jobs[i] = record
@@ -900,7 +900,7 @@ def delete_job(job_id: str) -> bool:
 
     def apply(data: dict) -> None:
         jobs = data.get("schedules") or []
-        kept = [j for j in jobs if not (isinstance(j, dict) and _matches_id(j, job_id))]
+        kept = [j for j in jobs if not (_isinst(j, dict) and _matches_id(j, job_id))]
         found["hit"] = len(kept) != len(jobs)
         data["schedules"] = kept
 
@@ -922,9 +922,9 @@ def set_enabled(job_id: str, enabled: bool) -> dict | None:
 
     def apply(data: dict) -> None:
         jobs = data.get("schedules")
-        rows = jobs if isinstance(jobs, list) else []
+        rows = jobs if _isinst(jobs, list) else []
         for j in rows:
-            if isinstance(j, dict) and _matches_id(j, job_id):
+            if _isinst(j, dict) and _matches_id(j, job_id):
                 j["enabled"] = bool(enabled)
                 hit.update(j)
                 return
@@ -954,8 +954,8 @@ def _record_run(entry: dict) -> None:
     with _runs_lock, secure_io.file_lock(RUNS_PATH):
         try:
             RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            payload = _jsonable(entry) if isinstance(entry, dict) else None
-            if not isinstance(payload, dict):
+            payload = _jsonable(entry) if _isinst(entry, dict) else None
+            if not _isinst(payload, dict):
                 return
             secure_io.append_text(
                 RUNS_PATH,
@@ -1004,8 +1004,8 @@ def runs(job_id: str | None = None, limit: int = 50) -> list[dict]:
             rec = safe_json_loads(raw)
         except (ValueError, RecursionError):
             continue
-        rec = _jsonable(rec) if isinstance(rec, dict) else None
-        if not isinstance(rec, dict):
+        rec = _jsonable(rec) if _isinst(rec, dict) else None
+        if not _isinst(rec, dict):
             continue
         if job_id and rec.get("job") != job_id:
             continue

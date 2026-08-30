@@ -867,7 +867,7 @@ def _jsonable(value, depth: int = 0):
     # falls through to the final text probe like any other leftover.
     if value is None:
         return value
-    if _isa(value, bool):
+    if type(value) is bool:
         # ``bool`` is final, so a value that answers the bool gate while
         # its real type is not bool is a *lying* ``__class__`` impostor
         # (the modules9 rule).  The old arm returned it raw and Starlette's
@@ -1026,7 +1026,7 @@ def _append_history(record: dict) -> None:
     # a write from a stale snapshot dropped the row the other just recorded.
     with _history_lock, file_lock(HISTORY_PATH):
         history = _load_history()
-        history.append(_jsonable(record) if isinstance(record, dict) else {})
+        history.append(_jsonable(record) if _isa(record, dict) else {})
         # Bounded so a daily schedule cannot grow the file without limit.
         del history[:-500]
         try:
@@ -1148,7 +1148,7 @@ def _schedule_text(value) -> str:
     silently stopping every scheduled self-test.  An unrenderable value
     coerces to "" so the caller's own fallback ("off" / "short" / drop the
     device entry) answers instead; a renderable int still coerces via str()
-    rather than being hidden behind an isinstance(str) gate.
+    rather than being hidden behind an _isa(str) gate.
     """
     if value is None:
         return ""
@@ -1589,7 +1589,7 @@ def abort_test(device: str) -> dict:
         # _isa: same ``__class__``-bomb gate as start_test, on
         # POST /api/smart/abort.
         cleaned = _jsonable(result) if _isa(result, dict) else {}
-        return cleaned if isinstance(cleaned, dict) else {"ok": False, "error": "failed"}
+        return cleaned if _isa(cleaned, dict) else {"ok": False, "error": "failed"}
     invalidate()
     return {"ok": True, "message": (_as_text(out) or _as_text(err)).strip()[-300:]}
 

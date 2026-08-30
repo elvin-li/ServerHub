@@ -517,7 +517,7 @@ def _cfg_text(value) -> str | None:
 def _exact_str(value) -> str | None:
     """Exact-str copy of *value* without calling any overridable method.
 
-    ``agent_keywords`` / ``extra_paths`` entries pass ``isinstance(x, str)``
+    ``agent_keywords`` / ``extra_paths`` entries pass ``_isa(x, str)``
     as odd subclasses too, and the bound ``.strip()`` that followed used to
     raise out of :func:`agent_keywords` / :func:`config_archive_extra_paths`
     and 500 POST /api/backups/configs.  surrogatepass, not the
@@ -580,7 +580,7 @@ def _mapping_get(mapping, key):
     """Field read that a dict-subclass ``.get`` bomb cannot 500.
 
     The ``hub.ups_svc._mapping_get`` rule, which these cfg-readers never
-    got: ``isinstance(x, dict)`` passes an odd subclass whose ``get``
+    got: ``_isa(x, dict)`` passes an odd subclass whose ``get``
     raises, and one such block planted as ``backups`` / ``config_archive``
     / a postgres entry used to raise out of :func:`pg_targets` /
     :func:`config_archive_extra_paths` and 500 GET /api/backups,
@@ -834,8 +834,8 @@ def _pg_password(target_id: str) -> str:
     except (OSError, ValueError, RecursionError):
         # RecursionError: leftover deeply-nested credentials is not ValueError.
         return ""
-    entry = raw.get(target_id) if isinstance(raw, dict) else None
-    if not isinstance(entry, dict):
+    entry = raw.get(target_id) if _isa(raw, dict) else None
+    if not _isa(entry, dict):
         return ""
     return str(entry.get("password") or "")
 
@@ -1143,7 +1143,7 @@ def _jsonable(value, depth: int = 0):
     # of riding the claimed rank into the encoder.
     if value is None:
         return value
-    if _isa(value, bool):
+    if type(value) is bool:
         # ``bool`` cannot be subclassed, so anything passing this gate that
         # is not the exact type is a lying ``__class__`` impostor (the
         # dash10/json9 shape).  It used to be returned verbatim — every
@@ -1295,8 +1295,8 @@ def _json_object(path: Path) -> dict:
         # a torn panel_status.json used to 500 the Backups page.
         # RecursionError: leftover deeply-nested status is not ValueError.
         return {}
-    raw = _jsonable(raw) if isinstance(raw, dict) else {}
-    return raw if isinstance(raw, dict) else {}
+    raw = _jsonable(raw) if _isa(raw, dict) else {}
+    return raw if _isa(raw, dict) else {}
 
 
 def _path_state(raw: object) -> dict:
@@ -1312,7 +1312,7 @@ def _path_state(raw: object) -> dict:
 
 def _status_snippet(raw: dict) -> dict:
     """Keep only the fields the Backups page renders — never the whole file."""
-    if not isinstance(raw, dict):
+    if not _isa(raw, dict):
         return {}
     out = {}
     for key in ("ok", "last_success", "last_attempt", "size_human", "reason"):
@@ -1349,7 +1349,7 @@ def immich_layers() -> dict:
     empty on this host.
     """
     cfg = _json_object(PHOTOSHUB_CFG)
-    immich = cfg.get("immich") if isinstance(cfg.get("immich"), dict) else {}
+    immich = cfg.get("immich") if _isa(cfg.get("immich"), dict) else {}
     media = str(immich.get("media_location") or _immich_media_from_env() or "").strip()
     originals = _path_state(cfg.get("photos_library"))
     bridge = _path_state(immich.get("bridge_mount") or cfg.get("bridge_dir"))
@@ -1374,15 +1374,15 @@ def immich_layers() -> dict:
         hint = restore_hint(last["name"])
         restore = apply_restore_path(hint, str(BACKUP_ROOT / last["name"]))
     panel = _json_object(PHOTOSHUB_STATE / "panel_status.json")
-    orig_snap = panel.get("originals") if isinstance(panel.get("originals"), dict) else {}
-    bridge_snap = panel.get("bridge") if isinstance(panel.get("bridge"), dict) else {}
+    orig_snap = panel.get("originals") if _isa(panel.get("originals"), dict) else {}
+    bridge_snap = panel.get("bridge") if _isa(panel.get("bridge"), dict) else {}
     backup = _status_snippet(_json_object(PHOTOSHUB_STATE / "backup_status.json"))
     if not backup:
-        backup = _status_snippet(panel.get("backup") if isinstance(panel.get("backup"), dict) else {})
+        backup = _status_snippet(panel.get("backup") if _isa(panel.get("backup"), dict) else {})
     external = _status_snippet(_json_object(PHOTOSHUB_STATE / "external_backup_status.json"))
     if not external:
         external = _status_snippet(
-            panel.get("external_backup") if isinstance(panel.get("external_backup"), dict) else {}
+            panel.get("external_backup") if _isa(panel.get("external_backup"), dict) else {}
         )
     originals_extra = {}
     if orig_snap.get("local_original_pct") is not None:
@@ -1414,7 +1414,7 @@ def immich_layers() -> dict:
     # Leftover Infinity in backup_status.json / panel_status.json used to
     # leak into GET /api/backups under Starlette's allow_nan=False encoder.
     cleaned = _jsonable(payload)
-    return cleaned if isinstance(cleaned, dict) else payload
+    return cleaned if _isa(cleaned, dict) else payload
 
 
 def immich_backup_info() -> dict:
@@ -2005,30 +2005,30 @@ def _stack_mounts(compose_path: str, workdir: str | None) -> tuple[list[str], li
     except (TypeError, ValueError, RecursionError) as e:
         # RecursionError: leftover deeply-nested compose JSON is not ValueError.
         return [], [], "unparsable compose config: " + (_as_text(e) or "error")
-    if not isinstance(resolved, dict):
+    if not _isa(resolved, dict):
         return [], [], "compose config is not an object"
 
     volume_names: dict[str, str] = {}
     declared = resolved.get("volumes") or {}
-    if not isinstance(declared, dict):
+    if not _isa(declared, dict):
         declared = {}
     for key, spec in declared.items():
-        name = (spec or {}).get("name") if isinstance(spec, dict) else None
+        name = (spec or {}).get("name") if _isa(spec, dict) else None
         volume_names[key] = str(name or key)
 
     binds: list[str] = []
     volumes: list[str] = []
     services = resolved.get("services") or {}
-    if not isinstance(services, dict):
+    if not _isa(services, dict):
         services = {}
     for svc in services.values():
-        if not isinstance(svc, dict):
+        if not _isa(svc, dict):
             continue
         raw_vols = svc.get("volumes")
-        if not isinstance(raw_vols, list):
+        if not _isa(raw_vols, list):
             continue
         for entry in raw_vols:
-            if not isinstance(entry, dict):
+            if not _isa(entry, dict):
                 continue
             kind = entry.get("type")
             source = str(entry.get("source") or "")
@@ -2084,7 +2084,7 @@ def _write_inflight(stack_id: str, compose_path: str) -> None:
             "compose_path": compose_path,
             "ts": ts,
         })
-        if not isinstance(payload, dict):
+        if not _isa(payload, dict):
             payload = {}
         secure_io.replace_bytes(
             _inflight_marker(stack_id),
@@ -2128,7 +2128,7 @@ def recover_interrupted_stack_backups() -> list[dict]:
             )
         except (OSError, ValueError, RecursionError):
             info = {}
-        if not isinstance(info, dict):
+        if not _isa(info, dict):
             info = {}
         stack_id = str(info.get("stack") or marker.name[len(_INFLIGHT_PREFIX):])
         compose_path = str(info.get("compose_path") or "")

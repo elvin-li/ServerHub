@@ -251,7 +251,7 @@ def _jsonable(value, depth: int = 0):
     # and 500 GET /api/ollama/pull/log raw (coded-500 on /api/ollama/status).
     if value is None:
         return value
-    if _isa(value, bool):
+    if type(value) is bool:
         # ``bool`` cannot be subclassed, so anything passing this gate that
         # is not the exact type is a *lying* ``__class__`` impostor (the
         # dash10/json9 shape).  It used to be returned verbatim — every
@@ -378,9 +378,9 @@ def _jsonable(value, depth: int = 0):
 
 def _safe_int(raw, default: int = 0) -> int:
     """``int(inf)`` OverflowError is not ValueError; leftover 1e400 used to 500."""
-    if isinstance(raw, bool) or raw in (None, ""):
+    if type(raw) is bool or raw in (None, ""):
         return default
-    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+    if _isa(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
         return default
     try:
         n = int(raw)
@@ -430,7 +430,7 @@ def _as_text(value) -> str:
 def settings_text(value) -> str:
     """A hand-edited settings scalar as sanitized text.
 
-    ``_as_text`` gates on ``isinstance(str)``, which silently dropped numeric
+    ``_as_text`` gates on ``_isa(str)``, which silently dropped numeric
     YAML values: a hand-edited ``label: 2023`` read back as int, discovery
     fell through to the plist scan, and Start/Stop targeted a different
     agent.  A ``str()`` probe keeps the numeric id — guarded, because a YAML
@@ -469,7 +469,7 @@ def settings_text(value) -> str:
         raise
     except BaseException:
         return ""
-    if not isinstance(text, str):
+    if not _isa(text, str):
         return ""
     return str.encode(text, "utf-8", "replace").decode("utf-8")
 
@@ -477,7 +477,7 @@ def settings_text(value) -> str:
 def _mapping_get(mapping, key):
     """Field read that a dict-subclass ``.get`` bomb cannot 500.
 
-    The ``hub.ups_svc._mapping_get`` rule: ``isinstance(x, dict)`` passes an
+    The ``hub.ups_svc._mapping_get`` rule: ``_isa(x, dict)`` passes an
     odd subclass whose ``get`` raises, and one such settings block used to
     raise out of ``base_url()`` into every daemon POST (a lying 502) and take
     GET /api/ollama/status down whole.  ``dict.get`` reads the real storage
@@ -688,7 +688,7 @@ def _api(path: str, payload: dict | None = None, timeout: float = PROBE_TIMEOUT)
     except (ValueError, RecursionError):
         # RecursionError: leftover deeply-nested daemon JSON is not ValueError.
         raise ValueError("response is not json")
-    if not isinstance(parsed, dict):
+    if not _isa(parsed, dict):
         raise ValueError("response is not an object")
     return parsed
 
@@ -708,17 +708,17 @@ def _looks_engine_down(exc) -> bool:
     original coded error.  URLError wraps the socket error in ``reason``.
     """
     for _ in range(4):
-        if isinstance(exc, urllib.error.HTTPError):
+        if _isa(exc, urllib.error.HTTPError):
             return False
-        if isinstance(exc, urllib.error.URLError):
+        if _isa(exc, urllib.error.URLError):
             exc = exc.reason
             continue
         break
-    if isinstance(exc, TimeoutError):
+    if _isa(exc, TimeoutError):
         return False
-    if isinstance(exc, ConnectionError):
+    if _isa(exc, ConnectionError):
         return True
-    return isinstance(exc, OSError) and exc.errno in _DOWN_ERRNOS
+    return _isa(exc, OSError) and exc.errno in _DOWN_ERRNOS
 
 
 def _engine_confirmed_down() -> bool:
@@ -753,7 +753,7 @@ def _daemon_error(exc, fallback_code: str):
 
 def _expires_forever(expires_at: str) -> bool:
     """keep_alive=-1 shows up as a far-future expires_at (year 2318 and alike)."""
-    text = expires_at if isinstance(expires_at, str) else ""
+    text = expires_at if _isa(expires_at, str) else ""
     m = re.match(r"(\d{4})-", text)
     return bool(m) and int(m.group(1)) >= _FOREVER_YEAR
 
@@ -761,14 +761,14 @@ def _expires_forever(expires_at: str) -> bool:
 def parse_tags(payload: dict) -> list[dict]:
     """Installed models from /api/tags, one flat dict per model."""
     out = []
-    models = (payload or {}).get("models") if isinstance(payload, dict) else None
-    if not isinstance(models, list):
+    models = (payload or {}).get("models") if _isa(payload, dict) else None
+    if not _isa(models, list):
         models = []
     for m in models:
-        if not isinstance(m, dict):
+        if not _isa(m, dict):
             continue
         details = m.get("details") or {}
-        if not isinstance(details, dict):
+        if not _isa(details, dict):
             details = {}
         caps = m.get("capabilities")
         out.append(_jsonable({
@@ -778,7 +778,7 @@ def parse_tags(payload: dict) -> list[dict]:
             "parameter_size": _as_text(details.get("parameter_size")),
             "quantization": _as_text(details.get("quantization_level")),
             "context_length": details.get("context_length"),
-            "capabilities": [_as_text(c) for c in caps] if isinstance(caps, list) else [],
+            "capabilities": [_as_text(c) for c in caps] if _isa(caps, list) else [],
             "modified": _as_text(m.get("modified_at")),
         }))
     return out
@@ -787,14 +787,14 @@ def parse_tags(payload: dict) -> list[dict]:
 def parse_ps(payload: dict) -> list[dict]:
     """Resident models from /api/ps, one flat dict per loaded model."""
     out = []
-    models = (payload or {}).get("models") if isinstance(payload, dict) else None
-    if not isinstance(models, list):
+    models = (payload or {}).get("models") if _isa(payload, dict) else None
+    if not _isa(models, list):
         models = []
     for m in models:
-        if not isinstance(m, dict):
+        if not _isa(m, dict):
             continue
         expires = m.get("expires_at")
-        expires = expires if isinstance(expires, str) else ""
+        expires = expires if _isa(expires, str) else ""
         out.append(_jsonable({
             "name": _as_text(m.get("name")) or _as_text(m.get("model")),
             "size": _safe_int(m.get("size")),
@@ -933,7 +933,7 @@ def _plist_label_if_ollama(path: Path) -> str | None:
         raise
     except BaseException:
         return None
-    if not isinstance(pl, dict):
+    if not _isa(pl, dict):
         return None
     try:
         haystack = repr(pl)
@@ -984,10 +984,10 @@ def _agent_origins(label: str | None = None) -> str:
         raise
     except BaseException:
         return ""
-    if not isinstance(pl, dict):
+    if not _isa(pl, dict):
         return ""
     env = pl.get("EnvironmentVariables")
-    if not isinstance(env, dict):
+    if not _isa(env, dict):
         return ""
     return _as_text(env.get("OLLAMA_ORIGINS")).strip()
 
@@ -1245,7 +1245,7 @@ def pull_state() -> dict:
         "started": _row_get("started"),
         "finished": _row_get("finished"),
     })
-    return state if isinstance(state, dict) else {
+    return state if _isa(state, dict) else {
         "running": False, "rc": None, "model": None,
         "started": None, "finished": None,
     }
@@ -1549,11 +1549,11 @@ def normalize_chat_messages(messages) -> list[dict]:
     cannot pin the resident 4b.  The last turn must be a non-empty user
     message — that is the prompt being sent.
     """
-    if not isinstance(messages, list) or not messages:
+    if not _isa(messages, list) or not messages:
         raise api_error("ollama.messages_required")
     out: list[dict] = []
     for raw in messages:
-        if not isinstance(raw, dict):
+        if not _isa(raw, dict):
             raise api_error("ollama.bad_message")
         role = str(raw.get("role") or "").strip()
         if role not in CHAT_ROLES:
@@ -1618,7 +1618,7 @@ def chat(name: str, messages: list, num_predict: int = 128) -> dict:
         raise
     except BaseException as e:
         raise _daemon_error(e, "ollama.chat_failed")
-    msg = resp.get("message") if isinstance(resp.get("message"), dict) else {}
+    msg = resp.get("message") if _isa(resp.get("message"), dict) else {}
     eval_count = _safe_int(resp.get("eval_count"))
     return _jsonable({
         "ok": True,
