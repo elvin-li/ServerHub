@@ -648,7 +648,7 @@ function probePhotoHub() {
   getPhotosHubStatus()
     .then((j) => {
       if (!stillOnShell(generation)) return
-      photoHubOk.value = Boolean(j?.photoshub_ok)
+      photoHubOk.value = Boolean(asRecord(j).photoshub_ok)
     })
     .catch(() => { /* keep last answer: a 502 is not "not installed" */ })
 }
