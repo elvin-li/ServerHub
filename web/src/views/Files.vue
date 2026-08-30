@@ -310,7 +310,7 @@ async function doMkdir() {
   const request = listRequest
   busy.value = true
   try {
-    await makeDirectory(currentPath.value, name, rootId.value)
+    const r = asRecord(await makeDirectory(currentPath.value, name, rootId.value))
     if (request !== listRequest) return
     toast(`✅ ${t('files.mkdir')}`)
     await loadList()
@@ -332,7 +332,7 @@ async function doRename(it) {
   const request = listRequest
   busy.value = true
   try {
-    await renameFile(row.path, name, rootId.value)
+    const r = asRecord(await renameFile(row.path, name, rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -354,7 +354,7 @@ async function doDeleteOne(it) {
   const request = listRequest
   busy.value = true
   try {
-    await deleteFile(row.path, rootId.value)
+    const r = asRecord(await deleteFile(row.path, rootId.value))
     if (request !== listRequest) return
     toast('✅')
     await loadList()
@@ -382,7 +382,7 @@ async function doDeleteSelected() {
   try {
     for (const path of paths) {
       try {
-        await deleteFile(path, rootId.value)
+        const r = asRecord(await deleteFile(path, rootId.value))
         if (request !== listRequest) return
         ok++
       } catch (e) {
@@ -432,7 +432,7 @@ async function uploadFiles(fileList) {
         fd.append('path', currentPath.value)
         if (rootId.value) fd.append('root_id', rootId.value)
         fd.append('file', file)
-        await uploadFile(fd)
+        const r = asRecord(await uploadFile(fd))
         if (request !== listRequest) return
         ok++
       } catch (e) {
