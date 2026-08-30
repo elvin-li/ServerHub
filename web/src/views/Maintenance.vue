@@ -10,7 +10,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(tasks).length }}</span>
+      <span class="meta-count" role="status">{{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(tasks).length) }}</span>
     </div>
     <!-- The standard failed-load banner every sibling list page uses. The old
          inline placeholder only rendered once the table had rows, so a failed

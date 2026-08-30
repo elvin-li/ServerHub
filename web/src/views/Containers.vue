@@ -27,7 +27,7 @@
       <!-- role=status: the count is the only feedback the filter box and the
            hide-system toggle give, and it changed silently for a screen
            reader. Same pattern as the Services filter count. -->
-      <span class="meta-count" role="status">{{ asArray(filteredContainers).length }} / {{ asArray(containers).length }}</span>
+      <span class="meta-count" role="status">{{ finiteN(asArray(filteredContainers).length) }} / {{ finiteN(asArray(containers).length) }}</span>
       <button :disabled="busy" @click="doAll('start')">{{ t('docker.start_all') }}</button>
       <button :disabled="busy" @click="doAll('stop')">{{ t('docker.stop_all') }}</button>
       <button :disabled="busy" @click="doAll('pause')">{{ t('docker.pause_all') }}</button>
@@ -535,8 +535,8 @@ function scheduleRefresh(delay) {
 const containers = computed(() => asArray(asRecord(data.value).containers).map((c) => asRecord(c)))
 const stats = computed(() => asRecord(asRecord(data.value).stats))
 const engineMem = computed(() => {
-  const n = Number(engineInfo.value?.info?.MemTotal)
-  if (!Number.isFinite(n) || n <= 0) return '—'
+  const n = finiteN(asRecord(asRecord(engineInfo.value).info).MemTotal, null)
+  if (n == null || !Number.isFinite(n) || n <= 0) return '—'
   return (n / 2 ** 30).toFixed(1)
 })
 

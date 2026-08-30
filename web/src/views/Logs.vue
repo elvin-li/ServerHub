@@ -117,14 +117,14 @@ function fmtSize(n) {
   if (n == null || n === 0) return '0 B'
   const u = ['B', 'KB', 'MB', 'GB']
   let i = 0
-  let v = Number(n)
-  if (!Number.isFinite(v) || v < 0) return '—'
+  let v = finiteN(n, null)
+  if (v == null || !Number.isFinite(v) || v < 0) return '—'
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
 }
 function fmtCount(n) {
-  const v = Number(n)
-  return Number.isFinite(v) && v >= 0 ? v : '—'
+  const v = finiteN(n, null)
+  return v != null && Number.isFinite(v) && v >= 0 ? v : '—'
 }
 
 async function loadSources() {

@@ -21,7 +21,7 @@
         <!-- role=status: the count is the only feedback the search box, category
              select and toggles give, and it changed silently for a screen
              reader. Same pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ asArray(filtered).length }} / {{ asArray(catalog).length }}</span>
+        <span class="meta-count" role="status">{{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(catalog).length) }}</span>
         <select v-model="cat" class="cat-select" :aria-label="t('apps.filter_category')">
           <option v-for="c in asArray(categories)" :key="finiteText(asRecord(c).id)" :value="asRecord(c).id">
             {{ catLabel(asRecord(c).id) }}{{ countLabel(asRecord(c).id) }}
@@ -160,7 +160,7 @@
         <!-- role=status: the count is the only feedback the search box and kind
              select give, and it changed silently for a screen reader. Same
              pattern as the Services filter count. -->
-        <span class="meta-count" role="status">{{ asArray(filteredManaged).length }} / {{ asArray(asRecord(managed).items).length }}</span>
+        <span class="meta-count" role="status">{{ finiteN(asArray(filteredManaged).length) }} / {{ finiteN(asArray(asRecord(managed).items).length) }}</span>
         <select v-model="mkind" class="cat-select" :aria-label="t('apps.filter_kind')">
           <option value="all">{{ t('apps.cat_all') }}</option>
           <option value="native">{{ t('apps.kind_native') }}</option>

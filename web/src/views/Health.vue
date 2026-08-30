@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ asArray(filtered).length }} / {{ asArray(asRecord(data).checks).length }}
+        {{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(asRecord(data).checks).length) }}
       </span>
     </div>
 

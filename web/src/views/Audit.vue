@@ -11,7 +11,7 @@
       <!-- role=status: the count is the only feedback the filter box gives,
            and it changed silently for a screen reader. Same pattern as the
            Services filter count. -->
-      <span class="meta-count" role="status">{{ asArray(filteredRows).length }} / {{ asArray(rows).length }}</span>
+      <span class="meta-count" role="status">{{ finiteN(asArray(filteredRows).length) }} / {{ finiteN(asArray(rows).length) }}</span>
       <span class="meta">{{ t('audit.redaction_note') }}</span>
     </div>
 
@@ -184,8 +184,8 @@ async function refresh(manual = false) {
     } catch {
       entries.value = []
     }
-    const retained = Number(d.retained_lines)
-    maxRetained.value = Number.isFinite(retained) && retained >= 0 ? retained : 0
+    const retained = finiteN(d.retained_lines, null)
+    maxRetained.value = retained != null && Number.isFinite(retained) && retained >= 0 ? retained : 0
     loadError.value = ''
   } catch (e) {
     if (generation !== loadGeneration || !pageAlive) return false

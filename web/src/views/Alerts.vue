@@ -30,7 +30,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ asArray(filtered).length }} / {{ asArray(alerts).length }}
+        {{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(alerts).length) }}
       </span>
     </div>
     <div class="table-wrap">
@@ -76,7 +76,7 @@
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { forceAlertCheck, getAlerts, testNotify } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText, fmtTs } from '../lib/finite'
+import { asArray, asRecord, finiteN, finiteText, fmtTs } from '../lib/finite'
 import { startVisibleInterval } from '../lib/poll'
 import SkeletonLoader from '../components/SkeletonLoader.vue'
 import LoadFailure from '../components/LoadFailure.vue'

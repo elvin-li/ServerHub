@@ -110,8 +110,8 @@ function backendHint(b) {
   return `${finiteText(bk.kind, '') || 'svc'}: ${name}${st ? ' · ' + st : ''}`
 }
 function finiteMs(ms) {
-  const n = Number(ms)
-  return Number.isFinite(n) && n >= 0 ? n : null
+  const n = finiteN(ms, null)
+  return n != null && Number.isFinite(n) && n >= 0 ? n : null
 }
 
 async function refresh(force = false) {

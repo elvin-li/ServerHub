@@ -2551,6 +2551,8 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.Containers/)
     expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\)\.info\)\.NCPU/)
+    expect(containers).toMatch(/finiteN\(asRecord\(asRecord\(engineInfo\.value\)\.info\)\.MemTotal/)
+    expect(containers).toMatch(/finiteN\(asArray\(filteredContainers\)\.length\)/)
     expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
     expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
@@ -2618,6 +2620,9 @@ describe('leftover Infinity interpolations', () => {
     const apps = readFileSync(resolve(SRC, 'views/Apps.vue'), 'utf8')
     expect(apps).toMatch(/from ['"][^'"]*lib\/finite/)
     expect(apps).toMatch(/finiteN\(asRecord\(asRecord\(managed\)\.counts\)\.total\)/)
+    expect(apps).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
+    expect(apps).toMatch(/finiteN\(asArray\(catalog\)\.length\)/)
+    expect(apps).toMatch(/finiteN\(asArray\(filteredManaged\)\.length\)/)
     expect(apps).toMatch(/finiteN\(autostart\.counts\.autostart_on\)/)
     expect(apps).not.toMatch(/\{\{\s*managed\.counts\.total\s*\}\}/)
     expect(apps).toMatch(/finiteN\(overview\.value\.total, null\)/)
@@ -3260,6 +3265,8 @@ describe('leftover Infinity interpolations', () => {
     expect(health).toMatch(/v-for="c in asArray\(filtered\)"/)
     expect(health).toMatch(/asRecord\(data\)\.healthy \? t\('common\.healthy'\)/)
     expect(health).toMatch(/asArray\(asRecord\(data\)\.checks\)/)
+    expect(health).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
+    expect(health).toMatch(/finiteN\(asArray\(asRecord\(data\)\.checks\)\.length\)/)
   })
 
   it('Users leftover counts and uids go through finiteN', () => {
@@ -3344,6 +3351,8 @@ describe('leftover Infinity interpolations', () => {
     expect(maintenance).toMatch(/asRecord\(await getMaintenanceLog/)
     expect(maintenance).toMatch(/asArray\(asRecord\(list\)\.tasks\)/)
     expect(maintenance).toMatch(/asRecord\(row\)/)
+    expect(maintenance).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
+    expect(maintenance).toMatch(/finiteN\(asArray\(tasks\)\.length\)/)
   })
 
   it('Account leftover recovery counts go through finiteN', () => {
@@ -3393,6 +3402,7 @@ describe('leftover Infinity interpolations', () => {
     expect(bookmarks).toMatch(/:href="finiteText\(asRecord\(b\)\.url, ''\)"/)
     expect(bookmarks).toMatch(/v-for="\(b, i\) in asArray\(asRecord\(data\)\.bookmarks\)"/)
     expect(bookmarks).toMatch(/asRecord\(await getBookmarks/)
+    expect(bookmarks).toMatch(/const n = finiteN\(ms, null\)/)
   })
 
   it('Alerts leftover timestamps go through fmtTs', () => {
@@ -3406,6 +3416,8 @@ describe('leftover Infinity interpolations', () => {
     expect(alerts).toMatch(/n: asArray\(r\.emitted\)\.length/)
     expect(alerts).not.toMatch(/'❌ ' \+ \(r\.message \|\| ''\)/)
     expect(alerts).toMatch(/'❌ ' \+ finiteText\(r\.message, ''\)/)
+    expect(alerts).toMatch(/finiteN\(asArray\(filtered\)\.length\)/)
+    expect(alerts).toMatch(/finiteN\(asArray\(alerts\)\.length\)/)
   })
 
   it('Scheduler leftover counts/duration/rc go through finite helpers', () => {
@@ -3533,6 +3545,8 @@ describe('leftover Infinity interpolations', () => {
     expect(audit).toMatch(/asArray\(entries\.value\)\.slice\(\)\.reverse\(\)/)
     expect(audit).toMatch(/v-for="\(e, i\) in asArray\(filteredRows\)"/)
     expect(audit).toMatch(/:key="finiteText\(asRecord\(e\)\.ts\)/)
+    expect(audit).toMatch(/finiteN\(asArray\(filteredRows\)\.length\)/)
+    expect(audit).toMatch(/finiteN\(d\.retained_lines/)
   })
 
   it('Dashboard leftover service totals go through finiteN', () => {
@@ -3799,6 +3813,8 @@ describe('leftover Infinity interpolations', () => {
     expect(logs).toMatch(/asArray\(d\.sources\)\.map\(\(s\) => asRecord\(s\)\)/)
     expect(logs).toMatch(/function asLogLines\(/)
     expect(logs).toMatch(/jsonLoad\(text\)/)
+    expect(logs).toMatch(/let v = finiteN\(n, null\)/)
+    expect(logs).toMatch(/const v = finiteN\(n, null\)/)
   })
 
   it('Terminal leftover container labels and session ids go through finiteText', () => {
