@@ -11,7 +11,7 @@
  * without binding this module to a component lifecycle.
  */
 
-import { asArray, asRecord, finiteText, jsonText } from './finite'
+import { asArray, asRecord, finiteText, jsonText, recGet } from './finite'
 
 /** Verbs that mutate service state (as opposed to open/logs/detail). */
 const CONTROL_ACTS = new Set(['start', 'stop', 'restart', 'run', 'pause', 'unpause', 'remove', 'kill'])
@@ -47,7 +47,7 @@ export function controlActs(s) {
 
 /** The card's compact subset: the server's own order, capped at three. */
 export function primaryActs(s) {
-  return asArray(asRecord(s).actions).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
+  return asArray(recGet(s, 'actions')).filter((a) => CONTROL_ACTS.has(a)).slice(0, 3)
 }
 
 export function canLogs(s) {
@@ -104,7 +104,7 @@ export function portOf(s) {
 /** Recognition payload lives on the row or under meta, depending on the endpoint. */
 export function signatureOf(s) {
   const row = asRecord(s)
-  return row.signature || asRecord(row.meta).signature || null
+  return recGet(row, 'signature') || recGet(recGet(row, 'meta'), 'signature') || null
 }
 
 const ACT_LABEL_KEYS = {

@@ -1,6 +1,6 @@
 import { inject, ref } from 'vue'
 
-import { asArray, asRecord } from '../lib/finite.js'
+import { asArray, asRecord, recGet } from '../lib/finite.js'
 
 const THEMES = [
   {
@@ -116,12 +116,12 @@ function prefersDark() {
 }
 
 function isCatalogueId(id) {
-  return asArray(THEMES).some(t => asRecord(t).id === id)
+  return asArray(THEMES).some(t => recGet(t, 'id') === id)
 }
 
 function pairFamily(id) {
-  if (asRecord(THEME_PAIRS)[id]) return id
-  if (asRecord(THEME_PAIR_LIGHT)[id]) return THEME_PAIR_LIGHT[id]
+  if (recGet(THEME_PAIRS, id)) return id
+  if (recGet(THEME_PAIR_LIGHT, id)) return THEME_PAIR_LIGHT[id]
   return null
 }
 
@@ -201,7 +201,7 @@ function paintTheme(id) {
     asArray(LIGHT_THEMES).includes(applied) ? 'light' : 'dark',
   )
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta && asRecord(THEME_COLORS)[applied]) meta.setAttribute('content', asRecord(THEME_COLORS)[applied])
+  if (meta && recGet(THEME_COLORS, applied)) meta.setAttribute('content', recGet(THEME_COLORS, applied))
   return applied
 }
 
@@ -251,7 +251,7 @@ function applyFollowSystem(on) {
 }
 
 function applyDensity(id) {
-  const valid = asArray(DENSITIES).some(d => asRecord(d).id === id) ? id : 'compact'
+  const valid = asArray(DENSITIES).some(d => recGet(d, 'id') === id) ? id : 'compact'
   density.value = valid
   write(DENSITY_KEY, valid)
   if (typeof document === 'undefined') return
@@ -261,7 +261,7 @@ function applyDensity(id) {
 function initTheme() {
   const storedTheme = read(THEME_KEY, '')
   const storedFamily = read(THEME_FAMILY_KEY, '')
-  if (asRecord(THEME_PAIRS)[storedFamily]) {
+  if (recGet(THEME_PAIRS, storedFamily)) {
     themeFamily.value = storedFamily
   } else if (storedTheme && storedTheme !== 'system') {
     rememberFamily(storedTheme)

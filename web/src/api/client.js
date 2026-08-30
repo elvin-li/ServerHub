@@ -1,5 +1,5 @@
 import { t } from '../i18n/index.js'
-import { asArray, asRecord, asJsonBody, asTrimmed, asUri, finiteN, finiteText, jsonDump, jsonLoad } from '../lib/finite.js'
+import { asArray, asRecord, asJsonBody, asTrimmed, asUri, finiteN, finiteText, jsonDump, jsonLoad, recGet } from '../lib/finite.js'
 import {
   adminPasswordHeaders,
   clearAdminPassword,
@@ -93,7 +93,7 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
         const err = new Error(errorText(j, r.statusText))
         err.status = r.status
         err.body = j
-        err.code = (asRecord(asRecord(j).detail).code) || null
+        err.code = recGet(recGet(j, 'detail'), 'code') || null
         // Privileged macOS operations need the operator's administrator
         // password. The server says so with these two codes; ask for it in an
         // in-browser dialog and retry once with it attached. A wrong password
