@@ -1640,7 +1640,7 @@ describe('operations polling and submission guards', () => {
     expect(files).toMatch(/async function uploadFiles\([\s\S]*finally \{[\s\S]*if \(pageAlive\) busy\.value = false/)
     expect(files).toMatch(/function deactivate\(\)[\s\S]*listRequest \+= 1/)
     expect(files).toMatch(/onUnmounted\([\s\S]*pageAlive = false[\s\S]*listRequest \+= 1/)
-    expect(files.match(/if \(!j\?\.ok\) throw new Error/g)).toHaveLength(2)
+    expect(files.match(/if \(!j\.ok\) throw new Error/g)).toHaveLength(2)
     expect(files).not.toMatch(/window\.open\(`\/api\/files\/download/)
     expect(files).toContain("a.rel = 'noopener'")
     expect(files).toContain('a.download = finiteText(row.name, \'download\')')

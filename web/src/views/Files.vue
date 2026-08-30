@@ -474,11 +474,11 @@ async function openFullFB() {
     if (!activated.value) {
       // still only start FB — don't force builtin list
     }
-    const j = await ensureFileBrowser()
+    const j = asRecord(await ensureFileBrowser())
     if (request !== listRequest) return
-    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
+    if (!j.ok) throw new Error(finiteText(j.message, '') || t('common.failed'))
     fb.value = j
-    const url = j.url || 'http://localhost:8125'
+    const url = finiteText(j.url, '') || 'http://localhost:8125'
     window.open(url, '_blank', 'noopener')
     toast(j.started ? t('files.fb_started') : t('files.fb_running'))
     // optional: enable on-demand mode so it won't auto-start at boot next time
@@ -497,9 +497,9 @@ async function stopFB() {
   const request = listRequest
   busy.value = true
   try {
-    const j = await stopFileBrowser()
+    const j = asRecord(await stopFileBrowser())
     if (request !== listRequest) return
-    if (!j?.ok) throw new Error(j?.message || t('common.failed'))
+    if (!j.ok) throw new Error(finiteText(j.message, '') || t('common.failed'))
     fb.value = j
     toast(finiteText(j.message, '') || '✅ ' + t('common.ok'))
   } catch (e) {
