@@ -379,10 +379,10 @@ async function refresh(manual = false) {
     root.value = finiteText(recGet(d, 'root'), '')
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
-    const reported = finiteN(d.total, null)
+    const reported = finiteN(recGet(d, 'total'), null)
     total.value = reported == null ? asArray(recGet(d, 'backups')).length : reported
     postgresTargets.value = asArray(recGet(d, 'postgres_targets')).map((row) => asRecord(row))
-    immich.value = asRecord(d.immich)
+    immich.value = asRecord(recGet(d, 'immich'))
     loadError.value = ''
   } catch (e) {
     if (generation !== backupsGeneration || !pageAlive) return

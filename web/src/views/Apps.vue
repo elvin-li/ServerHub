@@ -1927,7 +1927,7 @@ function openInstall(tpl) {
   const vars = {}
   for (const v of asArray(recGet(tpl, 'vars'))) {
     const rec = asRecord(v)
-    if (rec.name) vars[rec.name] = rec.default || ''
+    if (recGet(rec, 'name')) vars[recGet(rec, 'name')] = recGet(rec, 'default') || ''
   }
   installVars.value = vars
 }
@@ -1938,7 +1938,7 @@ function summaryLine(r) {
   return t('catalog_remote.result_summary', {
     added: finiteN(Array.isArray(r.added) ? r.added.length : r.added, 0),
     updated: finiteN(Array.isArray(r.updated) ? r.updated.length : r.updated, 0),
-    unchanged: finiteN(r.unchanged, 0),
+    unchanged: finiteN(recGet(r, 'unchanged'), 0),
     rejected: finiteN(Array.isArray(r.rejected) ? r.rejected.length : r.rejected, 0),
   })
 }

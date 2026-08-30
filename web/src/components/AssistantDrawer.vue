@@ -135,21 +135,21 @@ watch(() => props.open, async (isOpen) => {
 
 function formatBrief(snap) {
   const brief = asRecord(snap)
-  const c = asRecord(brief.counts)
+  const c = asRecord(recGet(brief, 'counts'))
   const lines = [
     t('assistant.brief_overview', {
-      load: finiteN(brief.load),
-      cpu: finiteN(brief.cpu_load_pct),
-      mem: finiteN(brief.mem_used_pct),
-      disk: finiteN(brief.disk_root_pct),
-      diskAmt: finiteText(brief.disk_root),
-      up: finiteText(brief.uptime),
+      load: finiteN(recGet(brief, 'load')),
+      cpu: finiteN(recGet(brief, 'cpu_load_pct')),
+      mem: finiteN(recGet(brief, 'mem_used_pct')),
+      disk: finiteN(recGet(brief, 'disk_root_pct')),
+      diskAmt: finiteText(recGet(brief, 'disk_root')),
+      up: finiteText(recGet(brief, 'uptime')),
     }),
     t('assistant.brief_services', {
-      ok: finiteN(c.ok, 0),
-      warn: finiteN(c.warn, 0),
-      down: finiteN(c.down, 0),
-      engine: brief.engine_up ? t('common.on') : t('common.off'),
+      ok: finiteN(recGet(c, 'ok'), 0),
+      warn: finiteN(recGet(c, 'warn'), 0),
+      down: finiteN(recGet(c, 'down'), 0),
+      engine: recGet(brief, 'engine_up') ? t('common.on') : t('common.off'),
     }),
   ]
   const problems = asArray(recGet(brief, 'problems'))
@@ -157,7 +157,7 @@ function formatBrief(snap) {
     lines.push(t('assistant.brief_problems'))
     for (const raw of problems.slice(0, 6)) {
       const p = asRecord(raw)
-      lines.push(`- ${finiteText(p.name)} · ${finiteText(p.state)} · ${finiteText(p.detail)}`)
+      lines.push(`- ${finiteText(recGet(p, 'name'))} · ${finiteText(recGet(p, 'state'))} · ${finiteText(recGet(p, 'detail'))}`)
     }
   } else {
     lines.push(t('assistant.brief_clear'))

@@ -2570,8 +2570,10 @@ describe('leftover Infinity interpolations', () => {
     expect(containers).not.toMatch(/typeof q\.value === 'string' \? q\.value\.trim\(\)\.toLowerCase\(\)/)
     expect(containers).not.toMatch(/engineInfo\.info\?\.Containers \?\? '—'/)
     expect(containers).not.toMatch(/stats\[c\.id\]\?\.mem_pct \|\| stats\[c\.id\]\?\.mem \|\| ''/)
-    expect(containers).toMatch(/finiteN\(j\.done, 0\)/)
-    expect(containers).toMatch(/finiteN\(j\.total, 0\)/)
+    expect(containers).toMatch(/finiteN\(recGet\(j, 'done'\), 0\)/)
+    expect(containers).toMatch(/finiteN\(recGet\(j, 'total'\), 0\)/)
+    expect(containers).toMatch(/if \(recGet\(j, 'ok'\)\) \{/)
+    expect(containers).toMatch(/recGet\(c, 'id'\)/)
     expect(containers).not.toMatch(/j\.done \|\| 0/)
     expect(containers).toMatch(/finiteText\(recGet\(data, 'update_checked_at'/)
     expect(containers).not.toMatch(/\{\{\s*data\.update_checked_at\s*\}\}/)
@@ -2644,6 +2646,8 @@ describe('leftover Infinity interpolations', () => {
     expect(apps).not.toMatch(/\{\{\s*managed\.counts\.total\s*\}\}/)
     expect(apps).toMatch(/finiteN\(overview\.value\.total, null\)/)
     expect(apps).not.toMatch(/r\.unchanged \?\? 0/)
+    expect(apps).toMatch(/finiteN\(recGet\(r, 'unchanged'\), 0\)/)
+    expect(apps).toMatch(/if \(recGet\(rec, 'name'\)\) vars\[recGet\(rec, 'name'\)\] = recGet\(rec, 'default'\) \|\| ''/)
     expect(apps).toMatch(/finiteText\(recGet\(remoteInfo, 'last_check'/)
     expect(apps).not.toMatch(/\{\{\s*remoteInfo\.last_check\s*\}\}/)
     expect(apps).toMatch(/finiteText\(recGet\(c, 'ports'\)/)
@@ -2938,6 +2942,7 @@ describe('leftover Infinity interpolations', () => {
     expect(ollama).toMatch(/const resident = computed\(\(\) => asArray\(recGet\(data.value, 'resident'\)\)\.map\(\(row\) => asRecord\(row\)\)\)/)
     expect(ollama).toMatch(/loadError\.value = finiteText\(e\.message \|\| String\(e\), ''\)/)
     expect(ollama).toMatch(/recGet\(m, 'pending'\)/)
+    expect(ollama).toMatch(/if \(recGet\(r, 'ok'\)\) \{/)
   })
 
   it('PhotosHub leftover originals/export figures go through finiteN', () => {
@@ -3075,6 +3080,7 @@ describe('leftover Infinity interpolations', () => {
     expect(array).toMatch(/const devices = asArray\(recGet\(recGet\(data\.value, 'array'\), 'devices'\)\)/)
     expect(array).toMatch(/asTrimmed\(x\) !== 'offline'/)
     expect(array).toMatch(/:key="finiteText\(k\)"/)
+    expect(array).toMatch(/recGet\(d, 'error'\)\) return 'unknown'/)
   })
 
   it('Pool leftover capacities go through fmtGb/withUnit', () => {
@@ -3544,6 +3550,8 @@ describe('leftover Infinity interpolations', () => {
     expect(backups).toMatch(/jobs\.value = asArray\(recGet\(d, 'jobs'\)\)\.map\(\(row\) => asRecord\(row\)\)/)
     expect(backups).toMatch(/recGet\(d, 'name'\)/)
     expect(backups).toMatch(/recGet\(j, 'running'\)/)
+    expect(backups).toMatch(/finiteN\(recGet\(d, 'total'\), null\)/)
+    expect(backups).toMatch(/asRecord\(recGet\(d, 'immich'\)\)/)
   })
 
   it('App leftover service counts go through finiteN', () => {
@@ -3748,7 +3756,11 @@ describe('leftover Infinity interpolations', () => {
     expect(ad).not.toMatch(/\{\{\s*p\.title\s*\}\}/)
     expect(ad).toMatch(/finiteText\(recGet\(p, 'title'\)\)/)
     expect(ad).not.toMatch(/\$\{p\.name\} · \$\{p\.state\}/)
-    expect(ad).toMatch(/finiteText\(p\.name\)/)
+    expect(ad).toMatch(/finiteText\(recGet\(p, 'name'\)\)/)
+    expect(ad).toMatch(/finiteText\(recGet\(p, 'state'\)\)/)
+    expect(ad).toMatch(/finiteText\(recGet\(p, 'detail'\)\)/)
+    expect(ad).toMatch(/finiteN\(recGet\(c, 'ok'\), 0\)/)
+    expect(ad).toMatch(/asRecord\(recGet\(brief, 'counts'\)\)/)
     expect(ad).not.toMatch(/q: query \|\| ''/)
     expect(ad).toMatch(/q: finiteText\(query, ''\)/)
     expect(ad).toMatch(/finiteText\(reply\.text, ''\)/)

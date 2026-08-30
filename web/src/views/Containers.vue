@@ -612,7 +612,7 @@ function allSelected(items) {
   return list.length && list.every(c => asArray(selected.value).includes(recGet(c, 'id')))
 }
 function toggleAll(items, ev) {
-  const ids = asArray(items).map(c => c.id)
+  const ids = asArray(items).map(c => recGet(c, 'id'))
   if (ev.target.checked) {
     selected.value = Array.from(new Set([...asArray(selected.value), ...ids]))
   } else {
@@ -644,7 +644,7 @@ async function refresh(manual = false) {
 }
 
 function batchToast(j) {
-  const text = t('docker.done_count', { done: finiteN(j.done, 0), total: finiteN(j.total, 0) })
+  const text = t('docker.done_count', { done: finiteN(recGet(j, 'done'), 0), total: finiteN(recGet(j, 'total'), 0) })
   toast(recGet(j, 'ok') === false ? `⚠ ${text}` : `✅ ${text}`)
 }
 
@@ -986,7 +986,7 @@ async function doRun() {
     const j = asRecord(await runContainer(body))
     if (!stillOnList(generation)) return
     toast(recGet(j, 'ok') ? '✅ ' + t('docker.container_created') : `❌ ${finiteText(recGet(j, 'message'))}`)
-    if (j.ok) {
+    if (recGet(j, 'ok')) {
       showRun.value = false
       scheduleRefresh(800)
     }

@@ -633,7 +633,7 @@ async function act(action) {
     const r = asRecord(await doAction(label, action))
     if (generation !== loadGeneration || !pageAlive) return
     toast(recGet(r, 'ok') ? `✅ ${label} · ${action}` : `❌ ${finiteText(recGet(r, 'message'), '') || action}`)
-    if (r.ok) {
+    if (recGet(r, 'ok')) {
       if (actionTimer) clearTimeout(actionTimer)
       actionTimer = setTimeout(() => {
         actionTimer = null

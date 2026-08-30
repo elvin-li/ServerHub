@@ -918,7 +918,7 @@ function smartGrade(d) {
   // passthrough over USB or Thunderbolt bridges, so smartctl answers "not
   // supported by device" for a perfectly healthy external disk.  The alert sweep
   // skips these entirely for the same reason.
-  if (!smart || typeof smart !== 'object' || d.error) return 'unknown'
+  if (!smart || typeof smart !== 'object' || recGet(d, 'error')) return 'unknown'
   const [down, warn] = smartReasons(smart)
   if (down.length) return 'down'
   if (warn.length) return 'warn'
