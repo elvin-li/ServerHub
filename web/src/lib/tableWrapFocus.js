@@ -22,11 +22,12 @@
  * focusable element inside aria-hidden is itself an ARIA violation.
  */
 import { t } from '../i18n'
+import { asTrimmed } from './finite.js'
 
 const HEADINGS = 'h1, h2, h3, h4, h5, h6'
 
 function headingText(el) {
-  const text = (el.textContent || '').replace(/\s+/g, ' ').trim()
+  const text = asTrimmed((el.textContent || '').replace(/\s+/g, ' '))
   return text || null
 }
 
