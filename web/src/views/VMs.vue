@@ -255,8 +255,9 @@ function webUrl(v) {
 }
 
 function requireOk(result) {
-  if (result?.ok === false) throw new Error(result.message || t('err.request_failed'))
-  return result
+  const row = asRecord(result)
+  if (row.ok === false) throw new Error(finiteText(row.message, '') || t('err.request_failed'))
+  return row
 }
 
 let pageAlive = true
@@ -265,7 +266,7 @@ let loadGeneration = 0
 async function refresh(manual = false) {
   const generation = ++loadGeneration
   try {
-    const next = await getVms()
+    const next = asRecord(await getVms())
     if (generation !== loadGeneration || !pageAlive) return
     const row = asRecord(next)
     data.value = {
