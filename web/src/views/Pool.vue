@@ -235,7 +235,7 @@
 
         <label for="pool-policy">{{ t('pool.policy_label') }}</label>
         <select id="pool-policy" v-model="policy">
-          <option v-for="p in policies" :key="p" :value="p">{{ policyLabel(p) }}</option>
+          <option v-for="p in asArray(policies)" :key="finiteText(p)" :value="finiteText(p)">{{ policyLabel(p) }}</option>
         </select>
 
         <label for="pool-minfree">{{ t('pool.min_free_label') }}</label>

@@ -5,7 +5,7 @@
       <input v-model="name" type="text" :placeholder="t('sched.name_ph')" :aria-label="t('sched.name')" />
       <div class="k">{{ t('sched.type') }}</div>
       <select v-model="type" :disabled="lockType" :aria-label="t('sched.type')">
-        <option v-for="ty in allowedTypes" :key="ty" :value="ty">{{ t(`sched.type_${ty}`) }}</option>
+        <option v-for="ty in asArray(allowedTypes)" :key="finiteText(ty)" :value="finiteText(ty)">{{ t(`sched.type_${ty}`) }}</option>
       </select>
       <div class="k">{{ t('sched.cron') }}</div>
       <div>
@@ -138,12 +138,12 @@ const props = defineProps({
 const emit = defineEmits(['save', 'cancel'])
 const { t } = injectI18n()
 
-const lockType = computed(() => Boolean(props.job) || props.allowedTypes.length === 1)
-const allowedTypes = computed(() => props.allowedTypes)
+const lockType = computed(() => Boolean(props.job) || asArray(props.allowedTypes).length === 1)
+const allowedTypes = computed(() => asArray(props.allowedTypes))
 
 const p = asRecord(props.job?.params)
 const name = ref(props.job?.name || '')
-const type = ref(props.job?.type || props.allowedTypes[0])
+const type = ref(props.job?.type || asArray(props.allowedTypes)[0])
 const cron = ref(props.job?.cron || '30 3 * * *')
 const enabled = ref(props.job ? Boolean(props.job.enabled) : true)
 const timeout = ref(props.job?.timeout || null)
@@ -271,7 +271,7 @@ function save() {
 
 onMounted(async () => {
   pageAlive = true
-  if (!props.allowedTypes.includes('stack_backup')) return
+  if (!asArray(props.allowedTypes).includes('stack_backup')) return
   const generation = ++stacksGeneration
   try {
     const d = asRecord(await getStacks())

@@ -473,7 +473,7 @@
         <div class="field-grid">
           <label>{{ t('main_extra.fs') }}</label>
           <select v-model="formatFs" :aria-label="t('main_extra.fs')">
-            <option v-for="f in fsTypes" :key="finiteText(f)" :value="finiteText(f)">{{ finiteText(f) }}</option>
+            <option v-for="f in asArray(fsTypes)" :key="finiteText(f)" :value="finiteText(f)">{{ finiteText(f) }}</option>
           </select>
           <label>{{ t('main_extra.vol_name') }}</label>
           <input v-model="formatName" type="text" :aria-label="t('main_extra.vol_name')" />

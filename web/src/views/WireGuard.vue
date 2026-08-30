@@ -459,8 +459,8 @@
         <h3 id="wg-peer-title">{{ t('wg.config_for', { name: finiteText(peerDialog.name) }) }}</h3>
         <div class="tabs" style="margin:8px 0">
           <button
-            v-for="f in formats"
-            :key="f"
+            v-for="f in asArray(formats)"
+            :key="finiteText(f)"
             :class="{ active: peerFormat === f }"
             :aria-pressed="peerFormat === f"
             @click="selectFormat(f)"
