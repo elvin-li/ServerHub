@@ -369,16 +369,16 @@ async function copyRestore(text) {
 async function refresh(manual = false) {
   const generation = ++backupsGeneration
   try {
-    const d = await getBackups()
+    const d = asRecord(await getBackups())
     if (generation !== backupsGeneration || !pageAlive) return
     backups.value = asArray(d.backups).map((row) => asRecord(row))
-    root.value = d.root || ''
+    root.value = finiteText(d.root, '')
     // A panel that predates `total` sends none; falling back to the row count
     // keeps the note hidden rather than claiming everything is truncated.
     const reported = finiteN(d.total, null)
     total.value = reported == null ? asArray(d.backups).length : reported
     postgresTargets.value = asArray(d.postgres_targets).map((row) => asRecord(row))
-    immich.value = d.immich || { available: false, last: null, layers: null }
+    immich.value = asRecord(d.immich)
     loadError.value = ''
   } catch (e) {
     if (generation !== backupsGeneration || !pageAlive) return
@@ -397,9 +397,9 @@ async function loadJobs(manual = false) {
   const generation = ++jobsGeneration
   const wasRunning = asArray(jobs.value).some((j) => j.running)
   try {
-    const d = await getSchedulerJobs()
+    const d = asRecord(await getSchedulerJobs())
     if (generation !== jobsGeneration || !pageAlive) return
-    jobs.value = asArray(d?.jobs).map((row) => asRecord(row))
+    jobs.value = asArray(d.jobs).map((row) => asRecord(row))
     jobsError.value = ''
     jobsPollFailures = 0
     // A finished run leaves new artefacts behind; pick them up without asking
@@ -446,9 +446,9 @@ function scheduleJobsPoll() {
 
 async function loadBinary() {
   try {
-    const info = await getRsyncBinary()
+    const info = asRecord(await getRsyncBinary())
     if (!pageAlive) return
-    rsyncBinary.value = typeof info?.available === 'boolean' ? info : null
+    rsyncBinary.value = typeof info.available === 'boolean' ? info : null
   } catch {
     if (!pageAlive) return
     rsyncBinary.value = null
@@ -532,7 +532,7 @@ async function doPg() {
   busy.value = true
   msg.value = t('backups.backing_up')
   try {
-    const r = await backupPostgres()
+    const r = asRecord(await backupPostgres())
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.pg_done') : '❌ ' + t('backups.pg_failed'))
@@ -551,7 +551,7 @@ async function doImmich() {
   busy.value = true
   msg.value = t('backups.backing_up')
   try {
-    const r = await backupImmich()
+    const r = asRecord(await backupImmich())
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)} (${sizeMb(r.size_mb)})` : '')
     toast(r.ok ? '✅ ' + t('backups.immich_done') : '❌ ' + t('backups.pg_failed'))
@@ -570,7 +570,7 @@ async function doCfg() {
   busy.value = true
   msg.value = t('backups.packing')
   try {
-    const r = await backupConfigs()
+    const r = asRecord(await backupConfigs())
     if (!pageAlive) return
     msg.value = (r.ok ? '✅ ' : '❌ ') + (finiteText(r.message, '') || '') + (finiteText(r.path, '') ? `\n${finiteText(r.path)}` : '')
     toast(r.ok ? '✅ ' + t('backups.cfg_done') : '❌ ' + t('common.failed'))
