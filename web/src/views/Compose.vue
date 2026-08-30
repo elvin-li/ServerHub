@@ -22,8 +22,8 @@
             <tbody>
               <tr
                 v-for="s in asArray(stacks)"
-                :key="finiteText(asRecord(s).id)"
-                :style="selected===asRecord(s).id ? 'background:var(--table-hover)' : ''"
+                :key="finiteText(recGet(s, 'id'))"
+                :style="selected===recGet(s, 'id') ? 'background:var(--table-hover)' : ''"
                 style="cursor:pointer"
                 @click="select(s)"
               >
@@ -34,18 +34,18 @@
                 <td
                   tabindex="0"
                   role="button"
-                  :aria-pressed="selected===asRecord(s).id ? 'true' : 'false'"
+                  :aria-pressed="selected===recGet(s, 'id') ? 'true' : 'false'"
                   @keydown.enter.prevent="select(s)"
                   @keydown.space.prevent="select(s)"
                 >
-                  <strong>{{ finiteText(asRecord(s).name) }}</strong>
-                  <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(asRecord(s).path) }}</div>
+                  <strong>{{ finiteText(recGet(s, 'name')) }}</strong>
+                  <div class="mono" style="color:var(--sub);font-size:10px">{{ finiteText(recGet(s, 'path')) }}</div>
                 </td>
-                <td><span class="badge" :class="asRecord(s).status==='ok'?'ok':''">{{ finiteText(asRecord(s).status) }}</span></td>
+                <td><span class="badge" :class="recGet(s, 'status')==='ok'?'ok':''">{{ finiteText(recGet(s, 'status')) }}</span></td>
                 <td class="ops">
-                  <button class="tiny" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
-                  <button class="tiny hide-m" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
-                  <button class="tiny danger" :disabled="!asRecord(s).compose_path || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
+                  <button class="tiny" :disabled="!recGet(s, 'compose_path') || busy" @click.stop="run(s,'up')">{{ t('compose.up') }}</button>
+                  <button class="tiny hide-m" :disabled="!recGet(s, 'compose_path') || busy" @click.stop="run(s,'update')">{{ t('docker.update') }}</button>
+                  <button class="tiny danger" :disabled="!recGet(s, 'compose_path') || busy" @click.stop="run(s,'down')">{{ t('compose.down') }}</button>
                 </td>
               </tr>
               <tr v-if="!asArray(stacks).length && !loadError">
@@ -59,7 +59,7 @@
       <div class="tile">
         <h2>
           {{ t('compose.yaml_editor') }}
-          <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(asRecord(compose).compose_path) }}</span>
+          <span v-if="compose" class="sub" style="text-transform:none">{{ finiteText(recGet(compose, 'compose_path')) }}</span>
         </h2>
         <!-- A failed read latches here with a retry. It used to fall through to
              the pick-a-stack placeholder below: the operator had picked one,
@@ -182,7 +182,7 @@ async function loadStacks(manual = false) {
   try {
     const d = asRecord(await getStacks())
     if (generation !== stacksGeneration || !pageAlive) return
-    stacks.value = asArray(d.stacks).map((s) => asRecord(s))
+    stacks.value = asArray(recGet(d, 'stacks')).map((s) => asRecord(s))
     loadError.value = ''
   } catch (e) {
     if (generation !== stacksGeneration || !pageAlive) return
@@ -293,7 +293,7 @@ async function run(s, action) {
     const r = asRecord(await runStack(id, action))
     if (!pageAlive) return
     if (generation !== stacksGeneration) return
-    toast('🚀 ' + (finiteText(r.message, '') || t('compose.started')))
+    toast('🚀 ' + (finiteText(recGet(r, 'message'), '') || t('compose.started')))
     if (r.job_id) {
       // Stay busy until the job actually ends, not merely until the server
       // acknowledged it. runStack returns as soon as the job is queued, so
@@ -332,7 +332,7 @@ function watchJob(id) {
     try {
       const j = asRecord(await getStackJob(id))
       if (generation !== jobPollGeneration) return
-      jobLog.value = finiteText(j.log, '')
+      jobLog.value = finiteText(recGet(j, 'log'), '')
       if (!j.running) {
         stopJobPolling()
         if (pageAlive) busy.value = false

@@ -11,10 +11,10 @@
            Tools syslog/ports counts (Tools.announcements.test.js). -->
       <span class="meta" role="status" v-if="data">
         {{ t('bookmarks.summary', {
-          up: finiteN(asRecord(data).up),
-          stopped: finiteN(asRecord(data).stopped, 0),
-          down: finiteN(asRecord(data).down),
-          at: finiteText(asRecord(data).checked_at),
+          up: finiteN(recGet(data, 'up')),
+          stopped: finiteN(recGet(data, 'stopped'), 0),
+          down: finiteN(recGet(data, 'down')),
+          at: finiteText(recGet(data, 'checked_at')),
         }) }}
       </span>
     </div>
@@ -22,14 +22,14 @@
     <SkeletonLoader v-if="!loaded" variant="cards" :rows="8" />
     <!-- Empty state: the grid is a bare v-for, so with no bookmarks the page
          showed only the static hint below and read as broken rather than empty. -->
-    <div v-else-if="!loadError && !asArray(asRecord(data).bookmarks).length" class="placeholder">{{ t('common.none') }}</div>
+    <div v-else-if="!loadError && !asArray(recGet(data, 'bookmarks')).length" class="placeholder">{{ t('common.none') }}</div>
     <div v-else class="bm-page-grid">
       <a
-        v-for="(b, i) in asArray(asRecord(data).bookmarks)"
-        :key="finiteText(asRecord(b).id, '') || finiteText(asRecord(b).url, '') || i"
+        v-for="(b, i) in asArray(recGet(data, 'bookmarks'))"
+        :key="finiteText(recGet(b, 'id'), '') || finiteText(recGet(b, 'url'), '') || i"
         class="bm-page-card"
         :class="cardClass(b)"
-        :href="finiteText(asRecord(b).url, '')"
+        :href="finiteText(recGet(b, 'url'), '')"
         target="_blank"
         rel="noopener"
       >
@@ -37,16 +37,16 @@
           <!-- aria-hidden: the LED only repeats the badge text in colour, so it
                is decoration — same treatment as the Gateway/VMs inline LEDs. -->
           <span class="led" :class="ledClass(b)" aria-hidden="true"></span>
-          <span class="bm-title">{{ finiteText(asRecord(b).name) }}</span>
+          <span class="bm-title">{{ finiteText(recGet(b, 'name')) }}</span>
           <span class="badge" :class="badgeClass(b)">
             {{ badgeText(b) }}
           </span>
         </div>
-        <div class="bm-url mono">{{ finiteText(asRecord(b).url) }}</div>
+        <div class="bm-url mono">{{ finiteText(recGet(b, 'url')) }}</div>
         <div class="bm-foot">
-          <span v-if="finiteMs(asRecord(b).ms) != null">{{ finiteMs(asRecord(b).ms) }} ms</span>
-          <span v-if="asRecord(b).backend" class="backend">{{ backendHint(b) }}</span>
-          <span v-if="finiteText(asRecord(b).error, '')" class="err">{{ finiteText(asRecord(b).error) }}</span>
+          <span v-if="finiteMs(recGet(b, 'ms')) != null">{{ finiteMs(recGet(b, 'ms')) }} ms</span>
+          <span v-if="recGet(b, 'backend')" class="backend">{{ backendHint(b) }}</span>
+          <span v-if="finiteText(recGet(b, 'error'), '')" class="err">{{ finiteText(recGet(b, 'error')) }}</span>
         </div>
       </a>
     </div>
@@ -98,7 +98,7 @@ function badgeClass(b) {
 }
 function badgeText(b) {
   const h = healthOf(b)
-  if (h === 'ok') return finiteText(asRecord(b).status, '') || t('dashboard.bm_up')
+  if (h === 'ok') return finiteText(recGet(b, 'status'), '') || t('dashboard.bm_up')
   if (h === 'stopped') return t('dashboard.bm_stopped')
   return t('dashboard.bm_down')
 }

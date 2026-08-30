@@ -18,7 +18,7 @@
         <label v-if="target === 'container'" class="tsel">
           <span>{{ t('terminal.container') }}</span>
           <select v-if="asArray(containers).length" v-model="container" :disabled="connected">
-            <option v-for="c in asArray(containers)" :key="finiteText(asRecord(c).id)" :value="asRecord(c).id">{{ finiteText(asRecord(c).label, '') || finiteText(asRecord(c).id) }}</option>
+            <option v-for="c in asArray(containers)" :key="finiteText(recGet(c, 'id'))" :value="recGet(c, 'id')">{{ finiteText(recGet(c, 'label'), '') || finiteText(recGet(c, 'id')) }}</option>
           </select>
           <input v-else v-model="container" type="text" :disabled="connected" :placeholder="t('terminal.container_ph')"  :aria-label="t('terminal.container_ph')"/>
           <!-- Only when discovery actually failed. An empty list with no error is
@@ -47,7 +47,7 @@
            toast that faded in four seconds, leaving a dead control with no
            explanation and no retry. -->
       <LoadFailure v-if="statusError" :detail="statusError" :retry="load" />
-      <div v-if="target === 'host' && status && !asRecord(status).host_enabled" class="locked">
+      <div v-if="target === 'host' && status && !recGet(status, 'host_enabled')" class="locked">
         <strong>{{ t('terminal.host_locked_title') }}</strong>
         <p>{{ t('terminal.host_locked_body') }}</p>
         <router-link class="btn tiny primary" to="/settings">{{ t('terminal.host_locked_cta') }}</router-link>
@@ -99,7 +99,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getContainers, getTerminal } from '../api/client'
 import { injectI18n } from '../i18n'
-import { asArray, asRecord, finiteText, jsonDump, jsonLoad } from '../lib/finite'
+import { asArray, asRecord, finiteText, jsonDump, jsonLoad, recGet } from '../lib/finite'
 import { useDismissable } from '../composables/useDismissable'
 import LoadFailure from '../components/LoadFailure.vue'
 
@@ -138,18 +138,18 @@ function clearConnectTimer() {
 }
 
 const canOpen = computed(() => {
-  if (target.value === 'host') return !!asRecord(status.value).host_enabled
+  if (target.value === 'host') return !!recGet(status.value, 'host_enabled')
   return !!container.value
 })
 const targetLabel = computed(() => {
   if (target.value === 'host') return t('terminal.target_host')
-  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => c.id === container.value))
-  return finiteText(asRecord(item).label, '') || finiteText(container.value, '') || t('terminal.target_container')
+  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => recGet(c, 'id') === container.value))
+  return finiteText(recGet(item, 'label'), '') || finiteText(container.value, '') || t('terminal.target_container')
 })
 
 watch(container, (id) => {
   if (!pageAlive) return
-  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => c.id === id))
+  const item = asRecord(asArray(containers.value).map((c) => asRecord(c)).find((c) => recGet(c, 'id') === id))
   if (item.shell) shell.value = item.shell
 })
 
@@ -175,8 +175,8 @@ async function load() {
         label: c.name || c.raw_name,
         shell: c.shell || '/bin/sh',
       }))
-      .filter((c) => asRecord(c).id)
-    if (!container.value && asArray(containers.value).length) container.value = asRecord(asArray(containers.value)[0]).id
+      .filter((c) => recGet(c, 'id'))
+    if (!container.value && asArray(containers.value).length) container.value = recGet(asArray(containers.value)[0], 'id')
     containerListError.value = ''
   } catch (error) {
     // Container discovery is optional -- the template falls back to a free-text
@@ -301,7 +301,7 @@ function onSocketMessage(event) {
       clearConnectTimer()
       connected.value = true
       opening.value = false
-      sessionId.value = finiteText(message.session, '')
+      sessionId.value = finiteText(recGet(message, 'session'), '')
       term?.write('\r\x1b[2K')
       fitTerminal()
       term?.focus()
