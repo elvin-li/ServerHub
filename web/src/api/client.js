@@ -236,11 +236,11 @@ export const deletePanelAccount = (username) =>
 export const getStatus = () => json('/api/status')
 export const doAction = async (target, action) => {
   try {
-    const result = await json('/api/action', {
+    const result = asRecord(await json('/api/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: jsonDump({ target, action }),
-    })
+    }))
     return { ...result, ok: result.ok !== false, status: 200 }
   } catch (error) {
     // Service actions historically return a result object instead of throwing on

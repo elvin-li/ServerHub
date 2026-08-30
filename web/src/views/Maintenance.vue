@@ -151,7 +151,7 @@ async function refresh() {
     return true
   } catch (e) {
     if (generation !== listGeneration || !pageAlive) return false
-    loadError.value = e.message || String(e)
+    loadError.value = finiteText(e.message || String(e), '')
     return false
   } finally {
     if (generation === listGeneration && pageAlive) loaded.value = true
