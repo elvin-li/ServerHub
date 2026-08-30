@@ -43,19 +43,6 @@ def _isa(value, kinds) -> bool:
         return False
 
 
-def _audit_disk_change(event: str, request: Request | None, **fields) -> None:
-    """One audit line for a disk or pool mutation — eraseDisk is the most
-    destructive action in the panel.  Called after the service call returned,
-    so a rejected action that raised leaves no record.  FastAPI always injects
-    `request`; the None guard only keeps direct in-process calls working."""
-    audit.record(
-        event,
-        username=auth.request_username(request) if request is not None else "",
-        client=auth.request_client_id(request),
-        **fields,
-    )
-
-
 def _as_text(value) -> str:
     """Drop leftover ``\\ud800`` in ``str(e)`` so GET /api/storage cannot UTF-8 500."""
     if value is None:

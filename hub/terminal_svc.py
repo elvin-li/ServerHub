@@ -325,26 +325,6 @@ def _config_text(value) -> str:
     return text if type(text) is str else str.__str__(text)
 
 
-def _config_text(value) -> str:
-    """``str(value)`` for a config scalar, or "" when it cannot be rendered.
-
-    YAML ``0xFFF…`` loads as an int past CPython's 4300-digit str cap (hex
-    parsing has no digit limit), so a bare ``str()`` on a leftover
-    ``settings.terminal.cwd``/``shell`` raised ValueError before any sanitizer
-    ran — a 500 on GET /api/terminal and POST /api/terminal/run.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    try:
-        return str(value)
-    except Exception:
-        # ValueError past the digit cap; RecursionError from a leftover
-        # self-referencing __str__.  Either way the scalar is unusable.
-        return ""
-
-
 def host_enabled() -> bool:
     """True when the operator has explicitly switched the host shell on."""
     return _cfg_truthy(_mapping_get(_terminal_cfg(), "host_enabled", False))

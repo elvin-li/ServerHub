@@ -212,25 +212,6 @@ def _row_get(row, key):
         return None
 
 
-def _finite_mtime(value) -> int:
-    """A ``st_mtime`` the JSON body can carry, or 0.
-
-    ``int(...)`` with a try only guards *conversions*: a leftover FUSE/SMB
-    ``st_mtime`` that is already a >4300-digit int passed through untouched,
-    and CPython's int->str digit limit then ValueError'd Starlette's
-    ``json.dumps`` — 500ing GET /api/compose/{id} after the compose had
-    already been read.  ``float()`` rejects anything beyond float range,
-    the same junk test files_svc._finite_int, logs_svc._stat_size,
-    usage_svc._safe_bytes and catalog._sig_int apply to their stat numbers.
-    """
-    try:
-        value = int(value)
-        float(value)
-    except (TypeError, ValueError, OverflowError, OSError):
-        return 0
-    return value
-
-
 def _find_stack(stack_id: str) -> dict:
     """The plain-dict stack row for *stack_id*, or the coded 404.
 
@@ -472,17 +453,6 @@ def save_compose(stack_id: str, content: str, validate: bool = True) -> dict:
         "message": "Saved",
         "backup": _utf8_text(str(bak)),
     }
-
-
-def _raise_validation_failure(v: dict):
-    """Fail a compose save/create with the code the validation reported.
-
-    An engine that is off is a dependency state (coded 503), not a defect in
-    the operator's YAML (``compose.invalid``, 400).
-    """
-    if v.get("code") == "container.engine_down":
-        raise api_error("container.engine_down")
-    raise api_error("compose.invalid", detail=v.get("message") or "compose invalid")
 
 
 def _raise_validation_failure(v: dict):
