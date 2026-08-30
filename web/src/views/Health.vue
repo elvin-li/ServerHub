@@ -11,11 +11,11 @@
            click beside them, and they updated silently for a screen reader
            (Users toolbar-count pattern). -->
       <span class="meta hide-m" v-if="data?.summary" role="status" style="color:var(--sub)">
-        {{ t('health.passed') }} {{ finiteN(asRecord(asRecord(data).summary).ok) }} · {{ t('health.warnings') }} {{ finiteN(asRecord(asRecord(data).summary).warn) }} · {{ t('health.errors') }} {{ finiteN(asRecord(asRecord(data).summary).error) }}
-        · {{ finiteN(asRecord(asRecord(data).summary).total) }}
+        {{ t('health.passed') }} {{ finiteN(recGet(recGet(data, 'summary'), 'ok')) }} · {{ t('health.warnings') }} {{ finiteN(recGet(recGet(data, 'summary'), 'warn')) }} · {{ t('health.errors') }} {{ finiteN(recGet(recGet(data, 'summary'), 'error')) }}
+        · {{ finiteN(recGet(recGet(data, 'summary'), 'total')) }}
       </span>
-      <span v-if="data" class="badge" :class="asRecord(data).healthy ? 'ok' : 'down'" style="margin-left:4px">
-        {{ asRecord(data).healthy ? t('common.healthy') : t('common.issues') }}
+      <span v-if="data" class="badge" :class="recGet(data, 'healthy') ? 'ok' : 'down'" style="margin-left:4px">
+        {{ recGet(data, 'healthy') ? t('common.healthy') : t('common.issues') }}
       </span>
     </div>
 
@@ -24,22 +24,22 @@
     <div class="dash-grid" style="margin-bottom:12px" v-else-if="data?.summary">
       <div class="tile span-3">
         <h2>{{ t('health.passed') }}</h2>
-        <div class="v" style="color:var(--ok-text)">{{ finiteN(asRecord(asRecord(data).summary).ok) }}</div>
+        <div class="v" style="color:var(--ok-text)">{{ finiteN(recGet(recGet(data, 'summary'), 'ok')) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.warnings') }}</h2>
-        <div class="v" style="color:var(--warn-text)">{{ finiteN(asRecord(asRecord(data).summary).warn) }}</div>
+        <div class="v" style="color:var(--warn-text)">{{ finiteN(recGet(recGet(data, 'summary'), 'warn')) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.errors') }}</h2>
-        <div class="v" style="color:var(--down-text)">{{ finiteN(asRecord(asRecord(data).summary).error) }}</div>
+        <div class="v" style="color:var(--down-text)">{{ finiteN(recGet(recGet(data, 'summary'), 'error')) }}</div>
       </div>
       <div class="tile span-3">
         <h2>{{ t('health.overall') }}</h2>
         <!-- Spell the state, not an emoji alone: the issues arm was a bare
              "⚠️", announced as "warning sign" (or nothing) with no words and
              no locale parity with the healthy arm. -->
-        <div class="v" style="font-size:16px">{{ asRecord(data).healthy ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
+        <div class="v" style="font-size:16px">{{ recGet(data, 'healthy') ? '✅ ' + t('common.healthy') : '⚠️ ' + t('common.issues') }}</div>
       </div>
     </div>
 
@@ -52,7 +52,7 @@
            filters do (filterCounts.test.js) — a sighted user watches rows
            disappear, a screen-reader user otherwise hears nothing at all. -->
       <span class="meta-count" role="status" style="margin-left:auto;align-self:center">
-        {{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(asRecord(data).checks).length) }}
+        {{ finiteN(asArray(filtered).length) }} / {{ finiteN(asArray(recGet(data, 'checks')).length) }}
       </span>
     </div>
 
@@ -62,7 +62,7 @@
          (the empty-row is loadError-suppressed), claiming a scan that never
          arrived.  Stale rows still stay on screen under the banner when a
          later rescan fails (the LoadFailure contract — Services pattern). -->
-    <div v-else-if="asArray(asRecord(data).checks).length || !loadError" class="table-wrap">
+    <div v-else-if="asArray(recGet(data, 'checks')).length || !loadError" class="table-wrap">
       <table class="dense fit-m">
         <thead>
           <tr>
@@ -74,26 +74,26 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in asArray(filtered)" :key="finiteText(asRecord(c).id)">
+          <tr v-for="c in asArray(filtered)" :key="finiteText(recGet(c, 'id'))">
             <!-- aria-hidden: the LED repeats the Level badge's Pass/Warn/Error
                  text in colour only (same as the Users admin LED). -->
             <td><span class="led" :class="led(c)" aria-hidden="true"></span></td>
             <td>
-              <strong>{{ finiteText(asRecord(c).name) }}</strong>
-              <div v-if="finiteText(errText(asRecord(c).detail), '')" class="show-m sub">{{ finiteText(errText(asRecord(c).detail)) }}</div>
-              <div v-if="asRecord(c).fix && !asRecord(c).ok" class="show-m sub">{{ finiteText(errText(asRecord(c).fix)) }}</div>
+              <strong>{{ finiteText(recGet(c, 'name')) }}</strong>
+              <div v-if="finiteText(errText(recGet(c, 'detail')), '')" class="show-m sub">{{ finiteText(errText(recGet(c, 'detail'))) }}</div>
+              <div v-if="recGet(c, 'fix') && !recGet(c, 'ok')" class="show-m sub">{{ finiteText(errText(recGet(c, 'fix'))) }}</div>
             </td>
             <td>
               <span class="badge" :class="levelBadge(c)">{{ levelLabel(c) }}</span>
             </td>
-            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(asRecord(c).detail)) }}</td>
-            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ asRecord(c).fix ? finiteText(errText(asRecord(c).fix)) : (asRecord(c).ok ? '—' : '') }}</td>
+            <td class="mono col-hide-m" style="max-width:320px;font-size:11px">{{ finiteText(errText(recGet(c, 'detail'))) }}</td>
+            <td class="col-hide-m" style="font-size:11px;color:var(--sub);max-width:280px">{{ recGet(c, 'fix') ? finiteText(errText(recGet(c, 'fix'))) : (recGet(c, 'ok') ? '—' : '') }}</td>
           </tr>
           <tr v-if="!asArray(filtered).length && !loadError">
             <!-- A level tab that misses and a scan that produced no checks
                  are different answers: "no matching items" on an empty scan
                  hid that there is nothing to filter (Logs/Services split). -->
-            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(asRecord(data).checks).length ? t('common.no_match') : t('health.empty')) }}</td>
+            <td colspan="5" class="empty-row">{{ loading ? t('common.scanning') : (asArray(recGet(data, 'checks')).length ? t('common.no_match') : t('health.empty')) }}</td>
           </tr>
         </tbody>
       </table>
@@ -120,7 +120,7 @@ let pageAlive = true
 let loadGeneration = 0
 
 const filtered = computed(() => {
-  const list = asArray(asRecord(data.value).checks).map((row) => asRecord(row))
+  const list = asArray(recGet(data.value, 'checks')).map((row) => asRecord(row))
   if (filter.value === 'all') return list
   if (filter.value === 'issues') return list.filter((c) => !recGet(c, 'ok'))
   if (filter.value === 'error') return list.filter((c) => !recGet(c, 'ok') && recGet(c, 'level') === 'error')
@@ -129,23 +129,20 @@ const filtered = computed(() => {
 })
 
 function led(c) {
-  const row = asRecord(c)
-  if (row.ok) return 'on'
-  if (row.level === 'warn') return 'warn'
+  if (recGet(c, 'ok')) return 'on'
+  if (recGet(c, 'level') === 'warn') return 'warn'
   return 'err'
 }
 function levelLabel(c) {
-  const row = asRecord(c)
-  if (row.ok) return t('common.pass')
-  if (row.level === 'error') return t('common.error')
-  if (row.level === 'warn') return t('common.warn')
-  return row.level
+  if (recGet(c, 'ok')) return t('common.pass')
+  if (recGet(c, 'level') === 'error') return t('common.error')
+  if (recGet(c, 'level') === 'warn') return t('common.warn')
+  return recGet(c, 'level')
 }
 function levelBadge(c) {
-  const row = asRecord(c)
-  if (row.ok) return 'ok'
-  if (row.level === 'error') return 'down'
-  if (row.level === 'warn') return 'warn'
+  if (recGet(c, 'ok')) return 'ok'
+  if (recGet(c, 'level') === 'error') return 'down'
+  if (recGet(c, 'level') === 'warn') return 'warn'
   return ''
 }
 
@@ -157,8 +154,8 @@ async function load() {
     if (generation !== loadGeneration || !pageAlive) return
     data.value = {
       ...next,
-      summary: asRecord(next.summary),
-      checks: asArray(next.checks).map((row) => asRecord(row)),
+      summary: asRecord(recGet(next, 'summary')),
+      checks: asArray(recGet(next, 'checks')).map((row) => asRecord(row)),
     }
     loadError.value = ''
   } catch (e) {
