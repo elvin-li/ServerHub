@@ -318,7 +318,7 @@
       </div>
 
       <!-- ===== Memory ===== -->
-      <div class="tile span-4 res-card" :class="{ 'am-surface': isMacSurface }">
+      <div class="tile span-4 res-card mem-card" :class="{ 'am-surface': isMacSurface }">
         <h2>
           {{ t('dashboard.memory') }}
           <span class="tile-tools">
@@ -1969,12 +1969,16 @@ onUnmounted(() => {
 .cpu-loadline { margin-top: 8px; }
 .tile .mem-footnote {
   margin-top: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  overflow-wrap: normal;
-  word-break: keep-all;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+/* memory card: nothing under 11px (badge + chart axis default to 10px) */
+.mem-card > h2 .badge { font-size: 11px; }
+.mem-card :deep(.y-lbl),
+.mem-card :deep(.x-lbl),
+.mem-card :deep(.leg-unit) { font-size: 11px; }
 @media (max-width: 640px) {
   .am-monitor,
   .am-monitor.chart-first,
