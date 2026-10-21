@@ -333,27 +333,39 @@
               <div class="big">{{ memAvailGb }}<small> {{ t('dashboard.gb_available') }}</small></div>
               <div class="res-side">
                 <div class="kv-mini">
+                  <span>{{ t('dashboard.mem_used') }}</span><b>{{ fmtGb(memUsedGb) }}</b>
                   <span>{{ t('dashboard.pressure') }}</span><b>{{ withUnit(memUsedPct, '%') }}</b>
-                  <span>{{ t('dashboard.free_rate') }}</span><b>{{ withUnit(memFreePct, '%') }}</b>
+                  <span>{{ t('dashboard.swap_used') }}</span><b>{{ fmtGb(mem.swap_used_gb) }}</b>
                   <span>{{ t('dashboard.total') }}</span><b>{{ fmtGb(memTotal) }}</b>
                 </div>
               </div>
             </div>
-            <div class="pct-bar thick" :class="memBarClass">
+            <div v-if="memSegments.length" class="mem-stack" :title="memStackTitle">
+              <i v-for="seg in memSegments" :key="seg.key" :class="'ms-' + seg.key" :style="{ width: seg.pct + '%' }"></i>
+            </div>
+            <div v-else class="pct-bar thick" :class="memBarClass">
               <i :style="{ width: barPct(memUsedPct) + '%' }"></i>
             </div>
             <div class="mem-break">
+              <div v-if="mem.app_gb != null" class="mb">
+                <span class="k"><em class="dot ms-app"></em>{{ t('dashboard.mem_app') }}</span>
+                <span class="v">{{ fmtN(mem.app_gb) }} GB</span>
+              </div>
               <div class="mb">
-                <span class="k">{{ t('dashboard.wired') }}</span>
+                <span class="k"><em class="dot ms-wired"></em>{{ t('dashboard.wired') }}</span>
                 <span class="v">{{ fmtN(mem.wired_gb) }} GB</span>
               </div>
               <div class="mb">
-                <span class="k">{{ t('dashboard.compressed') }}</span>
+                <span class="k"><em class="dot ms-comp"></em>{{ t('dashboard.compressed') }}</span>
                 <span class="v">{{ fmtN(mem.compressor_gb) }} GB</span>
               </div>
-              <div class="mb">
-                <span class="k">{{ t('dashboard.cache_approx') }}</span>
-                <span class="v">{{ fmtN(mem.cache_gb) }} GB</span>
+              <div v-if="mem.cached_files_gb != null" class="mb">
+                <span class="k"><em class="dot ms-cache"></em>{{ t('dashboard.cached_files') }}</span>
+                <span class="v">{{ fmtN(mem.cached_files_gb) }} GB</span>
+              </div>
+              <div v-if="memModel" class="mb" :title="memModel.title">
+                <span class="k">{{ t('dashboard.local_model') }}</span>
+                <span class="v">{{ fmtN(memModel.gb) }} GB <small class="mb-note">{{ memModel.where }}</small></span>
               </div>
             </div>
           </div>
@@ -1012,6 +1024,36 @@ const memFreePct = computed(() =>
 const memAvailGb = computed(() =>
   finiteN(mem.value.available_gb ?? mem.value.free_gb)
 )
+// Activity Monitor: Memory Used = App + Wired + Compressed (GiB, shown as GB)
+const memUsedGb = computed(() => finiteN(mem.value.mem_used_gb ?? mem.value.used_gb, null))
+const memSegments = computed(() => {
+  const total = Number(memTotal.value)
+  if (!(total > 0) || mem.value.app_gb == null) return []
+  return [
+    ['app', mem.value.app_gb],
+    ['wired', mem.value.wired_gb],
+    ['comp', mem.value.compressor_gb],
+    ['cache', mem.value.cached_files_gb],
+  ].map(([key, gb]) => ({ key, pct: barPct((Number(gb) || 0) / total * 100) }))
+})
+const memStackTitle = computed(() => [
+  `${t('dashboard.mem_app')} ${fmtN(mem.value.app_gb)} GB`,
+  `${t('dashboard.wired')} ${fmtN(mem.value.wired_gb)} GB`,
+  `${t('dashboard.compressed')} ${fmtN(mem.value.compressor_gb)} GB`,
+  `${t('dashboard.cached_files')} ${fmtN(mem.value.cached_files_gb)} GB`,
+].join(' · '))
+const memModel = computed(() => {
+  const m = asRecord(mem.value.model)
+  const gb = finiteN(m.gb, null)
+  if (gb == null) return null
+  const wired = Number(m.wired_gb) || 0
+  const where = wired > gb / 2 ? t('dashboard.model_in_wired') : t('dashboard.model_in_app')
+  return {
+    gb,
+    where,
+    title: `${finiteText(m.name, '')} ${t('dashboard.model_title', { wired: fmtN(wired) })}`.trim(),
+  }
+})
 // Looser thresholds: pressure 12% is fine; red only when truly tight
 const memBadge = computed(() => {
   const p = Number(memUsedPct.value) || 0
@@ -1025,14 +1067,7 @@ const memBarClass = computed(() => {
   if (p >= 70) return 'warn'
   return ''
 })
-const memFootnote = computed(() => {
-  const hint = t('dashboard.mem_hint')
-  if (mem.value.phys_used_gb == null) return hint
-  return `${hint} ${t('dashboard.mem_allocated', {
-    used: fmtN(mem.value.phys_used_gb),
-    total: memTotal.value,
-  })}`
-})
+const memFootnote = computed(() => t('dashboard.mem_hint'))
 
 const diskArray = computed(() => asRecord(storage.value?.array))
 const diskUsed = computed(() => finiteN(diskArray.value.used_gb, null) ?? finiteN(sensors.value?.disk?.root_used_gb, null) ?? finiteN(sys.value.disk_used_gb))
@@ -1916,7 +1951,8 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .am-monitor-stats > .res-head { margin-bottom: 0; }
-.am-monitor-stats > .pct-bar { margin-top: 0; }
+.am-monitor-stats > .pct-bar,
+.am-monitor-stats > .mem-stack { margin-top: 0; }
 .am-monitor-stats > .disk-list,
 .am-monitor-stats > .mem-break { margin-top: 0; }
 .am-surface .disk-list { gap: 1px; min-width: 0; }
@@ -2037,7 +2073,18 @@ button.host-assist { cursor: pointer; font: inherit; color: inherit; }
   background: var(--bg); border-radius: var(--radius-sm); padding: 5px 8px;
   border: 1px solid var(--line);
 }
-.mb .k { font-size: 9px; color: var(--sub); text-transform: uppercase; letter-spacing: .3px; }
+.mb .k { font-size: 11px; color: var(--sub); letter-spacing: .2px; white-space: nowrap; }
+.mb .k .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.mb-note { font-size: 11px; font-weight: 500; color: var(--sub); font-family: inherit; }
+.mem-stack {
+  display: flex; height: 9px; margin-top: 4px; border-radius: 4px; overflow: hidden;
+  background: var(--bar-track);
+}
+.mem-stack i { display: block; height: 100%; transition: width .4s ease; }
+.ms-app { background: #FFD60A; }
+.ms-wired { background: #FF453A; }
+.ms-comp { background: #FF9F0A; }
+.ms-cache { background: color-mix(in srgb, #5AC8FA 55%, var(--bar-track)); }
 .mb .v { font-size: 13px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
 .temp-warn { color: var(--warn-text) !important; }
