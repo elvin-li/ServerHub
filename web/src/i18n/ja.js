@@ -896,6 +896,8 @@ export default {
     test_prompt_label: 'テストプロンプト',
     act_test: 'テスト実行',
     testing: '生成中…',
+    testing_elapsed: '生成中… {s} 秒',
+    test_timeout: '{s} 秒待っても応答がありません。ローカルモデルのサービスが動作しているか（ログ → mlx-lm）確認して再試行してください。',
     test_stats: '{s} 秒 · {tps} tokens/s',
     test_failed: 'テスト失敗',
     test_thinking_note: '思考トレースを表示中（トークン上限が推論に使われました）',

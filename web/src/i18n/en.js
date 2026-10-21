@@ -901,6 +901,8 @@ export default {
     test_prompt_label: 'Test prompt',
     act_test: 'Run test',
     testing: 'Generating…',
+    testing_elapsed: 'Generating… {s}s',
+    test_timeout: 'No answer after {s}s — the model did not respond in time. Check that the local model service is running (Logs → mlx-lm), then try again.',
     test_stats: '{s}s · {tps} tokens/s',
     test_failed: 'Test failed',
     test_thinking_note: 'showing the thinking trace (the capped budget went to reasoning)',

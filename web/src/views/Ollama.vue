@@ -408,6 +408,15 @@ const testModel = ref('')
 const testPrompt = ref('')
 const testBusy = ref(false)
 const testResult = ref(null)
+// Seconds since the quick test was sent, so a slow answer visibly ticks
+// instead of looking like a hang; the request itself is capped (130s client,
+// 120s server) and ends in a clear error.
+const testElapsed = ref(0)
+let testClock = null
+function stopTestClock() {
+  if (testClock) clearInterval(testClock)
+  testClock = null
+}
 
 const chatModel = ref('')
 const chatInput = ref('')
@@ -463,7 +472,7 @@ const testShowsThinking = computed(() =>
   Boolean(testResult.value?.ok && !testResult.value.response && testResult.value.thinking))
 
 const testText = computed(() => {
-  if (testBusy.value) return t('ollama.testing')
+  if (testBusy.value) return testElapsed.value ? t('ollama.testing_elapsed', { s: testElapsed.value }) : t('ollama.testing')
   const r = testResult.value
   if (!r) return t('ollama.testing')
   return finiteText(recGet(r, 'response'), '') || finiteText(recGet(r, 'thinking'), '') || finiteText(recGet(r, 'error'), '') || (recGet(r, 'ok') ? '—' : t('ollama.test_failed'))
@@ -531,10 +540,10 @@ async function copyText(text) {
 }
 
 async function loadOllamaSettings() {
-  const generation = loadGeneration
+  const generation = pageEpoch
   try {
     const s = asRecord(await getSettings())
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     ollamaForm.value = {
       url: recGet(s.ollama, 'url') || recGet(data.value, 'url') || 'http://127.0.0.1:11434',
       label: recGet(s.ollama, 'label') || '',
@@ -542,7 +551,7 @@ async function loadOllamaSettings() {
     ollamaSettingsLoaded.value = true
     ollamaSettingsError.value = ''
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     ollamaSettingsLoaded.value = false
     ollamaSettingsError.value = finiteText(e.message || e, '')
     ollamaForm.value = {
@@ -559,7 +568,7 @@ async function saveOllamaSettings() {
     toast('❌ ' + t('ollama.settings_load_failed'))
     return
   }
-  const generation = loadGeneration
+  const generation = pageEpoch
   ollamaSaving.value = true
   try {
     const r = asRecord(await putSettings({
@@ -568,16 +577,14 @@ async function saveOllamaSettings() {
         label: asTrimmed(recGet(ollamaForm.value, 'label')),
       },
     }))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('✅ ' + t('ollama.settings_saved'))
     await refresh(true)
     await loadOllamaSettings()
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('❌ ' + finiteText(e.message || e))
   } finally {
-    // refresh() bumps loadGeneration, so a generation match here would leave
-    // Save stuck disabled after a successful write.
     if (pageAlive) ollamaSaving.value = false
   }
 }
@@ -627,26 +634,24 @@ async function act(action) {
   if (!label) return
   if (action === 'stop' && !confirm(t('ollama.confirm_stop', { name: finiteText(label) }))) return
   if (action === 'restart' && !confirm(t('services.confirm_restart', { name: finiteText(label) }))) return
-  const generation = loadGeneration
+  const generation = pageEpoch
   svcBusy.value = true
   try {
     const r = asRecord(await doAction(label, action))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast(recGet(r, 'ok') ? `✅ ${label} · ${action}` : `❌ ${finiteText(recGet(r, 'message'), '') || action}`)
     if (recGet(r, 'ok')) {
       if (actionTimer) clearTimeout(actionTimer)
       actionTimer = setTimeout(() => {
         actionTimer = null
-        if (generation !== loadGeneration || !pageAlive) return
+        if (generation !== pageEpoch || !pageAlive) return
         void refresh(true)
       }, 1200)
     }
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('❌ ' + finiteText(e.message || e))
   } finally {
-    // refresh() bumps loadGeneration on the 10s poll, so a generation match
-    // would leave Start/Stop stuck after a successful action.
     if (pageAlive) svcBusy.value = false
   }
 }
@@ -655,15 +660,15 @@ async function act(action) {
 async function unload(m) {
   const row = asRecord(m)
   if (!confirm(t('ollama.confirm_unload', { name: finiteText(recGet(row, 'name')) }))) return
-  const generation = loadGeneration
+  const generation = pageEpoch
   unloading.value = true
   try {
     const r = asRecord(await unloadOllamaModel(recGet(row, 'name')))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('✅ ' + t('ollama.unloaded', { name: finiteText(recGet(row, 'name')) }))
     void refresh(true)
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('❌ ' + finiteText(e.message || e))
   } finally {
     if (pageAlive) unloading.value = false
@@ -682,16 +687,16 @@ function closeDelete() {
 async function doDelete() {
   const target = asRecord(deleteTarget.value)
   if (!recGet(target, 'name') || asTrimmed(deleteText.value) !== recGet(target, 'name')) return
-  const generation = loadGeneration
+  const generation = pageEpoch
   deleting.value = true
   try {
     const r = asRecord(await deleteOllamaModel(recGet(target, 'name')))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('✅ ' + t('ollama.deleted', { name: finiteText(recGet(target, 'name')) }))
     closeDelete()
     void refresh(true)
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('❌ ' + finiteText(e.message || e))
   } finally {
     if (pageAlive) deleting.value = false
@@ -739,16 +744,16 @@ function startPullPolling() {
 async function startPull() {
   const name = asTrimmed(pullName.value)
   if (!name || pullBusy.value || pullInfo.value?.running) return
-  const generation = loadGeneration
+  const generation = pageEpoch
   pullBusy.value = true
   try {
     const r = asRecord(await startOllamaPull(name))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('🚀 ' + t('ollama.pull_started', { name: finiteText(name) }))
     pullName.value = ''
     startPullPolling()
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     toast('❌ ' + finiteText(e.message || e))
   } finally {
     if (pageAlive) pullBusy.value = false
@@ -780,8 +785,11 @@ async function sendChat() {
   if (chatBusy.value || !data.value?.reachable || !chatModel.value || !text) return
   chatInput.value = ''
   chatMessages.value.push({ role: 'user', content: text })
-  const pending = { role: 'assistant', content: '', thinking: '', pending: true, error: '' }
-  chatMessages.value.push(pending)
+  chatMessages.value.push({ role: 'assistant', content: '', thinking: '', pending: true, error: '' })
+  // Write through the reactive proxy, not the raw object that was pushed:
+  // mutating the raw literal changed the data but never re-rendered, so the
+  // bubble sat on "生成中…" for the whole stream and only filled in at the end.
+  const pending = chatMessages.value[chatMessages.value.length - 1]
   chatBusy.value = true
   chatAbort = new AbortController()
   // The just-pushed user turn is not pending; include it. Drop empty assistant stubs.
@@ -826,23 +834,37 @@ function clearChat() {
 // ── quick test ───────────────────────────────────────────────────────────────
 async function runTest() {
   if (testBusy.value || !testModel.value || !asTrimmed(testPrompt.value)) return
-  const generation = loadGeneration
+  const generation = pageEpoch
   testBusy.value = true
   testResult.value = null
+  testElapsed.value = 0
+  stopTestClock()
+  const started = Date.now()
+  testClock = setInterval(() => { testElapsed.value = Math.round((Date.now() - started) / 1000) }, 1000)
   try {
     const next = asRecord(await testOllamaModel(testModel.value, testPrompt.value))
-    if (generation !== loadGeneration || !pageAlive) return
+    if (generation !== pageEpoch || !pageAlive) return
     testResult.value = next
   } catch (e) {
-    if (generation !== loadGeneration || !pageAlive) return
-    testResult.value = { ok: false, error: e.message || String(e) }
+    if (generation !== pageEpoch || !pageAlive) return
+    const msg = e?.code === 'timeout' ? t('ollama.test_timeout', { s: Math.round((Date.now() - started) / 1000) }) : (e.message || String(e))
+    testResult.value = { ok: false, error: msg }
   } finally {
+    stopTestClock()
     if (pageAlive) testBusy.value = false
   }
 }
 
 let pageAlive = true
+// loadGeneration orders status reads only: refresh() bumps it on every 10s
+// poll so a stale status answer cannot overwrite a newer one.  User actions
+// (quick test, unload, delete, pull, service control, settings) must NOT key
+// on it — a poll landing mid-request used to throw the finished answer away,
+// so a quick test that took longer than the next poll tick (any test on a
+// cold cache) ended with no result at all.  They key on pageEpoch, which only
+// changes when the page is left.
 let loadGeneration = 0
+let pageEpoch = 0
 onMounted(() => {
   pageAlive = true
   void refresh()
@@ -854,6 +876,8 @@ onMounted(() => {
 onUnmounted(() => {
   pageAlive = false
   loadGeneration += 1
+  pageEpoch += 1
+  stopTestClock()
   if (typeof statusTimer === 'function') statusTimer()
   statusTimer = null
   if (actionTimer) clearTimeout(actionTimer)

@@ -897,6 +897,8 @@ export default {
     test_prompt_label: '测试提示词',
     act_test: '运行测试',
     testing: '生成中…',
+    testing_elapsed: '生成中… {s} 秒',
+    test_timeout: '等待 {s} 秒仍无结果——模型未在限时内响应。请确认本地模型服务在运行（日志 → mlx-lm）后重试。',
     test_stats: '{s} 秒 · {tps} tokens/s',
     test_failed: '测试失败',
     test_thinking_note: '显示的是思考过程（限额 token 都用在了推理上）',

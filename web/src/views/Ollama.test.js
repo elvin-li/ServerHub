@@ -588,3 +588,90 @@ describe('in-panel chat', () => {
     expect(wrapper.find('.chat-msg.assistant .chat-body').exists()).toBe(false)
   })
 })
+
+describe('quick test and chat survive the 10s status poll', () => {
+  let wrapper
+
+  afterEach(() => wrapper?.unmount())
+
+  it('keeps a quick-test answer that arrives after a poll tick', async () => {
+    // Regression: refresh() bumps loadGeneration on every poll and runTest
+    // used to compare against it, so any test slower than the next tick
+    // (a cold 9B answer takes ~7s) finished with no result shown at all.
+    getOllamaStatus.mockResolvedValue(STATUS)
+    const { testOllamaModel } = await import('../api/client')
+    let answer
+    testOllamaModel.mockReset()
+    testOllamaModel.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('input[aria-label="ollama.test_prompt_label"]').setValue('测速')
+    await wrapper.findAll('button').find(b => b.text() === 'ollama.act_test').trigger('click')
+    await flushPromises()
+    expect(wrapper.html()).toContain('ollama.testing')
+
+    await polls.callbacks[0]()
+    await flushPromises()
+    answer({ ok: true, model: 'qwen3.5:4b', response: '测速结果', thinking: '', duration_s: 7.1, eval_count: 101, tokens_per_s: 27.4 })
+    await flushPromises()
+
+    const html = wrapper.html()
+    expect(html).toContain('测速结果')
+    expect(html).toContain('ollama.test_stats')
+    expect(html).not.toContain('ollama.testing')
+  })
+
+  it('turns a client timeout into a clear error instead of spinning', async () => {
+    getOllamaStatus.mockResolvedValue(STATUS)
+    const { testOllamaModel } = await import('../api/client')
+    testOllamaModel.mockReset()
+    const err = new Error('err.timeout')
+    err.code = 'timeout'
+    testOllamaModel.mockRejectedValue(err)
+    wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('input[aria-label="ollama.test_prompt_label"]').setValue('测速')
+    await wrapper.findAll('button').find(b => b.text() === 'ollama.act_test').trigger('click')
+    await flushPromises()
+
+    const html = wrapper.html()
+    expect(html).toContain('ollama.test_timeout')
+    expect(html).toContain('ollama.test_failed')
+    expect(wrapper.findAll('button').find(b => b.text() === 'ollama.act_test')).toBeTruthy()
+  })
+
+  it('paints streamed chat tokens before the stream ends', async () => {
+    // Regression: onChunk wrote to the raw object that was pushed, which
+    // never re-rendered — the bubble stayed on "chat_sending" until done.
+    getOllamaStatus.mockResolvedValue(STATUS)
+    let begin
+    let finish
+    let seenMidStream = null
+    chatOllamaModel.mockImplementation(async (model, _messages, _n, { onChunk } = {}) => {
+      // The first token lands after the pending bubble has rendered.
+      await new Promise((resolve) => { begin = resolve })
+      onChunk?.({ ok: true, model, content: 'partial tok', thinking: '', done: false })
+      await new Promise((resolve) => { finish = resolve })
+      const snap = { ok: true, model, content: 'partial token done', thinking: '', done: true }
+      onChunk?.(snap)
+      return snap
+    })
+    wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.find('textarea[aria-label="ollama.chat_input_label"]').setValue('hi')
+    await wrapper.findAll('button').find(b => b.text() === 'ollama.chat_send').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.chat-msg.assistant .chat-body').text()).toBe('ollama.chat_sending')
+    begin()
+    await flushPromises()
+    seenMidStream = wrapper.find('.chat-msg.assistant .chat-body').text()
+    finish()
+    await flushPromises()
+
+    expect(seenMidStream).toBe('partial tok')
+    expect(wrapper.find('.chat-msg.assistant .chat-body').text()).toBe('partial token done')
+  })
+})
