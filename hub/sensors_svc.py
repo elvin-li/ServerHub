@@ -710,6 +710,293 @@ def _static_hw() -> dict:
     return {"ncpu": ncpu_i, "mem_total_gb": mem_gb, "page_size": page_size}
 
 
+# ── Activity-Monitor memory breakdown ───────────────────────────────────────
+# host_statistics64(HOST_VM_INFO64) is what vm_stat prints; reading it via
+# ctypes costs microseconds, so even the light dashboard tick can carry the
+# real App / Wired / Compressed / Cached split.  The previous card derived
+# "cache" as PhysMem used - wired - compressor, which swallowed all app
+# memory (a 5-7 GB local model included) into "cache" and called wired
+# memory "used".
+_HOST_VM_INFO64 = 4
+
+
+class _VmStatistics64(ctypes.Structure):
+    _fields_ = [
+        ("free_count", ctypes.c_uint32),
+        ("active_count", ctypes.c_uint32),
+        ("inactive_count", ctypes.c_uint32),
+        ("wire_count", ctypes.c_uint32),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", ctypes.c_uint32),
+        ("speculative_count", ctypes.c_uint32),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", ctypes.c_uint32),
+        ("throttled_count", ctypes.c_uint32),
+        ("external_page_count", ctypes.c_uint32),
+        ("internal_page_count", ctypes.c_uint32),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
+class _XswUsage(ctypes.Structure):
+    _fields_ = [
+        ("xsu_total", ctypes.c_uint64),
+        ("xsu_avail", ctypes.c_uint64),
+        ("xsu_used", ctypes.c_uint64),
+        ("xsu_pagesize", ctypes.c_uint32),
+        ("xsu_encrypted", ctypes.c_bool),
+    ]
+
+
+class _RusageInfoV2(ctypes.Structure):
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+        ("ri_child_user_time", ctypes.c_uint64),
+        ("ri_child_system_time", ctypes.c_uint64),
+        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_child_interrupt_wkups", ctypes.c_uint64),
+        ("ri_child_pageins", ctypes.c_uint64),
+        ("ri_child_elapsed_abstime", ctypes.c_uint64),
+        ("ri_diskio_bytesread", ctypes.c_uint64),
+        ("ri_diskio_byteswritten", ctypes.c_uint64),
+    ]
+
+
+_RUSAGE_INFO_V2 = 2
+# Local LLM runtimes whose resident weights deserve their own line on the
+# memory card.  Matched against the ps command line (lower-cased).
+_LOCAL_MODEL_MARKERS = (
+    ("mlx-lm/backend.py", "mlx-lm"),
+    ("mlx_lm.server", "mlx-lm"),
+    ("mlx_lm ", "mlx-lm"),
+    ("ollama runner", "Ollama"),
+    ("ollama serve", "Ollama"),
+    ("llama-server", "llama.cpp"),
+)
+
+
+def _vm_counts_ctypes() -> dict | None:
+    if _libc is None:
+        return None
+    try:
+        stats = _VmStatistics64()
+        count = ctypes.c_uint(ctypes.sizeof(stats) // 4)
+        host = _libc.mach_host_self()
+        kr = _libc.host_statistics64(
+            ctypes.c_uint(host), ctypes.c_int(_HOST_VM_INFO64),
+            ctypes.byref(stats), ctypes.byref(count),
+        )
+        if kr != 0:
+            return None
+        return {
+            "free": int(stats.free_count),
+            "speculative": int(stats.speculative_count),
+            "wired": int(stats.wire_count),
+            "purgeable": int(stats.purgeable_count),
+            "external": int(stats.external_page_count),
+            "internal": int(stats.internal_page_count),
+            "compressor": int(stats.compressor_page_count),
+        }
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+_VM_STAT_KEYS = {
+    "pages free": "free",
+    "pages speculative": "speculative",
+    "pages wired down": "wired",
+    "pages purgeable": "purgeable",
+    "file-backed pages": "external",
+    "anonymous pages": "internal",
+    "pages occupied by compressor": "compressor",
+}
+
+
+def _vm_counts_vm_stat() -> dict | None:
+    rc, out, _ = _sh_run(["/usr/bin/vm_stat"], timeout=4)
+    if _rc_int(rc) != 0:
+        return None
+    counts: dict = {}
+    for line in _as_text(out).splitlines():
+        key, _sep, val = line.partition(":")
+        name = _VM_STAT_KEYS.get(key.strip().strip('"').lower())
+        if not name:
+            continue
+        n = _sysctl_int(val.strip().rstrip("."))
+        if n is not None:
+            counts[name] = n
+    return counts if len(counts) == len(_VM_STAT_KEYS) else None
+
+
+def _swap_used_bytes() -> int | None:
+    if _libc is None:
+        return None
+    try:
+        xsw = _XswUsage()
+        size = ctypes.c_size_t(ctypes.sizeof(xsw))
+        if _libc.sysctlbyname(b"vm.swapusage", ctypes.byref(xsw), ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+            return None
+        return int(xsw.xsu_used)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _local_model_memory() -> dict | None:
+    """phys_footprint (= Activity Monitor's Memory column) of local LLM runtimes."""
+    if _libc is None:
+        return None
+    try:
+        from hub.proc_cache import ps_pid_commands
+
+        rows = ps_pid_commands()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+    total = wired = 0
+    names: list[str] = []
+    pids: list[int] = []
+    for pid, cmd in rows:
+        low = _as_text(cmd).lower()
+        label = next((lab for needle, lab in _LOCAL_MODEL_MARKERS if needle in low), None)
+        if not label:
+            continue
+        try:
+            info = _RusageInfoV2()
+            if _libc.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(_RUSAGE_INFO_V2), ctypes.byref(info)) != 0:
+                continue
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            continue
+        foot = int(info.ri_phys_footprint)
+        if foot < 256 * 2**20:
+            # adapters / CLIs, not the process that holds the weights
+            continue
+        total += foot
+        wired += int(info.ri_wired_size)
+        pids.append(int(pid))
+        if label not in names:
+            names.append(label)
+    if not pids:
+        return None
+    return {
+        "gb": _bytes_to_gb(total, 2),
+        "wired_gb": _bytes_to_gb(wired, 2),
+        "name": " + ".join(names),
+        "pids": pids,
+    }
+
+
+def _memory_breakdown(total_gb, page_size) -> dict:
+    """Activity Monitor's split, in GiB (Activity Monitor labels GiB as "GB").
+
+    App memory = anonymous (internal) - purgeable; Wired = wired down;
+    Compressed = pages occupied by the compressor; Memory Used = the three;
+    Cached Files = file-backed + purgeable (the kernel drops these on
+    demand); Available = total - Memory Used.
+    """
+    counts = _vm_counts_ctypes()
+    source = "host_statistics64"
+    if not counts:
+        counts = _vm_counts_vm_stat()
+        source = "vm_stat"
+    if not counts:
+        return {}
+    pg = page_size or 16384
+    gb = lambda pages, d=2: _bytes_to_gb(max(0, pages) * pg, d)  # noqa: E731
+    app_p = counts["internal"] - counts["purgeable"]
+    used_p = app_p + counts["wired"] + counts["compressor"]
+    cached_p = counts["external"] + counts["purgeable"]
+    out = {
+        "app_gb": gb(app_p),
+        "wired_gb": gb(counts["wired"]),
+        "compressor_gb": gb(counts["compressor"]),
+        "mem_used_gb": gb(used_p),
+        "cached_files_gb": gb(cached_p),
+        "free_pages_gb": gb(counts["free"]),
+        "source": source,
+    }
+    if total_gb is not None:
+        try:
+            avail = _finite_float(total_gb - out["mem_used_gb"])
+        except (TypeError, OverflowError):
+            avail = None
+        out["available_gb"] = None if avail is None else round(max(0.0, avail), 1)
+        ratio = _safe_div(out["mem_used_gb"], total_gb)
+        out["mem_used_pct"] = None if ratio is None else round(min(100.0, ratio * 100), 1)
+    swap = _swap_used_bytes()
+    out["swap_used_gb"] = None if swap is None else _bytes_to_gb(swap, 2)
+    model = _local_model_memory()
+    if model:
+        out["model"] = model
+    return out
+
+
+def _safe_breakdown(total_gb, page_size) -> dict:
+    try:
+        bd = _memory_breakdown(total_gb, page_size)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return {}
+    return bd if _isa(bd, dict) else {}
+
+
+_BREAKDOWN_KEYS = (
+    "app_gb", "wired_gb", "compressor_gb", "cached_files_gb", "swap_used_gb",
+    "mem_used_gb", "mem_used_pct", "free_pages_gb", "model",
+)
+
+
+def _apply_breakdown(memory: dict, bd) -> dict:
+    """Overlay the Activity-Monitor split onto a ``memory`` payload.
+
+    ``used_gb`` / ``available_gb`` switch from the memory_pressure guess
+    (total x free%%, which counted app memory as free) to Memory Used and
+    total - Memory Used.  ``cache_gb`` keeps its name for old clients but
+    now means Cached Files.  Pressure fields are left alone.
+    """
+    if not _isa(bd, dict) or bd.get("mem_used_gb") is None:
+        return memory
+    for k in _BREAKDOWN_KEYS:
+        if bd.get(k) is not None:
+            memory[k] = bd[k]
+    memory["cache_gb"] = bd.get("cached_files_gb")
+    memory["used_gb"] = bd.get("mem_used_gb")
+    if bd.get("available_gb") is not None:
+        memory["available_gb"] = bd["available_gb"]
+        memory["free_gb"] = bd["available_gb"]
+    memory["breakdown_source"] = bd.get("source")
+    memory["unit"] = "GiB"
+    return memory
+
+
 def _memory_base() -> dict:
     try:
         raw_load = os.getloadavg()
@@ -772,6 +1059,7 @@ def _memory_base() -> dict:
         "pages_speculative": pages_spec,
         "pages_inactive": pages_inactive,
         "pages_wired": pages_wired,
+        "breakdown": _safe_breakdown(hw["mem_total_gb"], hw["page_size"]),
     }
 
 
@@ -1190,6 +1478,7 @@ def collect_light() -> dict:
             "available_gb": available_gb,
             "pressure_free_pct": pressure_free,
             "pressure_used_pct": pressure_used,
+            **_apply_breakdown({}, mem.get("breakdown")),
         },
         "disk": disk,
         "network": {},
@@ -1377,7 +1666,8 @@ def _collect_sensors_uncached() -> dict:
             "pressure_free_pct": pressure_free_pct,
             "pressure_used_pct": pressure_used_pct,
             "physmem_raw": top.get("physmem_raw"),
-            "hint": "Usage follows memory_pressure and excludes file cache; PhysMem 'used' includes cache and reads high",
+            "hint": "Pressure follows memory_pressure; Memory Used = App + Wired + Compressed (Activity Monitor)",
+            **_apply_breakdown({}, mem.get("breakdown")),
         },
         "disk": disk,
         "network": net,
