@@ -972,6 +972,39 @@ def origins_allow_lan(origins: str) -> bool:
     return False
 
 
+#: The Origin a LAN page (Open WebUI, Page Assist on another Mac) sends.
+_LAN_PROBE_ORIGIN = "http://192.168.1.2"
+
+
+def _lan_cors_answers() -> bool:
+    """True when the daemon really serves a LAN-origin browser request.
+
+    ``OLLAMA_ORIGINS`` in the plist is only how *stock* Ollama is configured.
+    A drop-in Ollama-compatible front end (the mlx-lm adapter that now owns
+    :11434 on this host) has no such variable and answers every origin with
+    ``Access-Control-Allow-Origin: *`` — the plist-only check then warned
+    "LAN pages get 403" about a daemon that never 403s.  One bounded GET of
+    /api/version with a LAN ``Origin`` asks the daemon itself: a 2xx that
+    echoes ``*`` or the origin is allowed; a 403, any other answer, or any
+    failure is not (the plist verdict stands).
+    """
+    req = urllib.request.Request(
+        base_url() + "/api/version",
+        method="GET",
+        headers={"Accept": "application/json", "Origin": _LAN_PROBE_ORIGIN},
+    )
+    try:
+        with _ollama_open(req, PROBE_TIMEOUT) as r:
+            status_code = _safe_int(getattr(r, "status", 0))
+            allow = _as_text(r.headers.get("Access-Control-Allow-Origin")).strip()
+            r.read(4096)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+    return 200 <= status_code < 300 and allow in ("*", _LAN_PROBE_ORIGIN)
+
+
 def _agent_origins(label: str | None = None) -> str:
     """``OLLAMA_ORIGINS`` from the owning LaunchAgent, or empty."""
     name = _as_text(label).strip()
@@ -1757,7 +1790,7 @@ def health_checks() -> list[dict]:
         "fix": "",
     })
     origins = _agent_origins(label)
-    if not origins_allow_lan(origins):
+    if not origins_allow_lan(origins) and not _lan_cors_answers():
         rows.append({
             "id": "ollama_lan_origins",
             "name": "Ollama LAN CORS",

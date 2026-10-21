@@ -1217,12 +1217,57 @@ class HealthGating(_NoRealConfig):
                 ollama_svc, "_agent_origins",
                 return_value="chrome-extension://*,moz-extension://*",
             ),
+            mock.patch.object(ollama_svc, "_lan_cors_answers", return_value=False),
         ):
             rows = ollama_svc.health_checks()
         ids = [r["id"] for r in rows]
         self.assertEqual(ids, ["ollama_api", "ollama_lan_origins"])
         self.assertFalse(rows[1]["ok"])
         self.assertIn("403", rows[1]["detail"])
+
+    def test_compat_daemon_that_allows_lan_origins_does_not_warn(self):
+        # The mlx-lm adapter on :11434 has no OLLAMA_ORIGINS in its plist but
+        # answers every Origin with ACAO: * — no false "LAN pages get 403".
+        def fake_api(path, payload=None, timeout=None):
+            return {"/api/version": {"version": "0.33.0"}, "/api/ps": PS_PAYLOAD}[path]
+
+        with (
+            mock.patch.object(ollama_svc, "binary_path", return_value=None),
+            mock.patch.object(ollama_svc, "discover_label", return_value="local.mlx-lm"),
+            mock.patch.object(ollama_svc, "_candidate_labels", return_value=[]),
+            mock.patch.object(ollama_svc, "_api", side_effect=fake_api),
+            mock.patch.object(ollama_svc, "_agent_origins", return_value=""),
+            mock.patch.object(ollama_svc, "_lan_cors_answers", return_value=True),
+        ):
+            rows = ollama_svc.health_checks()
+        self.assertEqual([r["id"] for r in rows], ["ollama_api"])
+
+    def test_lan_cors_probe_reads_the_daemon_answer(self):
+        class Resp:
+            def __init__(self, status, allow):
+                self.status = status
+                self.headers = {"Access-Control-Allow-Origin": allow} if allow is not None else {}
+
+            def read(self, n=-1):
+                return b'{"version":"0.33.0"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        cases = [
+            (Resp(200, "*"), True),
+            (Resp(200, ollama_svc._LAN_PROBE_ORIGIN), True),
+            (Resp(200, None), False),
+            (Resp(200, "http://localhost"), False),
+        ]
+        for resp, want in cases:
+            with mock.patch.object(ollama_svc, "_ollama_open", return_value=resp):
+                self.assertIs(ollama_svc._lan_cors_answers(), want)
+        with mock.patch.object(ollama_svc, "_ollama_open", side_effect=OSError("403 Forbidden")):
+            self.assertFalse(ollama_svc._lan_cors_answers())
 
     def test_star_origins_do_not_warn_about_lan_cors(self):
         self.assertTrue(ollama_svc.origins_allow_lan("*"))
