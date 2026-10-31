@@ -1000,6 +1000,41 @@ def run_bytes(cmd, timeout=10, cap=_BYTES_CAP, runner=None):
 _SH_CAP = 1024 * 1024
 
 
+def _utm_app_running() -> bool:
+    """True when the UTM GUI is already open.
+
+    ``utmctl list`` talks to the app over Apple Events.  Launch Services
+    starts UTM.app when nothing is listening, so a status poll would pull
+    the window back up after the user quit it.
+    """
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/pgrep", "-x", "UTM"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def _utmctl_verb(cmd) -> str:
+    """The utmctl subcommand, or "" when *cmd* is not utmctl."""
+    if not isinstance(cmd, (list, tuple)) or len(cmd) < 2:
+        return ""
+    exe = str(cmd[0])
+    if exe != "utmctl" and not exe.endswith("/utmctl"):
+        return ""
+    return str(cmd[1])
+
+
+# ``start`` is the only verb that should bring the GUI up.  list/status/ip
+# are what the panel polls, and each of them otherwise relaunches UTM.app.
+_UTM_MAY_LAUNCH = frozenset({"start"})
+
+
 def sh(cmd, timeout=10, shell=False, env=None):
     """Run *cmd* and keep at most :data:`_SH_CAP` leading bytes of each stream.
 
@@ -1012,6 +1047,13 @@ def sh(cmd, timeout=10, shell=False, env=None):
         if argv is None:
             return -1, "", "invalid argv"
         cmd = argv
+        # A closed UTM has no virtual machines to ask about.  Skipping the
+        # spawn is what keeps the panel's poll from relaunching UTM.app.
+        verb = _utmctl_verb(cmd)
+        if verb and verb not in _UTM_MAY_LAUNCH and not _utm_app_running():
+            if verb == "list":
+                return 0, "UUID                                 Status   Name", ""
+            return 1, "", "UTM is not running"
     try:
         spawn_counts.record(cmd, shell=shell)
     except _CONTROL_FLOW:

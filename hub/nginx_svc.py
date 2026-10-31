@@ -48,10 +48,14 @@ def _user_home() -> Path | None:
         raise
     except BaseException:
         return None
+    # Local isinstance, not ``_isinst``: this runs while the module is still
+    # importing, before ``_isinst`` exists.  Calling it NameError'd, the
+    # handler below turned every real home into None, and NGINX_ROOT froze
+    # on the /var/empty sentinel — health then reported nginx.conf missing.
     try:
-        if _isinst(home, Path):
+        if isinstance(home, Path):
             return home
-        if _isinst(home, (str, bytes)):
+        if isinstance(home, (str, bytes)):
             return Path(os.fsdecode(home))
     except _CONTROL_FLOW:
         raise
