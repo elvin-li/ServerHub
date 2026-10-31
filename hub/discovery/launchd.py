@@ -477,6 +477,16 @@ def discover_launchd():
                 actions = ["restart", "stop", "logs"]
         elif running:
             state, detail, actions = "warn", f"Process alive but port :{port} not responding", ["restart", "stop", "logs"]
+        elif loaded and p is True and pl.get("KeepAlive"):
+            # launchd's pid column is "-" (exec'd child, KeepAlive restart
+            # window) but the configured port is already accepting.  p is
+            # None means no port was resolved — that stays on the down
+            # branch below.  A closed port (p is False) is not healthy.
+            # Without KeepAlive nothing respawns the job, so a pid-less
+            # agent stays "down" even if some other process owns the port.
+            state = "ok"
+            detail = f"Loaded · :{port} answering"
+            actions = ["restart", "stop", "logs"]
         else:
             keep = bool(pl.get("KeepAlive"))
             if loaded and last not in ("0", None, "-", "") and keep:

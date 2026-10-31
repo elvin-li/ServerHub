@@ -114,6 +114,20 @@ class LaunchdDiscoveryTests(unittest.TestCase):
         self.assertEqual(item["detail"], "Crash-looping · last exit 255")
         self.assertIn("start", item["actions"])
 
+    def test_keepalive_open_port_is_ok_when_launchd_pid_missing(self):
+        """exec'd child is invisible to argv match; an open port is still healthy."""
+        item = self._discover(
+            ["/opt/homebrew/bin/node", "/tmp/start.sh"],
+            ("-", "255"),
+            KeepAlive=True,
+            override={"port": 8482},
+            port_reachable=True,
+            orphan_pids=[],
+        )
+        self.assertEqual(item["state"], "ok")
+        self.assertIn(":8482", item["detail"])
+        self.assertNotIn("Crash-looping", item["detail"])
+
     def test_oneshot_nonzero_exit_is_exited(self):
         item = self._discover(
             ["/usr/bin/true"],

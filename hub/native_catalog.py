@@ -2109,12 +2109,18 @@ def _install_homeassistant(app: dict, app_id: str, logs: list[str]) -> dict:
     upd = ha_dir / "update-homeassistant.sh"
     try:
         with upd.open("x", encoding="utf-8") as fh:
+            shared_py = home / "venvs" / "shared" / "bin" / "python"
             fh.write(
                 "#!/bin/bash\n"
-                "set -e\n"
+                "set -euo pipefail\n"
                 f'HA_DIR="{ha_dir}"\n'
                 'cd "$HA_DIR"\n'
-                "./venv/bin/pip install --upgrade homeassistant\n"
+                f'if [[ -x "{shared_py}" ]]; then\n'
+                f'  PY="{shared_py}"\n'
+                "else\n"
+                "  PY=./venv/bin/python\n"
+                "fi\n"
+                '"$PY" -m pip install --upgrade homeassistant\n'
                 f'launchctl kickstart -k "gui/$(id -u)/{label}"\n'
             )
         upd.chmod(0o755)
