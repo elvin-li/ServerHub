@@ -389,10 +389,15 @@ def _caddy_blocks(text: str) -> list[tuple[list[str], list[str]]]:
     blocks, i = [], 0
     while i < len(lines):
         line = lines[i]
-        if line.endswith("{"):
-            head = line[:-1].strip()
-            depth, body, i = 1, [], i + 1
-            while i < len(lines) and depth:
+        if "{" in line:
+            head, rest = line.split("{", 1)
+            head = head.strip()
+            depth = 1 + rest.count("{") - rest.count("}")
+            # ``{ admin off }`` / ``(snip) { encode gzip }`` on one line.
+            inline = rest.rsplit("}", 1)[0].strip() if depth <= 0 else rest.strip()
+            body = [inline] if inline else []
+            i += 1
+            while i < len(lines) and depth > 0:
                 cur = lines[i]
                 depth += cur.count("{") - cur.count("}")
                 if depth > 0:
