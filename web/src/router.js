@@ -35,6 +35,7 @@ const Brew = () => import('./views/Brew.vue')
 const Ollama = () => import('./views/Ollama.vue')
 const Network = () => import('./views/Network.vue')
 const Gateway = () => import('./views/Gateway.vue')
+const Sites = () => import('./views/Sites.vue')
 const WireGuard = () => import('./views/WireGuard.vue')
 const Health = () => import('./views/Health.vue')
 const Scheduler = () => import('./views/Scheduler.vue')
@@ -71,6 +72,7 @@ const routes = [
   { path: '/ollama', name: 'ollama', component: Ollama },
   { path: '/network', name: 'network', component: Network },
   { path: '/gateway', name: 'gateway', component: Gateway },
+  { path: '/sites', name: 'sites', component: Sites },
   { path: '/wireguard', name: 'wireguard', component: WireGuard },
   { path: '/health', name: 'health', component: Health },
   { path: '/scheduler', name: 'scheduler', component: Scheduler },

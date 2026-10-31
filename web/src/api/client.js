@@ -829,6 +829,11 @@ export const testNginx = () => json('/api/nginx/test', { method: 'POST' })
 export const reloadNginx = () =>
   json('/api/nginx/reload', { method: 'POST' }, NGINX_RELOAD_TIMEOUT)
 
+// Sites: every local web site, rediscovered from nginx/Caddy/Apache/cloudflared/
+// launchd/containers/listeners.  force=true skips the short server-side cache.
+export const getSites = (force = false) => json(`/api/sites${force ? '?force=true' : ''}`, undefined, 20000)
+export const getSiteConfig = (id) => json(`/api/sites/${asUri(id)}/config`)
+
 // OrbStack VM creation and clone operations can run for up to ten minutes.
 const VM_OPERATION_TIMEOUT = 610000
 export const getVms = () => json('/api/vms')

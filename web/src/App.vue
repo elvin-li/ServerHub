@@ -223,7 +223,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
-  Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
+  Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark, Globe,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
   Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen, Palette, Zap,
 } from '@lucide/vue'
@@ -423,10 +423,11 @@ const NAV_ADMIN = [
   {
     to: '/network',
     labelKey: 'nav.network',
-    match: ['/network', '/gateway', '/wireguard', '/bookmarks'],
+    match: ['/network', '/sites', '/gateway', '/wireguard', '/bookmarks'],
     icon: Network,
     children: [
       { to: '/network', labelKey: 'nav.sub_interfaces', exact: true, icon: Network },
+      { to: '/sites', labelKey: 'nav.sites', icon: Globe },
       { to: '/gateway', labelKey: 'nav.gateway', icon: Router },
       { to: '/wireguard', labelKey: 'nav.wireguard', icon: ShieldCheck },
       { to: '/bookmarks', labelKey: 'nav.bookmarks', icon: Bookmark },
