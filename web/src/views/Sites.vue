@@ -48,12 +48,12 @@
               <div class="mono sub">
                 <a v-if="s.url" :href="s.url" target="_blank" rel="noopener noreferrer">{{ s.url }}</a>
               </div>
-              <div v-if="s.also.length" class="sub">{{ t('sites.also', { list: s.also.map(sourceLabel).join(', ') }) }}</div>
+              <div v-if="s.also.length" class="sub">{{ t('sites.also', { list: s.also.map((a) => finiteText(sourceLabel(a), '')).join(', ') }) }}</div>
               <div class="show-m sub">{{ sourceLabel(s.source) }}<span v-if="s.backend"> · {{ s.backend }}</span></div>
             </td>
             <td>
               <span class="badge" :class="badgeClass(s.status)">{{ t(STATUS_KEYS[s.status]) }}</span>
-              <div v-if="s.detail" class="sub" style="font-size:11px">{{ s.detail }}</div>
+              <div v-if="s.detail" class="sub" style="font-size:11px">{{ finiteText(s.detail, '') }}</div>
             </td>
             <td class="col-hide-m">{{ sourceLabel(s.source) }}</td>
             <td class="mono col-hide-m" style="font-size:11px">
@@ -200,8 +200,10 @@ async function load(force = false) {
       const r = asRecord(n)
       return { id: text(recGet(r, 'id')), ok: recGet(r, 'ok') === true, error: text(recGet(r, 'error')) }
     })
+    // A whole-discovery failure arrives as 200 + error; success clears it.
     const err = text(recGet(j, 'error'))
-    loadError.value = err
+    if (err) loadError.value = err
+    else loadError.value = ''
   } catch (e) {
     if (seq !== loadSeq || !pageAlive) return
     loadError.value = text(e?.message || String(e))
@@ -281,6 +283,6 @@ onUnmounted(() => {
 .sites-actions { white-space: nowrap; }
 .sites-actions > * + * { margin-left: 6px; }
 .sites-msg { margin-top: 10px; font-size: 11px; white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 4px; }
-.sites-modal { max-width: 860px; width: 92vw; }
+.sites-modal { max-width: 860px; width: 92%; }
 .sites-config { max-height: 70vh; overflow: auto; font-size: 11px; white-space: pre; }
 </style>
