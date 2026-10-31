@@ -79,14 +79,22 @@ def _httpd_confs() -> list[Path]:
     return out
 
 
-def _cloudflared_config() -> Path | None:
+def _cloudflared_configs() -> list[Path]:
+    """Locally-managed tunnel configs (a token-run tunnel has none)."""
+    out = []
     try:
         from hub import cloudflared_svc
-        return Path(cloudflared_svc.CONFIG_YML)
+        out.append(Path(cloudflared_svc.CONFIG_YML))
     except _CONTROL_FLOW:
         raise
     except BaseException:
-        return None
+        pass
+    home = _home()
+    if home is not None:
+        out += [home / ".cloudflared" / "config.yml", home / ".cloudflared" / "config.yaml"]
+    out += [Path(p) / "etc" / "cloudflared" / "config.yml" for p in HOMEBREW_PREFIXES]
+    out.append(Path("/etc/cloudflared/config.yml"))
+    return out
 
 
 # ---------------------------------------------------------------- utilities
@@ -154,7 +162,7 @@ def _make_site(source: str, *, name: str, host: str, port: int | None, scheme: s
                server_names=(), root: str | None = None, upstream: str | None = None,
                config_path: str | None = None, probe_host: str = "127.0.0.1",
                probe_tls: bool | None = None, detail: str = "", optional: bool = False,
-               url: str | None = None, extra_actions=()) -> dict:
+               url: str | None = None, extra_actions=(), http_only: bool = False) -> dict:
     host = host or "localhost"
     url = url or _build_url(scheme, host, port)
     return {
@@ -173,10 +181,12 @@ def _make_site(source: str, *, name: str, host: str, port: int | None, scheme: s
         "status": "unknown",
         "detail": _clean(detail),
         "actions": ["open"] + list(extra_actions),
+        "also_seen_in": [],
         # Internal probe hints; stripped before the payload leaves the module.
         "_probe": (probe_host, port, scheme == "https" if probe_tls is None else probe_tls,
                    host if not _is_local(host) else None),
         "_optional": optional,
+        "_http_only": http_only,
     }
 
 
@@ -571,7 +581,9 @@ def parse_cloudflared_config(path: Path) -> list[dict]:
         site = _make_site(
             "cloudflared", name=hostname, host=hostname, port=443, scheme="https",
             server_names=[hostname], upstream=service, config_path=str(path),
-            url=f"https://{hostname}" + (rule.get("path") or "" if isinstance(rule.get("path"), str) else ""),
+            # ``path`` in an ingress rule is a regex, not a URL path: never
+            # append it to the link.
+            url=f"https://{hostname}",
             detail="status = local upstream probe",
         )
         # The public edge is not probed (no WAN round trip per refresh); the
@@ -586,17 +598,28 @@ def parse_cloudflared_config(path: Path) -> list[dict]:
 
 
 def _cloudflared_source() -> list[dict]:
-    path = _cloudflared_config()
-    return parse_cloudflared_config(path) if path is not None else []
+    out, seen = [], set()
+    for p in _cloudflared_configs():
+        if str(p) in seen:
+            continue
+        seen.add(str(p))
+        out += parse_cloudflared_config(p)
+    return out
 
 
 # ---------------------------------------------------------------- launchd
 
 def _launchd_rows() -> list:
+    """Service rows of the shared status snapshot (``groups[].services``)."""
     from hub.status import full_status
     st = full_status()
-    rows = st.get("services") if isinstance(st, dict) else None
-    return rows if isinstance(rows, list) else []
+    groups = st.get("groups") if isinstance(st, dict) else None
+    rows = []
+    for g in groups if isinstance(groups, list) else []:
+        services = g.get("services") if isinstance(g, dict) else None
+        if isinstance(services, list):
+            rows.extend(services)
+    return rows
 
 
 def _launchd_source() -> list[dict]:
@@ -648,6 +671,8 @@ def parse_docker_ps(out: str) -> list[dict]:
                 upstream=f"{image} → {inner}/tcp",
                 probe_host="127.0.0.1" if _is_local(bind) else bind,
                 detail=f"container {name}",
+                # A published redis/postgres port is not a web site.
+                http_only=True,
             ))
     return sites
 
@@ -764,8 +789,9 @@ def merge_sites(by_source: dict[str, list[dict]]) -> list[dict]:
             # sites; the same name/port seen twice (e.g. listen + listen [::])
             # is one.
             if key in merged:
-                if source not in merged[key].setdefault("also_seen_in", []) and merged[key]["source"] != source:
-                    merged[key]["also_seen_in"].append(source)
+                first = merged[key]
+                if first["source"] != source and source not in first["also_seen_in"]:
+                    first["also_seen_in"].append(source)
                 continue
             merged[key] = site
     return list(merged.values())
@@ -824,6 +850,11 @@ def _collect() -> dict:
     _probe_all(sites)
     # Stock / stopped trees (Homebrew nginx, /etc/apache2) only count while up.
     sites = [s for s in sites if not (s.get("_optional") and s["status"] == "down")]
+    # Container ports that accept TCP but never answer HTTP are databases,
+    # caches or brokers, not sites.
+    sites = [s for s in sites
+             if not (s.get("_http_only") and s["status"] == "warn"
+                     and s["detail"].endswith("no HTTP answer"))]
 
     # Anything listening that no source explained, and that answers HTTP.
     covered = {s.get("port") for s in sites}
@@ -856,6 +887,7 @@ def _collect() -> dict:
     for s in sites:
         s.pop("_probe", None)
         s.pop("_optional", None)
+        s.pop("_http_only", None)
         out.append(s)
     order = {name: i for i, name in enumerate(_SOURCE_ORDER)}
     out.sort(key=lambda s: (order.get(s["source"], 99), s["name"].lower(), s.get("port") or 0))
