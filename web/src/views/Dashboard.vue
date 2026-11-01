@@ -1522,12 +1522,17 @@ function formatBps(bps) {
 let dashAlive = false
 let heavyGeneration = 0
 let sensorsGeneration = 0
+// The shell's top-bar badge reads the same /api/status.  Handing it each
+// answer lets the shell's own 30s (high: 15s) poll skip while this page polls
+// every 20s (high: 12s).  Absent outside App (tests mount the view alone).
+const shareStatus = inject('shareStatus', null)
 async function refresh() {
   try {
     const next = await getStatus()
     if (!dashAlive) return
     status.value = next
     loadError.value = ''
+    if (typeof shareStatus === 'function') shareStatus(next)
   } catch (e) {
     if (!dashAlive) return false
     loadError.value = finiteText(e.message || String(e), '')
@@ -1757,6 +1762,8 @@ onUnmounted(() => {
   stopDashTimers()
   if (actionRefreshTimer) clearTimeout(actionRefreshTimer)
   actionRefreshTimer = null
+  // Hand the badge back to the shell's own poll.
+  if (typeof shareStatus === 'function') shareStatus(null)
 })
 </script>
 

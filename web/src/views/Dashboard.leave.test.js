@@ -56,10 +56,10 @@ function button(wrapper, text) {
   return found
 }
 
-async function mountDash(toast = vi.fn()) {
+async function mountDash(toast = vi.fn(), provide = {}) {
   const wrapper = mount(Dashboard, {
     global: {
-      provide: { toast },
+      provide: { toast, ...provide },
       stubs: {
         RouterLink: { template: '<a class="router-link-stub"><slot /></a>' },
         LineChart: true,
@@ -132,6 +132,29 @@ describe('Dashboard leave-guards', () => {
     const src = readFileSync(join(here, 'Dashboard.vue'), 'utf8')
     expect(src).toContain("loadSensors(false, { light: !highMode.value })")
     expect(src).toContain('void loadSensors(forceSensors, { light: false })')
+  })
+
+  it('shares each status answer with the shell and hands it back on leave', async () => {
+    // The shell's badge polls the same /api/status; a share lets it skip.
+    const shareStatus = vi.fn()
+    const { wrapper } = await mountDash(vi.fn(), { shareStatus })
+    expect(shareStatus).toHaveBeenCalledTimes(1)
+    expect(shareStatus.mock.calls[0][0].groups[0].group).toBe('Apps')
+
+    wrapper.unmount()
+    expect(shareStatus).toHaveBeenLastCalledWith(null)
+  })
+
+  it('does not share a status answer that lands after leave', async () => {
+    let resolveStatus
+    api.getStatus.mockImplementation(() => new Promise((resolve) => { resolveStatus = resolve }))
+    const shareStatus = vi.fn()
+    const { wrapper } = await mountDash(vi.fn(), { shareStatus })
+    wrapper.unmount()
+    resolveStatus({ groups: [] })
+    await flushPromises()
+    expect(shareStatus).toHaveBeenCalledTimes(1)
+    expect(shareStatus).toHaveBeenLastCalledWith(null)
   })
 
   it('does not toast a service start that returns after leave', async () => {

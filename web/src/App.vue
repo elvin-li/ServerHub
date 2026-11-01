@@ -626,6 +626,10 @@ function onAppError() {
   showToast('⚠ ' + t('err.page_error'))
 }
 
+// When a page that reads /api/status itself (the Dashboard) last handed its
+// answer to the shell; 0 while no page is sharing.
+let sharedStatusAt = 0
+
 async function refresh() {
   // `false` opts the sidebar poll into lib/poll.js's failure backoff: with the
   // panel down, the badge refresh slows from every 15s toward 90s instead of
@@ -637,6 +641,28 @@ async function refresh() {
     status.value = next
   } catch { return false }
 }
+
+// The sidebar tick.  The Dashboard polls /api/status on a shorter timer and
+// shares every answer, so while it is open the badge is already fresher than
+// this tick would make it and the request is skipped.  The 1s margin keeps a
+// share that landed one interval ago from counting as fresh.
+function pollStatus() {
+  const age = Date.now() - sharedStatusAt
+  if (sharedStatusAt && age >= 0 && age < statusPollMs() - 1000) return undefined
+  return refresh()
+}
+
+// A page hands over each /api/status answer it read, or null when it stops
+// polling (unmount), so the sidebar tick goes back to its own schedule.
+function shareStatus(next) {
+  if (next == null || route.meta.authPage) {
+    sharedStatusAt = 0
+    return
+  }
+  status.value = asRecord(next)
+  sharedStatusAt = Date.now()
+}
+provide('shareStatus', shareStatus)
 
 function probePhotoHub() {
   // Members (and the login shell) are not on the photoshub whitelist;
@@ -666,7 +692,7 @@ function statusPollMs() {
 function startPoll() {
   if (poll) return
   // Low: 30s under the 35s status TTL. High: 15s for a livelier badge.
-  poll = startVisibleInterval(refresh, statusPollMs())
+  poll = startVisibleInterval(pollStatus, statusPollMs())
 }
 
 function stopPoll() {
