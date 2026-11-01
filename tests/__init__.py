@@ -55,6 +55,9 @@ os.environ.setdefault("SERVERHUB_NO_NATIVE_LSOF", "1")
 # And for the UTM-open check: tests stub `pgrep -x UTM` through
 # subprocess.run; tests/test_proc_names.py turns the sysctl read back on.
 os.environ.setdefault("SERVERHUB_NO_NATIVE_PROCNAME", "1")
+# WireGuard keeps `wg --version` answers until the binary changes; stubbed
+# answers must not stick across tests.  tests/test_wg_spawns.py turns it on.
+os.environ.setdefault("SERVERHUB_NO_VERSION_MEMO", "1")
 if "SERVERHUB_TESTS_KEEP_HOME" not in os.environ:
     _home = Path(_root) / "home"
     _home.mkdir(parents=True, exist_ok=True)
