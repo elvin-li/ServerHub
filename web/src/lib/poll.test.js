@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { startVisibleInterval } from './poll.js'
+import { inPollTick } from './pollTick.js'
 
 const MS = 1000
 
@@ -289,6 +290,30 @@ describe('startVisibleInterval', () => {
     expect(fn).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(MS)
     expect(fn).toHaveBeenCalledTimes(3)
+  })
+
+  it('marks what a tick starts before its first await as poll work', async () => {
+    // api/client.js reads the mark to leave a timed-out GET to the next tick.
+    const seen = []
+    const fn = vi.fn(async () => {
+      seen.push(inPollTick())
+      await Promise.resolve()
+      seen.push(inPollTick())
+    })
+    stop = startVisibleInterval(fn, MS)
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(seen).toEqual([true, false])
+
+    // The catch-up refresh on tab return is a tick too.
+    setHidden(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(MS * 2)
+    setHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fn).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual([true, false, true, false])
+    expect(inPollTick()).toBe(false)
   })
 
   it('recovers when the callback throws synchronously', async () => {

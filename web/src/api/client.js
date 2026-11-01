@@ -8,6 +8,7 @@ import {
   promptAdminPassword,
   setAdminPassword,
 } from '../lib/adminPassword.js'
+import { inPollTick } from '../lib/pollTick.js'
 
 const DEFAULT_TIMEOUT = 30000 // 30s — generous for docker ops on LAN
 const MAX_RETRIES = 2 // retry failed GET requests up to 2 times
@@ -76,6 +77,9 @@ function errorText(payload, statusText) {
 async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
   const isGet = !opts?.method || opts.method === 'GET'
   const attempts = isGet ? MAX_RETRIES + 1 : 1
+  // Read before the first await: a background poll tick only marks the
+  // requests it starts synchronously (lib/pollTick.js).
+  const fromPoll = isGet && inPollTick()
   const userSignal = opts?.signal
   const fetchOpts = { ...opts }
   delete fetchOpts.signal
@@ -132,8 +136,15 @@ async function json(url, opts, timeout = DEFAULT_TIMEOUT, adminRetry = 0) {
     } catch (e) {
       const isLast = i === attempts - 1
       const userAborted = Boolean(userSignal?.aborted)
+      // A poll's GET that hit its own timeout is not retried.  The next tick
+      // is its retry, and two more requests stacked on a server that just
+      // took 30s not to answer only add to its queue (a sync endpoint keeps
+      // working after the client gives up).  It used to hold the tick for
+      // 92s before lib/poll.js could start backing off.  A quick connection
+      // failure is still retried, so a short blip never raises a banner.
+      const pollTimedOut = fromPoll && e.name === 'AbortError'
       // Retry on network errors / timeouts for GET requests
-      if (!isLast && isGet && !userAborted && (e.name === 'AbortError' || e.message === 'Failed to fetch' || e.status === 0)) {
+      if (!isLast && isGet && !userAborted && !pollTimedOut && (e.name === 'AbortError' || e.message === 'Failed to fetch' || e.status === 0)) {
         await new Promise(r => setTimeout(r, RETRY_DELAY * (i + 1)))
         continue
       }

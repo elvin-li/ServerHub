@@ -6,6 +6,7 @@
  */
 
 import { asRecord } from './finite.js'
+import { runPollTick } from './pollTick.js'
 
 /** Returns a multiplier based on connection quality (1 = normal, higher = slower). */
 function networkMultiplier() {
@@ -60,8 +61,11 @@ export function startVisibleInterval(fn, ms) {
     if (inflight) return inflight
     const run = (async () => {
       try {
+        // runPollTick marks the requests fn starts before its first await as
+        // background ones (lib/pollTick.js); the client then leaves a
+        // timed-out GET to the next tick instead of retrying it.
         // `=== false` only: undefined/null/[]/0 stay "success" for legacy callbacks.
-        if ((await fn()) === false) failures++
+        if ((await runPollTick(fn)) === false) failures++
         else failures = 0
       } catch {
         failures++
