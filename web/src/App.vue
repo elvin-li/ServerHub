@@ -350,6 +350,10 @@ let ptrTimer = null
 let poll = null
 let ptrStartY = 0
 let ptrActive = false
+// Touch device (set on mount), and whether the blocking touchmove listener is
+// registered right now (see syncPtrArmed).
+let ptrSupported = false
+let ptrArmed = false
 let loadGeneration = 0
 
 function stillOnShell(generation) {
@@ -746,11 +750,13 @@ onMounted(() => {
   }
   window.addEventListener('online', onOnline)
   window.addEventListener('offline', onOffline)
-  // Pull-to-refresh (mobile only)
+  // Pull-to-refresh (mobile only).  touchmove is registered by syncPtrArmed,
+  // and only while the page is at the top.
   if ('ontouchstart' in window) {
+    ptrSupported = true
     document.addEventListener('touchstart', ptrTouchStart, { passive: true })
-    document.addEventListener('touchmove', ptrTouchMove, { passive: false })
     document.addEventListener('touchend', ptrTouchEnd, { passive: true })
+    syncPtrArmed()
   }
   // Back-to-top visibility
   window.addEventListener('scroll', onScroll, { passive: true })
@@ -775,6 +781,8 @@ onUnmounted(() => {
     narrowMq.removeEventListener('change', syncNarrow)
     narrowMq = null
   }
+  ptrSupported = false
+  ptrArmed = false
   document.removeEventListener('touchstart', ptrTouchStart)
   document.removeEventListener('touchmove', ptrTouchMove)
   document.removeEventListener('touchend', ptrTouchEnd)
@@ -799,6 +807,7 @@ function onSwUpdateReady() {
 }
 function onScroll() {
   showTop.value = window.scrollY > 400
+  syncPtrArmed()
 }
 function scrollTop() {
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -813,7 +822,30 @@ function applySwUpdate() {
 }
 
 /* Pull-to-refresh handlers */
+// ptrTouchMove has to be a blocking (non-passive) listener: a pull past 80px
+// calls preventDefault() to stop the page's own overscroll.  But while a
+// blocking touchmove listener sits on the document, a phone's browser has to
+// run the page's script before it may scroll, so a busy main thread (a poll
+// re-rendering the page) delayed the start of every scroll gesture.  It is
+// therefore registered only while the page is at the top, the one place a
+// pull can start.  It goes on ahead of the touch, not from touchstart: a
+// browser settles whether a touch sequence waits for script as it begins
+// (Safari at the touchstart, Chrome by the first move), so a listener added
+// from touchstart can come too late to stop the overscroll.  A pull that
+// began at the top keeps it until its touchend even if the page scrolls
+// meanwhile: its later moves must still hide the indicator, or lifting the
+// finger after scrolling away would refresh.
+function syncPtrArmed() {
+  const armed = ptrSupported && (window.scrollY <= 0 || ptrActive)
+  if (armed === ptrArmed) return
+  ptrArmed = armed
+  if (armed) document.addEventListener('touchmove', ptrTouchMove, { passive: false })
+  else document.removeEventListener('touchmove', ptrTouchMove)
+}
 function ptrTouchStart(e) {
+  // Also re-checked here: a page that reached the top without a scroll event
+  // (content shrank under it) is armed for the next gesture at the latest.
+  syncPtrArmed()
   if (window.scrollY <= 0 && !ptrRefreshing.value) {
     ptrStartY = e.touches[0].clientY
     ptrActive = true
@@ -832,6 +864,8 @@ function ptrTouchMove(e) {
 async function ptrTouchEnd() {
   if (!ptrActive) return
   ptrActive = false
+  // Drop the listener now if the pull ended on a page scrolled off the top.
+  syncPtrArmed()
   if (ptrVisible.value && !ptrRefreshing.value) {
     const generation = loadGeneration
     ptrRefreshing.value = true
