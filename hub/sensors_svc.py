@@ -1012,8 +1012,15 @@ def _memory_base(*, include_model: bool = True) -> dict:
     # _sh_run, not a bare unpack: an sh answer-shape bomb here used to be a
     # raw 500 on the light GET /api/system/sensors tick — _memory_base is
     # the one collector leg collect_light calls on the request thread.
-    rc, out, _ = _sh_run(["/usr/bin/memory_pressure", "-Q"], timeout=4)
-    free_pct = None
+    from hub.macos_sysctl import memory_free_pct
+
+    # The kernel's own free percentage, read in-process; `memory_pressure`
+    # prints the same number and only runs when that read fails.  Its -Q
+    # output has no page counts, so those stay None either way.
+    free_pct = memory_free_pct()
+    out = ""
+    if free_pct is None:
+        rc, out, _ = _sh_run(["/usr/bin/memory_pressure", "-Q"], timeout=4)
     pages_free = pages_spec = pages_inactive = pages_wired = None
     for line in _as_text(out).splitlines():
         low = line.lower()

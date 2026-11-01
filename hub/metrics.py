@@ -223,7 +223,15 @@ def _sample() -> dict:
                     pass
 
     if not sensors_hit or mem_free is None:
-        rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
+        from hub.macos_sysctl import memory_free_pct
+
+        # In-process first; `memory_pressure` prints the same number.
+        native_free = memory_free_pct()
+        rc, out = 1, ""
+        if native_free is not None:
+            mem_free = native_free
+        else:
+            rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
         if rc == 0:
             for line in out.splitlines():
                 if "free percentage" in line:
