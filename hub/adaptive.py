@@ -17,6 +17,7 @@ from typing import Any
 
 from hub.host_address import host_ip as resolved_host_ip
 from hub.group_rules import configured_group_rules, resolve_group
+from hub.libproc_listen import listen_rows
 from hub.paths import user_home
 from hub.service_signatures import configured_signatures, identify, unescape_proc_name
 from hub.util import port_open, read_text_capped, sh
@@ -266,11 +267,26 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
                 return _lsof_cache["v"]
             gen = _lsof_generation
         try:
-            rc, out, _ = sh(
-                ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
-                timeout=10,
-            )
-            rows = _parse_lsof_listen(out) if rc == 0 else []
+            # The same rows read in-process (hub/libproc_listen.py); lsof
+            # runs only when that read cannot reproduce its answer exactly.
+            native = listen_rows()
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            native = None
+        try:
+            if native is not None:
+                rows = [
+                    {"proc": unescape_proc_name(command), "pid": str(pid),
+                     "bind": name, "port": port}
+                    for command, pid, name, port in native
+                ]
+            else:
+                rc, out, _ = sh(
+                    ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
+                    timeout=10,
+                )
+                rows = _parse_lsof_listen(out) if rc == 0 else []
         except _CONTROL_FLOW:
             raise
         except BaseException:

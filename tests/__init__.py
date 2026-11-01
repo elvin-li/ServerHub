@@ -49,6 +49,9 @@ os.environ.setdefault("SERVERHUB_NO_NATIVE_GPU", "1")
 # Same for the free-memory percentage: tests feed canned `memory_pressure -Q`
 # text; tests/test_memory_level_native.py turns the sysctl read back on.
 os.environ.setdefault("SERVERHUB_NO_NATIVE_MEMLEVEL", "1")
+# And for listening sockets: tests feed canned `lsof` text through a stubbed
+# sh; tests/test_libproc_listen.py turns the libproc read back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_LSOF", "1")
 if "SERVERHUB_TESTS_KEEP_HOME" not in os.environ:
     _home = Path(_root) / "home"
     _home.mkdir(parents=True, exist_ok=True)
