@@ -112,7 +112,7 @@ def _as_text(value) -> str:
 #: A longer TTL would buy nothing and would widen the read-after-write gap for the
 #: mutation paths below, every one of which calls :func:`invalidate_launchd`.  What
 #: is left is a bootstrap or bootout performed outside the panel, bounded by this.
-_TTL = 2.0
+_TTL = 5.0
 
 #: `launchctl list` on a session with a few hundred jobs answers in ~40ms, but it
 #: is still a spawn and it is still on the request path.
