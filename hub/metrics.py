@@ -124,7 +124,9 @@ def _sensors_snapshot() -> dict | None:
         if is_high():
             snap = sensors_svc.collect_sensors()
         else:
-            snap = sensors_svc.collect_light()
+            # A history row never records the local-model badge, so skip
+            # the process-table scan behind it.
+            snap = sensors_svc.collect_light(include_model=False)
         # A leftover non-dict planted in the sensors cache used to come back
         # verbatim, and _sample()'s snapshot.get() AttributeError killed the
         # tick — no jsonl row and no maybe_rollup() pass until the cache

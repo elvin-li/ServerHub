@@ -47,6 +47,56 @@ class TestLazyPool(unittest.TestCase):
         finally:
             pool.shutdown()
 
+    def test_map_shutdown_race_runs_each_item_once(self):
+        pool = LazyPool(2, "test-lazy-map-race")
+        executor = pool._executor()
+        original_submit = executor.submit
+        submitted = 0
+        calls = []
+
+        def racing_submit(fn, /, *args, **kwargs):
+            nonlocal submitted
+            submitted += 1
+            if submitted == 3:
+                executor.shutdown(wait=False)
+            return original_submit(fn, *args, **kwargs)
+
+        def probe(value):
+            calls.append(value)
+            return value
+
+        try:
+            with patch.object(executor, "submit", side_effect=racing_submit):
+                self.assertEqual(list(pool.map(probe, [1, 2, 3, 4])), [1, 2, 3, 4])
+            self.assertEqual(sorted(calls), [1, 2, 3, 4])
+        finally:
+            pool.shutdown()
+
+    def test_map_raise_cancels_items_not_yet_started(self):
+        # One worker: "b" holds it, so "c" is still queued when "a" raises.
+        pool = LazyPool(1, "test-lazy-map-cancel")
+        gate = threading.Event()
+        ran = []
+
+        def probe(value):
+            if value == "a":
+                raise RuntimeError("probe failed")
+            if value == "b":
+                gate.wait(2)
+            ran.append(value)
+            return value
+
+        try:
+            results = pool.map(probe, ["a", "b", "c"])
+            with self.assertRaises(RuntimeError):
+                list(results)
+            gate.set()
+            pool.shutdown(wait=True)
+            self.assertNotIn("c", ran)
+        finally:
+            gate.set()
+            pool.shutdown()
+
 
 class TestIdleThreadPool(unittest.TestCase):
     @staticmethod
@@ -320,6 +370,60 @@ class TestSensorsStayOffTheIdlePath(unittest.TestCase):
         self.assertTrue(snap.get("light"))
         self.assertEqual(snap["cpu_used_pct"], 7.0)
         self.assertEqual(snap["top_processes"], [])
+
+    def _light_patches(self, gpu=None):
+        return (
+            patch.object(sensors_svc, "_memory_base", return_value={
+                "ncpu": 8, "load1": 0.2, "load5": 0.2, "load15": 0.2,
+                "mem_free_pct": 55, "mem_total_gb": 32.0,
+            }),
+            patch.object(sensors_svc, "_gpu", return_value=gpu),
+            patch.object(sensors_svc, "_cpu_from_ticks", return_value={"used_pct": 7.0}),
+            patch.object(sensors_svc, "_disk", return_value={}),
+        )
+
+    def test_light_collect_can_skip_the_model_scan_but_keeps_gpu_live(self):
+        mem_p, gpu_p, ticks_p, disk_p = self._light_patches(gpu={"util_pct": 42.0})
+        with mem_p as memory_base, gpu_p as read_gpu, ticks_p, disk_p:
+            snap = sensors_svc.collect_light(include_model=False)
+        memory_base.assert_called_once_with(include_model=False)
+        read_gpu.assert_called_once_with()
+        self.assertEqual(snap["gpu"], {"util_pct": 42.0})
+
+    def test_dashboard_light_collect_still_reads_the_model(self):
+        mem_p, gpu_p, ticks_p, disk_p = self._light_patches()
+        with mem_p as memory_base, gpu_p, ticks_p, disk_p:
+            sensors_svc.collect_light()
+        memory_base.assert_called_once_with(include_model=True)
+
+    def test_metrics_light_sample_skips_the_model_scan(self):
+        light = {"cpu_used_pct": 8.0, "network": {}, "memory": {}}
+        with (
+            patch("hub.sensors_svc.peek_sensors", return_value=None),
+            patch("hub.resource_mode.is_high", return_value=False),
+            patch("hub.sensors_svc.collect_light", return_value=light) as collect,
+            patch("hub.sensors_svc.collect_sensors", side_effect=AssertionError("full")),
+        ):
+            snap = metrics._sensors_snapshot()
+        collect.assert_called_once_with(include_model=False)
+        self.assertEqual(snap["cpu_used_pct"], 8.0)
+
+    def test_light_breakdown_skips_model_process_scan(self):
+        counts = {
+            "free": 1, "speculative": 1, "wired": 2, "purgeable": 1,
+            "external": 3, "internal": 5, "compressor": 1,
+        }
+        with (
+            patch.object(sensors_svc, "_vm_counts_ctypes", return_value=counts),
+            patch.object(sensors_svc, "_swap_used_bytes", return_value=0),
+            patch.object(
+                sensors_svc, "_local_model_memory", side_effect=AssertionError("ps"),
+            ),
+        ):
+            breakdown = sensors_svc._memory_breakdown(
+                16.0, 4096, include_model=False,
+            )
+        self.assertNotIn("model", breakdown)
 
     def test_tick_wrap_does_not_report_over_100(self):
         saved = sensors_svc._cpu_ticks_prev
@@ -1085,6 +1189,54 @@ class TestStatusCarriesRamTotal(unittest.TestCase):
         ):
             _warm_hotpath()
         light.assert_called_once()
+
+
+class TestSmartProbeFailureCooldown(unittest.TestCase):
+    """A failing ``sudo -n smartctl`` used to re-run on every status build."""
+
+    @staticmethod
+    def _fake_sh(calls):
+        def fake_sh(argv, **kwargs):
+            if argv[0].endswith("sudo"):
+                calls.append(argv)
+                return 1, "", "sudo: a password is required"
+            if argv[-1] == "kern.boottime":
+                return 0, "sec = 1,", ""
+            if argv[0].endswith("memory_pressure"):
+                return 0, "free percentage: 50%", ""
+            return 1, "", ""
+
+        return fake_sh
+
+    def _collect(self, cache, calls, rounds=1, age_between=0.0):
+        from hub import system
+
+        out = []
+        with (
+            patch("hub.macos_sysctl.sysctlbyname_int", return_value=None),
+            patch.object(system, "sh", side_effect=self._fake_sh(calls)),
+            patch.object(system, "_smart_cache", cache),
+        ):
+            for _ in range(rounds):
+                out.append(system.collect_system())
+                cache["t"] -= age_between
+        return out
+
+    def test_failed_probe_is_stamped_and_keeps_the_last_good_value(self):
+        good = {"temp": "41 Celsius", "wear": "3%"}
+        cache = {"t": 0.0, "v": dict(good)}
+        calls = []
+        first, second = self._collect(cache, calls, rounds=2)
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(cache["t"], 0.0)
+        self.assertEqual(cache["v"], good)
+        self.assertEqual(first["smart"], good)
+        self.assertEqual(second["smart"], good)
+
+    def test_failed_probe_retries_after_the_ten_minute_window(self):
+        calls = []
+        self._collect({"t": 0.0, "v": None}, calls, rounds=2, age_between=601)
+        self.assertEqual(len(calls), 2)
 
 
 class TestComposeReadRace(unittest.TestCase):

@@ -538,20 +538,23 @@ def collect_system():
                     parts = line.split()
                     if len(parts) >= 10:
                         smart.setdefault("temp", f"{parts[9]} Celsius")
+        # A missing tool or password used to retry every 35-second status
+        # build.  Stamp failed attempts too, while retaining the last good
+        # value.  A later status build retries after the normal ten minutes.
+        try:
+            _smart_cache.update(t=time.time(), v=smart)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A shadow key raises out of the insert compare; clear() never
+            # compares keys, so evict it while retaining the safe value.
             try:
+                _smart_cache.clear()
                 _smart_cache.update(t=time.time(), v=smart)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                # A shadow key raises out of the insert compare at the end
-                # of a successful probe; clear() never compares keys.
-                try:
-                    _smart_cache.clear()
-                    _smart_cache.update(t=time.time(), v=smart)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    pass
+                pass
     n = ncpu_i or 1
     load_pct = None
     if load1 is not None:

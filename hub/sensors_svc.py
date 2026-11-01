@@ -913,13 +913,15 @@ def _local_model_memory() -> dict | None:
     }
 
 
-def _memory_breakdown(total_gb, page_size) -> dict:
+def _memory_breakdown(total_gb, page_size, *, include_model: bool = True) -> dict:
     """Activity Monitor's split, in GiB (Activity Monitor labels GiB as "GB").
 
     App memory = anonymous (internal) - purgeable; Wired = wired down;
     Compressed = pages occupied by the compressor; Memory Used = the three;
     Cached Files = file-backed + purgeable (the kernel drops these on
-    demand); Available = total - Memory Used.
+    demand); Available = total - Memory Used.  ``include_model=False`` skips
+    the local-model scan (a process-table read) for callers that never show
+    it.
     """
     counts = _vm_counts_ctypes()
     source = "host_statistics64"
@@ -952,15 +954,15 @@ def _memory_breakdown(total_gb, page_size) -> dict:
         out["mem_used_pct"] = None if ratio is None else round(min(100.0, ratio * 100), 1)
     swap = _swap_used_bytes()
     out["swap_used_gb"] = None if swap is None else _bytes_to_gb(swap, 2)
-    model = _local_model_memory()
+    model = _local_model_memory() if include_model else None
     if model:
         out["model"] = model
     return out
 
 
-def _safe_breakdown(total_gb, page_size) -> dict:
+def _safe_breakdown(total_gb, page_size, *, include_model: bool = True) -> dict:
     try:
-        bd = _memory_breakdown(total_gb, page_size)
+        bd = _memory_breakdown(total_gb, page_size, include_model=include_model)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -997,7 +999,7 @@ def _apply_breakdown(memory: dict, bd) -> dict:
     return memory
 
 
-def _memory_base() -> dict:
+def _memory_base(*, include_model: bool = True) -> dict:
     try:
         raw_load = os.getloadavg()
     except OSError:
@@ -1059,7 +1061,9 @@ def _memory_base() -> dict:
         "pages_speculative": pages_spec,
         "pages_inactive": pages_inactive,
         "pages_wired": pages_wired,
-        "breakdown": _safe_breakdown(hw["mem_total_gb"], hw["page_size"]),
+        "breakdown": _safe_breakdown(
+            hw["mem_total_gb"], hw["page_size"], include_model=include_model,
+        ),
     }
 
 
@@ -1418,15 +1422,18 @@ def peek_sensors() -> dict | None:
     return None
 
 
-def collect_light() -> dict:
-    """CPU / memory / load without top, ps, or netstat.
+def collect_light(*, include_model: bool = True) -> dict:
+    """CPU / memory / load without top, netstat or the top-process list.
 
-    Mach ticks + memory_pressure + hw.memsize.  First ticks call sleeps
-    0.15s to seed a baseline; later calls are microseconds.  Does not
-    overwrite the full sensors cache, so a dashboard poll still gets
-    process rows and PhysMem the next time it asks for a full sample.
+    Mach ticks + memory_pressure + hw.memsize, plus the ioreg GPU sample the
+    CPU card shows.  First ticks call sleeps 0.15s to seed a baseline; later
+    calls are microseconds.  ``include_model=False`` skips the local-model
+    memory scan (a process-table read) for a caller that never shows it: the
+    metrics sampler.  Does not overwrite the full sensors cache, so a
+    dashboard poll still gets process rows and PhysMem the next time it asks
+    for a full sample.
     """
-    mem = _memory_base()
+    mem = _memory_base(include_model=include_model)
     cpu_ticks = _cpu_from_ticks() or {}
     disk = _disk()
     ncpu = mem.get("ncpu") or 1

@@ -184,9 +184,11 @@ class IdleThreadPool(Executor):
     """Thread pool whose workers exit after *idle* seconds without work.
 
     The parts of the ``ThreadPoolExecutor`` contract :class:`LazyPool` relies
-    on: ``submit``, the inherited ``map``, ``shutdown``, RuntimeError from
-    ``submit`` after shutdown, and never more than *max_workers* threads, each
-    started only when no parked worker is free.  Workers are daemon threads,
+    on: ``submit``, ``shutdown``, RuntimeError from ``submit`` after shutdown,
+    and never more than *max_workers* live workers, each started only when no
+    parked worker is free.  A retiring worker leaves that count just before
+    its thread exits, so the OS can briefly see one more thread than that.
+    Workers are daemon threads,
     like every other background thread in the panel, so a parked worker never
     holds up interpreter exit.
 
@@ -344,10 +346,22 @@ class LazyPool:
             return fut
 
     def map(self, fn, items):
-        try:
-            return self._executor().map(fn, items)
-        except RuntimeError:
-            return [fn(item) for item in items]
+        # Submit through this wrapper one item at a time.  Calling the inner
+        # executor's map directly could submit part of a batch, then race a
+        # shutdown and rerun the whole input inline, duplicating those probes.
+        futures = [self.submit(fn, item) for item in items]
+
+        def results():
+            try:
+                for future in futures:
+                    yield future.result()
+            finally:
+                # Executor.map's contract: a raise, or an iterator the caller
+                # abandons, cancels the items that have not started yet.
+                for future in futures:
+                    future.cancel()
+
+        return results()
 
     def shutdown(self, wait: bool = False) -> None:
         with self._guard:
@@ -1187,6 +1201,22 @@ _SH_SHARED = {
 
 _sh_memo: dict[tuple, tuple[float, tuple]] = {}
 _sh_memo_lock = threading.Lock()
+
+
+class _ShFlight:
+    """One running spawn of a memoised command, shared with its waiters."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: tuple = (-1, "", "interrupted")
+
+
+#: Per-command single-flight.  The status build, the light sensors tick and the
+#: metrics sampler ask for ``memory_pressure`` within the same second, and a
+#: plain cache check let every one of them miss and spawn the same command.
+_sh_memo_flights: dict[tuple, _ShFlight] = {}
 _sh_now = time.monotonic
 
 
@@ -1215,7 +1245,10 @@ def sh(cmd, timeout=10, shell=False, env=None):
     """Run *cmd*; see :func:`_sh_spawn`.  Constant and shared reads are memoised.
 
     Only a clean answer (rc 0, some stdout) is kept, so a failed or timed-out
-    read is retried on the next call exactly as before.
+    read is retried on the next call exactly as before.  A caller that arrives
+    while the same memoised command is already running waits for that spawn
+    and shares its answer, failed or not.  Queueing a spawn of its own behind
+    it would turn one hung ``memory_pressure`` into one hang per caller.
     """
     ttl = _sh_memo_ttl(as_argv(cmd) if not shell else cmd, shell, env)
     if ttl is None:
@@ -1223,19 +1256,35 @@ def sh(cmd, timeout=10, shell=False, env=None):
     key = tuple(as_argv(cmd))
     with _sh_memo_lock:
         hit = _sh_memo.get(key)
-    if hit is not None and _sh_now() - hit[0] < ttl:
-        return hit[1]
-    result = _sh_spawn(cmd, timeout, shell, env)
+        if hit is not None and _sh_now() - hit[0] < ttl:
+            return hit[1]
+        flight = _sh_memo_flights.get(key)
+        owner = flight is None
+        if owner:
+            flight = _sh_memo_flights[key] = _ShFlight()
+    if not owner:
+        flight.done.wait()
+        return flight.result
     try:
-        ok = result[0] == 0 and bool(result[1])
-    except _CONTROL_FLOW:
-        raise
-    except BaseException:
-        ok = False
-    if ok:
+        result = _sh_spawn(cmd, timeout, shell, env)
+        flight.result = result
+        try:
+            ok = result[0] == 0 and bool(result[1])
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            ok = False
+        if ok:
+            with _sh_memo_lock:
+                _sh_memo[key] = (_sh_now(), result)
+        return result
+    finally:
+        # Retire the flight before waking its waiters: a caller arriving after
+        # this reads the cache, or starts the next spawn itself.
         with _sh_memo_lock:
-            _sh_memo[key] = (_sh_now(), result)
-    return result
+            if _sh_memo_flights.get(key) is flight:
+                del _sh_memo_flights[key]
+        flight.done.set()
 
 
 def _sh_spawn(cmd, timeout=10, shell=False, env=None):
