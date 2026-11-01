@@ -58,6 +58,10 @@ os.environ.setdefault("SERVERHUB_NO_NATIVE_PROCNAME", "1")
 # WireGuard keeps `wg --version` answers until the binary changes; stubbed
 # answers must not stick across tests.  tests/test_wg_spawns.py turns it on.
 os.environ.setdefault("SERVERHUB_NO_VERSION_MEMO", "1")
+# host_address skips `ipconfig getifaddr` for interfaces with no IPv4 address,
+# which on a Mac includes the en0 that tests stub answers for.
+# tests/test_ifaddr_precheck.py turns the check back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_IFADDR", "1")
 if "SERVERHUB_TESTS_KEEP_HOME" not in os.environ:
     _home = Path(_root) / "home"
     _home.mkdir(parents=True, exist_ok=True)
