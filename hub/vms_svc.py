@@ -844,6 +844,11 @@ def _list_orb_machines_uncached() -> list[dict]:
             # through the ``_listing_rows`` catch.  An unusable JSON parse
             # loses the JSON rows, never the text listing.
             data = None
+        if type(data) is list and not data:
+            # OrbStack's answer when it has no machines.  The text listing
+            # below would say the same, so skip that second spawn (~95 ms of
+            # CPU on every inventory refresh of a host with no machines).
+            return []
         try:
             if data is not None:
                 if _isa(data, dict):
