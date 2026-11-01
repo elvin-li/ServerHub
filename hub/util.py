@@ -1035,7 +1035,80 @@ def _utmctl_verb(cmd) -> str:
 _UTM_MAY_LAUNCH = frozenset({"start"})
 
 
+#: Reads whose answer cannot change while this process lives.  Boot time and
+#: hardware facts change only across a reboot, and a reboot restarts the
+#: panel.  ``/api/status``, the sensors tick and diagnostics each spawned
+#: ``sysctl -n kern.boottime`` on every poll.
+_SH_FOREVER = frozenset({
+    ("/usr/sbin/sysctl", "-n", "kern.boottime"),
+    ("/usr/sbin/sysctl", "-n", "hw.memsize"),
+    ("/usr/sbin/sysctl", "-n", "hw.ncpu"),
+    ("/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"),
+    ("/usr/sbin/sysctl", "-n", "hw.model"),
+})
+
+#: Live reads that several handlers make in the same dashboard tick.  The
+#: status poll, the light sensors tick and the metrics sampler each ran
+#: ``memory_pressure -Q`` within the same second.  A few seconds of sharing
+#: is far below every poll interval that shows the value.
+_SH_SHARED = {
+    ("/usr/bin/memory_pressure", "-Q"): 4.0,
+}
+
+_sh_memo: dict[tuple, tuple[float, tuple]] = {}
+_sh_memo_lock = threading.Lock()
+_sh_now = time.monotonic
+
+
+def _sh_memo_ttl(cmd, shell, env) -> float | None:
+    """Memo lifetime for *cmd*, or None when it must always spawn."""
+    if shell or env is not None or not isinstance(cmd, list):
+        return None
+    if os.environ.get("SERVERHUB_NO_SH_MEMO"):
+        return None
+    try:
+        key = tuple(cmd)
+    except TypeError:
+        return None
+    if key in _SH_FOREVER:
+        return float("inf")
+    return _SH_SHARED.get(key)
+
+
+def sh_memo_clear() -> None:
+    """Forget memoised :func:`sh` answers (tests that stub subprocess)."""
+    with _sh_memo_lock:
+        _sh_memo.clear()
+
+
 def sh(cmd, timeout=10, shell=False, env=None):
+    """Run *cmd*; see :func:`_sh_spawn`.  Constant and shared reads are memoised.
+
+    Only a clean answer (rc 0, some stdout) is kept, so a failed or timed-out
+    read is retried on the next call exactly as before.
+    """
+    ttl = _sh_memo_ttl(as_argv(cmd) if not shell else cmd, shell, env)
+    if ttl is None:
+        return _sh_spawn(cmd, timeout, shell, env)
+    key = tuple(as_argv(cmd))
+    with _sh_memo_lock:
+        hit = _sh_memo.get(key)
+    if hit is not None and _sh_now() - hit[0] < ttl:
+        return hit[1]
+    result = _sh_spawn(cmd, timeout, shell, env)
+    try:
+        ok = result[0] == 0 and bool(result[1])
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        ok = False
+    if ok:
+        with _sh_memo_lock:
+            _sh_memo[key] = (_sh_now(), result)
+    return result
+
+
+def _sh_spawn(cmd, timeout=10, shell=False, env=None):
     """Run *cmd* and keep at most :data:`_SH_CAP` leading bytes of each stream.
 
     Head, not tail: callers parse JSON / plists from stdout.  A torn prefix
