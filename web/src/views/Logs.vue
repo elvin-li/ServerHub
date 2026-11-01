@@ -145,6 +145,17 @@ async function loadSources() {
   }
 }
 
+// The header fields shown for the open log, kept apart from the log text so
+// a tick that read the same path, size and line count can leave `meta` as it
+// is: replacing it with an equal copy re-rendered the page every 6 seconds.
+const META_KEYS = ['path', 'size', 'lines']
+function tailMeta(d) {
+  return Object.fromEntries(META_KEYS.map((k) => [k, recGet(d, k)]))
+}
+function sameMeta(a, b) {
+  return a != null && META_KEYS.every((k) => Object.is(recGet(a, k), recGet(b, k)))
+}
+
 async function load(manual = false) {
   if (!sourceId.value) {
     loaded.value = true
@@ -153,11 +164,16 @@ async function load(manual = false) {
   const generation = ++loadGeneration
   const requestedSource = sourceId.value
   const requestedLines = lines.value
-  loading.value = true
+  // Only a load the user asked for (or the first one) disables Refresh, the
+  // rule the Dashboard's 90s poll follows.  The 6-second tick used to flash
+  // Refresh and LoadFailure's retry busy around every request.
+  if (manual || !loaded.value) loading.value = true
   try {
     const d = asRecord(await getLogTail(requestedSource, requestedLines))
     if (generation !== loadGeneration || !pageAlive || requestedSource !== sourceId.value || requestedLines !== lines.value) return true
-    meta.value = asRecord(d)
+    const nextMeta = tailMeta(d)
+    if (!sameMeta(meta.value, nextMeta)) meta.value = nextMeta
+    // A string ref: Vue already ignores an equal log.
     text.value = recGet(d, 'log')
     loadError.value = ''
     return true

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import plistlib
 import socket
 import ssl
@@ -249,7 +250,44 @@ def _annotate_ollama_agent(item: dict) -> None:
         item["detail"] = f"{detail} · Ollama" if detail else "Ollama"
 
 
+#: The parser the cache trusts, captured at import.  A patched
+#: ``plistlib.loads`` (a test, a shim) bypasses the cache: it is called on
+#: every pass and nothing it returns is kept.
+_PLIST_LOADS = plistlib.loads
+#: path -> (blake2b digest of the plist bytes, their parse), from the
+#: previous discover_launchd pass.  Later passes share these dicts, so
+#: nothing may mutate them.
+_plist_cache: dict[str, tuple[bytes, dict]] = {}
+
+
+def _parse_plist(path: str, raw, parsed: dict):
+    """``plistlib.loads(raw)``, reusing the previous pass's parse of identical bytes.
+
+    Every status build re-parsed every LaunchAgent plist (84 on the
+    reference host).  Each parse builds an expat parser inside a reference
+    cycle (its handlers are bound methods of the ``_PlistParser`` that owns
+    it), so a build left about 1 MiB that only the cyclic GC frees, on top
+    of the parsing CPU.  The file is still read on every pass, so an edit
+    shows at once even when it keeps the size and mtime.  Each exact-dict
+    parse goes into *parsed*, which becomes the next pass's cache, so a
+    removed plist leaves the cache with it.
+    """
+    loads = plistlib.loads
+    if loads is not _PLIST_LOADS or type(raw) is not bytes:
+        return loads(raw)
+    digest = hashlib.blake2b(raw, digest_size=16).digest()
+    hit = _plist_cache.get(path)
+    if hit is not None and hit[0] == digest:
+        pl = hit[1]
+    else:
+        pl = loads(raw)
+    if type(pl) is dict:
+        parsed[path] = (digest, pl)
+    return pl
+
+
 def discover_launchd():
+    global _plist_cache
     table = launchctl_table()
     # Two network waits used to sit inside this loop, once per installed
     # LaunchAgent: the port reachability check (a connect that costs its whole
@@ -265,9 +303,10 @@ def discover_launchd():
     rules = configured_group_rules()
     contexts = []
     seen_labels: set[str] = set()
+    parsed: dict = {}
     for path in sorted(glob.glob(f"{AGENTS_DIR}/*.plist")):
         try:
-            pl = plistlib.loads(read_bytes_capped(path, _PLIST_CAP))
+            pl = _parse_plist(path, read_bytes_capped(path, _PLIST_CAP), parsed)
         except _CONTROL_FLOW:
             raise
         except BaseException:
@@ -384,6 +423,8 @@ def discover_launchd():
             "detected": detected, "url": url, "name": name, "group": group,
             "sig": sig,
         })
+    # Rebuilt each pass, so a removed plist leaves the cache with it.
+    _plist_cache = parsed
 
     # None where no port was resolved, matching the previous conditional.
     reachability = fan_out(

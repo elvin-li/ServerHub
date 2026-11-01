@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -111,6 +111,99 @@ describe('installTableWrapFocus', () => {
     root.querySelector('h2').firstChild.data = 'インターフェース'
     await flush()
     expect(root.querySelector('.table-wrap').getAttribute('aria-label')).toBe('インターフェース')
+  })
+
+  it('does no work when a poll rewrites table cells', async () => {
+    // Polled pages patch cell text every few seconds. Those batches used to
+    // rescan the whole region and rewrite every label.
+    root.innerHTML = `
+      <h2>Interfaces</h2>
+      <div class="table-wrap"><table><tbody><tr><td>1 MB/s</td></tr></tbody></table></div>
+    `
+    teardown = installTableWrapFocus(root)
+    const wrap = root.querySelector('.table-wrap')
+    const writes = vi.spyOn(wrap, 'setAttribute')
+    const scans = vi.spyOn(root, 'querySelectorAll')
+    root.querySelector('td').firstChild.data = '2 MB/s'
+    const row = document.createElement('tr')
+    row.innerHTML = '<td>3 MB/s</td>'
+    root.querySelector('tbody').appendChild(row)
+    await flush()
+    expect(writes).not.toHaveBeenCalled()
+    expect(scans).not.toHaveBeenCalled()
+  })
+
+  it('does not rewrite a label that did not change', async () => {
+    root.innerHTML = `<h2>Interfaces</h2><div class="table-wrap"></div>`
+    teardown = installTableWrapFocus(root)
+    const wrap = root.querySelector('.table-wrap')
+    const writes = vi.spyOn(wrap, 'setAttribute')
+    // Vue re-patches a heading's text node with the same string.
+    root.querySelector('h2').firstChild.data = 'Interfaces'
+    await flush()
+    expect(writes).not.toHaveBeenCalled()
+    expect(wrap.getAttribute('aria-label')).toBe('Interfaces')
+  })
+
+  it('relabels when a heading renders before the wrap later', async () => {
+    root.innerHTML = `<div class="card"><div class="table-wrap"></div></div>`
+    teardown = installTableWrapFocus(root)
+    const wrap = root.querySelector('.table-wrap')
+    expect(wrap.getAttribute('aria-label')).toBe('common.table_region')
+    const title = document.createElement('h2')
+    title.textContent = 'Peers'
+    root.insertBefore(title, root.firstChild)
+    await flush()
+    expect(wrap.getAttribute('aria-label')).toBe('Peers')
+  })
+
+  it('follows in-place edits of a heading that rendered after install', async () => {
+    root.innerHTML = `<div class="table-wrap"></div>`
+    teardown = installTableWrapFocus(root)
+    const title = document.createElement('h2')
+    title.textContent = 'Interfaces'
+    root.insertBefore(title, root.firstChild)
+    await flush()
+    title.firstChild.data = 'インターフェース'
+    await flush()
+    expect(root.querySelector('.table-wrap').getAttribute('aria-label')).toBe('インターフェース')
+  })
+
+  it('relabels when the nearest heading is removed', async () => {
+    root.innerHTML = `
+      <h2>Network</h2>
+      <section><h3>Routes</h3></section>
+      <div class="table-wrap"></div>
+    `
+    teardown = installTableWrapFocus(root)
+    const wrap = root.querySelector('.table-wrap')
+    expect(wrap.getAttribute('aria-label')).toBe('Routes')
+    root.querySelector('section').remove()
+    await flush()
+    expect(wrap.getAttribute('aria-label')).toBe('Network')
+  })
+
+  it('follows a heading whose text node is replaced', async () => {
+    root.innerHTML = `<h2>Interfaces</h2><div class="table-wrap"></div>`
+    teardown = installTableWrapFocus(root)
+    root.querySelector('h2').textContent = 'Peers'
+    await flush()
+    expect(root.querySelector('.table-wrap').getAttribute('aria-label')).toBe('Peers')
+  })
+
+  it('upgrades a wrap once its aria-hidden ancestor is shown', async () => {
+    root.innerHTML = `
+      <h2>Logs</h2>
+      <div class="pane" aria-hidden="true"><div class="table-wrap"></div></div>
+    `
+    teardown = installTableWrapFocus(root)
+    const wrap = root.querySelector('.table-wrap')
+    expect(wrap.hasAttribute('tabindex')).toBe(false)
+    root.querySelector('.pane').removeAttribute('aria-hidden')
+    await flush()
+    expect(wrap.getAttribute('tabindex')).toBe('0')
+    expect(wrap.getAttribute('role')).toBe('region')
+    expect(wrap.getAttribute('aria-label')).toBe('Logs')
   })
 
   it('stops observing after teardown', async () => {

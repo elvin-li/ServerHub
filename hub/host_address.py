@@ -1,10 +1,14 @@
 """Central host-address discovery and configuration-template expansion."""
 from __future__ import annotations
 
+import errno
+import fcntl
 import ipaddress
 import os
 import re
 import socket
+import struct
+import sys
 import threading
 import time
 from typing import Any
@@ -323,8 +327,48 @@ def default_interface(*, force: bool = False) -> str:
     return _route_fields(force).get("interface") or ""
 
 
+#: ``SIOCGIFADDR`` from <sys/sockio.h>: ``_IOWR('i', 33, struct ifreq)``.
+_SIOCGIFADDR = 0xC0206921
+#: The interface exists but has no IPv4 address; there is no such interface.
+_NO_IPV4_ERRNOS = frozenset({errno.EADDRNOTAVAIL, errno.ENXIO})
+
+
+def _lacks_ipv4(interface: str) -> bool:
+    """True when the kernel holds no IPv4 address on *interface*.
+
+    ``ipconfig getifaddr`` reports the address IPConfiguration applied to the
+    interface, so with none there it can only answer empty.  One ``SIOCGIFADDR``
+    ioctl (about 7 us) tells, and spares the spawn: the host page's sweep asks
+    about four interfaces that mostly have no address.  An address present, any
+    other error, a name the kernel cannot take or a non-macOS host keeps the
+    spawn, because ipconfig's answer is then not simply the kernel's first
+    address (a failover alias is listed before the DHCP address on this host).
+    ``SERVERHUB_NO_NATIVE_IFADDR`` turns it off; the test bootstrap sets it so
+    stubbed ipconfig answers still reach the parsers.
+    """
+    if sys.platform != "darwin" or os.environ.get("SERVERHUB_NO_NATIVE_IFADDR"):
+        return False
+    if type(interface) is not str or not interface.isascii() or not interface.isalnum():
+        return False
+    name = interface.encode("ascii")
+    if len(name) >= 16:  # IFNAMSIZ, terminator included
+        return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            fcntl.ioctl(probe.fileno(), _SIOCGIFADDR, struct.pack("16s16s", name, bytes(16)))
+    except OSError as exc:
+        return exc.errno in _NO_IPV4_ERRNOS
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+    return False
+
+
 @ttl_memo(_ADDRESS_TTL)
 def _interface_address(interface: str) -> str:
+    if _lacks_ipv4(interface):
+        return ""
     # _sh_run: same answer-shape bomb class as _default_route_fields.
     rc, output, _ = _sh_run(["/usr/sbin/ipconfig", "getifaddr", interface], timeout=3)
     # _rc_int: same rc-``__eq__`` bomb class as _default_route_fields.

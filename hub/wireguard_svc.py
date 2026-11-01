@@ -820,24 +820,50 @@ def _sh_answer(runner, argv, *, timeout):
     return fields[0], fields[1], fields[2]
 
 
+#: ``--version`` answers by binary path: ``(file key, first line)``.
+_version_memo: dict[str, tuple[tuple, str]] = {}
+_version_lock = threading.Lock()
+
+
+def _binary_key(binary: str) -> tuple | None:
+    """What a binary's ``--version`` answer depends on, or None if unreadable.
+
+    The file the path resolves to (a Homebrew upgrade repoints the symlink) and
+    its inode, size, mtime and ctime (a rewrite in place or a metadata change).
+    Both binaries link only system libraries, so nothing else can change the
+    answer while the panel runs.
+    """
+    try:
+        real = os.path.realpath(binary)
+        st = os.stat(real)
+    except (OSError, TypeError, ValueError):
+        return None
+    return (real, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 def _binary_version(binary: str) -> str:
     """First line of ``<binary> --version``, or "" when it would not answer.
 
-    Deliberately *not* memoised, though it looks like an obvious candidate: the
-    string is static and :func:`installation` runs as a route guard on every
-    ``/api/wireguard/*`` request as well as inside
-    :func:`wireguard_net_svc.readiness`, so a cache would save two spawns per
-    readiness read.
-
-    It would also make a transient failure sticky.  ``installation`` reports
-    ``probe_failed`` from this result, and the whole point of that field -- see the
-    comment below -- is that a one-off timeout must not be treated as authoritative.
-    Caching "" for a TTL turns a blip into a minute of the panel insisting the tools
-    are degraded, and caching a success does the same in reverse. Two spawns is not
-    worth that, so the duplication is left in place and only the two probes overlap.
+    :func:`installation` runs as a route guard on every ``/api/wireguard/*``
+    request, inside :func:`wireguard_net_svc.readiness` and in every health
+    check, so each of those used to spawn both binaries.  A successful answer
+    is now kept until the binary file changes (:func:`_binary_key`), which is
+    when the answer can change.  A failure is never kept: ``installation``
+    reports ``probe_failed`` from it, and a one-off timeout must not stick --
+    the next call probes again, exactly as before.  A TTL cache was rejected
+    for that reason: it made a blip last a minute either way.
+    ``SERVERHUB_NO_VERSION_MEMO`` turns the memo off; the test bootstrap sets
+    it so stubbed answers do not leak between tests.
     """
     if not _path_exists(binary):
         return ""
+    use_memo = not os.environ.get("SERVERHUB_NO_VERSION_MEMO")
+    key = _binary_key(binary) if use_memo else None
+    if key is not None:
+        with _version_lock:
+            hit = _version_memo.get(binary)
+        if hit is not None and hit[0] == key:
+            return hit[1]
     # _sh_answer: a patched sh answering a junk shape (or raising) used to
     # blow the bare 3-way unpack through installation()'s fan_out.
     rc, out, err = _sh_answer(sh, [binary, "--version"], timeout=8)
@@ -846,7 +872,13 @@ def _binary_version(binary: str) -> str:
     # ``__eq__`` raises used to detonate ``rc == 0`` through installation()'s
     # fan_out, a raw 500 on GET /api/wireguard and GET /api/wireguard/settings.
     text = (_as_text(out) or _as_text(err)).strip().splitlines()
-    return text[0][:120] if text and _ping_rc(rc) == 0 else ""
+    version = text[0][:120] if text and _ping_rc(rc) == 0 else ""
+    if version and key is not None and _binary_key(binary) == key:
+        # Re-keyed after the run: a binary replaced while it answered is
+        # probed again next time.
+        with _version_lock:
+            _version_memo[binary] = (key, version)
+    return version
 
 
 def installation() -> dict:
@@ -1416,6 +1448,22 @@ def _sockets() -> list[str]:
     return [s for s in stems if _UTUN_RE.match(s) or _IFACE_RE.match(s)]
 
 
+def _socket_refuses_us(device: str) -> bool:
+    """True when *device*'s UAPI socket exists and this account cannot open it.
+
+    wg-quick creates the socket mode 0700 root, and connecting to a Unix socket
+    needs write permission on it, so an unprivileged ``wg show`` against it can
+    only fail.  The callers then go straight to the root retry instead of
+    spending a spawn on that failure.  No socket (Linux's kernel module answers
+    over netlink) or one this account may write keeps the unprivileged try.
+    """
+    path = WG_RUN_DIR / f"{device}.sock"
+    try:
+        return os.path.lexists(path) and not os.access(path, os.W_OK)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _recorded_device(name_file: Path) -> str:
     """The utun *name_file* names, resolved without elevation.
 
@@ -1564,7 +1612,10 @@ def _dump_all() -> tuple[dict[str, list[list[str]]], str]:
     # salvages the honest exit; only a value that cannot answer one fails.
     # _sh_answer on both spawns: a junk-shaped answer blew the unpack the
     # same way, one token earlier.
-    rc, out, err = _sh_answer(sh, [WG, "show", "all", "dump"], timeout=10)
+    rc, out, err = -255, "", ""
+    sockets = _sockets()
+    if not sockets or not all(_socket_refuses_us(device) for device in sockets):
+        rc, out, err = _sh_answer(sh, [WG, "show", "all", "dump"], timeout=10)
     if _ping_rc(rc) != 0:
         rc, out, err = _sh_answer(
             sudo_capture, [WG, "show", "all", "dump"], timeout=10
@@ -1637,7 +1688,9 @@ def live_interface(interface: str) -> tuple[str, list[list[str]], str]:
         # _ping_rc on the exit probes (the health9 rc rule): a bombed rc
         # from a patched sh/sudo_capture used to 500 GET /api/wireguard.
         # _sh_answer: so did a junk-shaped answer, at the unpack itself.
-        rc, out, err = _sh_answer(sh, [WG, "show", device, "dump"], timeout=10)
+        rc, out, err = -255, "", ""
+        if not _socket_refuses_us(device):
+            rc, out, err = _sh_answer(sh, [WG, "show", device, "dump"], timeout=10)
         if _ping_rc(rc) != 0:
             # The UAPI socket is root-owned: retry with root.  sudo_capture uses
             # the web-entered password when this request carries one (management

@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from hub import gpu_native
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh, strftime_now
 
@@ -913,13 +914,15 @@ def _local_model_memory() -> dict | None:
     }
 
 
-def _memory_breakdown(total_gb, page_size) -> dict:
+def _memory_breakdown(total_gb, page_size, *, include_model: bool = True) -> dict:
     """Activity Monitor's split, in GiB (Activity Monitor labels GiB as "GB").
 
     App memory = anonymous (internal) - purgeable; Wired = wired down;
     Compressed = pages occupied by the compressor; Memory Used = the three;
     Cached Files = file-backed + purgeable (the kernel drops these on
-    demand); Available = total - Memory Used.
+    demand); Available = total - Memory Used.  ``include_model=False`` skips
+    the local-model scan (a process-table read) for callers that never show
+    it.
     """
     counts = _vm_counts_ctypes()
     source = "host_statistics64"
@@ -952,15 +955,15 @@ def _memory_breakdown(total_gb, page_size) -> dict:
         out["mem_used_pct"] = None if ratio is None else round(min(100.0, ratio * 100), 1)
     swap = _swap_used_bytes()
     out["swap_used_gb"] = None if swap is None else _bytes_to_gb(swap, 2)
-    model = _local_model_memory()
+    model = _local_model_memory() if include_model else None
     if model:
         out["model"] = model
     return out
 
 
-def _safe_breakdown(total_gb, page_size) -> dict:
+def _safe_breakdown(total_gb, page_size, *, include_model: bool = True) -> dict:
     try:
-        bd = _memory_breakdown(total_gb, page_size)
+        bd = _memory_breakdown(total_gb, page_size, include_model=include_model)
     except _CONTROL_FLOW:
         raise
     except BaseException:
@@ -997,7 +1000,7 @@ def _apply_breakdown(memory: dict, bd) -> dict:
     return memory
 
 
-def _memory_base() -> dict:
+def _memory_base(*, include_model: bool = True) -> dict:
     try:
         raw_load = os.getloadavg()
     except OSError:
@@ -1009,8 +1012,15 @@ def _memory_base() -> dict:
     # _sh_run, not a bare unpack: an sh answer-shape bomb here used to be a
     # raw 500 on the light GET /api/system/sensors tick — _memory_base is
     # the one collector leg collect_light calls on the request thread.
-    rc, out, _ = _sh_run(["/usr/bin/memory_pressure", "-Q"], timeout=4)
-    free_pct = None
+    from hub.macos_sysctl import memory_free_pct
+
+    # The kernel's own free percentage, read in-process; `memory_pressure`
+    # prints the same number and only runs when that read fails.  Its -Q
+    # output has no page counts, so those stay None either way.
+    free_pct = memory_free_pct()
+    out = ""
+    if free_pct is None:
+        rc, out, _ = _sh_run(["/usr/bin/memory_pressure", "-Q"], timeout=4)
     pages_free = pages_spec = pages_inactive = pages_wired = None
     for line in _as_text(out).splitlines():
         low = line.lower()
@@ -1059,7 +1069,9 @@ def _memory_base() -> dict:
         "pages_speculative": pages_spec,
         "pages_inactive": pages_inactive,
         "pages_wired": pages_wired,
-        "breakdown": _safe_breakdown(hw["mem_total_gb"], hw["page_size"]),
+        "breakdown": _safe_breakdown(
+            hw["mem_total_gb"], hw["page_size"], include_model=include_model,
+        ),
     }
 
 
@@ -1314,21 +1326,44 @@ def _iter_ioreg_dicts(value, depth: int = 0):
             yield from _iter_ioreg_dicts(item, depth + 1)
 
 
+def _gpu_entries():
+    """IOAccelerator entries: from IOKit when it answers, else ``ioreg -a``.
+
+    The light dashboard tick and every metrics sample read these.  IOKit
+    answers the same properties in under a millisecond; the ``ioreg`` spawn
+    cost about 24 ms of child CPU, 9 ms in the panel and 100 KB of XML through
+    two temp files.  An empty or failed native read falls back to ``ioreg``,
+    which also covers hosts without IOKit.
+    """
+    try:
+        native = gpu_native.accelerator_entries()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        native = None
+    if type(native) is list and native:
+        return native
+    rc, out, _ = _sh_run(
+        ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
+        timeout=4,
+    )
+    if _rc_int(rc) != 0 or not out:
+        return None
+    raw = out.encode("utf-8", "replace") if _isa(out, str) else out
+    return plistlib.loads(raw)
+
+
 def _gpu() -> dict | None:
     """Best-effort GPU util / memory from IOAccelerator (macOS IORegistry).
 
-    ``ioreg -a`` is an XML plist. Failures return None so GET /api/system/sensors
-    never 500s when the accelerator is missing or the plist is leftover junk.
+    Read through :func:`_gpu_entries` (IOKit, or the ``ioreg -a`` XML plist).
+    Failures return None so GET /api/system/sensors never 500s when the
+    accelerator is missing or the plist is leftover junk.
     """
     try:
-        rc, out, _ = _sh_run(
-            ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
-            timeout=4,
-        )
-        if _rc_int(rc) != 0 or not out:
+        parsed = _gpu_entries()
+        if parsed is None:
             return None
-        raw = out.encode("utf-8", "replace") if _isa(out, str) else out
-        parsed = plistlib.loads(raw)
 
         best = None
         best_score = -1.0
@@ -1418,15 +1453,18 @@ def peek_sensors() -> dict | None:
     return None
 
 
-def collect_light() -> dict:
-    """CPU / memory / load without top, ps, or netstat.
+def collect_light(*, include_model: bool = True) -> dict:
+    """CPU / memory / load without top, netstat or the top-process list.
 
-    Mach ticks + memory_pressure + hw.memsize.  First ticks call sleeps
-    0.15s to seed a baseline; later calls are microseconds.  Does not
-    overwrite the full sensors cache, so a dashboard poll still gets
-    process rows and PhysMem the next time it asks for a full sample.
+    Mach ticks + memory_pressure + hw.memsize, plus the ioreg GPU sample the
+    CPU card shows.  First ticks call sleeps 0.15s to seed a baseline; later
+    calls are microseconds.  ``include_model=False`` skips the local-model
+    memory scan (a process-table read) for a caller that never shows it: the
+    metrics sampler.  Does not overwrite the full sensors cache, so a
+    dashboard poll still gets process rows and PhysMem the next time it asks
+    for a full sample.
     """
-    mem = _memory_base()
+    mem = _memory_base(include_model=include_model)
     cpu_ticks = _cpu_from_ticks() or {}
     disk = _disk()
     ncpu = mem.get("ncpu") or 1

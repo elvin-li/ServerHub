@@ -124,7 +124,9 @@ def _sensors_snapshot() -> dict | None:
         if is_high():
             snap = sensors_svc.collect_sensors()
         else:
-            snap = sensors_svc.collect_light()
+            # A history row never records the local-model badge, so skip
+            # the process-table scan behind it.
+            snap = sensors_svc.collect_light(include_model=False)
         # A leftover non-dict planted in the sensors cache used to come back
         # verbatim, and _sample()'s snapshot.get() AttributeError killed the
         # tick — no jsonl row and no maybe_rollup() pass until the cache
@@ -221,7 +223,15 @@ def _sample() -> dict:
                     pass
 
     if not sensors_hit or mem_free is None:
-        rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
+        from hub.macos_sysctl import memory_free_pct
+
+        # In-process first; `memory_pressure` prints the same number.
+        native_free = memory_free_pct()
+        rc, out = 1, ""
+        if native_free is not None:
+            mem_free = native_free
+        else:
+            rc, out, _ = sh(["/usr/bin/memory_pressure", "-Q"], timeout=4)
         if rc == 0:
             for line in out.splitlines():
                 if "free percentage" in line:

@@ -19,6 +19,7 @@ from hub.routers import (
     services_api,
     settings_api,
     shares,
+    sites_api,
     storage,
     system_extra,
     terminal_api,
@@ -54,5 +55,6 @@ router.include_router(wireguard_api.router)
 router.include_router(photoshub_api.router)
 router.include_router(ollama_api.router)
 router.include_router(assistant_api.router)
+router.include_router(sites_api.router)
 
 __all__ = ["router"]

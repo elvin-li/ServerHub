@@ -16,6 +16,7 @@ from hub.docker_cli import docker, engine_up, inspect_object
 from hub.errors import api_error, exc_detail
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
+from hub.libproc_listen import lsof_text
 from hub.service_signatures import unescape_proc_name
 from hub.util import LazyPool, fan_out, sh, strftime_now, ttl_memo
 
@@ -1922,13 +1923,24 @@ def start_alias_autobind(interval: int | None = None) -> None:
                         failover_action = fail_result.get("action")
                         next_failover = now + fail_conf["interval"]
                     if alias_conf["auto_bind"] and (now >= next_alias or failover_action):
-                        alias_result = ensure_aliases_on_preferred(force=False)
-                        # Wi-Fi needs a few seconds for association and DHCP after
-                        # power-on; retry soon if no usable target exists yet.
-                        if failover_action == "wifi_on" and not alias_result.get("ok"):
-                            next_alias = now + 5
-                        else:
+                        if not alias_conf["ips"]:
+                            # Nothing to keep bound.  The pass would still find
+                            # the preferred NIC first (ifconfig -a and two
+                            # networksetup listings) only to report "No managed
+                            # IPs configured" -- every interval, on every
+                            # install that never set up an alias, since
+                            # auto_bind defaults on.  Look again next interval:
+                            # IPs added in the meantime are picked up then.
                             next_alias = now + (interval or alias_conf["interval"] or 60)
+                        else:
+                            alias_result = ensure_aliases_on_preferred(force=False)
+                            # Wi-Fi needs a few seconds for association and DHCP
+                            # after power-on; retry soon if no usable target
+                            # exists yet.
+                            if failover_action == "wifi_on" and not alias_result.get("ok"):
+                                next_alias = now + 5
+                            else:
+                                next_alias = now + (interval or alias_conf["interval"] or 60)
                 except _CONTROL_FLOW:
                     raise
                 except BaseException:
@@ -2065,9 +2077,13 @@ def _valid_ip(ip: str) -> bool:
 
 
 def listening_ports(limit: int = 100) -> list:
-    rc, out, _ = _sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
-    if rc != 0:
-        return []
+    # lsof's output, read in-process (hub/libproc_listen.py); lsof itself
+    # runs only when that read cannot reproduce it.
+    out = lsof_text()
+    if out is None:
+        rc, out, _ = _sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
+        if rc != 0:
+            return []
     rows = []
     seen = set()
     for line in out.splitlines()[1:]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import socket
 import sys
@@ -7,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -705,6 +706,137 @@ class HttpAliveTests(unittest.TestCase):
         self.assertFalse(launchd._http_alive(float("inf")))
         self.assertFalse(launchd._http_alive(float("nan")))
         self.assertFalse(launchd._http_alive({}))
+
+
+class PlistParseCacheTests(unittest.TestCase):
+    """A status build reads every LaunchAgent plist but re-parses only changed bytes."""
+
+    LABEL = "com.example.cache"
+
+    def setUp(self):
+        launchd._http_misses.clear()
+        self.addCleanup(launchd._http_misses.clear)
+        saved = getattr(launchd, "_plist_cache", None)
+        launchd._plist_cache = {}
+        self.addCleanup(setattr, launchd, "_plist_cache", saved)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def _write(self, label: str, name: str | None = None, **extra) -> Path:
+        path = self.dir / f"{name or label}.plist"
+        path.write_bytes(plistlib.dumps({
+            "Label": label,
+            "ProgramArguments": ["/usr/bin/true"],
+            "RunAtLoad": True,
+            **extra,
+        }))
+        return path
+
+    def _discover(self, *, real_readers: bool = False):
+        """One pass: (items, each parsed plist the pass handed to its readers)."""
+        handed = []
+        real_ports = launchd.ports_from_plist
+
+        def ports(pl):
+            handed.append(pl)
+            return real_ports(pl) if real_readers else []
+
+        patches = [
+            patch.object(launchd, "AGENTS_DIR", str(self.dir)),
+            patch.object(launchd, "launchctl_table", return_value={self.LABEL: ("4242", "0")}),
+            patch.object(launchd, "override", return_value={}),
+            patch.object(launchd, "configured_signatures", return_value=[]),
+            patch.object(launchd, "ports_from_plist", side_effect=ports),
+            patch.object(launchd, "ports_for_pid", return_value=[]),
+            patch.object(launchd, "resolve_template", side_effect=lambda value: value),
+            patch.object(launchd, "port_open", lambda port, **kw: True),
+            patch.object(launchd, "pid_exe_path", lambda pid: _PRESENT_EXE),
+            patch.object(launchd, "_http_alive", lambda port: True),
+            patch.object(launchd, "pids_for_argv", return_value=[]),
+        ]
+        if not real_readers:
+            patches += [
+                patch.object(launchd, "friendly_name", return_value="Example"),
+                patch.object(launchd, "guess_group", return_value="Native"),
+                patch.object(launchd, "url_from_plist", return_value=None),
+                patch.object(launchd, "enrich_service", side_effect=lambda item, **_: item),
+            ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            items = launchd.discover_launchd()
+        return items, handed
+
+    def test_an_unchanged_plist_is_not_parsed_again(self):
+        self._write(self.LABEL)
+        first, handed_first = self._discover()
+        second, handed_second = self._discover()
+        self.assertEqual(len(handed_first), 1)
+        self.assertIs(handed_second[0], handed_first[0])
+        self.assertEqual(second, first)
+        self.assertEqual(first[0]["state"], "ok")
+
+    def test_an_edit_that_keeps_size_inode_and_mtime_is_still_seen(self):
+        path = self._write(self.LABEL)
+        before = os.stat(path)
+        first, handed_first = self._discover()
+        # Same length (the Label differs in its last letter), same inode, and
+        # the mtime put back: only the bytes tell the edit apart.
+        self._write("com.example.cachf", name=self.LABEL)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = os.stat(path)
+        self.assertEqual(
+            (after.st_size, after.st_ino, after.st_mtime_ns),
+            (before.st_size, before.st_ino, before.st_mtime_ns),
+        )
+        second, handed_second = self._discover()
+        self.assertIsNot(handed_second[0], handed_first[0])
+        self.assertEqual([i["id"] for i in first], [self.LABEL])
+        self.assertEqual([i["id"] for i in second], ["com.example.cachf"])
+        # launchd does not list the renamed job.
+        self.assertEqual(second[0]["state"], "down")
+
+    def test_a_removed_plist_leaves_the_cache(self):
+        self._write(self.LABEL)
+        gone = self._write("com.example.gone")
+        self._discover()
+        self.assertEqual(len(launchd._plist_cache), 2)
+        gone.unlink()
+        items, _ = self._discover()
+        self.assertEqual([i["id"] for i in items], [self.LABEL])
+        self.assertEqual(
+            [Path(p).name for p in launchd._plist_cache], [f"{self.LABEL}.plist"],
+        )
+
+    def test_a_patched_parser_runs_every_pass_and_is_never_kept(self):
+        self._write(self.LABEL)
+        fake = {"Label": "com.example.fake", "ProgramArguments": ["/usr/bin/true"]}
+        with patch.object(launchd.plistlib, "loads", return_value=fake) as loads:
+            first, _ = self._discover()
+            self._discover()
+        self.assertEqual(loads.call_count, 2)
+        self.assertEqual([i["id"] for i in first], ["com.example.fake"])
+        self.assertEqual(launchd._plist_cache, {})
+        # The real parser is back, so the file's own Label shows again.
+        third, _ = self._discover()
+        self.assertEqual([i["id"] for i in third], [self.LABEL])
+
+    def test_discovery_leaves_the_shared_parse_untouched(self):
+        path = self._write(
+            self.LABEL,
+            ProgramArguments=["/usr/bin/true", "--port", "8123"],
+            EnvironmentVariables={"URL": "http://127.0.0.1:8123/", "PORT": "8123"},
+            KeepAlive=True,
+        )
+        first, handed_first = self._discover(real_readers=True)
+        second, handed_second = self._discover(real_readers=True)
+        self.assertIs(handed_second[0], handed_first[0])
+        self.assertEqual(handed_second[0], plistlib.loads(path.read_bytes()))
+        self.assertEqual(second, first)
+        # The real readers ran: port and URL come from the plist itself.
+        self.assertEqual(first[0]["port"], 8123)
+        self.assertEqual(first[0]["url"], "http://127.0.0.1:8123/")
 
 
 if __name__ == "__main__":

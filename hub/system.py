@@ -457,8 +457,16 @@ def collect_system():
         memsize = macos_sysctl.sysctl_int("hw.memsize", timeout=2, sh=sh)
         return ncpu, memsize
 
+    from hub.macos_sysctl import memory_free_pct
+
     f_boot = _pool.submit(sh, ["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=3)
-    f_mem = _pool.submit(sh, ["/usr/bin/memory_pressure", "-Q"], timeout=4)
+    # The kernel's own free percentage, read in-process; `memory_pressure`
+    # prints the same number and only runs when that read fails.
+    native_free = memory_free_pct()
+    f_mem = (
+        None if native_free is not None
+        else _pool.submit(sh, ["/usr/bin/memory_pressure", "-Q"], timeout=4)
+    )
     f_hw = _pool.submit(_ncpu_and_memsize)
     f_smart = (
         _pool.submit(sh, ["/usr/bin/sudo", "-n", SMARTCTL, "-a", "/dev/disk0"], timeout=10)
@@ -496,8 +504,11 @@ def collect_system():
                 n = _finite_float(uptime_h)
                 uptime_h = n if n is not None else 0.0
 
-    rc, out, _ = _sh3(_result(f_mem, (1, "", "")))
-    mem_free = _mem_free_pct(out)
+    if f_mem is None:
+        mem_free = native_free
+    else:
+        rc, out, _ = _sh3(_result(f_mem, (1, "", "")))
+        mem_free = _mem_free_pct(out)
 
     ncpu_i, mem_n = _result(f_hw, (None, None))
     if ncpu_i is not None:
@@ -538,20 +549,23 @@ def collect_system():
                     parts = line.split()
                     if len(parts) >= 10:
                         smart.setdefault("temp", f"{parts[9]} Celsius")
+        # A missing tool or password used to retry every 35-second status
+        # build.  Stamp failed attempts too, while retaining the last good
+        # value.  A later status build retries after the normal ten minutes.
+        try:
+            _smart_cache.update(t=time.time(), v=smart)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            # A shadow key raises out of the insert compare; clear() never
+            # compares keys, so evict it while retaining the safe value.
             try:
+                _smart_cache.clear()
                 _smart_cache.update(t=time.time(), v=smart)
             except _CONTROL_FLOW:
                 raise
             except BaseException:
-                # A shadow key raises out of the insert compare at the end
-                # of a successful probe; clear() never compares keys.
-                try:
-                    _smart_cache.clear()
-                    _smart_cache.update(t=time.time(), v=smart)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    pass
+                pass
     n = ncpu_i or 1
     load_pct = None
     if load1 is not None:

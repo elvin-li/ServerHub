@@ -223,7 +223,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import {
   LayoutDashboard, HardDrive, FolderOpen, Share2, Users, Container, Layers,
-  Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark,
+  Package, Monitor, Server, Terminal, TerminalSquare, Network, Router, Bookmark, Globe,
   Wrench, Heart, Clock, FileText, Bell, Archive, Hammer, Blocks, Bot, Camera,
   Settings, ScrollText, ShieldCheck, CircleUser, Sparkles, BookOpen, Palette, Zap,
 } from '@lucide/vue'
@@ -350,6 +350,10 @@ let ptrTimer = null
 let poll = null
 let ptrStartY = 0
 let ptrActive = false
+// Touch device (set on mount), and whether the blocking touchmove listener is
+// registered right now (see syncPtrArmed).
+let ptrSupported = false
+let ptrArmed = false
 let loadGeneration = 0
 
 function stillOnShell(generation) {
@@ -423,10 +427,11 @@ const NAV_ADMIN = [
   {
     to: '/network',
     labelKey: 'nav.network',
-    match: ['/network', '/gateway', '/wireguard', '/bookmarks'],
+    match: ['/network', '/sites', '/gateway', '/wireguard', '/bookmarks'],
     icon: Network,
     children: [
       { to: '/network', labelKey: 'nav.sub_interfaces', exact: true, icon: Network },
+      { to: '/sites', labelKey: 'nav.sites', icon: Globe },
       { to: '/gateway', labelKey: 'nav.gateway', icon: Router },
       { to: '/wireguard', labelKey: 'nav.wireguard', icon: ShieldCheck },
       { to: '/bookmarks', labelKey: 'nav.bookmarks', icon: Bookmark },
@@ -625,6 +630,10 @@ function onAppError() {
   showToast('⚠ ' + t('err.page_error'))
 }
 
+// When a page that reads /api/status itself (the Dashboard) last handed its
+// answer to the shell; 0 while no page is sharing.
+let sharedStatusAt = 0
+
 async function refresh() {
   // `false` opts the sidebar poll into lib/poll.js's failure backoff: with the
   // panel down, the badge refresh slows from every 15s toward 90s instead of
@@ -636,6 +645,28 @@ async function refresh() {
     status.value = next
   } catch { return false }
 }
+
+// The sidebar tick.  The Dashboard polls /api/status on a shorter timer and
+// shares every answer, so while it is open the badge is already fresher than
+// this tick would make it and the request is skipped.  The 1s margin keeps a
+// share that landed one interval ago from counting as fresh.
+function pollStatus() {
+  const age = Date.now() - sharedStatusAt
+  if (sharedStatusAt && age >= 0 && age < statusPollMs() - 1000) return undefined
+  return refresh()
+}
+
+// A page hands over each /api/status answer it read, or null when it stops
+// polling (unmount), so the sidebar tick goes back to its own schedule.
+function shareStatus(next) {
+  if (next == null || route.meta.authPage) {
+    sharedStatusAt = 0
+    return
+  }
+  status.value = asRecord(next)
+  sharedStatusAt = Date.now()
+}
+provide('shareStatus', shareStatus)
 
 function probePhotoHub() {
   // Members (and the login shell) are not on the photoshub whitelist;
@@ -665,7 +696,7 @@ function statusPollMs() {
 function startPoll() {
   if (poll) return
   // Low: 30s under the 35s status TTL. High: 15s for a livelier badge.
-  poll = startVisibleInterval(refresh, statusPollMs())
+  poll = startVisibleInterval(pollStatus, statusPollMs())
 }
 
 function stopPoll() {
@@ -719,11 +750,13 @@ onMounted(() => {
   }
   window.addEventListener('online', onOnline)
   window.addEventListener('offline', onOffline)
-  // Pull-to-refresh (mobile only)
+  // Pull-to-refresh (mobile only).  touchmove is registered by syncPtrArmed,
+  // and only while the page is at the top.
   if ('ontouchstart' in window) {
+    ptrSupported = true
     document.addEventListener('touchstart', ptrTouchStart, { passive: true })
-    document.addEventListener('touchmove', ptrTouchMove, { passive: false })
     document.addEventListener('touchend', ptrTouchEnd, { passive: true })
+    syncPtrArmed()
   }
   // Back-to-top visibility
   window.addEventListener('scroll', onScroll, { passive: true })
@@ -748,6 +781,8 @@ onUnmounted(() => {
     narrowMq.removeEventListener('change', syncNarrow)
     narrowMq = null
   }
+  ptrSupported = false
+  ptrArmed = false
   document.removeEventListener('touchstart', ptrTouchStart)
   document.removeEventListener('touchmove', ptrTouchMove)
   document.removeEventListener('touchend', ptrTouchEnd)
@@ -772,6 +807,7 @@ function onSwUpdateReady() {
 }
 function onScroll() {
   showTop.value = window.scrollY > 400
+  syncPtrArmed()
 }
 function scrollTop() {
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -786,7 +822,30 @@ function applySwUpdate() {
 }
 
 /* Pull-to-refresh handlers */
+// ptrTouchMove has to be a blocking (non-passive) listener: a pull past 80px
+// calls preventDefault() to stop the page's own overscroll.  But while a
+// blocking touchmove listener sits on the document, a phone's browser has to
+// run the page's script before it may scroll, so a busy main thread (a poll
+// re-rendering the page) delayed the start of every scroll gesture.  It is
+// therefore registered only while the page is at the top, the one place a
+// pull can start.  It goes on ahead of the touch, not from touchstart: a
+// browser settles whether a touch sequence waits for script as it begins
+// (Safari at the touchstart, Chrome by the first move), so a listener added
+// from touchstart can come too late to stop the overscroll.  A pull that
+// began at the top keeps it until its touchend even if the page scrolls
+// meanwhile: its later moves must still hide the indicator, or lifting the
+// finger after scrolling away would refresh.
+function syncPtrArmed() {
+  const armed = ptrSupported && (window.scrollY <= 0 || ptrActive)
+  if (armed === ptrArmed) return
+  ptrArmed = armed
+  if (armed) document.addEventListener('touchmove', ptrTouchMove, { passive: false })
+  else document.removeEventListener('touchmove', ptrTouchMove)
+}
 function ptrTouchStart(e) {
+  // Also re-checked here: a page that reached the top without a scroll event
+  // (content shrank under it) is armed for the next gesture at the latest.
+  syncPtrArmed()
   if (window.scrollY <= 0 && !ptrRefreshing.value) {
     ptrStartY = e.touches[0].clientY
     ptrActive = true
@@ -805,6 +864,8 @@ function ptrTouchMove(e) {
 async function ptrTouchEnd() {
   if (!ptrActive) return
   ptrActive = false
+  // Drop the listener now if the pull ended on a page scrolled off the top.
+  syncPtrArmed()
   if (ptrVisible.value && !ptrRefreshing.value) {
     const generation = loadGeneration
     ptrRefreshing.value = true

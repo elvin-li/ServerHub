@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { startVisibleInterval } from './poll.js'
+import { inPollTick } from './pollTick.js'
 
 const MS = 1000
 
@@ -212,5 +213,117 @@ describe('startVisibleInterval', () => {
     await vi.advanceTimersByTimeAsync(MS * 3)
     // A leaked listener would restart the loop and refresh a dead page.
     expect(fn).not.toHaveBeenCalled()
+  })
+
+  it('resumes the schedule without a catch-up refresh after a short hide', async () => {
+    // A two-second tab switch used to fire the same immediate refresh as a
+    // ten-minute absence: a burst of requests for data that was still fresh.
+    const fn = vi.fn().mockResolvedValue(undefined)
+    stop = startVisibleInterval(fn, MS)
+
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    setHidden(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(MS / 4)
+
+    setHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    // The next refresh lands where it would have had the tab stayed visible.
+    await vi.advanceTimersByTimeAsync(MS * 0.75 - 1)
+    expect(fn).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes at once when the tab was created hidden and is then shown', async () => {
+    setHidden(true)
+    const fn = vi.fn().mockResolvedValue(undefined)
+    stop = startVisibleInterval(fn, MS)
+
+    setHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('never starts a second call while one is still in flight', async () => {
+    let release
+    const fn = vi.fn(() => new Promise((r) => { release = r }))
+    stop = startVisibleInterval(fn, MS)
+
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    // Hidden and shown again before the host answered: neither the catch-up
+    // refresh nor the timers that come due may race the request in flight.
+    setHidden(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    setHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(MS * 3)
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    // The schedule then runs one interval after that call finished.
+    release()
+    await vi.advanceTimersByTimeAsync(MS - 1)
+    expect(fn).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not double the schedule on a visible event with no hide before it', async () => {
+    // A waking laptop can report `visible` while the timer is still armed; the
+    // catch-up tick used to land on top of the scheduled one.
+    const fn = vi.fn().mockResolvedValue(undefined)
+    stop = startVisibleInterval(fn, MS)
+
+    await vi.advanceTimersByTimeAsync(MS * 1.5)
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(MS / 2)
+    expect(fn).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(fn).toHaveBeenCalledTimes(3)
+  })
+
+  it('marks what a tick starts before its first await as poll work', async () => {
+    // api/client.js reads the mark to leave a timed-out GET to the next tick.
+    const seen = []
+    const fn = vi.fn(async () => {
+      seen.push(inPollTick())
+      await Promise.resolve()
+      seen.push(inPollTick())
+    })
+    stop = startVisibleInterval(fn, MS)
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(seen).toEqual([true, false])
+
+    // The catch-up refresh on tab return is a tick too.
+    setHidden(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(MS * 2)
+    setHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fn).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual([true, false, true, false])
+    expect(inPollTick()).toBe(false)
+  })
+
+  it('recovers when the callback throws synchronously', async () => {
+    const fn = vi.fn(() => { throw new Error('boom') })
+    stop = startVisibleInterval(fn, MS)
+
+    await vi.advanceTimersByTimeAsync(MS)
+    expect(fn).toHaveBeenCalledTimes(1)
+    // A stuck in-flight marker would swallow every later tick.
+    await vi.advanceTimersByTimeAsync(MS * 1.5)
+    expect(fn).toHaveBeenCalledTimes(2)
   })
 })

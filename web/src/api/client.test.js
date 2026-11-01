@@ -47,6 +47,7 @@ import {
   uploadFile,
   updateShare,
 } from './client.js'
+import { runPollTick } from '../lib/pollTick.js'
 
 /** Build a fetch response double. `body` is whatever r.json() should yield. */
 function res(status, body, statusText = '') {
@@ -336,6 +337,72 @@ describe('api client', () => {
       expect(caught.message).toBe(en.err.timeout)
       // status 0 is how callers tell transport failure from an HTTP error.
       expect(caught.status).toBe(0)
+    })
+
+    /** A request that never answers: only the client's own abort ends it. */
+    function hangUntilAborted() {
+      fetchMock.mockImplementation(
+        (_url, opts) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => {
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            })
+          }),
+      )
+    }
+
+    it('leaves a timed-out poll GET to the next tick instead of retrying it', async () => {
+      vi.useFakeTimers()
+      hangUntilAborted()
+
+      // What lib/poll.js wraps around every background tick.
+      const pending = runPollTick(() => getStatus())
+      let caught
+      const settled = pending.catch((e) => {
+        caught = e
+      })
+
+      // Long enough for the old client to have sent its first retry.
+      await vi.advanceTimersByTimeAsync(30000 + ALL_RETRY_DELAYS)
+      // One request, not three: a server that took 30s not to answer is not
+      // sent two more, and the tick fails after 30s instead of 92s.
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await settled
+      expect(caught.message).toBe(en.err.timeout)
+      expect(caught.status).toBe(0)
+    })
+
+    it('still retries a quick connection failure inside a poll tick', async () => {
+      vi.useFakeTimers()
+      fetchMock
+        .mockRejectedValueOnce(netFail())
+        .mockResolvedValue(res(200, { ok: true }))
+
+      const pending = runPollTick(() => getStatus())
+      await vi.advanceTimersByTimeAsync(ALL_RETRY_DELAYS)
+
+      // A short blip (Wi-Fi switching) must not raise a failure banner.
+      await expect(pending).resolves.toEqual({ ok: true })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('keeps the retries for a request a tick starts after its first await', async () => {
+      vi.useFakeTimers()
+      hangUntilAborted()
+
+      const pending = runPollTick(async () => {
+        await Promise.resolve()
+        return getStatus()
+      })
+      const settled = pending.catch(() => {})
+
+      // Not provably the tick's own request, so the old rule stands.
+      await vi.advanceTimersByTimeAsync(30000 + ALL_RETRY_DELAYS)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      // Run out the remaining attempt so no timer outlives the test.
+      await vi.advanceTimersByTimeAsync(30000 * 2)
+      await settled
+      expect(fetchMock).toHaveBeenCalledTimes(3)
     })
 
     it('does not retry an HTTP error response', async () => {

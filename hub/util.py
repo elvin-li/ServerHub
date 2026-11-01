@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import queue
 import re
 import socket
 import stat
@@ -14,11 +15,12 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from hub.cli_args import as_argv
+from hub.proc_names import process_named
 
 log = logging.getLogger("serverhub.util")
 
@@ -171,14 +173,148 @@ def ttl_memo(ttl: float) -> Callable[[Callable[..., T]], Callable[..., T]]:
 #: rather than by core count.
 MAX_PROBE_WORKERS = 8
 
+#: Seconds a pool worker waits for more work before its thread exits.  The
+#: dashboard polls that feed these pools repeat every 10-15 s, so an open tab
+#: keeps its workers and pays no thread churn; a hidden or closed tab gives the
+#: threads back.  ``ThreadPoolExecutor`` never retires a worker, which is how an
+#: idle panel came to hold ~80 parked threads: one full set per page ever visited.
+POOL_IDLE_S = 30.0
+
+
+class IdleThreadPool(Executor):
+    """Thread pool whose workers exit after *idle* seconds without work.
+
+    The parts of the ``ThreadPoolExecutor`` contract :class:`LazyPool` relies
+    on: ``submit``, ``shutdown``, RuntimeError from ``submit`` after shutdown,
+    and never more than *max_workers* live workers, each started only when no
+    parked worker is free.  A retiring worker leaves that count just before
+    its thread exits, so the OS can briefly see one more thread than that.
+    Workers are daemon threads,
+    like every other background thread in the panel, so a parked worker never
+    holds up interpreter exit.
+
+    Book-keeping, all under ``_lock``:
+
+    * ``_idle``: parked workers that no queued item has claimed yet;
+    * ``_owed``: queued items no worker has claimed (all busy, pool full),
+      paid back by the next worker that finishes a task.
+
+    A worker may retire only by taking back an unclaimed ``_idle`` slot, and it
+    drops ``_live`` in the same critical section, so every queued item always has
+    a live worker coming for it.  Without ``_owed`` a saturated burst would
+    leave ``_idle`` counting workers that had moved on to the backlog; once they
+    retired, a later submit could claim a slot whose worker no longer existed and
+    wait forever.
+    """
+
+    def __init__(self, max_workers: int, name: str, idle: float = POOL_IDLE_S):
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        self._max = max_workers
+        self._name = name
+        self._idle_s = idle
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._live = 0
+        self._idle = 0
+        self._owed = 0
+        self._seq = 0
+        self._threads: set[threading.Thread] = set()
+        self._closed = False
+
+    def submit(self, fn, /, *args, **kwargs):
+        fut: Future = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            if self._idle:
+                self._idle -= 1
+            elif self._live < self._max:
+                self._seq += 1
+                worker = threading.Thread(
+                    target=self._work, name=f"{self._name}_{self._seq}", daemon=True,
+                )
+                # Out of threads raises RuntimeError before anything is queued
+                # or counted; LazyPool then runs the call inline.
+                worker.start()
+                self._live += 1
+                self._threads.add(worker)
+            else:
+                self._owed += 1
+            self._q.put((fut, fn, args, kwargs))
+        return fut
+
+    def _work(self) -> None:
+        q, lock, idle_s = self._q, self._lock, self._idle_s
+        me = threading.current_thread()
+        while True:
+            try:
+                item = q.get(timeout=idle_s)
+            except queue.Empty:
+                with lock:
+                    if self._idle:
+                        self._idle -= 1
+                        self._live -= 1
+                        self._threads.discard(me)
+                        return
+                # Every parked slot is claimed: an item is on its way to us.
+                continue
+            if item is None:
+                # Shutdown.  Everything queued before the marker has run; pass
+                # the marker on so the next worker leaves too.
+                q.put(None)
+                with lock:
+                    self._live -= 1
+                    self._threads.discard(me)
+                return
+            fut, fn, args, kwargs = item
+            item = None
+            if fut.set_running_or_notify_cancel():
+                try:
+                    result = fn(*args, **kwargs)
+                except BaseException as exc:
+                    fut.set_exception(exc)
+                else:
+                    fut.set_result(result)
+                    result = None
+            # Parked workers must not pin the last task's arguments or result.
+            fut = fn = args = kwargs = None
+            with lock:
+                if self._owed:
+                    self._owed -= 1
+                else:
+                    self._idle += 1
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                if cancel_futures:
+                    while True:
+                        try:
+                            item = self._q.get_nowait()
+                        except queue.Empty:
+                            break
+                        if item is not None:
+                            item[0].cancel()
+                self._q.put(None)
+            threads = list(self._threads)
+        if wait:
+            me = threading.current_thread()
+            for worker in threads:
+                if worker is not me:
+                    worker.join()
+
 
 class LazyPool:
-    """Process-lifetime ThreadPoolExecutor, created on first use.
+    """Process-lifetime thread pool, created on first use.
 
     Dashboard polls used to construct and join a pool on every tick.  The
     probes still dominate latency, but the thread churn was paid on every
     ``/api/status`` and ``/api/sensors`` request — the same tax, five modules.
     ``shutdown`` drops the executor so a reload or test can start a fresh one.
+    The executor is an :class:`IdleThreadPool`: the pool object lives as long
+    as the process, its threads only while there is work.
     """
 
     def __init__(self, max_workers: int, name: str):
@@ -186,16 +322,13 @@ class LazyPool:
             raise ValueError("max_workers must be >= 1")
         self.max_workers = max_workers
         self.name = name
-        self._ex: ThreadPoolExecutor | None = None
+        self._ex: IdleThreadPool | None = None
         self._guard = threading.Lock()
 
-    def _executor(self) -> ThreadPoolExecutor:
+    def _executor(self) -> IdleThreadPool:
         with self._guard:
             if self._ex is None:
-                self._ex = ThreadPoolExecutor(
-                    max_workers=self.max_workers,
-                    thread_name_prefix=self.name,
-                )
+                self._ex = IdleThreadPool(self.max_workers, self.name)
             return self._ex
 
     def submit(self, fn, /, *args, **kwargs):
@@ -214,10 +347,22 @@ class LazyPool:
             return fut
 
     def map(self, fn, items):
-        try:
-            return self._executor().map(fn, items)
-        except RuntimeError:
-            return [fn(item) for item in items]
+        # Submit through this wrapper one item at a time.  Calling the inner
+        # executor's map directly could submit part of a batch, then race a
+        # shutdown and rerun the whole input inline, duplicating those probes.
+        futures = [self.submit(fn, item) for item in items]
+
+        def results():
+            try:
+                for future in futures:
+                    yield future.result()
+            finally:
+                # Executor.map's contract: a raise, or an iterator the caller
+                # abandons, cancels the items that have not started yet.
+                for future in futures:
+                    future.cancel()
+
+        return results()
 
     def shutdown(self, wait: bool = False) -> None:
         with self._guard:
@@ -1006,7 +1151,13 @@ def _utm_app_running() -> bool:
     ``utmctl list`` talks to the app over Apple Events.  Launch Services
     starts UTM.app when nothing is listening, so a status poll would pull
     the window back up after the user quit it.
+
+    Read from the process table in-process (hub/proc_names.py); ``pgrep``
+    runs only when that read cannot answer.
     """
+    native = process_named("UTM")
+    if native is not None:
+        return native
     try:
         proc = subprocess.run(
             ["/usr/bin/pgrep", "-x", "UTM"],
@@ -1035,7 +1186,115 @@ def _utmctl_verb(cmd) -> str:
 _UTM_MAY_LAUNCH = frozenset({"start"})
 
 
+#: Reads whose answer cannot change while this process lives.  Boot time and
+#: hardware facts change only across a reboot, and a reboot restarts the
+#: panel.  ``/api/status``, the sensors tick and diagnostics each spawned
+#: ``sysctl -n kern.boottime`` on every poll.
+_SH_FOREVER = frozenset({
+    ("/usr/sbin/sysctl", "-n", "kern.boottime"),
+    ("/usr/sbin/sysctl", "-n", "hw.memsize"),
+    ("/usr/sbin/sysctl", "-n", "hw.ncpu"),
+    ("/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"),
+    ("/usr/sbin/sysctl", "-n", "hw.model"),
+})
+
+#: Live reads that several handlers make in the same dashboard tick.  The
+#: status poll, the light sensors tick and the metrics sampler each ran
+#: ``memory_pressure -Q`` within the same second.  A few seconds of sharing
+#: is far below every poll interval that shows the value.
+_SH_SHARED = {
+    ("/usr/bin/memory_pressure", "-Q"): 4.0,
+}
+
+_sh_memo: dict[tuple, tuple[float, tuple]] = {}
+_sh_memo_lock = threading.Lock()
+
+
+class _ShFlight:
+    """One running spawn of a memoised command, shared with its waiters."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: tuple = (-1, "", "interrupted")
+
+
+#: Per-command single-flight.  The status build, the light sensors tick and the
+#: metrics sampler ask for ``memory_pressure`` within the same second, and a
+#: plain cache check let every one of them miss and spawn the same command.
+_sh_memo_flights: dict[tuple, _ShFlight] = {}
+_sh_now = time.monotonic
+
+
+def _sh_memo_ttl(cmd, shell, env) -> float | None:
+    """Memo lifetime for *cmd*, or None when it must always spawn."""
+    if shell or env is not None or not isinstance(cmd, list):
+        return None
+    if os.environ.get("SERVERHUB_NO_SH_MEMO"):
+        return None
+    try:
+        key = tuple(cmd)
+    except TypeError:
+        return None
+    if key in _SH_FOREVER:
+        return float("inf")
+    return _SH_SHARED.get(key)
+
+
+def sh_memo_clear() -> None:
+    """Forget memoised :func:`sh` answers (tests that stub subprocess)."""
+    with _sh_memo_lock:
+        _sh_memo.clear()
+
+
 def sh(cmd, timeout=10, shell=False, env=None):
+    """Run *cmd*; see :func:`_sh_spawn`.  Constant and shared reads are memoised.
+
+    Only a clean answer (rc 0, some stdout) is kept, so a failed or timed-out
+    read is retried on the next call exactly as before.  A caller that arrives
+    while the same memoised command is already running waits for that spawn
+    and shares its answer, failed or not.  Queueing a spawn of its own behind
+    it would turn one hung ``memory_pressure`` into one hang per caller.
+    """
+    ttl = _sh_memo_ttl(as_argv(cmd) if not shell else cmd, shell, env)
+    if ttl is None:
+        return _sh_spawn(cmd, timeout, shell, env)
+    key = tuple(as_argv(cmd))
+    with _sh_memo_lock:
+        hit = _sh_memo.get(key)
+        if hit is not None and _sh_now() - hit[0] < ttl:
+            return hit[1]
+        flight = _sh_memo_flights.get(key)
+        owner = flight is None
+        if owner:
+            flight = _sh_memo_flights[key] = _ShFlight()
+    if not owner:
+        flight.done.wait()
+        return flight.result
+    try:
+        result = _sh_spawn(cmd, timeout, shell, env)
+        flight.result = result
+        try:
+            ok = result[0] == 0 and bool(result[1])
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            ok = False
+        if ok:
+            with _sh_memo_lock:
+                _sh_memo[key] = (_sh_now(), result)
+        return result
+    finally:
+        # Retire the flight before waking its waiters: a caller arriving after
+        # this reads the cache, or starts the next spawn itself.
+        with _sh_memo_lock:
+            if _sh_memo_flights.get(key) is flight:
+                del _sh_memo_flights[key]
+        flight.done.set()
+
+
+def _sh_spawn(cmd, timeout=10, shell=False, env=None):
     """Run *cmd* and keep at most :data:`_SH_CAP` leading bytes of each stream.
 
     Head, not tail: callers parse JSON / plists from stdout.  A torn prefix

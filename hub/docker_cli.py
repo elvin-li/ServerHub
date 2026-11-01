@@ -530,6 +530,28 @@ def invalidate_engine_state() -> None:
         _engine_timeouts = 0
 
 
+def note_engine_up() -> None:
+    """Record that the daemon just answered a ``docker ps``.
+
+    That is the evidence :func:`engine_up` takes from ``docker info``, so it is
+    stored the same way and ages out on the same TTL.  The container listing
+    behind ``/api/status`` runs every few seconds while the dashboard is open,
+    and recording its success spares the separate ``docker info`` (~130 ms of
+    CPU) that health checks and the containers page would otherwise spawn in
+    the same five seconds.  Only success is recorded: a failed listing may be
+    a timeout, so the next :func:`engine_up` probes as before.  A probe
+    already holding the lock stores its own answer, so this never waits.
+    """
+    global _engine_timeouts
+    if not _engine_lock.acquire(blocking=False):
+        return
+    try:
+        _engine_cache.update(t=time.time(), v=True)
+        _engine_timeouts = 0
+    finally:
+        _engine_lock.release()
+
+
 def _cache_view() -> tuple[bool | None, bool]:
     """The engine memo's ``(value, is-fresh)`` with leftover junk read as unknown.
 

@@ -1,6 +1,7 @@
 """Aggregate service status with short TTL cache + adaptive discovery."""
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -183,6 +184,12 @@ def _cfg_value(key, default=None):
 
 def _utf8_text(value) -> str:
     """Drop leftover lone surrogates so Starlette's UTF-8 encode cannot 500."""
+    if type(value) is str:
+        # An exact str (C-level type, nothing to override) answers what the
+        # probes below answer for it, without their two raised TypeErrors.
+        if value.isascii():
+            return value
+        return str.encode(value, "utf-8", "replace").decode("utf-8")
     for base in (bytes, bytearray):
         try:
             return base.decode(value, "utf-8", "replace")
@@ -243,6 +250,31 @@ def _name_text(raw) -> str:
     return _utf8_text(raw)
 
 
+# Exact ints inside this bound (309 digits) always render: CPython's int->str
+# digit cap is never set below 640 digits, so only a larger one needs the
+# ``str()`` probe in ``_jsonable``.
+_RENDERABLE_INT = 1 << 1024
+
+
+def _jsonable_key(k):
+    """A mapping key as clean exact-str text, or None to drop its entry."""
+    if _isa(k, (bytes, bytearray)):
+        try:
+            k = _decode_bytes(k)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    elif not _isa(k, str):
+        try:
+            k = str(k)
+        except _CONTROL_FLOW:
+            raise
+        except BaseException:
+            return None
+    return _utf8_text(k)
+
+
 def _jsonable(value, depth: int = 0):
     """Coerce leftovers so Starlette's allow_nan=False encoder cannot 500.
 
@@ -262,6 +294,35 @@ def _jsonable(value, depth: int = 0):
     """
     if depth > 32:
         return None
+    # Exact JSON types first.  ``type()`` reads the C-level type, never a
+    # ``__class__`` property, and an exact str / dict / list / tuple / int /
+    # float / bool has no method a leftover could override, so no bomb the
+    # guarded gates below exist for can sit in one; each branch answers what
+    # those gates answer for it.  A cache-hit GET /api/status re-scrubs the
+    # whole snapshot under ``_lock``, and a built snapshot is all exact
+    # types: the gates cost a try/isinstance per rank and ``_utf8_text`` two
+    # raised TypeErrors per string (about 7ms and 11k exceptions a hit on a
+    # 120-service snapshot).
+    kind = type(value)
+    if kind is str:
+        return value if value.isascii() else _utf8_text(value)
+    if kind is dict:
+        out = {}
+        for k, v in value.items():
+            if type(k) is not str or not k.isascii():
+                k = _jsonable_key(k)
+                if k is None:
+                    continue
+            out[k] = _jsonable(v, depth + 1)
+        return out
+    if kind is list or kind is tuple:
+        return [_jsonable(v, depth + 1) for v in value]
+    if kind is int and -_RENDERABLE_INT < value < _RENDERABLE_INT:
+        return value
+    if kind is float:
+        return value if math.isfinite(value) else None
+    if kind is bool:
+        return value
     # _isa on every rank gate: a leftover whose ``__class__`` is a raising
     # property — planted as (or nested in) the cached snapshot, a collector
     # row or a config value — used to detonate the *first* isinstance below
@@ -331,21 +392,10 @@ def _jsonable(value, depth: int = 0):
         except BaseException:
             return None
         for k, v in entries:
-            if _isa(k, (bytes, bytearray)):
-                try:
-                    k = _decode_bytes(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
-            elif not _isa(k, str):
-                try:
-                    k = str(k)
-                except _CONTROL_FLOW:
-                    raise
-                except BaseException:
-                    continue
-            out[_utf8_text(k)] = _jsonable(v, depth + 1)
+            k = _jsonable_key(k)
+            if k is None:
+                continue
+            out[k] = _jsonable(v, depth + 1)
         return out
     if _isa(value, (list, tuple, set, frozenset)):
         for base in (list, tuple, set, frozenset):

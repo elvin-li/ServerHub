@@ -9,6 +9,7 @@ this module size-probes, rejects a zero ``hw.memsize``, and falls back to
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import struct
 
@@ -83,7 +84,34 @@ def parse_int(value) -> int | None:
 
 def sysctlbyname_int(name: str) -> int | None:
     """Read an integer sysctl via ctypes.  None on any failure (caller falls back)."""
-    if name not in INTEGER_KEYS or _libc is None:
+    if name not in INTEGER_KEYS:
+        return None
+    return _read_int(name)
+
+
+def memory_free_pct() -> int | None:
+    """System-wide memory free percentage: the number `memory_pressure` prints.
+
+    `memory_pressure` gets it from ``memorystatus_get_level()``, which copies
+    out the kernel's ``memorystatus_level``; the ``kern.memorystatus_level``
+    sysctl reads that same variable, without a spawn (about three a minute
+    with the dashboard open, and the only one left when it is idle).  Not
+    cached: it changes all the time and the read takes microseconds.  None
+    when the read fails or is outside 0-100, so callers fall back to
+    `memory_pressure`; also None under ``SERVERHUB_NO_NATIVE_MEMLEVEL``, which
+    the test bootstrap sets so stubbed `memory_pressure` answers still reach
+    the parsers.
+    """
+    if os.environ.get("SERVERHUB_NO_NATIVE_MEMLEVEL"):
+        return None
+    value = _read_int("kern.memorystatus_level")
+    if value is None or not 0 <= value <= 100:
+        return None
+    return value
+
+
+def _read_int(name: str) -> int | None:
+    if _libc is None:
         return None
     try:
         raw_name = name.encode("ascii")
