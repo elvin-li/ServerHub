@@ -38,6 +38,10 @@ os.environ.setdefault("SERVERHUB_STATE_DIR", str(Path(_root) / "state"))
 # Stubbed subprocess answers must not leak between tests through hub.util.sh's
 # memo; tests/test_sh_memo.py turns it back on for itself.
 os.environ.setdefault("SERVERHUB_NO_SH_MEMO", "1")
+# brew_cache reuses its snapshot while the host's Homebrew launchd jobs and
+# plists look unchanged.  On a Mac the real listing would make stubbed brew
+# answers stick across tests; tests/test_brew_services_reuse.py turns it on.
+os.environ.setdefault("SERVERHUB_NO_BREW_REUSE", "1")
 # Tests feed _gpu() canned ``ioreg`` XML through a stubbed sh; on a Mac the
 # native IOKit read would answer with the real GPU instead.
 # tests/test_sensors_gpu.py turns it back on for its own native tests.

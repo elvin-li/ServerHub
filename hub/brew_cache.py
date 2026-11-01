@@ -10,6 +10,7 @@ from __future__ import annotations
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
+import glob
 import json
 import os
 import re
@@ -17,9 +18,10 @@ import subprocess
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
-from hub.paths import BREW, DATA_DIR
+from hub.paths import AGENTS_DIR, BREW, DATA_DIR
 from hub.secure_io import replace_bytes
 from hub.util import read_text_capped, safe_json_loads, sh, utf8_env
 
@@ -54,6 +56,18 @@ _bg_running = False
 _DISK = DATA_DIR / "brew-services.cache.json"
 #: Leftover multi-MB cache used to OOM GET /api/brew/services.
 _DISK_CAP = 256 * 1024
+#: Launchd label prefixes Homebrew gives services: ``sh.brew.<name>`` now and
+#: ``homebrew.mxcl.<name>`` for ones registered by older releases.
+_LABEL_PREFIXES = ("sh.brew.", "homebrew.")
+#: Root services' plists (`sudo brew services`).  Its mtime is fingerprinted, so
+#: adding or removing one counts as a change (see :func:`_inputs_fingerprint`).
+_ROOT_AGENTS_DIR = "/Library/LaunchDaemons"
+#: Longest a snapshot is reused while the inputs `brew services list` reads stay
+#: unchanged: a backstop for an input the fingerprint does not cover.
+_REUSE_MAX = 600.0
+#: ``(fingerprint, time.monotonic())`` of the brew run behind the cached
+#: snapshot, or None.  Cleared by :func:`invalidate_brew_services`.
+_reuse: tuple | None = None
 
 
 def _isinstance(value, types) -> bool:
@@ -519,7 +533,7 @@ def _copy_items(items) -> list[dict]:
 
 def invalidate_brew_services() -> None:
     """Drop the snapshot after a start/stop so the next read is truthful."""
-    global _disk_ok, _generation
+    global _disk_ok, _generation, _reuse
     with _lock:
         _generation += 1
         # _cache_store, not the bare ``_cache["t"] = 0.0`` assignments: a
@@ -529,6 +543,9 @@ def invalidate_brew_services() -> None:
         # already run — this call sits outside its spawn try.
         _cache_store(t=0.0, v=None)
         _disk_ok = False
+        # The next read runs brew: launchd may not show the action's effect
+        # yet, and a fingerprint taken then would match the old answer.
+        _reuse = None
 
 
 def _fresh() -> list[dict] | None:
@@ -776,9 +793,165 @@ def _brew_busy() -> bool:
     return False
 
 
-def _load() -> list[dict]:
+def _stat_key(path) -> tuple | None:
+    """``(mtime_ns, size, inode)`` of *path*, or None when it does not exist."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _dir_keys(path, keep=None) -> tuple:
+    """``(name, stat key)`` of the entries in *path* (those *keep* accepts)."""
+    try:
+        with os.scandir(path) as entries:
+            names = sorted(e.name for e in entries if keep is None or keep(e.name))
+    except FileNotFoundError:
+        return ()
+    return tuple((name, _stat_key(os.path.join(path, name))) for name in names)
+
+
+def _service_labels(items) -> frozenset[str] | None:
+    """The launchd label in each item's plist path, or None if one has none."""
+    labels = set()
+    for item in items:
+        path = dict.get(item, "file") if type(item) is dict else None
+        if type(path) is not str or not path.endswith(".plist"):
+            return None
+        labels.add(os.path.basename(path)[: -len(".plist")])
+    return frozenset(labels)
+
+
+def _inputs_fingerprint(labels: frozenset[str]) -> tuple | None:
+    """What `brew services list --json` reads, or None when that cannot be told.
+
+    brew lists every installed formula with a service (``Cellar``/``opt``
+    change on each install, upgrade and uninstall; the definitions come from
+    the JSON API cache and from taps, which `brew update` refreshes), looks up
+    each one's launchd job by label (pid, last exit status) and reads its
+    plists in ~/Library/LaunchAgents and /Library/LaunchDaemons.  *labels* are
+    the ones in the previous answer; every ``sh.brew.*``/``homebrew.*`` job and
+    plist is watched as well.  The launchd rows come from a fresh `launchctl
+    list`, so a reused answer is as current as a brew run would have been.
+    Reading all of it costs one `launchctl list` and about 0.7 ms; brew costs
+    about 1.7 s of CPU.  A failed or empty listing gives None, and so does
+    ``SERVERHUB_NO_BREW_REUSE``.
+    """
+    if os.environ.get("SERVERHUB_NO_BREW_REUSE"):
+        return None
+    try:
+        prefix = Path(BREW).parent.parent
+        repo = Path(os.path.realpath(BREW)).parent.parent
+        api = os.path.join(
+            os.environ.get("HOMEBREW_CACHE")
+            or os.path.expanduser("~/Library/Caches/Homebrew"),
+            "api",
+        )
+        agents = str(AGENTS_DIR)
+        names = {label + ".plist" for label in labels}
+        files = (
+            _stat_key(prefix / "Cellar"),
+            _stat_key(prefix / "opt"),
+            _stat_key(repo / ".git" / "FETCH_HEAD"),
+            _stat_key(repo / ".git" / "HEAD"),
+            tuple(
+                (path, _stat_key(path))
+                for path in sorted(glob.glob(
+                    str(repo / "Library" / "Taps" / "*" / "*" / ".git" / "FETCH_HEAD"),
+                ))
+            ),
+            _dir_keys(api),
+            _dir_keys(os.path.join(api, "internal")),
+            _stat_key(agents),
+            _dir_keys(
+                agents,
+                lambda name: name in names or name.startswith(_LABEL_PREFIXES),
+            ),
+            _stat_key(_ROOT_AGENTS_DIR),
+        )
+        from hub.launchd_cache import listing
+
+        jobs = listing(force=True).jobs
+        if not jobs:
+            return None
+        rows = tuple(sorted(
+            (label, pid, status)
+            for label, (pid, status) in jobs.items()
+            if label in labels or label.startswith(_LABEL_PREFIXES)
+        ))
+        return (str(prefix), files, rows)
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return None
+
+
+def _answer_agrees(items, rows) -> bool:
+    """True when a brew answer may be reused while *rows* stay the same.
+
+    brew finds jobs in the ``gui/`` and the ``user/`` launchd domains, but this
+    process's `launchctl list` shows only its own.  So every service must look
+    the same in both: listed when brew says it is loaded (any status but
+    ``none``), with a pid when brew says ``started``.  At least one must be
+    loaded, as proof the listing sees brew's domain.  Comparing against rows
+    taken before the run also catches a change while brew ran, and a loaded
+    service under a custom label nobody watched yet.
+    """
+    try:
+        pids = {label: pid for label, pid, _status in rows}
+        any_loaded = False
+        for item in items:
+            name = dict.get(item, "name")
+            status = dict.get(item, "status")
+            path = dict.get(item, "file")
+            if type(name) is not str or type(status) is not str:
+                return False
+            if type(path) is not str or not path.endswith(".plist"):
+                return False
+            label = os.path.basename(path)[: -len(".plist")]
+            found = [
+                pids[c] for c in {label, "sh.brew." + name, "homebrew.mxcl." + name}
+                if c in pids
+            ]
+            loaded = status != "none"
+            if loaded != bool(found):
+                return False
+            if (status == "started") != any(pid.isdigit() for pid in found):
+                return False
+            any_loaded = any_loaded or loaded
+        return any_loaded
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        return False
+
+
+def _load(*, reuse: bool = True) -> list[dict]:
+    global _reuse
     with _lock:
         gen = _generation
+        token = _reuse
+    held = _stale_memory()
+    try:
+        labels = _service_labels(held or ())
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        labels = None
+    fingerprint = None if labels is None else _inputs_fingerprint(labels)
+    if (
+        reuse
+        and held
+        and fingerprint is not None
+        and token is not None
+        and token[0] == fingerprint
+        and time.monotonic() - token[1] < _REUSE_MAX
+    ):
+        # Nothing brew reads has changed since it produced this snapshot, so
+        # it is still brew's answer: skip the run and its two lock probes.
+        # The disk copy already holds these items.
+        return _publish(held, write_disk=False, gen=gen)
     if _brew_busy():
         kept = _keep_last_good()
         if kept is not None:
@@ -806,7 +979,16 @@ def _load() -> list[dict]:
     if _plain_rc(rc) == 0:
         items = _services_from_output(out)
         if items is not None:
-            return _publish(items, write_disk=True, gen=gen)
+            published = _publish(items, write_disk=True, gen=gen)
+            fresh = None
+            if fingerprint is not None and _answer_agrees(items, fingerprint[-1]):
+                # Taken before the run: a change while brew ran makes the next
+                # fingerprint differ, so the next load runs brew again.
+                fresh = (fingerprint, time.monotonic())
+            with _lock:
+                if gen == _generation:
+                    _reuse = fresh
+            return published
     # Timeout, brew crash, or unparseable JSON: keep the last good
     # snapshot and refresh its TTL so stale-while-revalidate does not
     # immediately re-enter `_load` and reprint the same timeout.
@@ -876,7 +1058,8 @@ def brew_services(force: bool = False) -> list[dict]:
             hit = _fresh()
             if hit is not None:
                 return hit
-        return _load()
+        # force means a brew run, even when its inputs look unchanged.
+        return _load(reuse=not force)
 
 
 #: Callers (brew_svc, autostart_svc, health_svc) import this name.  Keep both
