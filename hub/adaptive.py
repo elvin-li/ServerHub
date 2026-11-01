@@ -277,9 +277,9 @@ def lsof_listen_snapshot() -> list[dict[str, Any]]:
         try:
             if native is not None:
                 rows = [
-                    {"proc": unescape_proc_name(command), "pid": str(pid),
-                     "bind": name, "port": port}
-                    for command, pid, name, port in native
+                    {"proc": unescape_proc_name(row.command), "pid": str(row.pid),
+                     "bind": row.name, "port": row.port}
+                    for row in native
                 ]
             else:
                 rc, out, _ = sh(

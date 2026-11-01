@@ -8,23 +8,28 @@ as for this process, so reading them here gives the same rows without the
 spawn: about 50-80 ms of child CPU and two temp files per snapshot, against
 about 8 ms here.
 
-:func:`listen_rows` returns ``(command, pid, name, port)`` tuples in lsof's
-order and in its text.  COMMAND is the first nine columns of the name with a
-space written ``\\x20``; an escape that does not fit is dropped, not cut.
-NAME is ``*:port``, ``a.b.c.d:port`` or ``[::1]:port``.  For anything it does
-not reproduce exactly (another character in a name, another IPv6 address, a
-descriptor list it cannot read whole) it returns None and the caller runs
-lsof.  So does ``SERVERHUB_NO_NATIVE_LSOF``, which the test bootstrap sets so
-canned lsof text still reaches the parsers.
+:func:`listen_rows` returns :class:`Listener` rows in lsof's order and in
+its text.  COMMAND is the first nine columns of the name with a space written
+``\\x20``; an escape that does not fit is dropped, not cut.  NAME is
+``*:port``, ``a.b.c.d:port`` or ``[::1]:port``.  :func:`lsof_text` renders
+the rows as lsof's output for the readers that parse it.  For anything they
+do not reproduce exactly (another character in a name, another IPv6 address,
+a descriptor list that cannot be read whole, a user name lsof might print
+another way) they return None and the caller runs lsof.  So does
+``SERVERHUB_NO_NATIVE_LSOF``, which the test bootstrap sets so canned lsof
+text still reaches the parsers.
 """
 from __future__ import annotations
 
 import ctypes
 import os
+import pwd
+import re
 import socket
 import struct
 import sys
 import threading
+from typing import NamedTuple
 
 _CONTROL_FLOW = (KeyboardInterrupt, SystemExit)
 
@@ -47,10 +52,26 @@ _OFF_KIND = 256  # psi.soi_kind
 _OFF_LPORT = 268  # psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport (network order)
 _OFF_LADDR = 312  # psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr (16 bytes)
 _OFF_STATE = 344  # psi.soi_proto.pri_tcp.tcpsi_state
-#: sizeof(struct proc_bsdinfo), and pbi_comm[MAXCOMLEN + 1] in it.
+#: sizeof(struct proc_bsdinfo), pbi_uid and pbi_comm[MAXCOMLEN + 1] in it.
 _BSDINFO_SIZE = 136
+_OFF_UID = 20
 _OFF_COMM = 48
 _COMM_SIZE = 17
+#: User names printed as they are: lsof's text for longer or other names is
+#: not checked here.
+_USER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,7}")
+
+
+class Listener(NamedTuple):
+    """One listening socket, in lsof's text where lsof prints the field."""
+
+    command: str
+    pid: int
+    uid: int
+    fd: int
+    family: int
+    name: str
+    port: int
 #: lsof's default COMMAND width.
 _COMMAND_COLUMNS = 9
 #: Descriptors read per process before asking for the exact count.
@@ -128,8 +149,45 @@ def _address(family: int, info: bytes, base: int = _OFF_LADDR) -> str | None:
     return None
 
 
-def listen_rows() -> list[tuple[str, int, str, int]] | None:
-    """``(command, pid, name, port)`` for every listening TCP socket, or None."""
+def _lsof_user(uid: int) -> str | None:
+    """lsof's USER text for *uid* (its login name), or None if not reproduced."""
+    try:
+        name = pwd.getpwuid(uid).pw_name
+    except (KeyError, OverflowError, TypeError, ValueError):
+        return None  # lsof prints the number; not reproduced here
+    if type(name) is not str or not _USER_RE.fullmatch(name):
+        return None
+    return name
+
+
+def lsof_text() -> str | None:
+    """``lsof -nP -iTCP -sTCP:LISTEN`` output built from :func:`listen_rows`.
+
+    The COMMAND, PID, USER and NAME columns are lsof's; FD, TYPE, DEVICE,
+    SIZE/OFF and NODE are filled in so every column sits where lsof puts it.
+    None when the rows or a user name cannot be reproduced.
+    """
+    rows = listen_rows()
+    if rows is None:
+        return None
+    users: dict[int, str | None] = {}
+    lines = ["COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"]
+    for row in rows:
+        if row.uid not in users:
+            users[row.uid] = _lsof_user(row.uid)
+        user = users[row.uid]
+        if user is None:
+            return None
+        kind = "IPv4" if row.family == _AF_INET else "IPv6"
+        lines.append(
+            f"{row.command} {row.pid} {user} {row.fd}u {kind} 0x0 0t0 TCP "
+            f"{row.name} (LISTEN)"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def listen_rows() -> list[Listener] | None:
+    """Every listening TCP socket as a :class:`Listener`, or None."""
     if os.environ.get("SERVERHUB_NO_NATIVE_LSOF"):
         return None
     lib = _load()
@@ -143,7 +201,7 @@ def listen_rows() -> list[tuple[str, int, str, int]] | None:
         return None
 
 
-def _read(lib) -> list[tuple[str, int, str, int]] | None:
+def _read(lib) -> list[Listener] | None:
     count = lib.proc_listallpids(None, 0)
     if count <= 0:
         return None
@@ -155,7 +213,7 @@ def _read(lib) -> list[tuple[str, int, str, int]] | None:
     sock = ctypes.create_string_buffer(_SOCKET_FDINFO_SIZE)
     bsd = ctypes.create_string_buffer(_BSDINFO_SIZE)
     unpack_int = struct.Struct("<i").unpack_from
-    rows: list[tuple[str, int, str, int]] = []
+    rows: list[Listener] = []
     for pid in sorted(set(pids[:min(got, len(pids))])):
         if pid <= 0:
             continue
@@ -196,15 +254,17 @@ def _read(lib) -> list[tuple[str, int, str, int]] | None:
             address = _address(family, info)
             if address is None:
                 return None
-            listeners.append((f"{address}:{port}", port))
+            listeners.append((fd, family, f"{address}:{port}", port))
         if not listeners:
             continue
         if lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, bsd, _BSDINFO_SIZE) != _BSDINFO_SIZE:
             continue  # exited since its descriptors were read
-        comm = ctypes.string_at(ctypes.addressof(bsd) + _OFF_COMM, _COMM_SIZE)
+        bsdinfo = ctypes.string_at(bsd, _BSDINFO_SIZE)
+        uid = struct.unpack_from("<I", bsdinfo, _OFF_UID)[0]
+        comm = bsdinfo[_OFF_COMM:_OFF_COMM + _COMM_SIZE]
         command = _lsof_command(comm.split(b"\0", 1)[0])
         if not command:
             return None
-        for name, port in listeners:
-            rows.append((command, pid, name, port))
+        for fd, family, name, port in listeners:
+            rows.append(Listener(command, pid, uid, fd, family, name, port))
     return rows

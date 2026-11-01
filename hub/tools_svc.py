@@ -28,6 +28,7 @@ from hub import __version__, metrics
 from hub import cli_args
 from hub.errors import api_error, soft_fail
 from hub.host_address import host_ip
+from hub.libproc_listen import lsof_text
 from hub.service_signatures import unescape_proc_name
 from hub.docker_cli import (
     _jsonable,
@@ -1842,10 +1843,16 @@ def parse_lsof_listen_line(line: str) -> dict | None:
 
 def listening_ports(limit: int = 40) -> dict:
     """Quick lsof listen summary (Unraid-ish net tools)."""
-    rc, out, err = _sh(
-        ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
-        timeout=12,
-    )
+    # lsof's output, read in-process (hub/libproc_listen.py); lsof itself
+    # runs only when that read cannot reproduce it.
+    out = lsof_text()
+    if out is not None:
+        rc, err = 0, ""
+    else:
+        rc, out, err = _sh(
+            ["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
+            timeout=12,
+        )
     rows = []
     if rc == 0:
         for line in out.splitlines()[1:]:

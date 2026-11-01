@@ -16,6 +16,7 @@ from hub.docker_cli import docker, engine_up, inspect_object
 from hub.errors import api_error, exc_detail
 from hub.host_address import default_route as host_default_route
 from hub.host_address import invalidate_routing
+from hub.libproc_listen import lsof_text
 from hub.service_signatures import unescape_proc_name
 from hub.util import LazyPool, fan_out, sh, strftime_now, ttl_memo
 
@@ -2076,9 +2077,13 @@ def _valid_ip(ip: str) -> bool:
 
 
 def listening_ports(limit: int = 100) -> list:
-    rc, out, _ = _sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
-    if rc != 0:
-        return []
+    # lsof's output, read in-process (hub/libproc_listen.py); lsof itself
+    # runs only when that read cannot reproduce it.
+    out = lsof_text()
+    if out is None:
+        rc, out, _ = _sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], timeout=12)
+        if rc != 0:
+            return []
     rows = []
     seen = set()
     for line in out.splitlines()[1:]:
