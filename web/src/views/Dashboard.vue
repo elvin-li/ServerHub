@@ -1534,7 +1534,24 @@ async function refresh() {
     return false
   }
 }
+// The full (non-light) sensors request still waiting on the host, if any.  A
+// tick that comes due while it runs shares it instead of sending a second
+// request for the same data: the second one used to take a newer generation,
+// so the full answer (Top CPU, RX/TX) was thrown away when it arrived.
+// Refresh (force) still re-probes.
+let fullSensorsInflight = null
 async function loadSensors(force = false, { light = false } = {}) {
+  if (!force && fullSensorsInflight) return fullSensorsInflight
+  const run = fetchSensors(force, { light })
+  if (!light) {
+    fullSensorsInflight = run
+    // fetchSensors never rejects; the second handler only keeps that true.
+    const clear = () => { if (fullSensorsInflight === run) fullSensorsInflight = null }
+    run.then(clear, clear)
+  }
+  return run
+}
+async function fetchSensors(force, { light }) {
   const generation = ++sensorsGeneration
   try {
     // Prefer cache; force only on manual refresh.  The 20s tick uses
