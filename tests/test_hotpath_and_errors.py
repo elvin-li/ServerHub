@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from hub.errors import CODES, api_error, exc_detail
 from hub.power_svc import power_action
-from hub.util import LazyPool, strftime_now
+from hub.util import IdleThreadPool, LazyPool, strftime_now
 from hub import jobs, metrics, sensors_svc, status, util as hub_util
 
 
@@ -44,6 +46,87 @@ class TestLazyPool(unittest.TestCase):
             self.assertEqual(list(pool.map(lambda x: x + 1, [1, 2])), [2, 3])
         finally:
             pool.shutdown()
+
+
+class TestIdleThreadPool(unittest.TestCase):
+    @staticmethod
+    def _wait_until(predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.002)
+        return predicate()
+
+    def test_workers_retire_and_a_later_submit_restarts_one(self):
+        pool = IdleThreadPool(2, "test-retire", idle=0.02)
+        release = threading.Event()
+        try:
+            futures = [pool.submit(release.wait, 1) for _ in range(2)]
+            self.assertTrue(self._wait_until(lambda: pool._live == 2))
+            release.set()
+            self.assertEqual([future.result(timeout=1) for future in futures], [True, True])
+            self.assertTrue(self._wait_until(lambda: pool._live == 0))
+            self.assertEqual(pool._idle, 0)
+            self.assertEqual(pool.submit(lambda: 7).result(timeout=1), 7)
+        finally:
+            release.set()
+            pool.shutdown()
+
+    def test_concurrent_bursts_lose_no_work_or_worker_slots(self):
+        pool = IdleThreadPool(3, "test-burst", idle=0.003)
+        futures = []
+        guard = threading.Lock()
+
+        def submit_batch(base):
+            batch = [pool.submit(lambda value=value: value) for value in range(base, base + 80)]
+            with guard:
+                futures.extend(batch)
+
+        submitters = [threading.Thread(target=submit_batch, args=(n * 80,)) for n in range(8)]
+        try:
+            for thread in submitters:
+                thread.start()
+            for thread in submitters:
+                thread.join(timeout=2)
+            self.assertFalse(any(thread.is_alive() for thread in submitters))
+            self.assertEqual(sorted(future.result(timeout=2) for future in futures), list(range(640)))
+            self.assertLessEqual(pool._live, 3)
+            self.assertTrue(self._wait_until(lambda: pool._live == 0))
+            self.assertEqual((pool._live, pool._idle, pool._owed), (0, 0, 0))
+        finally:
+            pool.shutdown()
+
+    def test_cancel_pending_futures_keeps_running_work(self):
+        pool = IdleThreadPool(1, "test-cancel", idle=1)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked():
+            started.set()
+            release.wait(1)
+            return "done"
+
+        running = pool.submit(blocked)
+        self.assertTrue(started.wait(1))
+        pending = [pool.submit(lambda: "queued") for _ in range(20)]
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+            self.assertTrue(all(future.cancelled() for future in pending))
+            with self.assertRaises(RuntimeError):
+                pool.submit(lambda: None)
+            release.set()
+            self.assertEqual(running.result(timeout=1), "done")
+        finally:
+            release.set()
+            pool.shutdown()
+
+    def test_shutdown_waits_for_all_queued_work(self):
+        pool = IdleThreadPool(3, "test-drain", idle=0.01)
+        futures = [pool.submit(lambda value=value: value, value) for value in range(60)]
+        pool.shutdown(wait=True)
+        self.assertEqual([future.result() for future in futures], list(range(60)))
+        self.assertEqual(pool._live, 0)
 
 
 class TestStatusPeek(unittest.TestCase):

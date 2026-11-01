@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
