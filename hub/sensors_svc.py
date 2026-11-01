@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from hub import gpu_native
 from hub.proc_cache import ps_lines
 from hub.util import LazyPool, sh, strftime_now
 
@@ -1318,21 +1319,44 @@ def _iter_ioreg_dicts(value, depth: int = 0):
             yield from _iter_ioreg_dicts(item, depth + 1)
 
 
+def _gpu_entries():
+    """IOAccelerator entries: from IOKit when it answers, else ``ioreg -a``.
+
+    The light dashboard tick and every metrics sample read these.  IOKit
+    answers the same properties in under a millisecond; the ``ioreg`` spawn
+    cost about 24 ms of child CPU, 9 ms in the panel and 100 KB of XML through
+    two temp files.  An empty or failed native read falls back to ``ioreg``,
+    which also covers hosts without IOKit.
+    """
+    try:
+        native = gpu_native.accelerator_entries()
+    except _CONTROL_FLOW:
+        raise
+    except BaseException:
+        native = None
+    if type(native) is list and native:
+        return native
+    rc, out, _ = _sh_run(
+        ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
+        timeout=4,
+    )
+    if _rc_int(rc) != 0 or not out:
+        return None
+    raw = out.encode("utf-8", "replace") if _isa(out, str) else out
+    return plistlib.loads(raw)
+
+
 def _gpu() -> dict | None:
     """Best-effort GPU util / memory from IOAccelerator (macOS IORegistry).
 
-    ``ioreg -a`` is an XML plist. Failures return None so GET /api/system/sensors
-    never 500s when the accelerator is missing or the plist is leftover junk.
+    Read through :func:`_gpu_entries` (IOKit, or the ``ioreg -a`` XML plist).
+    Failures return None so GET /api/system/sensors never 500s when the
+    accelerator is missing or the plist is leftover junk.
     """
     try:
-        rc, out, _ = _sh_run(
-            ["/usr/sbin/ioreg", "-a", "-r", "-d", "1", "-c", "IOAccelerator"],
-            timeout=4,
-        )
-        if _rc_int(rc) != 0 or not out:
+        parsed = _gpu_entries()
+        if parsed is None:
             return None
-        raw = out.encode("utf-8", "replace") if _isa(out, str) else out
-        parsed = plistlib.loads(raw)
 
         best = None
         best_score = -1.0

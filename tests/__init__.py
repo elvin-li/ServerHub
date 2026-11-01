@@ -38,6 +38,10 @@ os.environ.setdefault("SERVERHUB_STATE_DIR", str(Path(_root) / "state"))
 # Stubbed subprocess answers must not leak between tests through hub.util.sh's
 # memo; tests/test_sh_memo.py turns it back on for itself.
 os.environ.setdefault("SERVERHUB_NO_SH_MEMO", "1")
+# Tests feed _gpu() canned ``ioreg`` XML through a stubbed sh; on a Mac the
+# native IOKit read would answer with the real GPU instead.
+# tests/test_sensors_gpu.py turns it back on for its own native tests.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_GPU", "1")
 if "SERVERHUB_TESTS_KEEP_HOME" not in os.environ:
     _home = Path(_root) / "home"
     _home.mkdir(parents=True, exist_ok=True)
