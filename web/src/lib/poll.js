@@ -31,6 +31,11 @@ function networkMultiplier() {
  * trigger backoff — they simply do not benefit from it.  A caller opts in by
  * either letting its errors propagate or by returning `false` from a tick where
  * something failed.
+ *
+ * Returning to the tab refreshes at once only when the last tick finished at
+ * least one interval ago; sooner than that, the schedule resumes where it was.
+ * Ticks never overlap: one that comes due while `fn` is still running waits for
+ * that call instead of starting another.
  */
 export function startVisibleInterval(fn, ms) {
   let id = null
@@ -42,25 +47,43 @@ export function startVisibleInterval(fn, ms) {
   // keeps hitting the host for the life of the page.
   let generation = 0
   const MAX_BACKOFF = ms * 6 // cap at 6x normal interval
+  // The tick still waiting on fn(), if any.  A catch-up refresh or a timer that
+  // comes due while it runs joins it instead of sending a second request for
+  // the same data.
+  let inflight = null
+  // When the last tick finished.  -Infinity until the first one, so a poller
+  // created in a hidden tab still refreshes the moment the tab is shown.
+  let lastRunAt = -Infinity
 
-  const tick = async () => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    try {
-      // `=== false` only: undefined/null/[]/0 stay "success" for legacy callbacks.
-      if ((await fn()) === false) failures++
-      else failures = 0
-    } catch {
-      failures++
-    }
+  const tick = () => {
+    if (typeof document !== 'undefined' && document.hidden) return Promise.resolve()
+    if (inflight) return inflight
+    const run = (async () => {
+      try {
+        // `=== false` only: undefined/null/[]/0 stay "success" for legacy callbacks.
+        if ((await fn()) === false) failures++
+        else failures = 0
+      } catch {
+        failures++
+      } finally {
+        lastRunAt = Date.now()
+      }
+    })()
+    // Cleared in a reaction rather than in `finally`: a callback that throws
+    // synchronously settles `run` before the assignment below, and clearing
+    // first would leave `inflight` set for good.  `run` never rejects.
+    inflight = run
+    run.then(() => { if (inflight === run) inflight = null })
+    return run
   }
 
   const effectiveMs = () =>
     Math.min(ms * Math.pow(1.5, failures) * networkMultiplier(), MAX_BACKOFF)
 
-  const start = () => {
+  const start = (firstDelay = effectiveMs()) => {
     if (id != null) return
     const gen = generation
-    const loop = () => {
+    const loop = (delay) => {
       id = setTimeout(async () => {
         // stop() may run after this timer has already fired and been queued.
         // clearTimeout cannot cancel that callback; skip fn() so a disposed
@@ -68,10 +91,10 @@ export function startVisibleInterval(fn, ms) {
         if (gen !== generation) return
         await tick()
         if (gen !== generation) return // stopped while this tick was in flight
-        loop()
-      }, effectiveMs())
+        loop(effectiveMs())
+      }, delay)
     }
-    loop()
+    loop(firstDelay)
   }
 
   const stop = () => {
@@ -83,13 +106,26 @@ export function startVisibleInterval(fn, ms) {
   }
 
   const onVis = () => {
-    if (document.hidden) stop()
-    else {
+    // Re-arm from a clean timer either way.  A `visible` event with no `hidden`
+    // before it (a laptop waking up) used to add a catch-up tick on top of the
+    // timer that was still armed.
+    stop()
+    if (document.hidden) return
+    // Clamped so a clock stepped backwards reads as "just ran", never as a
+    // delay longer than one interval.
+    const since = Math.max(0, Date.now() - lastRunAt)
+    if (since >= ms) {
       start()
       // One immediate refresh when the user returns.  Goes through tick() so a
       // callback that now propagates its error cannot produce an unhandled
       // rejection, and so the outcome still feeds the backoff counter.
       void tick()
+    } else {
+      // Shown again within one interval of the last refresh: the data on
+      // screen is no older than it would be had the tab stayed visible, so the
+      // schedule resumes where it was.  A two-second tab switch used to cost
+      // the same burst of requests as a ten-minute absence.
+      start(Math.max(0, effectiveMs() - since))
     }
   }
 
