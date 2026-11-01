@@ -5,6 +5,7 @@ import threading
 import time
 
 from hub.config import override
+from hub.docker_cli import note_engine_up
 from hub.group_rules import configured_group_rules, resolve_group
 from hub.host_address import resolve_value
 from hub.paths import DOCKER
@@ -128,6 +129,10 @@ def _refresh():
         ],
         timeout=8,
     )
+    if rc == 0:
+        # The daemon answered: the same evidence `docker info` gives
+        # engine_up(), which then skips its own probe for its TTL.
+        note_engine_up()
     if rc == -1 and err == "timeout":
         # No evidence either way -- do not turn "the probe was slow" into
         # "the engine is down" (and every container gone) while a previous
