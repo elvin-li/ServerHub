@@ -35,6 +35,33 @@ from pathlib import Path
 
 _root = tempfile.mkdtemp(prefix="serverhub-tests-state-")
 os.environ.setdefault("SERVERHUB_STATE_DIR", str(Path(_root) / "state"))
+# Stubbed subprocess answers must not leak between tests through hub.util.sh's
+# memo; tests/test_sh_memo.py turns it back on for itself.
+os.environ.setdefault("SERVERHUB_NO_SH_MEMO", "1")
+# brew_cache reuses its snapshot while the host's Homebrew launchd jobs and
+# plists look unchanged.  On a Mac the real listing would make stubbed brew
+# answers stick across tests; tests/test_brew_services_reuse.py turns it on.
+os.environ.setdefault("SERVERHUB_NO_BREW_REUSE", "1")
+# Tests feed _gpu() canned ``ioreg`` XML through a stubbed sh; on a Mac the
+# native IOKit read would answer with the real GPU instead.
+# tests/test_sensors_gpu.py turns it back on for its own native tests.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_GPU", "1")
+# Same for the free-memory percentage: tests feed canned `memory_pressure -Q`
+# text; tests/test_memory_level_native.py turns the sysctl read back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_MEMLEVEL", "1")
+# And for listening sockets: tests feed canned `lsof` text through a stubbed
+# sh; tests/test_libproc_listen.py turns the libproc read back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_LSOF", "1")
+# And for the UTM-open check: tests stub `pgrep -x UTM` through
+# subprocess.run; tests/test_proc_names.py turns the sysctl read back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_PROCNAME", "1")
+# WireGuard keeps `wg --version` answers until the binary changes; stubbed
+# answers must not stick across tests.  tests/test_wg_spawns.py turns it on.
+os.environ.setdefault("SERVERHUB_NO_VERSION_MEMO", "1")
+# host_address skips `ipconfig getifaddr` for interfaces with no IPv4 address,
+# which on a Mac includes the en0 that tests stub answers for.
+# tests/test_ifaddr_precheck.py turns the check back on.
+os.environ.setdefault("SERVERHUB_NO_NATIVE_IFADDR", "1")
 if "SERVERHUB_TESTS_KEEP_HOME" not in os.environ:
     _home = Path(_root) / "home"
     _home.mkdir(parents=True, exist_ok=True)
