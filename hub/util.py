@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from hub.cli_args import as_argv
+from hub.proc_names import process_named
 
 log = logging.getLogger("serverhub.util")
 
@@ -1150,7 +1151,13 @@ def _utm_app_running() -> bool:
     ``utmctl list`` talks to the app over Apple Events.  Launch Services
     starts UTM.app when nothing is listening, so a status poll would pull
     the window back up after the user quit it.
+
+    Read from the process table in-process (hub/proc_names.py); ``pgrep``
+    runs only when that read cannot answer.
     """
+    native = process_named("UTM")
+    if native is not None:
+        return native
     try:
         proc = subprocess.run(
             ["/usr/bin/pgrep", "-x", "UTM"],
